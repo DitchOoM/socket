@@ -255,10 +255,42 @@ runs:
         rc=$?
         set -e
 
+        # Budget blown -> fail over to the canonical archive and retry ONCE, exactly like
+        # apt-safe-update's update path. A DEGRADED-but-alive Azure mirror is the case that gets
+        # here: the package-index fetch is small enough to pass the update budget, and then the
+        # multi-hundred-MB toolchain download crawls into this one (2026-08-19: the JDK17/JNI lane
+        # died at 8m on this budget AFTER its apt-get update had succeeded). The mirrorlist rewrite
+        # is what apt actually reads on this runner image (ubuntu.sources points at
+        # mirror+file:/etc/apt/apt-mirrors.txt); the update step's failover may already have done
+        # this, in which case the rewrite is an idempotent no-op and the retry simply resumes the
+        # download — apt keeps completed .debs in /var/cache/apt/archives, so the second attempt
+        # does not start from zero.
         if [ "$rc" -eq 124 ]; then
-          echo "::error::apt-get install exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}'."
+          echo "::warning::apt-get install stalled past ${{ inputs.timeout }} for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
+          if [ -e /etc/apt/apt-mirrors.txt ]; then
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -e "$f" ]; then
+              sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' "$f"
+            fi
+          done
+          sudo apt-get update -o Acquire::Retries=3 || true
+          set +e
+          timeout --foreground "${{ inputs.timeout }}" \
+            sudo apt-get install -y \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              ${{ inputs.packages }}
+          rc=$?
+          set -e
+        fi
+
+        if [ "$rc" -eq 124 ]; then
+          echo "::error::apt-get install exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}' on BOTH the Azure mirror and archive.ubuntu.com."
           echo ""
-          echo "This is almost certainly a slow Ubuntu mirror, NOT a problem with this PR — see #368."
+          echo "This is almost certainly a wide Ubuntu-mirror event, NOT a problem with this PR — see #368."
           echo "Both recorded sightings collapsed from ~19 MB/s to ~40 KB/s part-way through the"
           echo "same install, on unrelated PRs, in the same 25-minute window."
           echo ""
