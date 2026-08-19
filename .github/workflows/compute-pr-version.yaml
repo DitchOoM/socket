@@ -1,0 +1,103 @@
+name: "Compute PR Version"
+
+# PR runs never publish to Maven Central and never need a Central-accurate version — but every
+# Gradle invocation in a CI job still needs SOME `-Pversion` / ORG_GRADLE_PROJECT_version now that
+# build.gradle.kts refuses to fall back to a live Central fetch when CI=true (see build.gradle.kts
+# and the incident below). This workflow answers that need entirely from git, with zero network
+# calls beyond the checkout itself.
+#
+# INCIDENT: run 32198589853 (2026-08-18) died 13 seconds in — the single `version` job in
+# review.yaml got HTTP 429 from https://repo1.maven.org/maven2/com/ditchoom/socket/maven-metadata.xml
+# and every downstream job skipped, losing a full PR matrix to a Central rate limit that had nothing
+# to do with the change under review. A PR build has no reason to ask Central anything: nothing it
+# builds is ever published there, and "what does the next release version look like" is a question
+# only the release path needs answered authoritatively — that stays Central-based in
+# compute-version.yaml (used by merged.yaml), which now also retries with backoff.
+#
+# DERIVATION: highest `v*` tag reachable from the checked-out commit, patch-bumped, suffixed
+# `-pr.<run_id>` — e.g. tag v4.8.1 -> `4.8.2-pr.32198589853`.
+#   - "highest reachable", not `git describe`'s nearest-ancestor: this repo actually has v4.8.0 and
+#     v4.8.1 pointing at the SAME commit, and `git describe --tags --abbrev=0` resolves that tie to
+#     the OLDER tag (v4.8.0) — which would silently rebase every PR version this run off a release
+#     that is already superseded. `git tag --list 'v*' --merged HEAD --sort=-v:refname | head -1`
+#     answers the question asked ("latest reachable") by semver value instead of commit-graph
+#     distance, so it isn't exposed to that tie-break quirk.
+#   - `github.run_id`, NOT `run_attempt`: a rerun of a single failed job in this run must derive the
+#     exact same version string a sibling job already used in attempt 1, or a rerun of (say)
+#     build-apple alone would disagree with the build-linux artifacts still sitting from the first
+#     attempt — the same cross-job split #329/compute-version.yaml exists to prevent, just moved
+#     from job-vs-job to attempt-vs-attempt.
+#   - the `-pr.<run_id>` suffix is also what makes the string obviously non-releasable: it fails
+#     compute-version.yaml's own `^[0-9]+\.[0-9]+\.[0-9]+$` semver gate on purpose, so it can never
+#     be mistaken for, or accidentally accepted as, a release version.
+#
+# NOT comparable across runs, and that's fine (unlike compute-version.yaml, whose docstring flags
+# the same non-hermeticity as a real limitation): two PR runs against the same commit at different
+# times can land on different tag bases if a release lands on main in between, since a PR branch
+# usually isn't rebased onto main for every push. A PR version only needs to be valid and unique for
+# ITS OWN run.
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "A git-tag-derived, non-releasable version for this PR run only"
+        value: ${{ jobs.version.outputs.version }}
+
+jobs:
+  version:
+    name: "Compute PR version (git tags, no network)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history + tags: a shallow (default fetch-depth 1) checkout carries no tags at all,
+          # and the derivation below needs every `v*` tag reachable from this commit. Both are set
+          # explicitly rather than relying on fetch-depth: 0 alone to imply tags — the explicit
+          # `git fetch --tags --force` below is a third, belt-and-suspenders layer over the same
+          # requirement, since this whole feature is worthless if it silently sees zero tags.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute PR version from git tags (no network beyond git)
+        id: version
+        run: |
+          set -euo pipefail
+
+          # Redundant with the checkout inputs above on any current actions/checkout, but cheap and
+          # makes "did we actually get the tags" independent of that action's version/behavior.
+          # `|| true`: a fetch that finds nothing to update is not a failure, and this step (like
+          # every workflow bash block in this repo) runs under `-e`.
+          git fetch --tags --force --quiet origin || true
+
+          latest_tag="$(git tag --list 'v*' --merged HEAD --sort=-v:refname | head -1)"
+          if [ -z "$latest_tag" ]; then
+            echo "::warning::No v* tag reachable from $(git rev-parse HEAD) — falling back to v0.0.0 as the PR version base."
+            latest_tag="v0.0.0"
+          fi
+
+          base="${latest_tag#v}"
+          if ! printf '%s' "$base" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Latest reachable tag '${latest_tag}' is not a bare vMAJOR.MINOR.PATCH tag — cannot derive a PR version from it."
+            exit 1
+          fi
+
+          major="$(printf '%s' "$base" | cut -d. -f1)"
+          minor="$(printf '%s' "$base" | cut -d. -f2)"
+          patch="$(printf '%s' "$base" | cut -d. -f3)"
+          next_patch=$((patch + 1))
+
+          # run_id (stable across reruns of this run), never run_attempt — see the header comment.
+          version="${major}.${minor}.${next_patch}-pr.${{ github.run_id }}"
+
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-pr\.[0-9]+$'; then
+            echo "::error::Derived PR version failed its own shape check. Got: '${version}'"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Base tag: ${latest_tag} -> PR version for this run: ${version}"
+          echo "### Version for this run: \`${version}\` (derived from ${latest_tag}, git tags only — no Maven Central fetch)" >> "$GITHUB_STEP_SUMMARY"

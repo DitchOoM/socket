@@ -44,11 +44,59 @@ val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+// `CI` is the generic, CI-vendor-agnostic signal ("an unattended job is running this build, not a
+// person at a terminal") that GitHub Actions — and effectively every other CI — sets to "true" on
+// every runner unconditionally. Distinct from isRunningOnGithub/isMainBranchGithub above, which only
+// distinguish GitHub from local and main from a branch; this is the one that gates the fail-loud
+// check below, so a non-GitHub CI vendor would still get it if this repo ever grew one.
+val isCI = System.getenv("CI") == "true"
+// The ONE legitimate CI reason to reach the branch below with no version supplied: compute-version.yaml
+// (the release path) runs exactly `./gradlew -q nextVersion` for the sole purpose of COMPUTING a
+// version from Central to hand to every other job — it structurally cannot pass -Pversion, since
+// producing that value is the point of the invocation. Every other CI Gradle call that gets here has
+// a broken wiring, not a legitimate need to ask Central live; see the guard below.
+val isComputingNextVersion = gradle.startParameter.taskNames.any { it == "nextVersion" || it.endsWith(":nextVersion") }
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
-// Only compute version if not explicitly provided via -Pversion
+// Only compute version if not explicitly provided via -Pversion / ORG_GRADLE_PROJECT_version.
 if (!project.hasProperty("version") || project.version == "unspecified") {
+    if (isCI && !isComputingNextVersion) {
+        // WHY THIS FAILS INSTEAD OF FALLING BACK TO CENTRAL: reaching here with no version supplied
+        // IS the bug, not a case to handle gracefully. Two live incidents, same root cause:
+        //   - #329: every Gradle invocation querying Central independently let a release publishing
+        //     mid-run split a single CI run across two different versions.
+        //   - run 32198589853 (2026-08-18): even after #329's fix consolidated the query into one
+        //     `version` job per PR run, that job still queried Central live — and repo1.maven.org's
+        //     HTTP 429 thirteen seconds in killed the whole PR matrix over a version the run didn't
+        //     even need to be Central-accurate for.
+        // The fix both times was the same shape: compute the version ONCE per run, outside any
+        // individual Gradle invocation — compute-version.yaml (release path, Central-authoritative,
+        // now with retry+backoff) or compute-pr-version.yaml (PR path, git-tag derived, no network)
+        // — and hand it down as -Pversion / ORG_GRADLE_PROJECT_version to every job. A Gradle call in
+        // CI with nothing supplied means that plumbing broke somewhere upstream: an env wiring typo,
+        // a new job that forgot to pin it, a workflow-call input that stopped resolving. Silently
+        // falling back to a fresh Central fetch here would "fix" that one call while reintroducing
+        // the exact per-job/per-run split both incidents came from — invisibly, since every branch
+        // still produces a plausible-looking version. Fail loudly instead. See
+        // .github/actions/linux-quiche-env / apple-quiche-env for the equivalent guard on the
+        // receiving end (asserting ORG_GRADLE_PROJECT_version is non-empty before any Gradle call),
+        // which this complements from the Gradle side.
+        error(
+            "No version was supplied (-Pversion / ORG_GRADLE_PROJECT_version) while running in CI " +
+                "(CI=true). Every CI workflow must compute the version once — compute-version.yaml " +
+                "for the release path (Central-authoritative) or compute-pr-version.yaml for PR runs " +
+                "(git-tag derived, no Central fetch) — and pass it down explicitly. A live Maven " +
+                "Central fetch from inside a Gradle invocation is exactly the per-job/per-run " +
+                "version split #329 and run 32198589853 both hit; see the comment above this check " +
+                "for the full incident history. If this is a new CI job, wire " +
+                "ORG_GRADLE_PROJECT_version through from the run's `version` job output. (The " +
+                "`nextVersion` task itself is exempt from this check — it IS the version computation.)",
+        )
+    }
+    // Local developer path: unchanged, including getLatestVersion()'s (gradle/setup.gradle.kts)
+    // in-script caching of the live Central fetch via the top-level `latestVersion` var, and the
+    // `!isRunningOnGithub` snapshot flag (local builds get a `-SNAPSHOT` suffix; CI builds don't).
     project.version = getNextVersion(!isRunningOnGithub).toString()
 }
 

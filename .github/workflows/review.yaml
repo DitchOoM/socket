@@ -19,11 +19,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One Maven Central version query for the whole run, ~90s, feeding every job below. Both build
-  # jobs used to compute their own, which let a release publishing between their two queries pin
-  # them to different versions — see compute-version.yaml and #329.
+  # One version, computed once for the whole run, feeding every job below. Both build jobs used to
+  # compute their own, which let a release publishing between their two queries pin them to
+  # different versions — see #329. PR runs never publish to Central and don't need a
+  # Central-accurate answer, so this is git-tag-derived (compute-pr-version.yaml) rather than a live
+  # Central fetch — see that file for the derivation. Central query is now the RELEASE path only
+  # (compute-version.yaml, called from merged.yaml), which is exactly what it needs to be
+  # authoritative for. This split is what stopped run 32198589853 (2026-08-18): a Central HTTP 429
+  # 13 seconds into this exact job took down a full PR matrix over a version this run was always
+  # going to throw away.
   version:
-    uses: ./.github/workflows/compute-version.yaml
+    uses: ./.github/workflows/compute-pr-version.yaml
 
   build-linux:
     needs: version
@@ -405,9 +411,11 @@ jobs:
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
     needs: [version, build-linux]
-    # Pinned like every other Gradle-running job in the run. This lane publishes nothing, so a
-    # divergent version could not corrupt an artifact — but it removes one more live Maven Central
-    # fetch, which is both latency and a failure mode, and keeps "one version per run" exception-free.
+    # Pinned like every other Gradle-running job in the run — and no longer optional. This lane
+    # publishes nothing, so a divergent version could not corrupt an artifact, but build.gradle.kts
+    # now FAILS any Gradle invocation that reaches it with no version while CI=true (see
+    # build.gradle.kts's version block) rather than silently falling back to a live Maven Central
+    # fetch. Dropping this env would red this job outright, not just desync its version number.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
@@ -476,9 +484,11 @@ jobs:
     name: "Validate Docs Generation"
     runs-on: macos-latest
     needs: version
-    # Same reasoning as build-windows: docs publish nothing, but pinning drops a Central fetch from
-    # the Dokka run. `needs: version` delays this job by ~90s; it finishes in ~8 min against a
-    # ~40 min critical path, so it stays far off it.
+    # Same reasoning as build-windows: docs publish nothing, but this is now load-bearing, not an
+    # optimization — build.gradle.kts fails any CI Gradle call that has no version rather than
+    # falling back to Central. `needs: version` delays this job by however long compute-pr-version.yaml
+    # takes (git-only, no Central fetch — seconds, not the ~90s the old Central-backed job cost); it
+    # finishes in ~8 min against a ~40 min critical path either way, so it stays far off it.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:

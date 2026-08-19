@@ -1,6 +1,7 @@
 name: "Compute Version"
 
-# One authoritative version query per RUN.
+# One authoritative version query per RUN — the RELEASE path only (merged.yaml). PR runs stopped
+# calling this workflow; see compute-pr-version.yaml and the note below.
 #
 # `getNextVersion` (gradle/setup.gradle.kts) derives the version from a LIVE fetch of Maven
 # Central's maven-metadata.xml, performed once per Gradle invocation. The version a build uses
@@ -26,6 +27,14 @@ name: "Compute Version"
 # release still yields different numbers. True hermeticity means sourcing the version from a git
 # tag or gradle.properties and having the release flow bump it — a larger change to the
 # label-driven release machinery (see #329 "Out of scope").
+#
+# WHY THIS IS RELEASE-ONLY NOW: run 32198589853 (2026-08-18) died 13 seconds in when this exact
+# fetch got HTTP 429 from repo1.maven.org on a PR run, taking a full matrix down for a version
+# nothing in that run was ever going to publish. review.yaml (and android_integration.yaml) now
+# call compute-pr-version.yaml instead — a git-tag-derived, non-releasable version with zero
+# network beyond git — because a PR build genuinely does not need Central's answer to "what's
+# next". The release path here still does: it is choosing the number that actually ships, so it
+# stays Central-based and authoritative, hardened below with retries instead of routed around.
 
 on:
   workflow_call:
@@ -97,16 +106,46 @@ jobs:
       # The regex assert is the point of doing this in one place. Every downstream job now takes
       # this string on faith and bakes it into artifact paths, so a malformed value (a Gradle
       # warning leaking onto stdout, an empty string from a failed Central fetch) must fail HERE,
-      # loudly, in 90 seconds — not 40 minutes later as a confusing "no -jvm-<V>.jar found" or an
-      # unresolvable dependency in `validate`, which is exactly how this class of bug has
-      # presented every time so far.
+      # loudly — not 40 minutes later as a confusing "no -jvm-<V>.jar found" or an unresolvable
+      # dependency in `validate`, which is exactly how this class of bug has presented every time
+      # so far.
+      #
+      # RETRY + BACKOFF: this is the fetch that killed run 32198589853 with an HTTP 429 from
+      # repo1.maven.org 13 seconds into a PR run (see the header comment — that path no longer
+      # calls this workflow at all). This job is still a live Central client, though, and Central
+      # rate-limits are real and transient, so a single failed attempt should not fail the whole
+      # release. 5 attempts, 10/20/40/80/160s backoff (270s worst case) — generous relative to
+      # Central's typical 429 retry-after windows, cheap relative to the ~45min release matrix this
+      # job gates. gradlew's own stderr (captured on failure) carries the actual HTTP status, so a
+      # non-429 failure (a real config error, say) is still fully diagnosable from the log even
+      # though this loop cannot tell the two apart itself.
       - name: Compute version
         id: version
         run: |
-          set -euo pipefail
-          version="$(./gradlew -q nextVersion ${{ inputs.gradle-args }})"
-          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::nextVersion did not produce a bare semver. Got: '${version}'"
+          set -uo pipefail
+          max_attempts=5
+          delay=10
+          version=""
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            output="$(./gradlew -q nextVersion ${{ inputs.gradle-args }} 2>&1)"
+            status=$?
+            if [ "$status" -eq 0 ] && printf '%s' "$output" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              version="$output"
+              break
+            fi
+            echo "::warning::nextVersion attempt ${attempt}/${max_attempts} failed or produced a non-semver value — possibly a Maven Central rate limit (HTTP 429) on repo1.maven.org/maven2/com/ditchoom/socket/maven-metadata.xml, the same class of failure that killed run 32198589853. Output:"
+            printf '%s\n' "$output"
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              break
+            fi
+            echo "Retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          if [ -z "$version" ]; then
+            echo "::error::nextVersion did not produce a bare semver after ${max_attempts} attempts. This is the release path — it must stay authoritative against Maven Central, so there is no git-tag fallback here (see compute-pr-version.yaml for why PR runs get one and this doesn't). Most likely repo1.maven.org rate-limited (HTTP 429) or was unreachable for the whole retry window; check the warnings above, then https://repo1.maven.org/maven2/com/ditchoom/socket/maven-metadata.xml directly, and re-run."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -25,13 +25,30 @@ env:
   QUIC_TEST_TIME_SCALE: "3"
 
 jobs:
+  # This lane runs several bare `./gradlew` invocations below (the x86_64 native build,
+  # startNetworkControlServer, connectedAndroidTest, stopNetworkControlServer) that never went
+  # through review.yaml's consolidated version job — each one was hitting build.gradle.kts's live
+  # Maven Central fallback on its own, several fetches per run, on a PR-triggered workflow. That is
+  # now a hard failure instead of a silent fetch (build.gradle.kts refuses to fall back when
+  # CI=true), so this lane needs a version pinned up front same as review.yaml. Git-tag-derived, not
+  # Central — this workflow never publishes anything either. See compute-pr-version.yaml and
+  # review.yaml's `version` job for the full incident/rationale (run 32198589853, #329).
+  version:
+    uses: ./.github/workflows/compute-pr-version.yaml
+
   android-emulator:
     runs-on: ubuntu-latest
+    needs: version
     # 25, not 15: a passing run already takes ~14m58s (emulator boot + KVM-accelerated
     # instrumented tests), so a 15-min cap tips a healthy run into a "cancelled" timeout on
     # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
     # genuine hang (e.g. an emulator that never boots).
     timeout-minutes: 25
+    # Pins every `./gradlew` invocation in this job to the run's one version — see the `version` job
+    # above. Without this, build.gradle.kts fails outright (CI=true, no version supplied) at the
+    # very first Gradle call below instead of quietly desyncing a version number.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
