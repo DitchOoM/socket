@@ -70,9 +70,8 @@ jobs:
       # the root build.gradle.kts comment already prescribes). NOTE: building the
       # linuxArm64 lib in an x86_64 emulator job is wasteful — de-scoping that task
       # from the Android test graph is a follow-up.
-      # apt-safe-update first — see .github/actions/apt-safe-update. It also supplies the
-      # `apt-get update` the install below needs; do not drop it without adding one back.
-      - uses: ./.github/actions/apt-safe-update
+      # No apt-safe-update step: apt-install-cached supplies its own `apt-get update`, run only
+      # when its cache cannot fully serve — a warm hit touches no mirror.
 
       # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
       # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
