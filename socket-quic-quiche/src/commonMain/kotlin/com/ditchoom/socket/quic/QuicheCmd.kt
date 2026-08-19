@@ -4,6 +4,41 @@ import com.ditchoom.buffer.PlatformBuffer
 import kotlinx.coroutines.CompletableDeferred
 
 /**
+ * Where a datagram entered the driver — and therefore which recv_info tells quiche the truth about
+ * where it arrived.
+ *
+ * Exhaustive over the two ways a datagram can enter: a client connection owns one socket per path
+ * (its reader tags each packet with that path's key), and a server owns one shared socket for all
+ * connections (its receive loop resolves the source address itself). There is no third ingress.
+ *
+ * Replaces three co-nullable `RecvPacket` fields (`pathKey?`, `recvInfoOverride?`,
+ * `onRecvInfoConsumed?`) whose legal combinations were exactly these shapes plus an "untagged"
+ * default that no caller used; everything else expressible — a path-tagged packet carrying a server
+ * override, a consumed-callback with nothing to consume, a packet from nowhere — was representable
+ * and impossible.
+ */
+sealed interface PacketSource {
+    /** A client path reader's packet: it arrived on the socket bound to [key]. */
+    class FromPath(
+        val key: PathKey,
+    ) : PacketSource
+
+    /**
+     * The *server's* shared socket: [recvInfo]'s `from` is the datagram's real source — required for
+     * passive (peer) migration, where one server socket sees a client's source address change. The
+     * server owns the recv_info's lifetime (cached per source); [onConsumed] is invoked exactly once
+     * when the driver is done with it — after `connRecv`, or when the command is dropped without
+     * processing (failCommand) — so the server can evict/free a cached recv_info only once no queued
+     * packet can still dereference it (the command channel is UNLIMITED, so a lagging driver may hold
+     * one long after the source went idle).
+     */
+    class FromServerSocket(
+        val recvInfo: QuicheRecvInfo,
+        val onConsumed: () -> Unit,
+    ) : PacketSource
+}
+
+/**
  * Commands processed sequentially by the [QuicheDriver] coroutine.
  *
  * quiche is single-threaded — the driver is the only coroutine that touches it.
@@ -11,27 +46,14 @@ import kotlinx.coroutines.CompletableDeferred
  */
 sealed interface QuicheCmd {
     /**
-     * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after processing).
-     * [pathKey] identifies which local path socket received it (null = the connection's primary path), so the
-     * driver hands quiche the matching recv_info during connection migration (slice 3).
-     *
-     * [recvInfoOverride] lets the *server* supply a per-datagram recv_info whose `from` is the actual datagram
-     * source — required for passive (peer) migration, where one server socket sees a client's source address
-     * change. The caller owns the recv_info's lifetime (the server caches them per source). When set it takes
-     * precedence over [pathKey]; clients leave it null and use [pathKey] path routing instead.
-     *
-     * [onRecvInfoConsumed] is invoked exactly once after the driver is done with [recvInfoOverride] — both on
-     * the normal path (after `connRecv`) and when this command is dropped without processing (failCommand). The
-     * server uses it to track in-flight references so it can safely evict/free a cached recv_info only once no
-     * queued packet can still dereference it (the driver's command channel is UNLIMITED, so a lagging driver may
-     * hold a recv_info long after the source went idle). Null for the client/path-routed cases the server doesn't own.
+     * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after
+     * processing). [source] says where the datagram entered — and therefore which recv_info tells
+     * quiche the truth about it. See [PacketSource].
      */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
-        val pathKey: PathKey? = null,
-        val recvInfoOverride: QuicheRecvInfo? = null,
-        val onRecvInfoConsumed: (() -> Unit)? = null,
+        val source: PacketSource,
     ) : QuicheCmd
 
     /**

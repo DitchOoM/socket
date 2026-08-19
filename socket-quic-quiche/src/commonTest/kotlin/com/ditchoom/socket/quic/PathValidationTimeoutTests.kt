@@ -114,6 +114,9 @@ class PathValidationTimeoutTests {
         /** The local port [openPath] will assign to its next path — what a path event must name. */
         fun portOfPath(index: Int): Int = portBase + index
 
+        /** The synthetic sockaddr [openPath] minted for path [index] — what a send-info `from` can name. */
+        fun sockAddrOfPath(index: Int): Long = SOCKADDR_BASE + index * SOCKADDR_STRIDE
+
         override suspend fun openPath(
             localHost: String?,
             localPort: Int,
@@ -183,6 +186,11 @@ class PathValidationTimeoutTests {
             val deferred = CompletableDeferred<MigrationResult>()
             driver.commands.send(QuicheCmd.Migrate(MigrationTarget.FreshLocalEndpoint, deferred))
             return deferred
+        }
+
+        /** One benign driver-loop wake (a no-op stream open), so `afterCommand`'s flush runs. */
+        suspend fun wake() {
+            driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
         }
     }
 
@@ -467,6 +475,72 @@ class PathValidationTimeoutTests {
                 )
                 // And the floor is real: ~3s, not something that could fire inside a normal RTT.
                 assertTrue(expectedBudget >= 3.seconds - 3.milliseconds)
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **An abandoned probe's re-armed PATH_CHALLENGE is dropped, not misrouted out the primary
+     * socket** (issue #395 item 4).
+     *
+     * Abandoning tears the driver's path entry down, but quiche still holds that path in
+     * `Validating` and re-arms `challenge_requested` on each PTO for up to `MAX_PROBING_TIMEOUTS`
+     * (path.rs). During that window `get_send_path_id` schedules datagrams whose egress address is
+     * the abandoned path — a path this driver has no socket for. Routing them "somewhere" sends a
+     * PATH_CHALLENGE out the wrong 4-tuple (the peer answers an address that never asked), and if
+     * that fallback socket's send fails, the [SendOutcome.Failed] arm aborts the entire flush —
+     * stream data queued behind the challenge included — for up to three PTOs. A datagram for a
+     * torn-down path has exactly one correct treatment: it is already lost, and RFC 9002 loss
+     * recovery owns it. Newly reachable since the 9f462e69 abandon timer, so it is pinned here
+     * beside the timer's own tests.
+     */
+    @Test
+    fun anAbandonedProbesReArmedChallengeIsDroppedNotMisroutedOutThePrimarySocket() =
+        runTest {
+            val f = Fixture(this)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(1, f.factory.opened, "no probe was armed — nothing to abandon")
+
+                testScheduler.advanceTimeBy(expectedBudget + 1.milliseconds)
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
+                assertEquals(
+                    1,
+                    f.factory.channels
+                        .single()
+                        .closeCount,
+                    "the abandon must have torn the probed path down for this test to mean anything",
+                )
+                val sendsBefore = f.primaryChannel.sendCount
+
+                // The next flush carries two datagrams: quiche schedules the first on the abandoned
+                // path (its re-armed challenge), the second on the primary.
+                f.stub.connSendQueue += 1200
+                f.stub.connSendQueue += 1200
+                f.stub.sendInfoFromAddrQueue += f.factory.sockAddrOfPath(1)
+                f.stub.sendInfoFromAddrQueue += primaryAddr
+                f.wake()
+                runCurrent()
+
+                assertEquals(
+                    0,
+                    f.factory.channels
+                        .single()
+                        .sendCount,
+                    "a datagram reached the abandoned path's closed socket",
+                )
+                assertEquals(
+                    sendsBefore + 1,
+                    f.primaryChannel.sendCount,
+                    "exactly the primary-addressed datagram must egress the primary socket: one more " +
+                        "means the abandoned path's PATH_CHALLENGE was misrouted out the primary 4-tuple, " +
+                        "one fewer means the flush stalled behind the undeliverable datagram (#395 item 4)",
+                )
             } finally {
                 f.driver.destroy()
             }

@@ -58,6 +58,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
@@ -708,16 +709,26 @@ internal object CinteropQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int =
-        quiche_conn_migrate(
-            conn.handle.toCPointer()!!,
-            localAddr.toCPointer()!!,
-            localLen.convert(),
-            peerAddr.toCPointer()!!,
-            peerLen.convert(),
-            seqOut.toCPointer<ULongVar>()!!,
-        )
+    ): MigrateOutcome {
+        memScoped {
+            val seq = alloc<ULongVar>()
+            val rc =
+                quiche_conn_migrate(
+                    conn.handle.toCPointer()!!,
+                    localAddr.toCPointer()!!,
+                    localLen.convert(),
+                    peerAddr.toCPointer()!!,
+                    peerLen.convert(),
+                    seq.ptr,
+                )
+            return if (rc >= 0) MigrateOutcome.Migrated(seq.value.toLong()) else MigrateOutcome.Rejected(rc)
+        }
+    }
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int = quiche_conn_retire_dcid(conn.handle.toCPointer()!!, dcidSeq.toULong())
 
     override fun connMigrateSource(
         conn: QuicheConn,

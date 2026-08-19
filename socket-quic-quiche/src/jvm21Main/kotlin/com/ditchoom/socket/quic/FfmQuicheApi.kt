@@ -288,6 +288,9 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS),
         )
     }
+    private val hConnRetireDcid by lazy {
+        downcall("quiche_conn_retire_dcid", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG))
+    }
     private val hConnAvailableDcids by lazy {
         downcall("quiche_conn_available_dcids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
@@ -887,16 +890,25 @@ class FfmQuicheApi private constructor(
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int =
-        hConnMigrate.invokeExact(
-            seg(conn.handle),
-            seg(localAddr),
-            localLen,
-            seg(peerAddr),
-            peerLen,
-            seg(seqOut),
-        ) as Int
+    ): MigrateOutcome =
+        Arena.ofConfined().use { arena ->
+            val seqOut = arena.allocate(JAVA_LONG)
+            val rc =
+                hConnMigrate.invokeExact(
+                    seg(conn.handle),
+                    seg(localAddr),
+                    localLen,
+                    seg(peerAddr),
+                    peerLen,
+                    seqOut,
+                ) as Int
+            if (rc >= 0) MigrateOutcome.Migrated(seqOut.get(JAVA_LONG, 0)) else MigrateOutcome.Rejected(rc)
+        }
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int = hConnRetireDcid.invokeExact(seg(conn.handle), dcidSeq) as Int
 
     override fun connMigrateSource(
         conn: QuicheConn,

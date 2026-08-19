@@ -142,6 +142,10 @@ fun downloadQuicheSource(
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
+    // Stop `retire_dcid` from re-linking a spare DCID to a path that is no longer active, so a
+    // migrated-from path becomes evictable and the 4th migration stops failing (#395). Idempotent,
+    // fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheRetireDcidNoRelink(sourceDir)
 
     return sourceDir
 }
@@ -488,6 +492,238 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
 
     ffiRs.writeText(text.replaceFirst(anchor, replacement))
     logger.lifecycle("Patched quiche source: #[repr(C)] on ffi.rs TransportParams (peer transport-params ABI)")
+}
+
+/**
+ * Patch quiche so a path the connection has migrated away from can actually be **released**: retiring
+ * its DCID must stick, instead of quiche immediately handing the dead path a fresh one.
+ *
+ * **Why this is needed (DitchOoM/socket#395).** quiche caps its internal path table at
+ * `max_concurrent_paths = active_conn_id_limit` (4 here), and `make_room_for_new_path` (path.rs) can
+ * only evict a path that is `unused()` — not active AND `active_dcid_seq.is_none()`. `migrate()` never
+ * clears the old path's DCID, and *two* separate mechanisms undo any attempt to clear it:
+ *
+ *  1. `retire_dcid` — the API RFC 9000 §9.5 says a client SHOULD call for the CID used on the path it
+ *     migrated away from — re-links a spare DCID to the retired path's `pid` whenever one is available
+ *     (the normal case, since the peer keeps the pool topped up).
+ *  2. `recv()`'s frame-processing tail refills a spare DCID into ANY path whose `active_dcid_seq` is
+ *     None, on **every received packet** — so even a successful clear is resurrected one packet later
+ *     (measured via instrumented builds: `link_dcid seq=2 pid=0` on the packet after
+ *     RETIRE_CONNECTION_ID(0)).
+ *
+ * Net effect: the table fills by one pinned path per migration, each pin burns a spare CID, and the
+ * 4th migration fails — exactly when a flapping mobile network needs migration most.
+ *
+ * Three edits, one semantic delta: a **validated path that is no longer the designated-active one**
+ * (i.e., a path the connection has finished with) no longer receives DCIDs. Every legitimate consumer
+ * keeps its behaviour: the designated-active path stranded by a peer's `retire_prior_to` is still
+ * re-linked/refilled, and not-yet-validated paths (a fresh server-side path created by an incoming
+ * probe needs the refill to send PATH_RESPONSE at all) still refill. The `socket_designated_active`
+ * accessor exists because `Path::active()` requires a linked DCID and so cannot answer "is this the
+ * chosen path" at the one moment that question matters.
+ *
+ * Upstream-reportable like the TransportParams repr bug; carried here until then. **Idempotent per
+ * edit and loud in both directions** (the [patchQuicheForCallerClock] discipline): each edit's marker
+ * returns early, a moved anchor throws, and an upstream that has restructured these sites also throws —
+ * a quiche bump surfaces as a build failure, never a silent no-op.
+ */
+fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val pathRs = sourceDir.resolve("quiche/src/path.rs")
+    if (!libRs.exists() || !pathRs.exists()) return
+
+    fun missingAnchor(what: String): Nothing =
+        throw GradleException(
+            "socket-retire-dcid-no-relink (DitchOoM/socket#395): $what was not found. A quiche bump moved or " +
+                "reshaped it — possibly fixing the dead-path pinning this patch works around (retire_dcid " +
+                "re-linking spares to non-active paths, and recv()'s indiscriminate DCID refill). If upstream " +
+                "fixed it: DELETE this patch and its call site, and KEEP the multi-migration conformance test " +
+                "(QuicActiveMigrationTestSuite.theConnectionCanKeepMigratingPastTheConnectionIdLimit), which is " +
+                "the regression guard and outlives the patch. Otherwise re-fit the anchor and re-verify with " +
+                "that test before shipping. See https://github.com/DitchOoM/socket/issues/395",
+        )
+
+    // ── Edit 1 (path.rs): expose the raw `active` designation. `Path::active()` requires a linked
+    // DCID, so inside the DCID-refill loop (where the DCID is None by definition) it can never answer
+    // "is this the connection's chosen path" — which is the exact question edit 3 must ask.
+    var pathText = pathRs.readText()
+    if (!pathText.contains("socket_designated_active")) {
+        val anchor =
+            """
+            |    /// Returns whether the path is active.
+            |    #[inline]
+            |    pub fn active(&self) -> bool {
+            |        self.active && self.working() && self.active_dcid_seq.is_some()
+            """.trimMargin()
+        if (!pathText.contains(anchor)) missingAnchor("Path::active() in quiche/src/path.rs")
+        val replacement =
+            """
+            |    /// socket-retire-dcid-no-relink (DitchOoM/socket#395): the raw `active` designation,
+            |    /// independent of whether a DCID is currently linked. `active()` conflates the two, and
+            |    /// the DCID-refill loop in recv() needs "is this the connection's chosen path" at the
+            |    /// one moment the chosen path can legitimately have no DCID (a peer-forced retirement
+            |    /// just unlinked it).
+            |    #[inline]
+            |    pub fn socket_designated_active(&self) -> bool {
+            |        self.active
+            |    }
+            |
+            |    /// Returns whether the path is active.
+            |    #[inline]
+            |    pub fn active(&self) -> bool {
+            |        self.active && self.working() && self.active_dcid_seq.is_some()
+            """.trimMargin()
+        pathRs.writeText(pathText.replaceFirst(anchor, replacement))
+    }
+
+    var libText = libRs.readText()
+
+    // ── Edit 2 (lib.rs): stop `retire_dcid` from re-linking a spare DCID to a path that is no longer
+    // active. quiche caps its path table at `max_concurrent_paths = active_conn_id_limit` (4 here), and
+    // `make_room_for_new_path` can only evict a path that is not active AND has no DCID. `migrate()`
+    // never clears the old path's DCID, and the one API that could — `retire_dcid`, which RFC 9000 §9.5
+    // says a client SHOULD call for the CID used on the path it migrated away from — undoes itself:
+    // whenever a spare DCID is available it re-links that spare to the retired path's pid, leaving the
+    // path pinned forever. The re-link exists for the *active* path (retiring the CID in use must not
+    // strand the connection); for any other path it only burns a spare and pins a dead slot.
+    if (!libText.contains("socket-retire-dcid-no-relink: only the ACTIVE path")) {
+        val anchor =
+            """
+            |        if let Some(pid) = self.ids.retire_dcid(dcid_seq)? {
+            |            // The retired Destination CID was associated to a given path. Let's
+            |            // find an available DCID to associate to that path.
+            |            let path = self.paths.get_mut(pid)?;
+            |            let dcid_seq = self.ids.lowest_available_dcid_seq();
+            |
+            |            if let Some(dcid_seq) = dcid_seq {
+            |                self.ids.link_dcid_to_path_id(dcid_seq, pid)?;
+            |            }
+            |
+            |            path.active_dcid_seq = dcid_seq;
+            |        }
+            """.trimMargin()
+        if (!libText.contains(anchor)) missingAnchor("the relink block inside retire_dcid in quiche/src/lib.rs")
+        val replacement =
+            """
+            |        if let Some(pid) = self.ids.retire_dcid(dcid_seq)? {
+            |            let path = self.paths.get_mut(pid)?;
+            |
+            |            // socket-retire-dcid-no-relink: only the ACTIVE path needs a replacement DCID when
+            |            // its CID is retired (stranding it would stall the connection). Re-linking a spare
+            |            // to a non-active path pins it in the path table forever: make_room_for_new_path can
+            |            // only evict a path whose active_dcid_seq is None, so after enough migrations
+            |            // probe_path fails with Done. Clearing the seq instead is what makes the RFC 9000
+            |            // §9.5 post-migration retirement actually release the old path's slot (#395).
+            |            if path.socket_designated_active() {
+            |                let dcid_seq = self.ids.lowest_available_dcid_seq();
+            |
+            |                if let Some(dcid_seq) = dcid_seq {
+            |                    self.ids.link_dcid_to_path_id(dcid_seq, pid)?;
+            |                }
+            |
+            |                path.active_dcid_seq = dcid_seq;
+            |            } else {
+            |                path.active_dcid_seq = None;
+            |            }
+            |        }
+            """.trimMargin()
+        libText = libText.replaceFirst(anchor, replacement)
+    }
+
+    // ── Edit 3 (lib.rs): scope recv()'s frame-processing-tail DCID refill. On every received packet it
+    // re-links a spare DCID into ANY path whose active_dcid_seq is None, which resurrects the
+    // migrated-from path the driver just retired per §9.5 (measured: `link_dcid seq=2 pid=0` on the
+    // packet after RETIRE_CONNECTION_ID(0)) — pinning it and burning one spare CID per migration, so
+    // edit 2 is a no-op without this one. The refill stays for every path upstream legitimately serves:
+    // the designated-active path stranded by a peer-forced retirement, and paths not yet validated
+    // (fresh server-side paths created by an incoming probe NEED this refill to send PATH_RESPONSE —
+    // scoping it tighter breaks path validation outright). The only newly-excluded class is
+    // validated-and-not-active: exactly a path the connection has finished with.
+    if (!libText.contains("socket-retire-dcid-no-relink: refill only")) {
+        val anchor =
+            """
+            |        let no_dcid = self
+            |            .paths
+            |            .iter_mut()
+            |            .filter(|(_, p)| p.active_dcid_seq.is_none());
+            """.trimMargin()
+        if (!libText.contains(anchor)) missingAnchor("the no-DCID path refill loop in recv() in quiche/src/lib.rs")
+        val replacement =
+            """
+            |        // socket-retire-dcid-no-relink: refill only paths the connection still wants — the
+            |        // designated-active path (a peer-forced retirement can legitimately strand it) and
+            |        // paths not yet validated (a fresh server-side path created by an incoming probe needs
+            |        // a DCID here to answer with PATH_RESPONSE). A validated non-active path is one the
+            |        // connection migrated away from: refilling it pins it in the path table and burns a
+            |        // spare CID per migration (#395).
+            |        let no_dcid = self
+            |            .paths
+            |            .iter_mut()
+            |            .filter(|(_, p)| {
+            |                p.active_dcid_seq.is_none() &&
+            |                    (p.socket_designated_active() || !p.validated())
+            |            });
+            """.trimMargin()
+        libText = libText.replaceFirst(anchor, replacement)
+    }
+
+    // ── Edit 4 (lib.rs): the server-side half of RFC 9000 §9.5. When the peer migrates,
+    // `on_peer_migrated` switches the active path and keeps the old path's DCID linked forever — so the
+    // CIDs the *client* issued (its SCIDs) stay pinned to dead server-side paths, the client's
+    // `available_scids()` hits zero after activeConnectionIdLimit-1 migrations, and its next
+    // `probe_path` fails with OutOfIdentifiers even though everything client-side was released.
+    // Retiring the old path's DCID here sends RETIRE_CONNECTION_ID, which frees the peer's SCID (it
+    // issues a replacement) and — with edits 2+3 — leaves the old server-side path evictable.
+    // Skipped when the old DCID was just reused for the new path (the no-spare + dcid-reuse branch).
+    if (!libText.contains("socket-retire-dcid-no-relink: RFC 9000 Section 9.5 applies to both endpoints")) {
+        val anchor =
+            """
+            |        let no_spare_dcid =
+            |            self.paths.get_mut(new_pid)?.active_dcid_seq.is_none();
+            |
+            |        if no_spare_dcid && !disable_dcid_reuse {
+            |            self.paths.get_mut(new_pid)?.active_dcid_seq =
+            |                self.paths.get_mut(active_path_id)?.active_dcid_seq;
+            |        }
+            |
+            |        Ok(())
+            """.trimMargin()
+        if (!libText.contains(anchor)) missingAnchor("the DCID handover block in on_peer_migrated in quiche/src/lib.rs")
+        val replacement =
+            """
+            |        let no_spare_dcid =
+            |            self.paths.get_mut(new_pid)?.active_dcid_seq.is_none();
+            |
+            |        if no_spare_dcid && !disable_dcid_reuse {
+            |            self.paths.get_mut(new_pid)?.active_dcid_seq =
+            |                self.paths.get_mut(active_path_id)?.active_dcid_seq;
+            |        }
+            |
+            |        // socket-retire-dcid-no-relink: RFC 9000 Section 9.5 applies to both endpoints — retire the
+            |        // CID used toward the peer's old address once the peer has moved, unless it was just
+            |        // reused for the new path. This is what frees the peer's SCID (it issues a
+            |        // replacement) and, with the retire/refill edits, lets the old path be evicted
+            |        // instead of pinning the table. Best-effort: a refusal leaves one pinned slot, it
+            |        // must not fail the migration that already happened.
+            |        let old_seq = self.paths.get(active_path_id)?.active_dcid_seq;
+            |        let new_seq = self.paths.get(new_pid)?.active_dcid_seq;
+            |        if let Some(old_seq) = old_seq {
+            |            if Some(old_seq) != new_seq {
+            |                let _ = self.retire_dcid(old_seq);
+            |            }
+            |        }
+            |
+            |        Ok(())
+            """.trimMargin()
+        libText = libText.replaceFirst(anchor, replacement)
+    }
+
+    libRs.writeText(libText)
+    logger.lifecycle(
+        "Patched quiche source: retire_dcid no longer re-links a spare DCID to a non-active path, recv() " +
+            "no longer refills DCIDs into validated non-active paths, and a server retires the DCID of the " +
+            "path its peer migrated away from (#395)",
+    )
 }
 
 /** A cargo build directory segment: `quiche-<major>.<minor>.<patch>`, and nothing else. */

@@ -446,8 +446,17 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int = nConnMigrate(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+    ): MigrateOutcome {
+        // JNI packs the result: >= 0 is the migrated path's DCID sequence number, < 0 is a quiche
+        // error code. Real DCID sequence numbers are tiny, so this is unambiguous in practice.
+        val raw = nConnMigrate(conn.handle, localAddr, localLen, peerAddr, peerLen)
+        return if (raw >= 0) MigrateOutcome.Migrated(raw) else MigrateOutcome.Rejected(raw.toInt())
+    }
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int = nConnRetireDcid(conn.handle, dcidSeq)
 
     override fun connMigrateSource(
         conn: QuicheConn,
@@ -929,14 +938,14 @@ object JniQuicheApi : QuicheApi {
         seqOut: Long,
     ): Int
 
+    // Packed jlong: >= 0 is the migrated path's DCID sequence number, < 0 is a quiche error code.
     @JvmStatic private external fun nConnMigrate(
         conn: Long,
         localAddr: Long,
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int
+    ): Long
 
     @JvmStatic private external fun nConnMigrateSource(
         conn: Long,
@@ -946,6 +955,11 @@ object JniQuicheApi : QuicheApi {
     ): Int
 
     @JvmStatic private external fun nConnAvailableDcids(conn: Long): Long
+
+    @JvmStatic private external fun nConnRetireDcid(
+        conn: Long,
+        dcidSeq: Long,
+    ): Int
 
     @JvmStatic private external fun nConnScidsLeft(conn: Long): Long
 
