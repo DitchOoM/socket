@@ -12,12 +12,11 @@
 # (matches the CI load profile the 1-in-14 sightings actually had).
 name: 401 Soak Hunt
 
+# push-triggered (scoped to this branch) because workflow_dispatch requires the file on the
+# default branch; every push to debug/401-soak-hunt fires a hunt round.
 on:
-  workflow_dispatch:
-    inputs:
-      iterations:
-        description: "Base loop count (class shards run 3x this, full shards run this/2)"
-        default: "25"
+  push:
+    branches: [debug/401-soak-hunt]
 
 env:
   # Matches build-linux.yaml — the failing run's capture printed scale=3.0, so keep every
@@ -75,7 +74,7 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p hunt-results
-          base="${{ inputs.iterations }}"
+          base=25
           if [ "${{ matrix.mode }}" = "class" ]; then
             n=$(( base * 3 ))
           else
