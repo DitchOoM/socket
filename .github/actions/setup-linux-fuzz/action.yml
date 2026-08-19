@@ -90,9 +90,8 @@ runs:
     # what an earlier "skip the toolchain for http3 lanes" optimization broke. libclang: the
     # cargo-fuzz native lanes compile quiche 0.29 (boring-crate default), whose boring-sys build
     # runs bindgen.
-    # See .github/actions/apt-safe-update: a 403 from the runner image's unused azure-cli source
-    # made `apt-get update` exit 100 and blocked the 1efafc4b release.
-    - uses: ./.github/actions/apt-safe-update
+    # No apt-safe-update step: apt-install-cached below runs it itself, only when its cache cannot
+    # fully serve — a warm hit touches no mirror.
 
     # ⚠️ This is the composite that #368 was filed against: `Fuzz native ASAN (header-slice)` burned
     # all 25 of its timeout-minutes inside the install below and was killed before one fuzz

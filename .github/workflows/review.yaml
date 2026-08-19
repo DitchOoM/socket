@@ -120,8 +120,7 @@ jobs:
       # linux-arm64 .a cargo-builds against the aarch64-unknown-linux-gnu target). Install
       # the same cross toolchain the other Linux lanes use or the jar build dies at cmake
       # configure — same failure class android_integration.yaml already documents.
-      # apt-safe-update first — see .github/actions/apt-safe-update.
-      - uses: ./.github/actions/apt-safe-update
+      # No apt-safe-update step: apt-install-cached runs it itself, only on a cache miss.
       # ⚠️ This is the exact step that killed `Consumer Smoke (JVM + Linux link)` on PR #361 — it sat
       # ~9 minutes on a single 21.1 MB gcc-13-aarch64-linux-gnu at ~40 KB/s and was cancelled at
       # 20m16s, on a PR that had nothing to do with any of it (#368, second sighting).

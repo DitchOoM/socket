@@ -2,7 +2,10 @@ name: "apt-get update, resilient to unused third-party sources"
 description: >-
   `apt-get update` that cannot be taken down by a third-party apt source this project does not use,
   and cannot silently eat a job's whole timeout-minutes budget if the Ubuntu mirror itself stalls.
-  Wraps the one-line fix so the call sites cannot drift apart.
+  Wraps the one-line fix so the call sites cannot drift apart. Since 2026-08-19 this is invoked
+  from INSIDE apt-install-cached (only when its cache cannot fully serve) — do NOT add it
+  unconditionally before a cached install; that re-adds the warm-path mirror round-trip the cache
+  exists to remove.
 
 inputs:
   timeout:
@@ -91,15 +94,49 @@ runs:
         rc=$?
         set -e
 
+        # Budget blown on the default mirror -> fail over to the canonical archive and retry ONCE.
+        #
+        # The runners' preconfigured mirror is azure.archive.ubuntu.com — in-datacenter and fastest
+        # when healthy, which is why it stays the first attempt. But it is also the repeat offender:
+        # every budget-expiry sighting (2026-08-18's six jobs, 2026-08-19's fourteen-job run plus the
+        # cache warmer itself) traced to it crawling while archive.ubuntu.com answered fine. When the
+        # warmer is among the casualties the warm-cache escape hatch cannot refresh itself — the only
+        # path left was re-running jobs until the dice landed. Failing over converts that into a
+        # self-healing retry: same packages, same signatures, same archive — just not routed through
+        # the one stalled CDN. Only the budget expiry (rc 124) triggers it; a real apt error (bad
+        # sources, 403s) still fails immediately below, unretried.
         if [ "$rc" -eq 124 ]; then
-          echo "::error::apt-get update exceeded its ${{ inputs.timeout }} budget."
+          echo "::warning::apt-get update stalled past ${{ inputs.timeout }} on the default (Azure) mirror — failing over to archive.ubuntu.com and retrying once."
+          # The runner image points ubuntu.sources at `mirror+file:/etc/apt/apt-mirrors.txt`, a
+          # MIRRORLIST — there is no azure hostname in the sources files themselves (the first
+          # version of this failover sed-rewrote them and changed nothing: the retry replayed the
+          # same mirrorlist, measured on 2026-08-19's PR #412 run — 'Get:1 file:/etc/apt/apt-mirrors.txt'
+          # followed by minutes of azure Ign: cycles). Overwriting the mirrorlist is the rewrite that
+          # apt actually reads; the sed stays for any image that configures a direct URL instead.
+          if [ -e /etc/apt/apt-mirrors.txt ]; then
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -e "$f" ]; then
+              sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' "$f"
+            fi
+          done
+          set +e
+          timeout --foreground "${{ inputs.timeout }}" \
+            sudo apt-get update -o Acquire::Retries=3
+          rc=$?
+          set -e
+        fi
+
+        if [ "$rc" -eq 124 ]; then
+          echo "::error::apt-get update exceeded its ${{ inputs.timeout }} budget on BOTH the Azure mirror and archive.ubuntu.com."
           echo ""
-          echo "This is almost certainly a slow/stalled Ubuntu archive mirror (azure.archive.ubuntu.com"
-          echo "on 2026-08-18's sightings), NOT a problem with this PR. apt's own retry/timeout options"
-          echo "cannot catch this: Acquire::Retries and Acquire::http::Timeout both watch for INACTIVITY,"
-          echo "and a crawling-but-still-sending mirror never goes inactive, so neither ever fires."
+          echo "Two independent mirrors crawling at once means a wider Ubuntu-archive or network event,"
+          echo "NOT a problem with this PR. apt's own retry/timeout options cannot catch a stall:"
+          echo "Acquire::Retries and Acquire::http::Timeout both watch for INACTIVITY, and a"
+          echo "crawling-but-still-sending mirror never goes inactive, so neither ever fires."
           echo ""
-          echo "This step now fails HERE, loudly, in ~${{ inputs.timeout }}, instead of silently"
+          echo "This step fails HERE, loudly, in ~2x${{ inputs.timeout }}, instead of silently"
           echo "consuming the job's whole timeout-minutes budget and reporting as 'cancelled' with no"
           echo "work done and nothing in the log to explain why. Re-running the job is the immediate"
           echo "workaround."

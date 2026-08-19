@@ -44,10 +44,9 @@ jobs:
       # Native build toolchain for quiche + BoringSSL + liburing (mirrors
       # build-linux.yaml). Without these a quiche/liburing bump cannot be
       # validated and the agent would open an unverified PR.
-      # See .github/actions/apt-safe-update: an unused third-party apt source on the runner image
-      # can exit-100 the whole job. This lane validates a dependency bump before opening a PR, so a
-      # spurious apt failure here reads as "the bump is broken".
-      - uses: ./.github/actions/apt-safe-update
+      # No apt-safe-update step: apt-install-cached runs it itself, only on a cache miss. Matters
+      # here because a spurious apt failure in this lane reads as "the bump is broken" — a warm
+      # cache now cannot even reach the mirror to fail.
 
       # Was a raw `apt-get install` (no cache, no budget) — the same shape #368 deleted two jobs
       # over and the same shape that made apt-safe-update's own update step die on 2026-08-18. All

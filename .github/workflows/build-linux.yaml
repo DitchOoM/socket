@@ -258,9 +258,11 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
-      # See .github/actions/apt-safe-update: a 403 from the runner image's unused azure-cli source
-      # made `apt-get update` exit 100 and blocked the 1efafc4b release.
-      - uses: ./.github/actions/apt-safe-update
+      # No standalone apt-safe-update (here or at any apt-install-cached call site since
+      # 2026-08-19): the action runs it itself, only when its cache cannot fully serve — so a warm
+      # cache means zero mirror contact. The 1efafc4b lesson (a 403 from an unused third-party
+      # source exit-100s `apt-get update`) still lives inside apt-safe-update, which is what the
+      # action invokes on a miss.
 
       # The full manifest — this is the `natives` job, which builds every Linux/Windows artifact the
       # rest of the fan-out then downloads. Per-package rationale now lives in

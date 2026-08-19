@@ -179,11 +179,11 @@ runs:
     # The concrete consumer-side use: buildJvmJniShimLinuxArm64 links with aarch64-linux-gnu-gcc, and
     # `natives` writes its `.jni-built-<ver>` marker so that task normally skips here. "Normally" is
     # not "always" (see the continue-on-error on that step), so keep the compiler within reach.
-    # ⚠️ apt-safe-update, not a bare `apt-get update`: the fan-out runs this composite in ~10 Linux
-    # jobs where the monolith ran apt ONCE, so a flaky-or-broken apt source now gets ten chances to
-    # fail the run instead of one. That is not hypothetical — a 403 from the runner image's unused
-    # azure-cli source blocked the 1efafc4b release here. See .github/actions/apt-safe-update.
-    - uses: ./.github/actions/apt-safe-update
+    # ⚠️ No apt-safe-update step, deliberately: this composite runs in ~10 Linux jobs per run, so an
+    # unconditional `apt-get update` here was ten mirror round-trips per run that the warm cache
+    # existed to avoid — and ten chances for a stalled mirror or a broken third-party source (the
+    # 403 that blocked the 1efafc4b release) to take a job down. apt-install-cached below runs
+    # apt-safe-update itself, only when its cache cannot fully serve.
 
     # ⚠️ The highest-leverage call site: this composite runs in ~10 Linux jobs per run, so before
     # the .deb cache existed one run pulled the same ~100 MB from the mirror ten times over, and
