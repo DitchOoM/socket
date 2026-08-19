@@ -119,8 +119,10 @@ kotlinWrappers = "2026.6.0"
 # This pin is the #401 fix; the JDK17/JNI soak lane going green-in-a-streak is its acceptance test.
 buffer = "6.30.5"
 ksp = "2.3.9"
-# held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
-androidxCore = "1.18.0"
+# 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
+# no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
+# rather than drifting (it was `checkReleaseAarMetadata` that caught the mismatch in #384).
+androidxCore = "1.19.0"
 # androidx.startup — App Startup's InitializationProvider is how :network-monitor gets the application
 # Context on Android without the app remembering to call NetworkMonitor.installAndroidContext().
 # minSdk 21 (matches ours); its consumer proguard.txt already keeps `* extends Initializer`.

@@ -232,7 +232,7 @@ kotlin {
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {
         manifest.srcFile("src/androidMain/AndroidManifest.xml")
     }
