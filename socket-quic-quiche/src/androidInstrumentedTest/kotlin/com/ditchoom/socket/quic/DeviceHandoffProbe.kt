@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -50,7 +51,13 @@ class DeviceHandoffProbe {
 
     @Test
     fun walkAroundAndRecordTheHandoff() {
-        val host = arg("probeHost", "100.110.209.112")
+        // Hand-driven only, as the class KDoc says — but a KDoc does not exclude a @Test from
+        // connectedAndroidTest. Without this gate the CI emulator ran the probe for its full
+        // probeMinutes against an unreachable Tailscale address, silently (it logs, never asserts),
+        // which stalled both emulator lanes at 69/153 until the 25m job budget killed them.
+        // The documented invocation passes -e probeHost explicitly, so requiring it costs nothing.
+        val host = arg("probeHost", "")
+        assumeTrue("hand-driven probe — pass -e probeHost <ip> to run it (see class KDoc)", host.isNotEmpty())
         val port = arg("probePort", "14433").toInt()
         val minutes = arg("probeMinutes", "12").toInt()
 
