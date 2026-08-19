@@ -490,7 +490,7 @@ class PathRetirementTests {
         key: PathKey,
     ) {
         val buf = bufferFactory.allocate(64)
-        f.driver.commands.send(QuicheCmd.RecvPacket(buf, 64, key))
+        f.driver.commands.send(QuicheCmd.RecvPacket(buf, 64, PacketSource.FromPath(key)))
     }
 
     private companion object {

@@ -350,8 +350,7 @@ internal class SharedQuicheServer(
                                 QuicheCmd.RecvPacket(
                                     recvBuf,
                                     received,
-                                    recvInfoOverride = cached.info,
-                                    onRecvInfoConsumed = { cached.inFlight.decrementAndGet() },
+                                    PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
                                 ),
                             )
                         if (sendResult.isFailure) {

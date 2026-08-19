@@ -457,31 +457,42 @@ class QuicheDriver(
     private val migrationEnabled: Boolean = migrationWiring != null
 
     /**
-     * The path the connection currently lives on — [primary] until the first successful migration,
-     * then whichever entry the latest [drainPathEvents] `Validated` arm switched to. Every fallback
-     * that used to name [primary] ([flushOutgoing]'s single-path egress, the untagged
-     * [QuicheCmd.RecvPacket] recv_info) names this instead: after the primary is retired, [primary]
-     * points at a closed socket and a recv_info the connection no longer uses.
+     * The connection's current identity, as one value: the path it lives on and the DCID sequence in
+     * use there. Two facts that are only ever true *together* — the §9.5 retirement needs exactly
+     * this pair for the path being left — so they travel in one immutable holder and can never be
+     * observed disagreeing mid-update.
      */
-    private var active: PathEntry = primary
+    private class ActivePath(
+        /** [primary] until the first successful migration, then whatever the latest `Validated` arm switched to. */
+        val entry: PathEntry,
+        /** 0 at start (the initial CID's sequence, RFC 9000 §5.1.1), then what each successful `connMigrate` reports. */
+        val dcidSeq: Long,
+    )
 
     /**
-     * DCID sequence number in use on [active] — 0 at start (the initial connection ID's sequence,
-     * RFC 9000 §5.1.1), then whatever each successful `connMigrate` reports. Tracked so the *next*
-     * migration can retire exactly the CID the old path used (RFC 9000 §9.5); retiring anything else
-     * leaves the real one linked and quiche's path table pinned (#395).
+     * Every fallback that used to name [primary] ([flushOutgoing]'s single-path egress, the
+     * [PacketSource.Unattributed] recv_info) names this instead: after the primary is retired,
+     * [primary] points at a closed socket and a recv_info the connection no longer uses.
      */
-    private var activeDcidSeq: Long = 0
+    private var active = ActivePath(primary, dcidSeq = 0)
 
     /**
-     * False until [handleMigrate] first opens a probe path; never reset. While false, [flushOutgoing]
-     * sends straight to [primary] with no decode — single-path behaviour is byte-for-byte what it
-     * always was. Once true, every datagram's egress is decoded: after an abandoned probe, quiche
-     * keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs (`MAX_PROBING_TIMEOUTS`) with the
-     * driver's `paths` map back to a single entry — so "one path in the map" stops implying "quiche
-     * only schedules on that path" the moment a probe has ever existed (#395 item 4).
+     * True once any probe path has ever opened; never true before, never false after. While false,
+     * [flushOutgoing] sends straight to [primary] with no decode — single-path behaviour is
+     * byte-for-byte what it always was. Once true, every datagram's egress is decoded: after an
+     * abandoned probe, quiche keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs
+     * (`MAX_PROBING_TIMEOUTS`) with the driver's `paths` map back to a single entry — so "one path in
+     * the map" stops implying "quiche only schedules on that path" (#395 item 4).
+     *
+     * Derived, not stored: [pathState] leaves [QuicPathState.Original] in the same command that arms
+     * the first successful probe (`handleMigrate` publishes `Probing` before any flush can run) and
+     * never returns to it, so the flow already carries this fact — a stored boolean would be one more
+     * mutable field whose only legal values are implied by state that exists. A probe *rejected* by
+     * quiche leaves [QuicPathState.Original] standing, and dormant routing stays correct there:
+     * quiche refused the path, so it never schedules on it. The misroute regression test pins this
+     * equivalence — a future pathState transition back to Original would turn it red.
      */
-    private var routingLive = false
+    private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
     private var pendingMigration: PendingMigration? = null
 
@@ -744,35 +755,32 @@ class QuicheDriver(
                     cmd.buf.nativeMemoryAccess!!
                         .nativeAddress
                         .toLong()
-                // Hand quiche the recv_info for this packet. Server: a per-datagram override whose
-                // `from` is the real source (passive migration). Client: the path the packet arrived
-                // on (local addr = that socket's). Untagged falls back to the active path — which is
-                // the primary until the first migration, so single-path is unchanged.
-                val tagged = cmd.pathKey
+                // Hand quiche the recv_info that tells the truth about where this packet arrived —
+                // exhaustive over the three ways a packet enters (see [PacketSource]).
+                val source = cmd.source
                 val info =
-                    if (cmd.recvInfoOverride != null) {
-                        cmd.recvInfoOverride
-                    } else if (tagged == null) {
-                        active.recvInfo
-                    } else {
-                        val entry = paths[tagged]
-                        if (entry == null) {
-                            // The packet arrived on a path that has since been retired — a reader's
-                            // final datagrams can be queued behind their own teardown. Feeding it
-                            // under another path's recv_info would tell quiche it arrived somewhere
-                            // it did not (the stale attribution retirement exists to end); it is
-                            // bounded collateral of a path the connection already left. Drop it.
-                            cmd.buf.freeNativeMemory()
-                            cmd.onRecvInfoConsumed?.invoke()
-                            return
+                    when (source) {
+                        is PacketSource.FromServerSocket -> source.recvInfo
+                        is PacketSource.FromPath -> {
+                            val entry = paths[source.key]
+                            if (entry == null) {
+                                // The packet arrived on a path that has since been retired — a
+                                // reader's final datagrams can be queued behind their own teardown.
+                                // Feeding it under another path's recv_info would tell quiche it
+                                // arrived somewhere it did not (the stale attribution retirement
+                                // exists to end); it is bounded collateral of a path the connection
+                                // already left. Drop it.
+                                cmd.buf.freeNativeMemory()
+                                return
+                            }
+                            entry.recvInfo
                         }
-                        entry.recvInfo
                     }
                 api.connRecv(conn, addr, cmd.len, info)
                 cmd.buf.freeNativeMemory()
                 // Signal the server it may now release the cached recv_info (quiche copied
                 // what it needs during connRecv; the pointer is no longer referenced).
-                cmd.onRecvInfoConsumed?.invoke()
+                if (source is PacketSource.FromServerSocket) source.onConsumed()
             }
 
             is QuicheCmd.OpenStream -> {
@@ -1111,7 +1119,7 @@ class QuicheDriver(
                     if (from.family == 0) {
                         // A backend that exposes no egress address (test doubles decode nothing);
                         // quiche schedules non-probing data on the active path, so honour that.
-                        active.channel
+                        active.entry.channel
                     } else {
                         val entry = paths[from]
                         if (entry == null) {
@@ -1200,7 +1208,7 @@ class QuicheDriver(
                 consecutiveFailures = 0
                 if (received > 0) {
                     try {
-                        commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
+                        commands.send(QuicheCmd.RecvPacket(buf, received, PacketSource.FromPath(entry.key)))
                     } catch (e: ClosedSendChannelException) {
                         // The driver closed between our receive() and this enqueue (an idle-timeout
                         // or error close racing an inbound datagram). The packet can never be
@@ -1250,7 +1258,7 @@ class QuicheDriver(
                     }
                 consecutiveFailures = 0
                 try {
-                    commands.send(QuicheCmd.RecvPacket(owned.buffer, owned.length, entry.key))
+                    commands.send(QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromPath(entry.key)))
                 } catch (e: ClosedSendChannelException) {
                     // Same close race as [udpReaderLoop]: the driver closed between receiveOwned() and
                     // this enqueue. The packet can never be processed — free its pooled buffer here or
@@ -1387,9 +1395,6 @@ class QuicheDriver(
                 release = newPath.release,
             )
         paths[key] = entry
-        // From the first probe onward, egress routing must decode — see [routingLive]. Never reset:
-        // an abandoned probe keeps being scheduled by quiche after `paths` is back to one entry.
-        routingLive = true
 
         val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
         if (rc < 0) {
@@ -1461,8 +1466,8 @@ class QuicheDriver(
                             // not at cleanup(). Order matters: `active` moves first so nothing below
                             // (or concurrent teardown-triggered routing) can resolve to the old entry.
                             val previous = active
-                            active = entry
-                            teardownPath(previous)
+                            active = ActivePath(entry, outcome.dcidSeq)
+                            teardownPath(previous.entry)
                             // RFC 9000 §9.5: retire the DCID used on the old path. This — with the
                             // retire-no-relink source patch — is what clears the old path's
                             // `active_dcid_seq` inside quiche, making its slot evictable; without it
@@ -1470,8 +1475,7 @@ class QuicheDriver(
                             // (#395). Best-effort: a refusal (e.g. OutOfIdentifiers under the no-spare
                             // guard) costs one pinned slot, not the migration that already happened —
                             // the multi-migration conformance test is the systemic check.
-                            api.connRetireDcid(conn, activeDcidSeq)
-                            activeDcidSeq = outcome.dcidSeq
+                            api.connRetireDcid(conn, previous.dcidSeq)
                             completeMigration(
                                 pending,
                                 MigrationResult.Succeeded(pending.localEndpoint),
@@ -1499,7 +1503,7 @@ class QuicheDriver(
                     // for paths make_room_for_new_path evicted — which are never active — so this
                     // guard is a backstop, replacing the old `!isPrimary` (post-migration the entry
                     // to protect is `active`, which need not be the primary).
-                    paths[key]?.let { if (it !== active) teardownPath(it) }
+                    paths[key]?.let { if (it !== active.entry) teardownPath(it) }
                 }
 
                 QuichePathEventType.New,
@@ -1669,7 +1673,7 @@ class QuicheDriver(
             is QuicheCmd.RecvPacket -> {
                 cmd.buf.freeNativeMemory()
                 // Dropped without connRecv — still release the server's in-flight ref.
-                cmd.onRecvInfoConsumed?.invoke()
+                (cmd.source as? PacketSource.FromServerSocket)?.onConsumed?.invoke()
             }
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
