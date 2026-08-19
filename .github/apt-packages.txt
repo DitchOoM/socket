@@ -53,3 +53,9 @@ clang
 # `boringssl-boring-crate`, whose boring-sys build script runs bindgen and needs libclang on the
 # host. (Linux x64/arm64 use external BoringSSL + `ffi`, which needs no libclang.)
 libclang-dev
+
+# --- native-crash post-mortem ---
+# build-linux.yaml's `if: failure()` gdb-backtrace steps (quiche-jvm, malloc-check, fuzz-jvm) load
+# a core dump and print every thread's stack. Listing it here means a failed job's post-mortem no
+# longer has to hit the mirror on the way down too — see apt-install-cached.
+gdb

@@ -1,8 +1,9 @@
-name: "apt-get install, from a warmed .deb cache"
+name: "apt-get install, from a warmed .deb + package-index cache"
 description: >-
-  Installs apt packages from a nightly-warmed cache of .deb files, and puts a hard, legible
-  wall-clock budget on the install so a slow Ubuntu mirror can no longer delete a job. Restore-only
-  for every caller except the nightly warmer, which is the single writer.
+  Installs apt packages from a nightly-warmed cache of .deb files (and, since -v2, the apt package
+  index that resolves them), and puts a hard, legible wall-clock budget on any path that still has
+  to touch the mirror. Restore-only for every caller except the nightly warmer, which is the single
+  writer.
 
 inputs:
   packages:
@@ -52,6 +53,13 @@ runs:
     # every run of every Linux lane, is cached. The timeout below is the backstop for the residual
     # case (cold cache AND slow mirror), and its job is to fail FAST and SAY WHY rather than to
     # prevent the stall.
+    #
+    # ⚠️ 2026-08-18 EXTENSION — six jobs across four runs instead died one step EARLIER, at
+    # apt-safe-update's own `apt-get update` (now budgeted too, see that action). This action's own
+    # cache picked up the apt package INDEX (`/var/lib/apt/lists`, not just the .debs) so that, on a
+    # full hit, the Install step below never has to reach the mirror either — see the `--no-download`
+    # path. Two independent mitigations for the same root cause (an inactivity-timeout blind spot on
+    # a crawling mirror), because each protects a different step.
 
     - name: Keep downloaded .debs (so there is something to cache)
       shell: bash
@@ -64,19 +72,24 @@ runs:
         echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
           | sudo tee /etc/apt/apt.conf.d/99keep-downloaded-packages >/dev/null
 
-    - name: Compute .deb cache key
+    - name: Compute apt cache key
       id: key
       shell: bash
       run: |
         set -euo pipefail
         manifest=".github/apt-packages.txt"
         # Package versions are pinned by the runner image, not by us, so the image version belongs
-        # in the key: without it a cache warmed on an older image hands back .debs that apt will
-        # just re-download (a silent, permanent ~100% miss that still reports as a hit).
+        # in the key: without it a cache warmed on an older image hands back .debs (and, since -v2,
+        # a package index) that describe a state apt won't just re-download — it'll REFUSE to trust,
+        # or resolve incorrectly. A silent, permanent ~100% miss is safe; a silent mismatch is not.
         image="${ImageVersion:-unknown}"
         arch="$(dpkg --print-architecture)"
         manifest_hash="$(sha256sum "$manifest" | cut -c1-16)"
-        echo "value=apt-debs-${arch}-${image}-${manifest_hash}-v1" >>"$GITHUB_OUTPUT"
+        # -v2: the cached entry's SHAPE changed (it now also holds a staged copy of
+        # /var/lib/apt/lists under "lists/", not just *.deb files at the top level) — bump the
+        # suffix so a -v1 entry from before this change is never misread as containing lists it
+        # does not have.
+        echo "value=apt-debs-${arch}-${image}-${manifest_hash}-v2" >>"$GITHUB_OUTPUT"
         echo "staging=${RUNNER_TEMP}/apt-deb-cache" >>"$GITHUB_OUTPUT"
 
     # Restore-only for every caller but the warmer. This follows the single-writer discipline the
@@ -87,23 +100,28 @@ runs:
     # It also sidesteps a mechanism that has burned this repo before — a `pull_request_target` run
     # (merged.yaml, the RELEASE path) cannot write caches at all, and a denied save reports as a
     # green step (#351). A restore-only caller has nothing to be denied.
-    - name: Restore .deb cache
+    - name: Restore apt cache (.debs + package index)
       id: restore
       uses: actions/cache/restore@v6
       with:
         path: ${{ steps.key.outputs.staging }}
         key: ${{ steps.key.outputs.value }}
 
-    - name: Seed apt's archive from the cache
+    - name: Seed apt's archive + package index from the cache
+      id: seed
       shell: bash
       run: |
         set -euo pipefail
         staging="${{ steps.key.outputs.staging }}"
+        debs_present="false"
+        lists_present="false"
+
         if [ -d "$staging" ] && compgen -G "$staging/*.deb" >/dev/null; then
-          n=$(find "$staging" -name '*.deb' | wc -l | tr -d ' ')
+          n=$(find "$staging" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
           mb=$(du -sm "$staging" | cut -f1)
           echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
           sudo cp "$staging"/*.deb /var/cache/apt/archives/
+          debs_present="true"
         else
           echo "::warning::apt .deb cache MISS for '${{ inputs.purpose }}' — downloading from the mirror."
           echo "A miss is safe but slow, and is the condition in which #368 deletes a job."
@@ -111,6 +129,40 @@ runs:
           echo "If this misses on every run, the nightly warmer (native-deps-freshness.yaml) is"
           echo "not writing — check that job before assuming the mirror is at fault."
         fi
+
+        # The package-index half of the cache, added -v2 (2026-08-18: apt-safe-update's own
+        # `apt-get update` was what actually died on the mirror that day — see that action). A
+        # warm index here is what lets Install below skip the mirror entirely, not just skip
+        # re-downloading .debs.
+        #
+        # The nightly warmer (save == 'true') is deliberately excluded from seeding this onto
+        # itself. It is the single writer: what it stages here IS tomorrow's cache. If it kept
+        # overwriting the fresh index its own apt-safe-update step just fetched with LAST NIGHT's
+        # cached copy, freshness would never advance — a silent, self-perpetuating stale loop with
+        # no red step to point at. The warmer's on-disk index is always current already (its own
+        # apt-safe-update ran moments before this composite), so it is safe to use for the
+        # `--no-download` path below without seeding anything.
+        #
+        # compgen guarded the same way as the .deb check above: a bare unmatched glob under `set -e`
+        # kills a composite step with zero output (bitten before — see apt-safe-update's header and
+        # the composite-`-e` trap note in this repo's CI docs).
+        if [ "${{ inputs.save }}" = "true" ]; then
+          echo "::notice::writer run — using its own just-fetched apt-get update output, not seeding the cached index onto itself (see comment above)."
+          lists_present="true"
+        elif [ -d "$staging/lists" ] && compgen -G "$staging/lists/*" >/dev/null; then
+          n=$(find "$staging/lists" -maxdepth 1 -type f | wc -l | tr -d ' ')
+          echo "::notice::apt package-index cache HIT — pre-seeding ${n} index files, no 'apt-get update' needed for the install below"
+          # No --delete: the destination is the LIVE system's /var/lib/apt/lists, not a scratch
+          # dir, and apt maintains files there (partial/, lock) this composite never copied into
+          # the cache in the first place — leave whatever's already on disk alone, only add to it.
+          sudo rsync -a "$staging/lists/" /var/lib/apt/lists/
+          lists_present="true"
+        else
+          echo "::notice::apt package-index cache MISS for '${{ inputs.purpose }}' — Install will rely on the preceding apt-safe-update step's index instead."
+        fi
+
+        echo "debs=${debs_present}" >>"$GITHUB_OUTPUT"
+        echo "lists=${lists_present}" >>"$GITHUB_OUTPUT"
 
     # Only the warmer runs this: it downloads the FULL manifest, not just the packages this job
     # happens to need, so that the single cached entry serves every call site. Without it the
@@ -137,21 +189,58 @@ runs:
           -o Acquire::https::Timeout=30 \
           "${pkgs[@]}"
 
+    - name: Warn about packages missing from the manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Not fatal: an unlisted package still installs, it is just uncached — and an uncached
+        # package is the next candidate to stall a job, so it should be visible rather than
+        # discovered the hard way.
+        manifest=".github/apt-packages.txt"
+        for p in ${{ inputs.packages }}; do
+          if ! grep -qxF "$p" "$manifest"; then
+            echo "::warning::'$p' is not in ${manifest}, so it is NOT covered by the .deb/index cache."
+            echo "  Add it there if it is a real dependency — see the header of that file for why."
+          fi
+        done
+
+    # The fast path: BOTH halves of the cache hit, so apt has everything it needs already on disk
+    # and can be told, hard, not to reach for the mirror at all. continue-on-error is deliberate —
+    # a miss here (e.g. the manifest doesn't cover a transitive dependency of one of these packages)
+    # is expected to happen occasionally and must fall through to the normal budgeted path below,
+    # not fail the job. `steps.fast-install.outcome` (unlike `.conclusion`) still reports the real
+    # pass/fail through continue-on-error, which is what the two steps after this one key off.
+    - name: Install (full cache hit — mirror untouched)
+      id: fast-install
+      if: steps.seed.outputs.debs == 'true' && steps.seed.outputs.lists == 'true'
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "apt cache FULL HIT (.debs + index) for '${{ inputs.purpose }}' — installing with --no-download; mirror untouched."
+        sudo apt-get install --no-download -y ${{ inputs.packages }}
+
+    # Only reached if the fast path above actually ran and failed (not on a plain miss, where
+    # fast-install never ran and the index on disk was never touched by this action). The seed step
+    # already overwrote /var/lib/apt/lists with the (possibly-stale, nightly-warmed) cached copy, so
+    # whatever fresher index the caller's own apt-safe-update fetched moments earlier no longer
+    # exists on disk — re-fetch it before the normal path below tries to resolve anything.
+    - name: Refresh package index before falling back (full-hit install failed)
+      if: steps.fast-install.outcome == 'failure'
+      uses: ./.github/actions/apt-safe-update
+
     - name: Install
+      if: steps.fast-install.outcome != 'success'
       shell: bash
       run: |
         set -uo pipefail
 
-        # Warn about anything not in the manifest. Not fatal: an unlisted package still installs,
-        # it is just uncached — and an uncached package is the next candidate to stall a job, so it
-        # should be visible rather than discovered the hard way.
-        manifest=".github/apt-packages.txt"
-        for p in ${{ inputs.packages }}; do
-          if ! grep -qxF "$p" "$manifest"; then
-            echo "::warning::'$p' is not in ${manifest}, so it is NOT covered by the .deb cache."
-            echo "  Add it there if it is a real dependency — see the header of that file for why."
-          fi
-        done
+        if [ "${{ steps.fast-install.outcome }}" = "failure" ]; then
+          echo "::warning::--no-download install failed despite a full cache hit for '${{ inputs.purpose }}'."
+          echo "Likely cause: a package (or a transitive dependency of one) that .github/apt-packages.txt"
+          echo "does not list, so the nightly warmer never downloaded it. Falling back to a networked,"
+          echo "budgeted install after refreshing the package index."
+        fi
 
         # NOTE: `timeout --foreground`, not a bare `timeout`. Composite-action steps do not support
         # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
@@ -180,6 +269,27 @@ runs:
         fi
         exit "$rc"
 
+    - name: Stage apt package index for the cache (writer only)
+      if: inputs.save == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        staging="${{ steps.key.outputs.staging }}/lists"
+        mkdir -p "$staging"
+        # Exclude partial/ (apt's own in-progress-download scratch dir, never valid to reuse) and
+        # lock (a live file descriptor of THIS run's apt processes, not a sentinel of anything —
+        # copying it stages a dead lock file, not a useful one).
+        sudo rsync -a --delete \
+          --exclude 'partial/' \
+          --exclude 'lock' \
+          /var/lib/apt/lists/ "$staging"/
+        sudo chown -R "$(id -u):$(id -g)" "$staging"
+        n=$(find "$staging" -maxdepth 1 -type f | wc -l | tr -d ' ')
+        echo "::notice::warmer staged ${n} apt package-index files for the cache"
+        if [ "$n" -eq 0 ]; then
+          echo "::warning::nothing staged for the package index — the warmer will publish an entry with no lists/."
+        fi
+
     - name: Collect .debs for the cache (writer only)
       if: inputs.save == 'true'
       shell: bash
@@ -191,14 +301,14 @@ runs:
         # already installed on the image), and should not fail the warmer.
         sudo cp /var/cache/apt/archives/*.deb "$staging"/ 2>/dev/null || true
         sudo chown -R "$(id -u):$(id -g)" "$staging"
-        n=$(find "$staging" -name '*.deb' | wc -l | tr -d ' ')
+        n=$(find "$staging" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
         echo "::notice::warmer collected ${n} .deb files for the cache"
         if [ "$n" -eq 0 ]; then
           echo "::warning::nothing to cache — the warmer will publish an empty entry."
           echo "That is the false-green shape to watch for: a HIT that seeds zero packages."
         fi
 
-    - name: Save .deb cache (writer only)
+    - name: Save apt cache (.debs + package index) (writer only)
       if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
