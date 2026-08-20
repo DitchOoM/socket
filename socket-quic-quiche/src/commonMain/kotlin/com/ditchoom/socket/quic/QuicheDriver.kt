@@ -203,6 +203,19 @@ class QuicheDriver(
     val state: StateFlow<QuicConnectionState> = _state
 
     /**
+     * Identity latched on the driver loop just before [cleanup] frees the quiche handles.
+     *
+     * [closeAttribution] is evaluated on CALLER threads — inside every QuicCloseException a
+     * teardown hands out — and both identity reads dereference the live conn: [sessionId] is
+     * initialized lazily and [wireConnectionId] reads fresh by design. Without the latch, a caller
+     * building its close exception after cleanup() has run reads connTraceId/connSourceId off a
+     * freed (and possibly reallocated) quiche_conn — a use-after-free observed live during the
+     * #401 hunt. Once non-null, the conn may be gone; identity must come from here.
+     */
+    @kotlin.concurrent.Volatile
+    private var latchedIdentity: QuicConnectionIdentity? = null
+
+    /**
      * This connection's identity and network correlation, as a value snapshot for a
      * [QuicCloseException].
      *
@@ -212,7 +225,7 @@ class QuicheDriver(
      */
     internal fun closeAttribution(): QuicCloseAttribution =
         QuicCloseAttribution.Attributed(
-            identity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
+            identity = latchedIdentity ?: QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
             network = NetworkAtClose.NotObserved,
         )
 
@@ -681,11 +694,24 @@ class QuicheDriver(
                 if (cmd == null && commands.isClosedForReceive) break
                 when {
                     cmd is QuicheCmd.Migrate -> {
-                        handleMigrate(cmd) // suspends: opens a socket
+                        // Guarded like execute() below: a throw with the command already dequeued
+                        // would otherwise leave its deferred permanently uncompleted (see
+                        // failCommandExceptionally).
+                        try {
+                            handleMigrate(cmd) // suspends: opens a socket
+                        } catch (t: Throwable) {
+                            failCommandExceptionally(cmd, t)
+                            throw t
+                        }
                         lastActivity = clock.markNow()
                     }
                     cmd != null -> {
-                        execute(cmd)
+                        try {
+                            execute(cmd)
+                        } catch (t: Throwable) {
+                            failCommandExceptionally(cmd, t)
+                            throw t
+                        }
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired, and the path-validation deadline is the soonest of the three →
@@ -1607,6 +1633,10 @@ class QuicheDriver(
     }
 
     private fun cleanup() {
+        // Latch identity while the conn is alive and we are on its loop: after the api.*Free calls
+        // below, closeAttribution() from a caller thread must use this snapshot instead of
+        // dereferencing freed quiche memory (see latchedIdentity).
+        latchedIdentity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId)
         commands.close()
 
         while (true) {
@@ -1704,6 +1734,44 @@ class QuicheDriver(
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+        }
+    }
+
+    /**
+     * A backend call threw with [cmd] already dequeued — so [cleanup]'s teardown drain can never
+     * reach it, and without this its deferred would never complete. That is not a theoretical gap:
+     * `streamRead`/`streamWrite`/the datagram adapter end with a NonCancellable `join()` on exactly
+     * that deferred (the barrier that keeps a caller from freeing a buffer whose raw address a
+     * queued command still carries), so an uncompleted deferred is a permanent, uncancellable hang.
+     * The PeerCert arm has guarded itself this way since it landed (see its inline try/catch);
+     * every arm gets the same protection at the dispatch site. The throw still unwinds [run]
+     * afterwards, so the connection tears down through [cleanup] exactly as before.
+     *
+     * `completeExceptionally` on an already-completed deferred is a no-op, so arms that completed
+     * before throwing (e.g. PeerCert's own catch) are unaffected. RecvPacket carries no deferred —
+     * it gets the same driver-owned-buffer release [failCommand] gives it; the pooled free is
+     * idempotent, so an arm that freed before throwing cannot double-release.
+     */
+    private fun failCommandExceptionally(
+        cmd: QuicheCmd,
+        cause: Throwable,
+    ) {
+        when (cmd) {
+            is QuicheCmd.RecvPacket -> {
+                cmd.buf.freeNativeMemory()
+                (cmd.source as? PacketSource.FromServerSocket)?.onConsumed?.invoke()
+            }
+            is QuicheCmd.OpenStream -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.StreamShutdown -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.DgramRecv -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.DgramSend -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.PeerCert -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.Stats -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.PeerTransportParamsRead -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
         }
     }
 
@@ -2006,9 +2074,15 @@ class DriverStreamAdapter(
                 }
                 while (true) {
                     val deferred = CompletableDeferred<StreamRecvResult>()
-                    driver.commands.send(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred))
-                    // Mark in-flight only AFTER a successful enqueue: if send threw (channel closed) the
-                    // command never reached the driver, so there is nothing to join (joining it would hang).
+                    // trySend, not send: on the UNLIMITED command channel it always succeeds unless
+                    // the channel is closed (getOrThrow then rethrows the close cause, exactly like
+                    // send). Unlike send it is not a suspend call, so there is no state in which the
+                    // command is buffered yet the call throws CancellationException — the gap that
+                    // would leave `inFlight` unset and let the finally below skip its join while the
+                    // driver still holds this buffer's raw address (#401 hunt).
+                    driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred)).getOrThrow()
+                    // Mark in-flight only AFTER a successful enqueue: if trySend threw (channel closed)
+                    // the command never reached the driver, so there is nothing to join (joining it would hang).
                     inFlight = deferred
                     val result = deferred.await()
                     inFlight = null
@@ -2125,7 +2199,9 @@ class DriverStreamAdapter(
             withTimeout(timeout) {
                 while (true) {
                     val deferred = CompletableDeferred<StreamSendResult>()
-                    driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
+                    // trySend, not send — see streamRead: atomic enqueue-or-throw, no
+                    // buffered-yet-cancelled state that could skip the finally's join.
+                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred)).getOrThrow()
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
                     inFlight = deferred
                     val sent = deferred.await()

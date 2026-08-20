@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -164,7 +165,14 @@ abstract class QuicImpairmentTestSuite {
                         while (true) {
                             val data = stream.read(15.seconds.scaled)
                             if (data is ReadResult.Data) {
-                                stream.write(data.buffer, 10.seconds.scaled)
+                                try {
+                                    stream.writeFully(data.buffer, 10.seconds.scaled)
+                                } finally {
+                                    // read transfers ownership; write is zero-copy and takes none — without this
+                                    // free every echoed chunk leaks, and accumulated echo leaks were the #401
+                                    // corruption's primer. writeFully because a QUIC write may be partial.
+                                    data.buffer.freeIfNeeded()
+                                }
                             } else {
                                 break
                             }

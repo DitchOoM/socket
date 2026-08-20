@@ -90,7 +90,9 @@ internal class DriverDatagramAdapter(
         try {
             while (true) {
                 val deferred = CompletableDeferred<Int>()
-                driver.commands.send(QuicheCmd.DgramSend(addr, remaining, deferred))
+                // trySend, not send — see DriverStreamAdapter.streamRead: atomic enqueue-or-throw,
+                // no buffered-yet-cancelled state that could skip the finally's join on `inFlight`.
+                driver.commands.trySend(QuicheCmd.DgramSend(addr, remaining, deferred)).getOrThrow()
                 inFlight = deferred
                 val written = deferred.await()
                 inFlight = null
@@ -127,7 +129,8 @@ internal class DriverDatagramAdapter(
         try {
             while (true) {
                 val deferred = CompletableDeferred<StreamRecvResult>()
-                driver.commands.send(QuicheCmd.DgramRecv(addr, QuicheDriver.MAX_DATAGRAM_SIZE, deferred))
+                // trySend, not send — same atomic enqueue-or-throw as DgramSend above.
+                driver.commands.trySend(QuicheCmd.DgramRecv(addr, QuicheDriver.MAX_DATAGRAM_SIZE, deferred)).getOrThrow()
                 inFlight = deferred
                 val result = deferred.await()
                 inFlight = null

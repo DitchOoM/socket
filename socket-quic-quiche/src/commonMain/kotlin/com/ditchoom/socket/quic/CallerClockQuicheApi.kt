@@ -29,13 +29,24 @@ internal class CallerClockQuicheApi(
      * Reads [DriverClock.quicheTime] at this exact synchronous moment so the injected nanos match the
      * virtual clock quiche is about to observe. [DriverTime.Real] is a no-op — nothing is injected.
      */
-    private inline fun <T> synced(block: () -> T): T {
+    private inline fun <T> synced(block: () -> T): T =
         when (val t = clock.quicheTime()) {
-            DriverTime.Real -> {}
-            is DriverTime.Virtual -> delegate.setThreadVirtualTimeNanos(t.nanos)
+            DriverTime.Real -> block()
+            is DriverTime.Virtual -> {
+                delegate.setThreadVirtualTimeNanos(t.nanos)
+                try {
+                    block()
+                } finally {
+                    // The pin must not outlive the call. Driver coroutines migrate across pooled
+                    // dispatcher threads, so a pin left behind poisons that OS thread for every
+                    // later REAL-clock connection scheduled onto it — those then read a frozen
+                    // instant on some calls and the real clock on others, thread by thread.
+                    // cleanup()'s clearThreadVirtualTime() can only ever clear the one thread it
+                    // happens to run on; scoping here is what actually bounds the pin.
+                    delegate.clearThreadVirtualTime()
+                }
+            }
         }
-        return block()
-    }
 
     override fun connRecv(
         conn: QuicheConn,
