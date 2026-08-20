@@ -378,12 +378,7 @@ class QuicheDriver(
     internal val streamReadPool: BufferPool =
         BufferPool(
             threadingMode = ThreadingMode.MultiThreaded,
-            // DEBUG round 8 (#401 hunt): effectively infinite — releases only ever REPOOL, no 64KB
-            // stream buffer is ever really free()d. Round 7 exonerated the datagram input buffers
-            // (corruption reproduced with them leaked); if it vanishes now, the freed-and-relinked
-            // chunk quiche copies from is a stream-read buffer; if it persists, the source is
-            // quiche-internal (Rust Vec) memory.
-            maxPoolSize = 1_000_000,
+            maxPoolSize = 16,
             defaultBufferSize = STREAM_READ_BUFFER_SIZE,
             factory = bufferFactory,
         )

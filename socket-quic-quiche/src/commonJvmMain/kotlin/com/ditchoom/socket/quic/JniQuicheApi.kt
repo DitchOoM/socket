@@ -165,21 +165,39 @@ object JniQuicheApi : QuicheApi {
             ),
         )
 
-    override fun connFree(conn: QuicheConn) = nConnFree(conn.handle)
+    override fun connFree(conn: QuicheConn) =
+        run {
+            census(conn, "connFree")
+            nConnFree(conn.handle)
+        }
 
     override fun connRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ): Int = nConnRecv(conn.handle, buf, bufLen, recvInfo.handle)
+    ): Int =
+        run {
+            census(conn, "connRecv")
+            nConnRecv(conn.handle, buf, bufLen, recvInfo.handle)
+        }
 
     override fun connSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         sendInfo: QuicheSendInfo,
-    ): Int = nConnSend(conn.handle, buf, bufLen, sendInfo.handle)
+    ): Int =
+        run {
+            census(conn, "connSend")
+            nConnSend(conn.handle, buf, bufLen, sendInfo.handle)
+        }
+
+    // DEBUG (#401 hunt round 9): census which threads touch which conn.
+    private fun census(
+        conn: QuicheConn,
+        method: String,
+    ) = Probe401.recordThread(conn.handle, Thread.currentThread().name, method)
 
     // DEBUG (#401 hunt): raw-memory reader so the destination bytes can be recorded AT EXECUTE
     // TIME, on the driver thread, immediately after quiche's native call returns — before the
@@ -198,6 +216,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): StreamRecvResult {
+        census(conn, "connStreamRecv")
         // Per-call 8-byte native scratch for quiche's out_error_code, same reasoning as
         // connStreamSend's scratch: JniQuicheApi is a shared singleton called from every connection's
         // driver thread, so one reused scratch would race.
@@ -238,6 +257,7 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         fin: Boolean,
     ): StreamSendResult {
+        census(conn, "connStreamSend")
         // Hand the C shim an 8-byte native scratch to receive quiche's out_error_code — a buffer address
         // (FastNative-safe primitive), not a Java array. Per-call rather than reused: JniQuicheApi is a
         // shared singleton called from every connection's driver thread, so one scratch would race; the
@@ -269,31 +289,51 @@ object JniQuicheApi : QuicheApi {
         streamId: QuicStreamId,
         direction: Int,
         err: Long,
-    ): Int = nConnStreamShutdown(conn.handle, streamId.id, direction, err)
+    ): Int =
+        run {
+            census(conn, "connStreamShutdown")
+            nConnStreamShutdown(conn.handle, streamId.id, direction, err)
+        }
 
     override fun connPeerCert(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = nConnPeerCert(conn.handle, buf, bufLen)
+    ): Int =
+        run {
+            census(conn, "connPeerCert")
+            nConnPeerCert(conn.handle, buf, bufLen)
+        }
 
     override fun connApplicationProto(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = nConnApplicationProto(conn.handle, buf, bufLen)
+    ): Int =
+        run {
+            census(conn, "connApplicationProto")
+            nConnApplicationProto(conn.handle, buf, bufLen)
+        }
 
     override fun connTraceId(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = nConnTraceId(conn.handle, buf, bufLen)
+    ): Int =
+        run {
+            census(conn, "connTraceId")
+            nConnTraceId(conn.handle, buf, bufLen)
+        }
 
     override fun connSourceId(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = nConnSourceId(conn.handle, buf, bufLen)
+    ): Int =
+        run {
+            census(conn, "connSourceId")
+            nConnSourceId(conn.handle, buf, bufLen)
+        }
 
     // --- Unreliable datagrams (RFC 9221) ---
 
@@ -308,13 +348,18 @@ object JniQuicheApi : QuicheApi {
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = nConnDgramSend(conn.handle, buf, bufLen)
+    ): Int =
+        run {
+            census(conn, "connDgramSend")
+            nConnDgramSend(conn.handle, buf, bufLen)
+        }
 
     override fun connDgramRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
     ): StreamRecvResult {
+        census(conn, "connDgramRecv")
         // ssize_t: >= 0 length (datagrams have no FIN), QUICHE_ERR_DONE when none queued, else error.
         val raw = nConnDgramRecv(conn.handle, buf, bufLen)
         return when {
@@ -327,19 +372,40 @@ object JniQuicheApi : QuicheApi {
     override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
+        census(conn, "connDgramMaxWritableLen")
         val raw = nConnDgramMaxWritableLen(conn.handle)
         return if (raw < 0) MaxDatagramSize.Unavailable else MaxDatagramSize.Bytes(raw.toInt())
     }
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean = nConnIsEstablished(conn.handle)
+    override fun connIsEstablished(conn: QuicheConn): Boolean =
+        run {
+            census(conn, "connIsEstablished")
+            nConnIsEstablished(conn.handle)
+        }
 
-    override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
+    override fun connIsClosed(conn: QuicheConn): Boolean =
+        run {
+            census(conn, "connIsClosed")
+            nConnIsClosed(conn.handle)
+        }
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
+    override fun connIsTimedOut(conn: QuicheConn): Boolean =
+        run {
+            census(conn, "connIsTimedOut")
+            nConnIsTimedOut(conn.handle)
+        }
 
-    override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(conn, peer = true)
+    override fun connPeerError(conn: QuicheConn): QuicError? =
+        run {
+            census(conn, "connPeerError")
+            readConnError(conn, peer = true)
+        }
 
-    override fun connLocalError(conn: QuicheConn): QuicError? = readConnError(conn, peer = false)
+    override fun connLocalError(conn: QuicheConn): QuicError? =
+        run {
+            census(conn, "connLocalError")
+            readConnError(conn, peer = false)
+        }
 
     private fun readConnError(
         conn: QuicheConn,
@@ -352,6 +418,7 @@ object JniQuicheApi : QuicheApi {
     }
 
     override fun connStats(conn: QuicheConn): QuicConnStats? {
+        census(conn, "connStats")
         // 13-slot layout contract with quiche_jni.c nConnStats — see the shim comment there.
         val out = LongArray(13)
         nConnStats(conn.handle, out)
@@ -376,6 +443,7 @@ object JniQuicheApi : QuicheApi {
         conn: QuicheConn,
         pathIdx: Long,
     ): QuicPathStats? {
+        census(conn, "connPathStats")
         // 18-slot layout contract with quiche_jni.c nConnPathStats — see the shim comment there.
         val out = LongArray(18)
         if (nConnPathStats(conn.handle, pathIdx, out) < 0) return null
@@ -407,6 +475,7 @@ object JniQuicheApi : QuicheApi {
      * "unknown" for a value that silently switches active migration off.
      */
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams {
+        census(conn, "connPeerTransportParams")
         // 13-slot layout contract with quiche_jni.c nConnPeerTransportParams — see the shim comment there.
         val out = LongArray(13)
         if (!nConnPeerTransportParams(conn.handle, out)) return PeerTransportParams.NotYetNegotiated
@@ -428,30 +497,47 @@ object JniQuicheApi : QuicheApi {
     }
 
     override fun connTimeout(conn: QuicheConn): Duration? {
+        census(conn, "connTimeout")
         val nanos = nConnTimeoutAsNanos(conn.handle)
         // JNI casts uint64_t to jlong: UINT64_MAX becomes -1L (or any negative)
         return if (nanos < 0) null else nanos.nanoseconds
     }
 
-    override fun connOnTimeout(conn: QuicheConn) = nConnOnTimeout(conn.handle)
+    override fun connOnTimeout(conn: QuicheConn) =
+        run {
+            census(conn, "connOnTimeout")
+            nConnOnTimeout(conn.handle)
+        }
 
     override fun setThreadVirtualTimeNanos(nanos: Long) = nSetVirtualTimeNanos(nanos)
 
     override fun clearThreadVirtualTime() = nClearVirtualTime()
 
-    override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
+    override fun connSendAckEliciting(conn: QuicheConn): Int =
+        run {
+            census(conn, "connSendAckEliciting")
+            nConnSendAckEliciting(conn.handle).toInt()
+        }
 
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
-    ): Int = nConnClose(conn.handle, error is QuicError.ApplicationError, error.code, 0L, 0)
+    ): Int =
+        run {
+            census(conn, "connClose")
+            nConnClose(conn.handle, error is QuicError.ApplicationError, error.code, 0L, 0)
+        }
 
     override fun connSetQlogPath(
         conn: QuicheConn,
         path: String,
         title: String,
         desc: String,
-    ): Boolean = nConnSetQlogPath(conn.handle, path, title, desc)
+    ): Boolean =
+        run {
+            census(conn, "connSetQlogPath")
+            nConnSetQlogPath(conn.handle, path, title, desc)
+        }
 
     // --- Path migration ---
     override fun connProbePath(
@@ -461,7 +547,11 @@ object JniQuicheApi : QuicheApi {
         peerAddr: Long,
         peerLen: Int,
         seqOut: Long,
-    ): Int = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+    ): Int =
+        run {
+            census(conn, "connProbePath")
+            nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+        }
 
     override fun connNewScid(
         conn: QuicheConn,
@@ -470,7 +560,11 @@ object JniQuicheApi : QuicheApi {
         resetTokenAddr: Long,
         retireIfNeeded: Boolean,
         seqOut: Long,
-    ): Int = nConnNewScid(conn.handle, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut)
+    ): Int =
+        run {
+            census(conn, "connNewScid")
+            nConnNewScid(conn.handle, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut)
+        }
 
     override fun connMigrate(
         conn: QuicheConn,
@@ -479,6 +573,7 @@ object JniQuicheApi : QuicheApi {
         peerAddr: Long,
         peerLen: Int,
     ): MigrateOutcome {
+        census(conn, "connMigrate")
         // JNI packs the result: >= 0 is the migrated path's DCID sequence number, < 0 is a quiche
         // error code. Real DCID sequence numbers are tiny, so this is unambiguous in practice.
         val raw = nConnMigrate(conn.handle, localAddr, localLen, peerAddr, peerLen)
@@ -488,18 +583,34 @@ object JniQuicheApi : QuicheApi {
     override fun connRetireDcid(
         conn: QuicheConn,
         dcidSeq: Long,
-    ): Int = nConnRetireDcid(conn.handle, dcidSeq)
+    ): Int =
+        run {
+            census(conn, "connRetireDcid")
+            nConnRetireDcid(conn.handle, dcidSeq)
+        }
 
     override fun connMigrateSource(
         conn: QuicheConn,
         localAddr: Long,
         localLen: Int,
         seqOut: Long,
-    ): Int = nConnMigrateSource(conn.handle, localAddr, localLen, seqOut)
+    ): Int =
+        run {
+            census(conn, "connMigrateSource")
+            nConnMigrateSource(conn.handle, localAddr, localLen, seqOut)
+        }
 
-    override fun connAvailableDcids(conn: QuicheConn): Long = nConnAvailableDcids(conn.handle)
+    override fun connAvailableDcids(conn: QuicheConn): Long =
+        run {
+            census(conn, "connAvailableDcids")
+            nConnAvailableDcids(conn.handle)
+        }
 
-    override fun connScidsLeft(conn: QuicheConn): Long = nConnScidsLeft(conn.handle)
+    override fun connScidsLeft(conn: QuicheConn): Long =
+        run {
+            census(conn, "connScidsLeft")
+            nConnScidsLeft(conn.handle)
+        }
 
     override fun connPathEventNext(
         conn: QuicheConn,
@@ -508,6 +619,7 @@ object JniQuicheApi : QuicheApi {
         peerOut: Long,
         peerLenOut: Long,
     ): QuichePathEventType? {
+        census(conn, "connPathEventNext")
         val raw = nConnPathEventNext(conn.handle, localOut, localLenOut, peerOut, peerLenOut)
         return if (raw < 0) null else QuichePathEventType.entries[raw]
     }
@@ -590,9 +702,17 @@ object JniQuicheApi : QuicheApi {
     ): Int = nNegotiateVersion(scidAddr, scidLen, dcidAddr, dcidLen, outAddr, outLen)
 
     // --- Stream iteration ---
-    override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnReadable(conn.handle))
+    override fun connReadable(conn: QuicheConn): QuicheStreamIter =
+        run {
+            census(conn, "connReadable")
+            QuicheStreamIter(nConnReadable(conn.handle))
+        }
 
-    override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnWritable(conn.handle))
+    override fun connWritable(conn: QuicheConn): QuicheStreamIter =
+        run {
+            census(conn, "connWritable")
+            QuicheStreamIter(nConnWritable(conn.handle))
+        }
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null

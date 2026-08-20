@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
@@ -105,5 +106,37 @@ object Probe401 {
             i--
         }
         return "no fill recorded for addr=0x${addr.toString(16)} (ring top=$top)"
+    }
+
+    // ---- per-connection thread census (round 9) -------------------------------------------------
+    // quiche conns are single-threaded by contract; a conn touched by two threads with overlapping
+    // liveness is Rust UB through the FFI. First-occurrence-only COW writes keep the hot path free.
+
+    private val connThreads = AtomicReference<Map<Long, Map<String, Set<String>>>>(emptyMap())
+
+    fun recordThread(
+        connHandle: Long,
+        threadName: String,
+        method: String,
+    ) {
+        while (true) {
+            val cur = connThreads.load()
+            val perConn = cur[connHandle] ?: emptyMap()
+            val methods = perConn[threadName] ?: emptySet()
+            if (method in methods) return
+            val next = cur + (connHandle to (perConn + (threadName to (methods + method))))
+            if (connThreads.compareAndSet(cur, next)) return
+        }
+    }
+
+    /** Connections touched by more than one distinct thread, with the methods each thread used. */
+    fun threadReport(): String {
+        val snap = connThreads.load()
+        val bad = snap.filterValues { it.size > 1 }
+        if (bad.isEmpty()) return "  (every conn single-threaded: ${snap.size} conns censused)"
+        return bad.entries.joinToString("\n") { (h, per) ->
+            "  conn=0x${h.toString(16)} touched by ${per.size} threads:\n" +
+                per.entries.joinToString("\n") { (t, ms) -> "    [$t] ${ms.sorted().joinToString(", ")}" }
+        }
     }
 }

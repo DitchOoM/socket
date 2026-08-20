@@ -345,7 +345,8 @@ abstract class QuicConcurrencySoakTestSuite {
         } catch (e: CharacterCodingException) {
             throw AssertionError(
                 describeCorruption(expected, bytes, chunks) + "\n  " + fillEvidence.joinToString("\n  ") +
-                    "\n  stream chain (both ends, oldest->newest):\n" + Probe401.history(streamId.id),
+                    "\n  stream chain (both ends, oldest->newest):\n" + Probe401.history(streamId.id) +
+                    "\n  conn thread census (multi-threaded conns = quiche contract violations):\n" + Probe401.threadReport(),
                 e,
             )
         }
