@@ -1578,8 +1578,51 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      # Retried on a TRANSIENT repository failure only — never on a build or test failure.
+      #
+      # WHY this job and not the others: `publishToMavenLocal` resolves the JS target's
+      # `:jsNpmAggregated` configuration, and the `gradle-linux-` cache it restored cannot serve it.
+      # That cache is written by ONE job (`natives`, main's ref scope only), and `natives` runs
+      # nothing but `buildQuicheShared*` / `buildAndroidJni*` — cargo tasks that never resolve the
+      # JS graph. The key is a hash of the build scripts, not of the cache's contents, so this job
+      # gets an EXACT key hit and still has to fetch every JS module from Maven Central cold, on
+      # every single run. Run 32406698331 died on precisely that burst: `kotlin-stdlib`,
+      # `kotlinx-coroutines-core`, `kotlin-dom-api-compat`, `kotlin-js` wrappers and the three
+      # `com.ditchoom:buffer*` modules all came back `429 Too Many Requests` at once, 28 seconds in,
+      # and one 429 kills the whole job. The standing cold resolve is the real defect and is filed
+      # separately; this makes a rate-limit answer survivable in the meantime, exactly as the
+      # sdkmanager and apt steps in this lane already do for their own transient fetches.
+      #
+      # The grep is what keeps this honest: a compile error, a failing test or a publication problem
+      # has none of these markers and fails on the first attempt with its own output intact. Only a
+      # repository fetch that Gradle reports as rate-limited, unavailable or timed out is retried.
       - name: Publish to Maven Local
-        run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          # A workflow `run:` with no `shell:` key is `bash -e {0}` — errexit but NOT pipefail. Without
+          # this line `gradlew ... | tee` would report tee's exit status, so a real build failure would
+          # read as success and this step would silently publish nothing. `-e` is already on and stays on;
+          # the greps below are inside `if`, where errexit does not apply.
+          set -o pipefail
+          attempts=3
+          log="$RUNNER_TEMP/publish-to-maven-local.log"
+          for i in $(seq 1 "$attempts"); do
+            if ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            # A transient repository answer, not a build failure. Anchored on Gradle's own
+            # "Could not GET/get resource" wording so an unrelated log line cannot trip it.
+            if ! grep -qE "Could not (GET|get resource).*(429|503|502|504|Too Many Requests|Read timed out|Connection reset)" "$log"; then
+              echo "::error::publishToMavenLocal failed for a non-transient reason — not retrying"
+              exit 1
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              backoff=$((i * 30))
+              echo "::warning::publishToMavenLocal hit a transient repository failure (attempt $i/$attempts); retrying in ${backoff}s"
+              sleep "$backoff"
+            fi
+          done
+          echo "::error::publishToMavenLocal still failing on a transient repository error after $attempts attempts"
+          exit 1
 
       - name: Upload Maven local artifacts
         uses: actions/upload-artifact@v7
