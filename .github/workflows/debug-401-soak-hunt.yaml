@@ -60,14 +60,14 @@ jobs:
         # Round 15: SUITE BISECTION. The victim is deterministic (StaleConnectionDiagnosticTests);
         # some other test creates the corrupting conditions. Each shard runs a candidate trigger set
         # + the victim, many fast iterations; the corrupting shard names the trigger.
-        # Round 16: method-level bisection inside the soak suite (r15: only Soak+Concurrency triggers).
+        # Round 17: dose vs combination. r16: no single method triggers at n=40; all five do.
         include:
-          - { shard: 1, mode: subset, filter: "--tests *manyConcurrentStreamsOnOneConnectionRoundTrip* --tests *StaleConnection*" }
-          - { shard: 2, mode: subset, filter: "--tests *manyConcurrentStreamsHighConcurrencyRoundTrip* --tests *StaleConnection*" }
-          - { shard: 3, mode: subset, filter: "--tests *manyConnectionsConcurrentlyRoundTrip* --tests *StaleConnection*" }
-          - { shard: 4, mode: subset, filter: "--tests *manyConnectionsHighConcurrencyRoundTrip* --tests *StaleConnection*" }
-          - { shard: 5, mode: subset, filter: "--tests *sustainedEchoLoop* --tests *StaleConnection*" }
-          - { shard: 6, mode: subset, filter: "--tests *Soak* --tests *Concurrency* --tests *StaleConnection*" }
+          - { shard: 1, mode: subset, filter: "--tests *manyConcurrentStreamsHighConcurrencyRoundTrip* --tests *StaleConnection*", n: "150" }
+          - { shard: 2, mode: subset, filter: "--tests *manyConnectionsConcurrentlyRoundTrip* --tests *StaleConnection*", n: "150" }
+          - { shard: 3, mode: subset, filter: "--tests *manyConcurrentStreams* --tests *StaleConnection*", n: "60" }
+          - { shard: 4, mode: subset, filter: "--tests *manyConnections* --tests *StaleConnection*", n: "60" }
+          - { shard: 5, mode: subset, filter: "--tests *manyConnections* --tests *sustainedEchoLoop* --tests *StaleConnection*", n: "60" }
+          - { shard: 6, mode: subset, filter: "--tests *Soak* --tests *StaleConnection*", n: "40" }
     env:
       MALLOC_PERTURB_: ""
       # Round 13: glibc's own double-/invalid-free detector. If ANY pointer in the process is freed
@@ -114,7 +114,7 @@ jobs:
           mkdir -p hunt-results
           base=25
           if [ "${{ matrix.mode }}" = "subset" ]; then
-            n=40
+            n=${{ matrix.n }}
           else
             n=$(( base / 2 ))
           fi
