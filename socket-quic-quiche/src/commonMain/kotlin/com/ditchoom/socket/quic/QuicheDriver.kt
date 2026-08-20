@@ -14,6 +14,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -111,7 +112,7 @@ class QuicheDriver(
      * Timestamps come from the recorder's own clock, which callers must construct from the same
      * [clock] seam (one clock per RFC §5; `QuicheDriverTuning` threads both together).
      */
-    private val recorder: QuicTraceRecorder? = null,
+    internal val recorder: QuicTraceRecorder? = null,
     /**
      * Connection-migration wiring (RFC 9000 §9), as one exhaustive answer.
      *
@@ -1976,6 +1977,10 @@ class DriverStreamAdapter(
     override fun releaseUndeliveredReads() {
         while (true) {
             val buffer = slot.pendingData.tryReceive().getOrNull() ?: return
+            // Recorded before freeing: releasing here is CORRECT (no read() can hand these out any
+            // more), and they are still bytes quiche accepted that the application never saw. Only
+            // the second fact explains a stream that ends short, so the trace has to carry it.
+            driver.recorder?.streamLoss(slot.id.id, buffer.remaining(), StreamLossCause.ReaderGone)
             buffer.freeIfNeeded()
         }
     }
@@ -2029,6 +2034,12 @@ class DriverStreamAdapter(
             // UNLIMITED and never closed, so the send cannot fail; on the impossible branch report "not
             // transferred" so the caller frees the buffer rather than leaking it.
             queued = slot.pendingData.trySend(buffer).isSuccess
+            if (!queued) {
+                // The caller frees the buffer on this branch, so these bytes are gone. quiche already
+                // advanced the receive offset for them — this is the #393 shape, named at the moment
+                // it happens instead of being inferred later from a short stream.
+                driver.recorder?.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed)
+            }
         }
         if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
         return queued
@@ -2207,6 +2218,15 @@ class DriverStreamAdapter(
             pendingTaken?.let { undelivered ->
                 pendingTaken = null
                 if (slot.pendingData.trySend(undelivered.buffer).isFailure) {
+                    // Unexpected on a healthy stream, and the reason this is worth a trace line: the
+                    // queue is closed, so nothing will ever drain this chunk and freeing is the only
+                    // alternative to a leak. A STREAM_LOSS/QueueClosed line is the first direct
+                    // evidence the #414 window is reachable rather than only real by construction.
+                    driver.recorder?.streamLoss(
+                        slot.id.id,
+                        undelivered.buffer.remaining(),
+                        StreamLossCause.QueueClosed,
+                    )
                     undelivered.buffer.freeIfNeeded()
                 }
             }

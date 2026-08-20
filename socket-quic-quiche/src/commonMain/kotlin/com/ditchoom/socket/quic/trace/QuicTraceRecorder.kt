@@ -137,6 +137,31 @@ class QuicTraceRecorder(
     }
 
     /**
+     * Record bytes the transport accepted that the application will never receive (STREAM_LOSS).
+     *
+     * Every one of these is a permanent hole: quiche has already advanced the stream's receive offset
+     * and credited flow control, so the peer will not resend. Recorded even where releasing is the
+     * *correct* action — see [StreamLossCause] — because "correct to release" and "the application did
+     * not get these bytes" are different statements, and only the second explains a short stream.
+     *
+     * The sealed cause is translated onto its frozen v1 token here, at the wire boundary, exactly as
+     * [pathState] does: the driver stays typed, and a recorded trace survives the model being reshaped.
+     */
+    fun streamLoss(
+        streamId: Long,
+        bytes: Int,
+        cause: StreamLossCause,
+    ) {
+        val token =
+            when (cause) {
+                StreamLossCause.ReaderGone -> "ReaderGone"
+                StreamLossCause.QueueClosed -> "QueueClosed"
+                StreamLossCause.SalvageUnclaimed -> "SalvageUnclaimed"
+            }
+        record(TraceEvent.StreamLoss(now(), streamId, bytes, token))
+    }
+
+    /**
      * Record a typed exception (ERROR) — **qualified** class name + message, never a bare string
      * error. The FQN keeps the error type retraceable against R8's `mapping.txt`.
      */
