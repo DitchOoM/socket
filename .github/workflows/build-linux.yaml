@@ -909,7 +909,7 @@ jobs:
       # Reads socket-quic-quiche/build/netns/ from the gradle call above, so it MUST stay in this job.
       - name: QUIC migration off a dead path — netns integration (Linux)
         run: |
-          ./gradlew :socket-quic-quiche:netnsQuicProbeClasspath
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:netnsQuicProbeClasspath
           chmod +x test-harness/netns/run-netns-quic-migration.sh
           ./test-harness/netns/run-netns-quic-migration.sh
 
@@ -1202,10 +1202,10 @@ jobs:
             ulimit -c unlimited
             sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
             echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-            ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue --no-daemon \
+            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue --no-daemon \
               --no-configuration-cache ${{ inputs.gradle-args }}
           else
-            ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue \
+            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue \
               --no-configuration-cache ${{ inputs.gradle-args }}
           fi
 
@@ -1415,7 +1415,7 @@ jobs:
       # build-apple's link job, which is where this class of break was last found.)
       - name: Build multi-arch quic-echo fat jar
         run: >-
-          ./gradlew :socket-quic-quiche:quicEchoJar -PquicEchoAllArches=true
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar -PquicEchoAllArches=true
           :socket-quic-quiche:verifyGeneratedTestCerts
           --no-configuration-cache ${{ inputs.gradle-args }}
 
@@ -1446,7 +1446,7 @@ jobs:
       # cinterop suite, grouped with the fuzz/ASAN lanes in the integration job).
       - name: Link native test binaries (x64 + arm64) for integration jobs
         run: >-
-          ./gradlew
+          .github/scripts/gradle-retry.sh
           :socket-quic-quiche:linkDebugTestLinuxX64
           linkDebugTestLinuxArm64
           :socket-quic-quiche:linkDebugTestLinuxArm64
@@ -1578,8 +1578,10 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      # Retried on a transient repository failure only — see .github/scripts/gradle-retry.sh for
+      # why this job talks to Maven Central at all on a warm cache (issue #427).
       - name: Publish to Maven Local
-        run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
+        run: .github/scripts/gradle-retry.sh publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Upload Maven local artifacts
         uses: actions/upload-artifact@v7
@@ -2018,7 +2020,7 @@ jobs:
           ulimit -c unlimited
           sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
           echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-          ./gradlew :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
             --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
             --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
             --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
@@ -2174,10 +2176,10 @@ jobs:
             ulimit -c unlimited
             sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
             echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 --no-daemon \
+            .github/scripts/gradle-retry.sh ${{ matrix.task }} -PquicFuzzSeconds=180 --no-daemon \
               --no-configuration-cache ${{ inputs.gradle-args }}
           else
-            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+            .github/scripts/gradle-retry.sh ${{ matrix.task }} -PquicFuzzSeconds=180 \
               --no-configuration-cache ${{ inputs.gradle-args }}
           fi
 
@@ -2296,7 +2298,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p /tmp/fuzz-logs
-          ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+          .github/scripts/gradle-retry.sh ${{ matrix.task }} -PquicFuzzSeconds=180 \
             --no-configuration-cache ${{ inputs.gradle-args }} \
             2>&1 | tee "/tmp/fuzz-logs/${{ matrix.lane }}-asan.log"
 
@@ -2350,7 +2352,7 @@ jobs:
           # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served
           # from a prior uninstrumented cache) — otherwise the proof below could read a stale archive.
           rm -rf socket-quic-quiche/fuzz/native/target
-          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
             --no-configuration-cache ${{ inputs.gradle-args }}
           # Prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
           # interceptors. Zero __asan_ symbols => the CFLAGS never reached the C build, fail loudly.
