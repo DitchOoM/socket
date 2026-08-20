@@ -181,6 +181,17 @@ object JniQuicheApi : QuicheApi {
         sendInfo: QuicheSendInfo,
     ): Int = nConnSend(conn.handle, buf, bufLen, sendInfo.handle)
 
+    // DEBUG (#401 hunt): raw-memory reader so the destination bytes can be recorded AT EXECUTE
+    // TIME, on the driver thread, immediately after quiche's native call returns — before the
+    // awaiting reader can resume. Splits "quiche wrote elsewhere" from "memory freed after write".
+    private val unsafe: sun.misc.Unsafe =
+        Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null) as sun.misc.Unsafe
+
+    private fun rawHex(
+        addr: Long,
+        len: Int,
+    ): String = buildString { for (i in 0 until minOf(16, len)) append(unsafe.getByte(addr + i).toUByte().toString(16).padStart(2, '0')).append(' ') }.trim()
+
     override fun connStreamRecv(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -200,6 +211,7 @@ object JniQuicheApi : QuicheApi {
             if (lower63 <= bufLen.toLong()) {
                 val bytesRead = lower63.toInt()
                 val fin = raw and (1L shl 63) != 0L
+                if (bytesRead > 0) Probe401.record("recv-post-jni", buf, streamId.id, bytesRead, rawHex(buf, bytesRead))
                 StreamRecvResult.Data(bytesRead, fin)
             } else {
                 when (raw) {
