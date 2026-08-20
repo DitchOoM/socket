@@ -777,7 +777,12 @@ class QuicheDriver(
                         }
                     }
                 api.connRecv(conn, addr, cmd.len, info)
-                cmd.buf.freeNativeMemory()
+                // DEBUG round 7 (#401 hunt): deliberately LEAK the ingested datagram buffer instead
+                // of freeing it. If the corrupt echo vanishes, quiche (contrary to its documented
+                // contract) still references the input after recv() returns and this free is the
+                // use-after-free the whole hunt has been chasing; if corruption persists, the raced
+                // memory is elsewhere (the 64KB stream-read buffers are next).
+                // cmd.buf.freeNativeMemory()
                 // Signal the server it may now release the cached recv_info (quiche copied
                 // what it needs during connRecv; the pointer is no longer referenced).
                 if (source is PacketSource.FromServerSocket) source.onConsumed()
