@@ -14,6 +14,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
@@ -151,6 +152,25 @@ internal class Http3LoopbackServer(
                 } catch (_: QuicStreamException) {
                     // Peer STOP_SENDING / RESET_STREAM on one stream (e.g. a client cancelling a server
                     // PUSH, RFC 9114 §7.2.3) — stream-scoped, the connection stays up for other streams.
+                } catch (e: QuicCloseException) {
+                    // The peer took the CONNECTION down while this stream was mid-flight. That is a
+                    // terminal condition for the whole server role, not a failure of it: no stream can
+                    // make progress on a closed connection, and [serve]'s contract is to RETURN when the
+                    // connection closes. Before this arm the exception escaped `scope.launch`, cancelled
+                    // the enclosing scope, and surfaced as a test failure attributed to the server.
+                    //
+                    // It is the expected outcome in every test that asserts the client aborts —
+                    // `malformedFrameSequenceFromServer_abortsConnection` sends DATA before HEADERS
+                    // precisely so the client closes with H3_FRAME_UNEXPECTED (0x105), and the server is
+                    // still writing the rest of that response when the close lands. Whether the write
+                    // wins that race is pure timing: the API-35 emulator finished writing first and was
+                    // green, the slower API-29 lane lost the race and was red, on the same commit.
+                    //
+                    // Recorded, not discarded: an unexpected close (an idle timeout, a transport error)
+                    // must still name itself in the failure report, exactly as the Http3StreamException
+                    // arm above does. The typed [com.ditchoom.socket.quic.QuicError] is what
+                    // distinguishes the abort a test asked for from one it did not.
+                    diagnostics?.recordConnectionClose("S", e)
                 }
             }
         }

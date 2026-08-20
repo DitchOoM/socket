@@ -87,6 +87,35 @@ class Http3LoopbackDiagnostics {
         }
     }
 
+    /**
+     * A connection-level close the [Http3LoopbackServer] absorbed as its terminal condition.
+     *
+     * The server role ends when the peer closes the connection, so a [QuicCloseException] raised on a
+     * stream mid-flight is normal termination rather than a failure — see the catch in
+     * [Http3LoopbackServer.serve]. It is recorded rather than discarded because the typed
+     * [com.ditchoom.socket.quic.QuicError] is the only thing separating the abort a test *asked* for
+     * (`ApplicationError(0x105)`, H3_FRAME_UNEXPECTED, from a client rejecting a malformed frame
+     * sequence) from one it did not (an idle timeout, a transport error). Swallowing it untyped would
+     * repeat the #291 gap the stream-level recorder above exists to close.
+     */
+    private val connectionCloses = AtomicReference(emptyList<Pair<String, QuicCloseException>>())
+
+    fun recordConnectionClose(
+        side: String,
+        close: QuicCloseException,
+    ) {
+        while (true) {
+            val current = connectionCloses.load()
+            val next =
+                if (current.size >= MAX_VIOLATIONS) {
+                    current.subList(1, current.size) + (side to close)
+                } else {
+                    current + (side to close)
+                }
+            if (connectionCloses.compareAndSet(current, next)) return
+        }
+    }
+
     /** Capture sink for the in-process server's connections (every accepted connection interleaves). */
     val serverSink: TraceSink = sinkTagged("S")
 
@@ -148,6 +177,10 @@ class Http3LoopbackDiagnostics {
             streamViolations.load().forEach { (side, e) ->
                 appendLine("$side stream-level H3 violation (connection kept up): ${e.violation}")
                 appendLine("  -> ${e.violation.describe()} (error code 0x${e.errorCode.toString(16)})")
+            }
+            // Normal termination when a test asked the peer to abort; the typed reason is what says so.
+            connectionCloses.load().forEach { (side, e) ->
+                appendLine("$side absorbed a connection close (server role ended): ${e.quicError.describe()}")
             }
             val captured = events.load()
             // Lines are in capture order, which is the comparable axis: each recorder stamps against
