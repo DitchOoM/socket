@@ -3763,3 +3763,39 @@ tasks.register("verifyGeneratedTestCerts") {
         }
     }
 }
+
+// ── netns QUIC migration probe ───────────────────────────────────────────────
+// Dumps the jvmTest runtime classpath + a JDK21 launcher for
+// test-harness/netns/run-netns-quic-migration.sh, mirroring
+// :network-monitor:netnsJvmProbeClasspath.
+//
+// NetnsQuicMigrationProbe is a main class rather than a JUnit test because it needs a
+// network namespace built around it and it revokes one of that namespace's interfaces
+// mid-stream. The script self-skips when these files are absent, so an ordinary build
+// never depends on this task.
+val netnsQuicJava21Launcher =
+    javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+
+afterEvaluate {
+    tasks.register("netnsQuicProbeClasspath") {
+        group = "verification"
+        description = "Dumps the jvmTest runtime classpath + JDK21 launcher for the netns QUIC migration probe."
+        dependsOn("compileTestKotlinJvm")
+        val jvmTest = tasks.named<Test>("jvmTest")
+        val outDir = layout.buildDirectory.dir("netns")
+        val launcher = netnsQuicJava21Launcher
+        outputs.dir(outDir)
+        doLast {
+            val dir = outDir.get().asFile
+            dir.mkdirs()
+            dir.resolve("jvm-test-classpath.txt").writeText(jvmTest.get().classpath.asPath)
+            dir.resolve("java21-launcher.txt").writeText(
+                launcher
+                    .get()
+                    .executablePath.asFile.absolutePath,
+            )
+        }
+    }
+}

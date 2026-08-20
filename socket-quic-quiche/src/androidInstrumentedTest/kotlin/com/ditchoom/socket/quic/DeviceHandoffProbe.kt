@@ -17,6 +17,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -60,6 +61,11 @@ class DeviceHandoffProbe {
         assumeTrue("hand-driven probe — pass -e probeHost <ip> to run it (see class KDoc)", host.isNotEmpty())
         val port = arg("probePort", "14433").toInt()
         val minutes = arg("probeMinutes", "12").toInt()
+        // Read deadline, injectable so a run can be tuned to ARM the #393 salvage path rather than
+        // merely hope for it. The field default (8s) sees ~1 timeout per 15 minutes, so a short probe
+        // records zero and proves nothing about the cancellation edge. Setting this just under the
+        // cellular RTT (~200ms median, ~500ms post-migration spikes) makes timeouts routine.
+        val readTimeoutMs = arg("probeReadTimeoutMs", "8000").toLong()
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
@@ -75,7 +81,7 @@ class DeviceHandoffProbe {
         }
 
         log.writeText("")
-        emit("START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port minutes=$minutes")
+        emit("START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port minutes=$minutes readTimeoutMs=$readTimeoutMs")
 
         val options =
             QuicOptions(
@@ -117,6 +123,21 @@ class DeviceHandoffProbe {
                         var seq = 0
                         var lastWire = identity.wire
 
+                        // Stream-integrity ledger (#393).
+                        //
+                        // With a short read deadline a timeout is EXPECTED, and a working salvage path
+                        // hands those bytes to the NEXT read — so the old per-read `echoed == payload`
+                        // test would report a mismatch on correct behaviour. Small payloads can also
+                        // coalesce, so one read may carry two echoes.
+                        //
+                        // The invariant that survives both: everything received must be an exact,
+                        // in-order PREFIX of everything sent. Late delivery keeps that true; bytes
+                        // destroyed by a timed-out read (the #393 defect) break it permanently, because
+                        // the stream then resumes past the hole.
+                        val sentAll = StringBuilder()
+                        val recvAll = StringBuilder()
+                        var integrityBroken = false
+
                         // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
                         // loop below. Phase 4 bounds an unanswered path probe at ~3s (RFC 9000 §8.2.4),
                         // so a whole Probing -> Failed -> Probing sequence can fall between two samples
@@ -135,17 +156,32 @@ class DeviceHandoffProbe {
 
                             seq++
                             val sentAt = System.currentTimeMillis()
-                            val payload = "probe-$seq"
+                            // Delimited so payload boundaries stay visible in a coalesced read.
+                            val payload = "probe-$seq;"
                             try {
                                 val out = BufferFactory.Default.allocate(payload.length)
                                 out.writeString(payload, Charset.UTF8)
                                 out.resetForRead()
                                 stream.write(out, 5.seconds)
-                                val resp = stream.read(8.seconds)
+                                sentAll.append(payload)
+                                val resp = stream.read(readTimeoutMs.milliseconds)
                                 val rtt = System.currentTimeMillis() - sentAt
                                 if (resp is ReadResult.Data) {
                                     val echoed = resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8)
-                                    emit("ECHO-OK seq=$seq rtt=${rtt}ms match=${echoed == payload}")
+                                    recvAll.append(echoed)
+                                    val intact = sentAll.startsWith(recvAll)
+                                    val pending = sentAll.length - recvAll.length
+                                    emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
+                                    if (!intact && !integrityBroken) {
+                                        integrityBroken = true
+                                        // The whole point of the run. Capture both sides at the divergence.
+                                        val at = recvAll.indices.firstOrNull { it >= sentAll.length || sentAll[it] != recvAll[it] } ?: 0
+                                        emit(
+                                            "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
+                                                "sent=[${sentAll.substring(maxOf(0, at - 24), minOf(sentAll.length, at + 24))}] " +
+                                                "recv=[${recvAll.substring(maxOf(0, at - 24), minOf(recvAll.length, at + 24))}]",
+                                        )
+                                    }
                                 } else {
                                     emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
                                 }
