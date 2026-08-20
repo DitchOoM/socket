@@ -49,7 +49,17 @@ object Probe401 {
         record("send-enq", addr, streamId, len, firstBytesHex)
     }
 
-    private fun record(
+    /** Destination-buffer bytes BEFORE connStreamRecv ran — [kind] names the call site. */
+    fun recordRecvPre(
+        kind: String,
+        addr: Long,
+        streamId: Long,
+        firstBytesHex: String,
+    ) {
+        record(kind, addr, streamId, 0, firstBytesHex)
+    }
+
+    fun record(
         kind: String,
         addr: Long,
         streamId: Long,

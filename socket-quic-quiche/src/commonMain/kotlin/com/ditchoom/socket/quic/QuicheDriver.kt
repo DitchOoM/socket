@@ -1042,6 +1042,7 @@ class QuicheDriver(
     private fun drainStreamIntoSlot(slot: StreamSlot) {
         while (true) {
             val buffer = streamReadPool.allocate(STREAM_READ_BUFFER_SIZE)
+            Probe401.recordRecvPre("recv-pre-drain", addr(buffer), slot.id.id, firstBytesHex(buffer, 16))
             val result = api.connStreamRecv(conn, slot.id, addr(buffer), STREAM_READ_BUFFER_SIZE)
             // Not Data => the drain for this stream is over. A Reset still latches the verdict
             // (with the peer's code) so a post-teardown read reports the abort, not a clean End (#398);
@@ -1056,7 +1057,7 @@ class QuicheDriver(
             if (result.bytesRead > 0) {
                 buffer.position(result.bytesRead)
                 buffer.resetForRead()
-                Probe401.recordFill(addr(buffer), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
+                Probe401.record("recv-fill-drain", addr(buffer), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
                 // UNLIMITED and never closed before this point, so the send cannot fail; on the
                 // impossible branch release the buffer rather than leaking it.
                 if (slot.pendingData.trySend(buffer).isFailure) {
@@ -1959,7 +1960,7 @@ class DriverStreamAdapter(
         if (result.bytesRead > 0) {
             buffer.position(result.bytesRead)
             buffer.resetForRead()
-            Probe401.recordFill(buffer.nativeMemoryAccess!!.nativeAddress.toLong(), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
+            Probe401.record("recv-fill-salvage", buffer.nativeMemoryAccess!!.nativeAddress.toLong(), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
             // UNLIMITED and never closed, so the send cannot fail; on the impossible branch report "not
             // transferred" so the caller frees the buffer rather than leaking it.
             queued = slot.pendingData.trySend(buffer).isSuccess
@@ -1978,6 +1979,7 @@ class DriverStreamAdapter(
         pendingData()?.let { return it }
         val buffer = bufferFactory.allocate(bufferSize)
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
+        Probe401.recordRecvPre("recv-pre-cmd", addr, streamId.id, firstBytesHex(buffer, 16))
 
         // A StreamRecv we enqueued but the driver has not yet completed. While this is set, the driver may
         // still be about to WRITE received bytes into `addr` inside connStreamRecv. The command channel is
@@ -2025,7 +2027,7 @@ class DriverStreamAdapter(
                                 buffer.position(result.bytesRead)
                                 buffer.resetForRead()
                                 // Ownership transfers to the caller — do not release in the finally.
-                                Probe401.recordFill(addr, streamId.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
+                                Probe401.record("recv-fill-cmd", addr, streamId.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
                                 transferred = true
                                 return@withTimeout ReadResult.Data(buffer)
                             }
