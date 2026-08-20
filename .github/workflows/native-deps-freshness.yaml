@@ -350,6 +350,31 @@ jobs:
           :socket-quic-quiche:buildQuicheSharedLinuxArm64
           --no-configuration-cache
 
+      # ── Warm the Kotlin dependency graph, not just the natives (issue #427) ─────────────────
+      #
+      # The `gradle-linux-` entry above is the one every build-linux job restores. Until now the only
+      # Gradle this job ran was cargo work (`buildLiburing*`, `buildQuicheShared*`), so what it saved
+      # was a gradle home that had resolved almost none of the Kotlin graph. The cache KEY is a hash
+      # of the build scripts, not of the contents — so every consumer job got an exact key hit,
+      # logged "Cache restored successfully", and re-fetched its half of the graph from Maven Central
+      # COLD on every run. That standing burst is what drew the rate limiting that killed
+      # "Publish Linux targets to Maven Local" (run 32406698331, on `:jsNpmAggregated`) and
+      # "QUIC quiche JVM (JNI)" (run 32411168329) on 2026-08-20, each with every module — kotlin-stdlib,
+      # kotlinx-coroutines-core, kotlin-test, the buffer modules — answering 429 at once.
+      #
+      # Here rather than in build-linux.yaml's `natives` job, even though that job also gates the whole
+      # lane and also writes this key: this one runs once a day, off-peak, on main, and is on NO
+      # critical path. Warming in `natives` would put the download on the critical path of every merge
+      # run instead, for a freshness gain that prefix-restore mostly already provides — a build-script
+      # edit rotates the key, but `gradle-linux-` still lands on the previous fat entry, so only the
+      # genuine delta is fetched.
+      #
+      # continue-on-error: a cold cache is a slow lane, not a broken one. Consumers still resolve for
+      # themselves exactly as they do today, so a bad day at Central must not fail the freshness job.
+      - name: Warm the Kotlin dependency graph
+        continue-on-error: true
+        run: ./gradlew resolveAllDependencies --no-configuration-cache
+
       - name: Report warmed artifacts
         if: always()
         run: |
@@ -460,6 +485,14 @@ jobs:
           :socket-quic-quiche:buildQuicheAppleStaticLibs
           :socket-quic-quiche:prepareQuicheNativeLib
           --no-configuration-cache
+
+      # Same gap as the Linux twin, same fix (issue #427): the `gradle-macos-` entry every
+      # build-apple job restores was written by a job that had run only cargo work, so it could not
+      # serve a consumer resolving the Kotlin graph — an exact key hit that still went to Central.
+      # Warmed here, once a day, off-peak, on main, off every critical path.
+      - name: Warm the Kotlin dependency graph
+        continue-on-error: true
+        run: ./gradlew resolveAllDependencies --no-configuration-cache
 
       - name: Report warmed Apple artifacts
         if: always()

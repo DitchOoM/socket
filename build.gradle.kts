@@ -1016,3 +1016,63 @@ listOf("macosArm64Test", "macosX64Test").forEach { name ->
         finalizedBy(harnessDown)
     }
 }
+
+// ── CI dependency-cache warming (issue #427) ───────────────────────────────────────────────────
+//
+// Every job in build-linux.yaml and build-apple.yaml already `needs: natives`, so `natives` is
+// the pre-flight gate for both lanes — and it is also the single writer of the `gradle-linux-` /
+// `gradle-apple-` caches. What it writes, though, is shaped by what it RESOLVED, and it runs
+// nothing but `buildQuicheShared*` / `buildAndroidJni*`: cargo tasks that touch almost none of the
+// Kotlin dependency graph.
+//
+// The cache KEY is a hash of the build scripts, not of the cache's contents. So every consumer job
+// gets an exact key hit, logs "Cache restored successfully", and re-fetches its half of the graph
+// from Maven Central COLD on every single run. That standing burst is what draws rate limiting: on
+// 2026-08-20 it killed "Publish Linux targets to Maven Local" (run 32406698331, on
+// `:jsNpmAggregated`) and "QUIC quiche JVM (JNI)" (run 32411168329, on :socket-quic-quiche's test
+// classpath), each with every module answering 429 at once, seconds into the build.
+//
+// Resolving the graph in `natives`, before the save, is what makes the cached entry match what
+// consumers actually need — so they restore something that can serve them and never call Central.
+//
+// ⚠️ Registered PER PROJECT, and this is not a style choice. Gradle forbids resolving another
+// project's configuration from a task action ("Resolution of the configuration ... was attempted
+// without an exclusive lock. This is unsafe and not allowed"), so a single root task that walked
+// `allprojects` resolved 313 configurations and skipped 2889 — it looked like it worked. Each
+// project resolving its OWN configurations is what actually warms the cache.
+allprojects {
+    tasks.register("resolveProjectDependencies") {
+        description = "Resolves this project's resolvable configurations, to warm the CI dependency cache."
+        group = "build setup"
+        notCompatibleWithConfigurationCache("resolves configurations at execution time")
+        val resolvable = configurations.matching { it.isCanBeResolved }
+        val projectPath = path
+        doLast {
+            var resolved = 0
+            val skipped = mutableListOf<String>()
+            // Snapshot before resolving, never iterate the live container. `configurations.matching {}`
+            // is a LIVE view, and resolving a configuration can register more of them — which threw
+            // ConcurrentModificationException out of seven of the eleven projects here.
+            resolvable.toList().forEach { configuration ->
+                try {
+                    configuration.resolve()
+                    resolved++
+                } catch (e: Exception) {
+                    skipped += "${configuration.name} (${e.message?.lineSequence()?.firstOrNull()?.take(140)})"
+                }
+            }
+            // LOUD about what it skipped. A configuration that cannot resolve on this host is
+            // expected — Apple klibs on a Linux runner — but a warm step that silently swallowed
+            // everything would report success while warming nothing, which is precisely the failure
+            // this task exists to end. Warming is a convenience, so a skip must never fail the build.
+            logger.lifecycle("$projectPath: warmed $resolved configuration(s), skipped ${skipped.size}")
+            skipped.forEach { logger.info("  $projectPath skipped $it") }
+        }
+    }
+}
+
+tasks.register("resolveAllDependencies") {
+    description = "Warms the whole dependency graph so CI's `natives` job caches something consumers can use (#427)."
+    group = "build setup"
+    dependsOn(allprojects.map { "${it.path}:resolveProjectDependencies" })
+}
