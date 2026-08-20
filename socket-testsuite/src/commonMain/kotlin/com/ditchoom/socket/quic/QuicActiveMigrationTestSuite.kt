@@ -6,8 +6,12 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -59,6 +63,26 @@ abstract class QuicActiveMigrationTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             idleTimeout = 10.seconds,
+        )
+
+    /**
+     * Options for the two byte-continuity tests below, which are transfers rather than single echoes and
+     * are budgeted like [QuicConcurrencySoakTestSuite]'s: a **scaled** idle timeout, well above the
+     * (also scaled) per-read deadlines.
+     *
+     * The fixed 10 s above is right for a test that exchanges one message, and wrong for one that keeps a
+     * pipeline full across a path switch. A migration's in-flight packets can be lost and re-sent under
+     * QUIC's exponential PTO backoff, which is seconds of legitimate stall on a runner whose cores are
+     * busy — measured here as an 8 s gap on Apple K/N while a full JVM suite ran alongside, on a
+     * connection that then recovered. Scaling the transport budget and the read deadlines by the same
+     * [testTimeScale] gives a loaded runner proportionally more wall-clock while preserving every timing
+     * relationship: a stream that has genuinely lost bytes still never catches up, and still fails.
+     */
+    private val transferQuicOptions =
+        QuicOptions(
+            alpnProtocols = listOf("test"),
+            verifyPeer = false,
+            idleTimeout = 30.seconds.scaled,
         )
 
     private suspend fun QuicByteStream.echoOnce(
@@ -282,4 +306,606 @@ abstract class QuicActiveMigrationTestSuite {
                 }
             }
         }
+
+    /**
+     * **Byte-continuity across a migration**: everything the stream delivers must be an exact, in-order
+     * prefix of everything written into it, *while the path moves underneath it*.
+     *
+     * ## Why "the migration succeeded" was never enough
+     * The two tests above assert that [migrate] answers [MigrationResult.Succeeded], that the resolved
+     * endpoint reaches [QuicScope.pathState], and that one echo round-trips afterwards. Issue #393 passed
+     * every one of those: on a 124-minute on-device Android handoff the **connection** stayed healthy for
+     * 101 minutes after the stream died — exchanging keepalives the whole time — because a read that timed
+     * out with a `StreamRecv` in flight had its already-delivered bytes freed and discarded, punching a
+     * permanent hole in the stream's receive offset. "The connection is alive" is precisely the assertion
+     * that failed to catch it. The property that catches it is the one asserted here: the bytes.
+     *
+     * ## The invariant is a prefix, not per-read equality
+     * A QUIC `read()` returns *whatever the transport has*, which is not the framing the writer used: two
+     * writes can arrive coalesced in one chunk, one write can arrive split across two, and a read whose
+     * deadline expired mid-delivery hands its salvaged bytes to the *next* read. So an
+     * `assertEquals(payloadN, chunkN)` per read is not a stricter test — it is a **wrong** one, red on a
+     * perfectly healthy stream. [StreamContinuityLedger] instead accumulates both sides and asserts, on
+     * every chunk, that the received bytes are an exact in-order prefix of the sent bytes. That catches a
+     * dropped byte (#393), a reordered one, and a duplicated one, and it is indifferent to framing.
+     *
+     * ## Why the traffic is provably in flight across the switch
+     * A migration on an idle stream proves nothing — #393's stream was idle-ish and looked fine until the
+     * next read. Two structures put real data in the air across the switch, without a single wall-clock
+     * wait:
+     *
+     *  - **A pipeline window.** The writer may run at most [PIPELINE_WINDOW] chunks ahead of what has been
+     *    echoed back. So whenever the writer is gated, `sent > received` — i.e. bytes are *definitionally*
+     *    in flight — and the writer cannot outrun the reader and finish early.
+     *  - **A rendezvous, not a sleep.** The writer stops at chunk [MIGRATE_AT_CHUNK] and hands off to the
+     *    migrator, which only then calls [migrate]; the writer resumes the moment the migrator has
+     *    committed to migrating. Reaching that barrier at all proves at least
+     *    `MIGRATE_AT_CHUNK - PIPELINE_WINDOW` chunks have already round-tripped (the stream is live), and
+     *    the remaining ~5/6 of the payload is written strictly afterwards, with the migration in flight.
+     */
+    @Test
+    fun streamBytesRemainAnInOrderPrefixAcrossAMigration() =
+        runQuicTest(timeout = 40.seconds) {
+            wrapTestBody {
+                val serverLedger = EchoOwnershipLedger()
+                val data = StreamContinuityLedger()
+                // coroutineScope so the echo coroutines are provably finished before assertNoLeaks reads
+                // the ledger — asserting between serverJob.cancel() and the join would race a release.
+                coroutineScope {
+                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = transferQuicOptions) {
+                        val serverJob = launch { connections { echoOneStream(serverLedger) } }
+                        try {
+                            withQuicConnection("127.0.0.1", port, transferQuicOptions, timeout = 10.seconds.scaled) {
+                                val stream = openStream()
+                                // Warm-up round, and not only for liveness: openStream() reserves a
+                                // stream id locally without putting anything on the wire, so a read that
+                                // races the first write asks quiche about a stream it has never heard of
+                                // and the driver reports that error as a clean ReadResult.End. Writing
+                                // chunk 0 and draining it makes the stream real on both sides before the
+                                // concurrent phase, so an End below is a genuine terminal verdict.
+                                stream.sendChunk(0, data)
+                                stream.drainUntilCaughtUp(data, "warm-up")
+
+                                // The two halves of the writer↔migrator rendezvous. Deferreds, not flags:
+                                // an await is a suspension the scheduler resolves, where a polled flag
+                                // would be a wall-clock race dressed up as a loop.
+                                val writerAtBarrier = CompletableDeferred<Unit>()
+                                val migrationCommitted = CompletableDeferred<Unit>()
+
+                                coroutineScope {
+                                    launch {
+                                        while (data.receivedCount < CONTINUITY_CHUNKS * CHUNK_BYTES) {
+                                            stream.receiveInto(data, STREAM_READ_DEADLINE, "migration echo reader")
+                                        }
+                                    }
+                                    launch {
+                                        for (i in 1 until CONTINUITY_CHUNKS) {
+                                            // Pipeline window: never more than PIPELINE_WINDOW chunks ahead
+                                            // of what has come back, so the writer can neither run the
+                                            // stream dry nor finish the payload before the path moves.
+                                            awaitUntil(
+                                                PIPELINE_STALL_BUDGET,
+                                                "the echo stalled: chunk $i could not be sent because only " +
+                                                    "${data.progress()} — the stream stopped carrying bytes",
+                                            ) { data.receivedCount >= (i - PIPELINE_WINDOW) * CHUNK_BYTES }
+                                            if (i == MIGRATE_AT_CHUNK) {
+                                                writerAtBarrier.complete(Unit)
+                                                migrationCommitted.await()
+                                            }
+                                            stream.sendChunk(i, data)
+                                        }
+                                    }
+
+                                    writerAtBarrier.await()
+                                    // Reaching the barrier already proves the stream round-trips (the
+                                    // window gate could not have released otherwise), so the migration
+                                    // needs no separate liveness probe to be non-vacuous.
+                                    migrationCommitted.complete(Unit)
+                                    val result = migrate()
+                                    assertTrue(
+                                        result is MigrationResult.Succeeded,
+                                        "expected the mid-transfer migration to succeed (${data.progress()}), got $result",
+                                    )
+                                    assertTrue(
+                                        pathState.value is QuicPathState.Migrated,
+                                        "pathState must report the connection moved, got ${pathState.value}",
+                                    )
+                                }
+
+                                data.assertEverySentByteCameBack("streamBytesRemainAnInOrderPrefixAcrossAMigration")
+                                stream.close()
+                            }
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+                serverLedger.assertNoLeaks("streamBytesRemainAnInOrderPrefixAcrossAMigration")
+            }
+        }
+
+    /**
+     * **A migration that lands on an in-flight read must not cost a byte** — the end-to-end analogue of
+     * issue #393.
+     *
+     * The field failure needed two things at once: a stream read that unwound while the driver still had
+     * a `StreamRecv` outstanding for it, and a migration to make that likely. This drives both, in two
+     * phases that are deliberately different in kind:
+     *
+     *  1. **A read parked across the whole migration** — *deterministic*. The stream is fully drained
+     *     first, so the read has nothing to return and provably cannot complete until this test writes
+     *     again; the migration therefore runs, start to finish, with that read parked. The payload is
+     *     written only afterwards, so it is delivered into a read that has been sitting across a path
+     *     switch. A moved path that orphans its parked reader dies here.
+     *  2. **A deadline sweep under driver pressure** — *opportunistic, and labelled as such*. Writes are
+     *     issued back to back with no pipeline window, so the driver's command queue carries a real
+     *     backlog, and each write is followed by a read on a deadline of a few milliseconds cycled from
+     *     [READ_DEADLINE_LADDER]. Reads therefore unwind while echoes are still outstanding.
+     *
+     *     Whether any one of those unwinds lands in the *actual* #393 window — the microseconds between a
+     *     `StreamRecv` being enqueued and the driver answering it with data — is not something the public
+     *     API can force, and this suite should not pretend otherwise. Measured on an idle loopback JVM:
+     *     the driver answers fast enough that a timed-out read is essentially always parked on the data
+     *     signal, where there is no delivery to lose, and reverting the salvage fix leaves this suite
+     *     green. `StreamReadCancellationTests` is what pins that race, with a gated stub driver holding
+     *     the interleaving still. What this phase adds is the end-to-end half — a busy driver, real path
+     *     switches, and the standing guarantee that a timeout is never allowed to cost a byte, which is
+     *     also the shape a destructive-timeout regression would take (RFC_READ_TIMEOUT_CONTRACT §3, axis
+     *     2: a timeout must abort the read, never the stream).
+     *
+     * A read timing out is an expected outcome throughout, never a failure. The failure is a byte that
+     * does not come back.
+     *
+     * Both phases migrate, so this also walks the connection through path switches with reads in flight,
+     * retrying the one answer that is transient by design
+     * ([MigrationResult.Unmoved.Failed.NoSpareConnectionId] — the peer needs a round trip to replenish the
+     * CID the last migration retired, RFC 9000 §5.1.1), exactly as
+     * [theConnectionCanKeepMigratingPastTheConnectionIdLimit] does.
+     */
+    @Test
+    fun aMigrationAcrossAnInFlightReadLosesNoBytes() =
+        runQuicTest(timeout = 60.seconds) {
+            wrapTestBody {
+                val serverLedger = EchoOwnershipLedger()
+                val data = StreamContinuityLedger()
+                coroutineScope {
+                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = transferQuicOptions) {
+                        val serverJob = launch { connections { echoOneStream(serverLedger) } }
+                        try {
+                            withQuicConnection("127.0.0.1", port, transferQuicOptions, timeout = 10.seconds.scaled) {
+                                val stream = openStream()
+                                // Warm-up round: openStream() reserves a stream id locally without putting
+                                // anything on the wire, so a read that races the first write asks quiche
+                                // about a stream it has never heard of and the driver reports that error
+                                // as a clean ReadResult.End. Draining one chunk makes the stream real on
+                                // both sides, so an End below is a genuine terminal verdict — and proves
+                                // the stream carries bytes before any deadline is under test.
+                                stream.sendChunk(0, data)
+                                stream.drainUntilCaughtUp(data, "warm-up")
+
+                                // ---- phase 1: a read parked across the entire migration ----
+                                coroutineScope {
+                                    val readStarted = CompletableDeferred<Unit>()
+                                    val parkedRead =
+                                        launch {
+                                            readStarted.complete(Unit)
+                                            stream.receiveIntoToleratingTimeout(data, PARKED_READ_DEADLINE)
+                                        }
+                                    // Ordering, not timing: migrate() is entered only once the reading
+                                    // coroutine has been scheduled — and with the stream drained, nothing
+                                    // can wake that read until the write below, so the whole path switch
+                                    // happens underneath it.
+                                    readStarted.await()
+                                    val result = migrateReplenishingConnectionIds()
+                                    assertTrue(
+                                        result is MigrationResult.Succeeded,
+                                        "the migration under a parked read failed with $result",
+                                    )
+                                    // Written on the NEW path, into a read issued on the old one.
+                                    stream.sendChunk(1, data)
+                                    parkedRead.join()
+                                }
+                                stream.drainUntilCaughtUp(data, "after a migration under a parked read")
+
+                                // ---- phase 2: short deadlines against a backlogged driver ----
+                                coroutineScope {
+                                    launch {
+                                        // Mid-sweep, so reads are unwinding both before and after the
+                                        // path moves rather than only around one edge of it.
+                                        awaitUntil(
+                                            PIPELINE_STALL_BUDGET,
+                                            "the sweep stalled before its migration: ${data.progress()}",
+                                        ) { data.sentCount >= (2 + PRESSURE_CHUNKS / 2) * CHUNK_BYTES }
+                                        val result = migrateReplenishingConnectionIds()
+                                        assertTrue(
+                                            result is MigrationResult.Succeeded,
+                                            "the migration under the deadline sweep failed with $result",
+                                        )
+                                    }
+                                    for (i in 0 until PRESSURE_CHUNKS) {
+                                        // No pipeline window here on purpose: back-to-back writes leave a
+                                        // backlog in the driver's command queue, so a StreamRecv enqueued
+                                        // behind them is answered late — widening the window in which a
+                                        // read's deadline can expire with a delivery still outstanding.
+                                        stream.sendChunk(2 + i, data)
+                                        stream.receiveIntoToleratingTimeout(
+                                            data,
+                                            READ_DEADLINE_LADDER[i % READ_DEADLINE_LADDER.size].scaled,
+                                        )
+                                    }
+                                }
+                                // Every byte written during the sweep must still arrive, in order. If a
+                                // read that unwound mid-delivery ever loses the bytes quiche had already
+                                // handed it — the #393 defect — this is where the stream's permanent hole
+                                // surfaces: the drain never catches up, and it names the shortfall rather
+                                // than hanging to the whole-test budget.
+                                stream.drainUntilCaughtUp(data, "after the deadline sweep")
+
+                                data.assertEverySentByteCameBack("aMigrationAcrossAnInFlightReadLosesNoBytes")
+                                stream.close()
+                            }
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+                serverLedger.assertNoLeaks("aMigrationAcrossAnInFlightReadLosesNoBytes")
+            }
+        }
+
+    // ---- helpers -----------------------------------------------------------------------------------
+
+    /**
+     * Server side: echo one accepted stream back to the client until it ends.
+     *
+     * Every read buffer is handed to [EchoOwnershipLedger.took] the instant `read()` returns it and
+     * released in a `finally`, because a QUIC `read()` transfers ownership while `write()` takes none: an
+     * echo loop that writes a buffer and walks away leaks it, permanently starving the driver's
+     * `streamReadPool` — the allocator primer behind #401. The ledger is what makes a dropped release
+     * *visible* by name instead of fatal three suites later. [writeFully], not `write`, because a QUIC
+     * stream write returns a possibly-partial count at a flow-control boundary and a truncated echo would
+     * read here as lost bytes — indicting the driver for the harness's bug.
+     */
+    private suspend fun QuicScope.echoOneStream(ledger: EchoOwnershipLedger) {
+        val stream = acceptStream()
+        try {
+            while (true) {
+                val data = stream.read(STREAM_READ_DEADLINE)
+                if (data !is ReadResult.Data) break
+                val receipt = ledger.took(data.buffer)
+                try {
+                    stream.writeFully(data.buffer, STREAM_WRITE_DEADLINE)
+                } finally {
+                    ledger.release(receipt)
+                }
+            }
+        } finally {
+            stream.close()
+        }
+    }
+
+    /**
+     * Write chunk [index] and record it as sent.
+     *
+     * The recording happens **before** the write, not after: the ledger's invariant is that received bytes
+     * are a prefix of sent bytes, and on a fast loopback the echo can be recorded by the reader before a
+     * post-write recording would have run — which would report the driver's correct behaviour as an
+     * overrun.
+     */
+    private suspend fun QuicByteStream.sendChunk(
+        index: Int,
+        data: StreamContinuityLedger,
+    ) {
+        val payload = chunkPayload(index)
+        val out = BufferFactory.deterministic().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        data.recordSent(payload.encodeToByteArray())
+        try {
+            writeFully(out, STREAM_WRITE_DEADLINE)
+        } finally {
+            // A deterministic() buffer is native-backed: the writer owns it and the write took no
+            // ownership, so it is ours to release once the bytes are on the wire.
+            out.freeNativeMemory()
+        }
+    }
+
+    /** Read one chunk into [data]. A deadline that expires here is a failure — nothing should be idle. */
+    private suspend fun QuicByteStream.receiveInto(
+        data: StreamContinuityLedger,
+        deadline: Duration,
+        context: String,
+    ) {
+        val result =
+            try {
+                read(deadline)
+            } catch (e: TimeoutCancellationException) {
+                throw AssertionError("$context: read($deadline) timed out with ${data.progress()}", e)
+            }
+        data.recordReceived(result, context)
+    }
+
+    /**
+     * Read one chunk into [data], **tolerating** a deadline that expires mid-delivery.
+     *
+     * That expiry is the point of the exercise, not a failure: quiche may already have written bytes into
+     * this read's buffer when the deadline unwinds it, and the contract is that those bytes reach the next
+     * `read()` instead of being freed with the buffer. The caller asserts the consequence (nothing is
+     * lost) rather than the mechanism, so this returns quietly either way.
+     */
+    private suspend fun QuicByteStream.receiveIntoToleratingTimeout(
+        data: StreamContinuityLedger,
+        deadline: Duration,
+    ) {
+        val result =
+            try {
+                read(deadline)
+            } catch (_: TimeoutCancellationException) {
+                return
+            }
+        data.recordReceived(result, "in-flight read across a migration")
+    }
+
+    /** Read until every byte written so far has come back, in order. */
+    private suspend fun QuicByteStream.drainUntilCaughtUp(
+        data: StreamContinuityLedger,
+        context: String,
+    ) {
+        while (data.receivedCount < data.sentCount) {
+            receiveInto(data, STREAM_READ_DEADLINE, "$context: draining the echo")
+        }
+    }
+
+    /**
+     * [migrate], retrying the one non-success that a *previous* migration makes transient by design.
+     *
+     * After a migration the client has retired a connection ID and the peer needs a round trip to issue a
+     * replacement (RFC 9000 §5.1.1), so back-to-back migrations can legitimately find no spare DCID.
+     * Every other answer is returned unchanged for the caller to assert on — retrying a
+     * [MigrationResult.Unmoved.Impossible] would only convert a capability gap into a timeout.
+     */
+    private suspend fun QuicScope.migrateReplenishingConnectionIds(): MigrationResult {
+        var result = migrate()
+        var retries = 0
+        while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && retries < CID_REPLENISH_RETRIES) {
+            delay(CID_REPLENISH_BACKOFF)
+            result = migrate()
+            retries++
+        }
+        return result
+    }
+
+    /**
+     * Chunk [index]'s payload: a zero-padded index label padded out with a per-chunk filler letter.
+     *
+     * Self-describing on purpose — a divergence report then names *which* chunk and which byte of it went
+     * missing, instead of showing an anonymous run of identical bytes in which a lost 64-byte hole and a
+     * reordering look the same. ASCII only, so one character is one byte and ledger offsets read directly
+     * as stream offsets.
+     */
+    private fun chunkPayload(index: Int): String = "chunk-${index.toString().padStart(4, '0')}-".padEnd(CHUNK_BYTES, 'a' + index % 26)
+
+    private companion object {
+        /** Bytes per chunk. Small enough that a chunk never fragments, big enough to be legible in a dump. */
+        private const val CHUNK_BYTES = 64
+
+        /** Chunks written across the migration in [streamBytesRemainAnInOrderPrefixAcrossAMigration]. */
+        private const val CONTINUITY_CHUNKS = 48
+
+        /** How far the writer may run ahead of the echo. While it is gated, `sent > received` — bytes are in flight. */
+        private const val PIPELINE_WINDOW = 4
+
+        /**
+         * The chunk at which the writer hands off to the migrator. Past [PIPELINE_WINDOW] (so reaching it
+         * proves `MIGRATE_AT_CHUNK - PIPELINE_WINDOW` chunks already round-tripped) and well short of
+         * [CONTINUITY_CHUNKS] (so most of the payload is still written with the migration in flight).
+         */
+        private const val MIGRATE_AT_CHUNK = 8
+
+        /**
+         * Per-read/write deadlines for the transfer tests, scaled in step with
+         * [transferQuicOptions]'s idle timeout so the relationship between them holds at any scale: a
+         * read gives up well before the transport declares the connection idle, so a stalled stream is
+         * reported as a stalled stream and never as an idle timeout.
+         */
+        private val STREAM_READ_DEADLINE = 15.seconds.scaled
+        private val STREAM_WRITE_DEADLINE = 10.seconds.scaled
+
+        /**
+         * Backstop for a coroutine waiting on the echo's progress. Deliberately longer than
+         * [STREAM_READ_DEADLINE] so that a stalled stream is reported by the *reader* — which names the
+         * byte counts and the deadline it waited on — rather than by whichever waiter happened to expire
+         * first. Scaled, since it only bounds how long a loaded runner may lag.
+         */
+        private val PIPELINE_STALL_BUDGET = 20.seconds.scaled
+
+        /** Write+read rounds in the deadline sweep. Bounded work: each round costs one write and one short read. */
+        private const val PRESSURE_CHUNKS = 128
+
+        /**
+         * Read deadlines cycled through the sweep, all of them at or under the driver's own scheduling
+         * granularity so a read regularly unwinds with a delivery still outstanding. Scaled, because on a
+         * loaded runner the whole delivery window slides out with them; scaling moves which rung is the
+         * interesting one, it never turns an assertion off.
+         */
+        private val READ_DEADLINE_LADDER =
+            listOf(1.milliseconds, 2.milliseconds, 4.milliseconds, 8.milliseconds)
+
+        /**
+         * Deadline for the read parked across a whole migration. Long enough that a loopback path
+         * validation cannot outlast it (so the read is provably still parked when the migration returns),
+         * short enough to stay under the connection's idle timeout.
+         */
+        private val PARKED_READ_DEADLINE = 5.seconds.scaled
+
+        /** Bounded retry for a CID the peer has not re-issued yet; same shape as the #395 loop above. */
+        private const val CID_REPLENISH_RETRIES = 40
+        private val CID_REPLENISH_BACKOFF = 50.milliseconds
+    }
+}
+
+/**
+ * The sent/received byte ledger for one stream, asserting the property issue #393 broke: **everything
+ * received is an exact, in-order prefix of everything sent.**
+ *
+ * ## Why a prefix and not per-read equality
+ * A QUIC `read()` hands back whatever the transport currently holds, which need not be the framing the
+ * writer used: two writes can arrive coalesced, one write can arrive split, and a read whose deadline
+ * expired mid-delivery hands its salvaged bytes to the *next* read. So `assertEquals(payloadN, chunkN)`
+ * is not a stricter assertion, it is a wrong one — red on a healthy stream, and worse, it teaches the
+ * next reader to weaken it. Accumulating both sides and comparing as a prefix is framing-independent and
+ * still catches every corruption that matters: a dropped byte (offset shifts, so the very next byte
+ * mismatches), a reordered one, and a duplicated one (received overruns sent).
+ *
+ * The invariant only holds because [recordSent] runs *before* its write is issued, so `sent` is always a
+ * superset of anything the peer could possibly have echoed.
+ *
+ * ## Failure reports carry the evidence
+ * A divergence prints the stream offset, the surrounding bytes of both sides in hex and printable form,
+ * and the chunk that broke it. That is the lesson of #401: a bare `MalformedInputException: Input
+ * length = 1` from decoding corrupt bytes discards the very evidence needed to diagnose it, and the
+ * failures this ledger exists to catch are rare enough that "reproducible if you are lucky" is no
+ * diagnosis at all.
+ *
+ * **Thread-safe.** The writer, the reader, and (in the ladder test) a migrating main coroutine all touch
+ * it from different threads on K/N as well as JVM. Same spin-lock idiom as [EchoOwnershipLedger]: a
+ * [Mutex] via `tryLock`, because every entry point is non-suspending and each critical section is a
+ * short list append.
+ */
+private class StreamContinuityLedger {
+    private val listLock = Mutex()
+    private val sent = ArrayList<Byte>()
+    private val received = ArrayList<Byte>()
+
+    private inline fun <T> locked(block: () -> T): T {
+        while (!listLock.tryLock()) {
+            // Spin: the critical section is a short list append, contention is rare.
+        }
+        try {
+            return block()
+        } finally {
+            listLock.unlock()
+        }
+    }
+
+    /** Record [payload] as written. Call **before** issuing the write — see the class docs. */
+    fun recordSent(payload: ByteArray) {
+        locked { for (b in payload) sent.add(b) }
+    }
+
+    /**
+     * Fold one [ReadResult] into the ledger, asserting the prefix invariant and releasing the buffer.
+     *
+     * The release is this method's job rather than the caller's precisely because the invariant check can
+     * throw: a `freeIfNeeded()` written after the assertion at every call site is a leak waiting for the
+     * first red run, and accumulated echo leaks were #401's primer.
+     */
+    fun recordReceived(
+        result: ReadResult,
+        context: String,
+    ) {
+        if (result !is ReadResult.Data) {
+            throw AssertionError(
+                "$context: the stream ended before its bytes did — got $result with ${progress()}. A " +
+                    "connection that migrates must not terminate the streams riding it (#393).",
+            )
+        }
+        val chunk = ByteArray(result.buffer.remaining())
+        try {
+            for (i in chunk.indices) chunk[i] = result.buffer.readByte()
+        } finally {
+            // read() transfers ownership to us; write() takes none. Freeing here, in a finally, is what
+            // keeps a red assertion from also being a leak.
+            result.buffer.freeIfNeeded()
+        }
+        val failure = locked { appendLocked(chunk) }
+        if (failure != null) throw AssertionError("$context: $failure")
+    }
+
+    /** Bytes written so far. */
+    val sentCount: Int get() = locked { sent.size }
+
+    /** Bytes received so far. */
+    val receivedCount: Int get() = locked { received.size }
+
+    /** One-line state for a failure message. */
+    fun progress(): String = locked { "${received.size} of ${sent.size} bytes echoed back" }
+
+    /**
+     * Assert the stream gave back everything it was given. The prefix invariant has been checked on every
+     * chunk, so equal counts here mean byte-identical content — the shortfall is the only thing left to
+     * report, and it is #393's exact signature: a stream that is still open, on a connection that is still
+     * healthy, permanently missing the bytes a timed-out read discarded.
+     */
+    fun assertEverySentByteCameBack(context: String) {
+        val missing = locked { sent.size - received.size }
+        if (missing == 0) return
+        throw AssertionError(
+            "$context: $missing byte(s) written to the stream never came back (${progress()}) — the " +
+                "connection survived the migration but the stream lost data across it (#393).",
+        )
+    }
+
+    /** Append [chunk], returning a rendered failure when it breaks the prefix invariant. Caller holds the lock. */
+    private fun appendLocked(chunk: ByteArray): String? {
+        for (b in chunk) {
+            val offset = received.size
+            if (offset >= sent.size) {
+                return render(
+                    "received more bytes than were ever written — the stream duplicated or reordered data",
+                    offset,
+                    chunk,
+                )
+            }
+            if (sent[offset] != b) {
+                return render(
+                    "received 0x${b.hex()} at stream offset $offset where 0x${sent[offset].hex()} was written — " +
+                        "bytes were lost or reordered",
+                    offset,
+                    chunk,
+                )
+            }
+            received.add(b)
+        }
+        return null
+    }
+
+    /** Caller holds the lock. */
+    private fun render(
+        headline: String,
+        offset: Int,
+        chunk: ByteArray,
+    ): String {
+        val from = maxOf(0, offset - DUMP_WINDOW)
+        val to = minOf(sent.size, offset + DUMP_WINDOW)
+        val expected = ByteArray(to - from) { sent[from + it] }
+        return listOf(
+            headline,
+            "  written  [$from,$to) : ${expected.toHex()}",
+            "  written  [$from,$to) : |${expected.toPrintable()}|",
+            "  this read chunk      : ${chunk.toHex()}",
+            "  this read chunk      : |${chunk.toPrintable()}|",
+            "  totals               : ${received.size} received / ${sent.size} written",
+        ).joinToString("\n")
+    }
+
+    private fun Byte.hex(): String {
+        val v = toInt() and 0xFF
+        return "${HEX[v shr 4]}${HEX[v and 0xF]}"
+    }
+
+    private fun ByteArray.toHex(): String = joinToString(" ") { it.hex() }
+
+    private fun ByteArray.toPrintable(): String {
+        val sb = StringBuilder(size)
+        for (b in this) sb.append(if (b >= 0x20 && b < 0x7F) b.toInt().toChar() else '.')
+        return sb.toString()
+    }
+
+    private companion object {
+        private const val HEX = "0123456789abcdef"
+
+        /** Bytes of context either side of a divergence — two chunks' worth, so the neighbours are legible. */
+        private const val DUMP_WINDOW = 32
+    }
 }
