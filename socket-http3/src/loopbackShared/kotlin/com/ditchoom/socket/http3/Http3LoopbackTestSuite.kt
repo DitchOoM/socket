@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.connectionsByAlpn
@@ -309,6 +310,77 @@ abstract class Http3LoopbackTestSuite {
                                 "localhost",
                                 port,
                                 quicOptions = clientQuicOptions,
+                                connectionOptions = connectionOptions,
+                                timeout = 15.seconds,
+                            ) {
+                                val e =
+                                    assertFailsWith<Http3StreamException> {
+                                        request(Http3Request(method = "GET", authority = "localhost", path = "/"))
+                                    }
+                                e.errorCode
+                            }
+                        assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, code)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun clientAbortMidResponse_endsTheServerRoleWithoutFailingIt() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The same client-side contract as the test above, but with the SERVER's race outcome
+                // pinned instead of left to the scheduler.
+                //
+                // In `malformedFrameSequenceFromServer_abortsConnection` the server writes a 4-byte
+                // stray DATA frame, then HEADERS, then a short body — and the client's
+                // H3_FRAME_UNEXPECTED abort is in flight the whole time. Whether the server finishes
+                // writing before that close lands is pure timing, and both outcomes really happen: on
+                // one commit the API-35 emulator won the race and was green while the slower API-29
+                // lane lost it and was red. Losing it must be a normal end of the server role.
+                //
+                // Here the body is larger than the client's stream flow-control window, so the server
+                // CANNOT finish: after `windowBytes` it blocks for credit that an aborting client will
+                // never send. The close therefore always arrives with a write outstanding, which is the
+                // path [Http3LoopbackServer.serve] absorbs. Without that arm this test fails every run
+                // rather than one in N.
+                val windowBytes = 16 * 1024L
+                val server =
+                    Http3LoopbackServer(connectionOptions) {
+                        Http3LoopbackServer.Response(
+                            status = 200,
+                            body = "u".repeat((windowBytes * 4).toInt()),
+                            dataBeforeHeaders = true,
+                        )
+                    }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    try {
+                        val code =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                // Only the receive window is narrowed, and only for this test: it is what
+                                // makes the server's write block, and it is a client-side limit so the
+                                // server needs no special configuration to be caught mid-response.
+                                quicOptions =
+                                    clientQuicOptions.copy(
+                                        flowControl =
+                                            FlowControl(
+                                                initialMaxData = windowBytes,
+                                                initialMaxStreamDataBidiLocal = windowBytes,
+                                                initialMaxStreamDataBidiRemote = windowBytes,
+                                                // Pinned, not left null: quiche auto-tunes a stream's
+                                                // window upward as the receiver consumes, and a window
+                                                // that grew past the body would let the server finish
+                                                // and put the race back.
+                                                maxConnectionWindow = windowBytes,
+                                                maxStreamWindow = windowBytes,
+                                            ),
+                                    ),
                                 connectionOptions = connectionOptions,
                                 timeout = 15.seconds,
                             ) {
