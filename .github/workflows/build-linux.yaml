@@ -898,6 +898,21 @@ jobs:
           ./test-harness/netns/run-wifi-classify.sh \
             network-monitor/build/bin/linuxX64/debugTest/test.kexe
 
+      # QUIC path migration OFF A PATH THAT DIES — the condition no other test in this repo can
+      # express. Every migration suite migrates away from a *healthy* path: QuicActiveMigrationTestSuite
+      # calls migrate() with no target, a local PORT change on loopback where 127.0.0.1 never dies, which
+      # is why #393 needed a 124-minute on-device recording to find. A rootless namespace supplies the
+      # three ingredients loopback cannot: the client's local ADDRESS changes, the old path DIES (the
+      # probe downs eth-a mid-stream, revoking its address), and the stream is CARRYING DATA across it.
+      # Asserts byte-exact continuity, not "the connection survived" — the latter is precisely what
+      # failed to catch #393, where the connection lived 101 minutes while the stream was dead.
+      # Reads socket-quic-quiche/build/netns/ from the gradle call above, so it MUST stay in this job.
+      - name: QUIC migration off a dead path — netns integration (Linux)
+        run: |
+          ./gradlew :socket-quic-quiche:netnsQuicProbeClasspath
+          chmod +x test-harness/netns/run-netns-quic-migration.sh
+          ./test-harness/netns/run-netns-quic-migration.sh
+
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
