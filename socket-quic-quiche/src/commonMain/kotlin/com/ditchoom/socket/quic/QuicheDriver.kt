@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
@@ -2056,101 +2057,133 @@ class DriverStreamAdapter(
         // is released.
         var inFlight: CompletableDeferred<StreamRecvResult>? = null
         var transferred = false
+        // A chunk already taken out of slot.pendingData but not yet handed to the caller.
+        //
+        // pendingData() is destructive: the buffer leaves the queue and its ownership moves to us. If the
+        // withTimeout deadline beats our return, withTimeout throws and the produced value is dropped —
+        // the chunk is then unreachable by any later read() and by releaseUndeliveredReads(), so it is
+        // both silent stream data loss and a leak. (withTimeout does not merely check the deadline at
+        // suspension points: its TimeoutCoroutine is cancelled by a scheduled task, and a block that
+        // completes at the same instant loses the race and its result — a non-suspending
+        // `take(); return` sequence is not safe from it.) Recording the take is what lets the catch
+        // below hand those bytes over anyway, and the finally put them back if it cannot. (#414)
+        var pendingTaken: ReadResult.Data? = null
+
+        // pendingData(), but remembering what it took. Every destructive take inside withTimeout goes
+        // through this; the one before the try is outside the deadline and does not need it.
+        fun takePending(): ReadResult.Data? = pendingData()?.also { pendingTaken = it }
         try {
-            return withTimeout(timeout) {
-                // The FIN (or Reset) may have arrived coalesced with the last data chunk on a previous
-                // read() (which returned that Data and latched slot.end here). quiche has already
-                // delivered it, so there is no further data and no readable-signal coming — return now
-                // instead of issuing a StreamRecv that returns Done and parking on dataSignal forever.
-                // A teardown drain that queued the last chunk *and* latched slot.end lands here too:
-                // the queued bytes come first, the terminal verdict only once they are gone.
-                when (slot.end) {
-                    StreamEnd.Open -> {}
-                    StreamEnd.Fin -> return@withTimeout pendingData() ?: ReadResult.End
-                    // The peer's abort outlives the read that observed it: quiche collects the stream
-                    // once the reset is delivered, so the slot's latched verdict — not a fresh
-                    // stream_recv — is the only truthful answer a later read can give (#398).
-                    is StreamEnd.Reset -> return@withTimeout pendingData() ?: ReadResult.Reset
-                }
-                while (true) {
-                    val deferred = CompletableDeferred<StreamRecvResult>()
-                    // trySend, not send: on the UNLIMITED command channel it always succeeds unless
-                    // the channel is closed (getOrThrow then rethrows the close cause, exactly like
-                    // send). Unlike send it is not a suspend call, so there is no state in which the
-                    // command is buffered yet the call throws CancellationException — the gap that
-                    // would leave `inFlight` unset and let the finally below skip its join while the
-                    // driver still holds this buffer's raw address (#401 hunt).
-                    driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred)).getOrThrow()
-                    // Mark in-flight only AFTER a successful enqueue: if trySend threw (channel closed)
-                    // the command never reached the driver, so there is nothing to join (joining it would hang).
-                    inFlight = deferred
-                    val result = deferred.await()
-                    inFlight = null
-                    when (result) {
-                        is StreamRecvResult.Data -> {
-                            // Record the FIN whether or not this chunk also carried data — a coalesced
-                            // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
-                            // Guarded so this can never downgrade an already-latched terminal state.
-                            if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
-                            if (result.bytesRead > 0) {
-                                buffer.position(result.bytesRead)
-                                buffer.resetForRead()
-                                // Ownership transfers to the caller — do not release in the finally.
-                                transferred = true
-                                return@withTimeout ReadResult.Data(buffer)
+            val result =
+                withTimeout(timeout) {
+                    // The FIN (or Reset) may have arrived coalesced with the last data chunk on a previous
+                    // read() (which returned that Data and latched slot.end here). quiche has already
+                    // delivered it, so there is no further data and no readable-signal coming — return now
+                    // instead of issuing a StreamRecv that returns Done and parking on dataSignal forever.
+                    // A teardown drain that queued the last chunk *and* latched slot.end lands here too:
+                    // the queued bytes come first, the terminal verdict only once they are gone.
+                    when (slot.end) {
+                        StreamEnd.Open -> {}
+                        StreamEnd.Fin -> return@withTimeout takePending() ?: ReadResult.End
+                        // The peer's abort outlives the read that observed it: quiche collects the stream
+                        // once the reset is delivered, so the slot's latched verdict — not a fresh
+                        // stream_recv — is the only truthful answer a later read can give (#398).
+                        is StreamEnd.Reset -> return@withTimeout takePending() ?: ReadResult.Reset
+                    }
+                    while (true) {
+                        val deferred = CompletableDeferred<StreamRecvResult>()
+                        // trySend, not send: on the UNLIMITED command channel it always succeeds unless
+                        // the channel is closed (getOrThrow then rethrows the close cause, exactly like
+                        // send). Unlike send it is not a suspend call, so there is no state in which the
+                        // command is buffered yet the call throws CancellationException — the gap that
+                        // would leave `inFlight` unset and let the finally below skip its join while the
+                        // driver still holds this buffer's raw address (#401 hunt).
+                        driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred)).getOrThrow()
+                        // Mark in-flight only AFTER a successful enqueue: if trySend threw (channel closed)
+                        // the command never reached the driver, so there is nothing to join (joining it would hang).
+                        inFlight = deferred
+                        val result = deferred.await()
+                        inFlight = null
+                        when (result) {
+                            is StreamRecvResult.Data -> {
+                                // Record the FIN whether or not this chunk also carried data — a coalesced
+                                // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
+                                // Guarded so this can never downgrade an already-latched terminal state.
+                                if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+                                if (result.bytesRead > 0) {
+                                    buffer.position(result.bytesRead)
+                                    buffer.resetForRead()
+                                    // Ownership transfers to the caller — do not release in the finally.
+                                    transferred = true
+                                    return@withTimeout ReadResult.Data(buffer)
+                                }
+                                // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
+                                // the same driver wake that answers this FIN, and End must never overtake
+                                // them (the #318 shape — this was the one terminal arm that skipped it).
+                                if (result.fin) {
+                                    return@withTimeout takePending() ?: ReadResult.End
+                                }
+                                // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
+                                // unenforced assumption): wait for the data signal like a Done and retry.
+                                takePending()?.let { return@withTimeout it }
+                                slot.dataSignal.receive()
+                                continue
                             }
-                            // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
-                            // the same driver wake that answers this FIN, and End must never overtake
-                            // them (the #318 shape — this was the one terminal arm that skipped it).
-                            if (result.fin) {
-                                return@withTimeout pendingData() ?: ReadResult.End
+                            is StreamRecvResult.Done -> {
+                                // The teardown drain may have emptied quiche into the slot between our
+                                // enqueue and now — take that before any terminal verdict.
+                                takePending()?.let { return@withTimeout it }
+                                // Defensive: if the FIN (or Reset) was consumed earlier (coalesced with
+                                // data), no signal is coming — end now rather than park forever.
+                                when (slot.end) {
+                                    StreamEnd.Open -> {}
+                                    StreamEnd.Fin -> return@withTimeout ReadResult.End
+                                    is StreamEnd.Reset -> return@withTimeout ReadResult.Reset
+                                }
+                                slot.dataSignal.receive()
+                                continue
                             }
-                            // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
-                            // unenforced assumption): wait for the data signal like a Done and retry.
-                            pendingData()?.let { return@withTimeout it }
-                            slot.dataSignal.receive()
-                            continue
-                        }
-                        is StreamRecvResult.Done -> {
-                            // The teardown drain may have emptied quiche into the slot between our
-                            // enqueue and now — take that before any terminal verdict.
-                            pendingData()?.let { return@withTimeout it }
-                            // Defensive: if the FIN (or Reset) was consumed earlier (coalesced with
-                            // data), no signal is coming — end now rather than park forever.
-                            when (slot.end) {
-                                StreamEnd.Open -> {}
-                                StreamEnd.Fin -> return@withTimeout ReadResult.End
-                                is StreamEnd.Reset -> return@withTimeout ReadResult.Reset
+                            is StreamRecvResult.Error -> {
+                                // Any other quiche stream-recv error (e.g. QUICHE_ERR_INVALID_STREAM_STATE).
+                                return@withTimeout takePending() ?: ReadResult.End
                             }
-                            slot.dataSignal.receive()
-                            continue
-                        }
-                        is StreamRecvResult.Error -> {
-                            // Any other quiche stream-recv error (e.g. QUICHE_ERR_INVALID_STREAM_STATE).
-                            return@withTimeout pendingData() ?: ReadResult.End
-                        }
-                        is StreamRecvResult.Reset -> {
-                            // The peer sent RESET_STREAM. Latch the abort (with its application error
-                            // code) so every later read reports it — quiche collects the stream now, so
-                            // nothing re-delivers this — and report Reset, never End: an abnormal,
-                            // code-carrying abort is not the peer finishing politely (#398). Bytes the
-                            // transport already accepted still outrank the verdict (the #318/#393 rule).
-                            if (slot.end == StreamEnd.Open) {
-                                slot.end = StreamEnd.Reset(result.applicationErrorCode)
+                            is StreamRecvResult.Reset -> {
+                                // The peer sent RESET_STREAM. Latch the abort (with its application error
+                                // code) so every later read reports it — quiche collects the stream now, so
+                                // nothing re-delivers this — and report Reset, never End: an abnormal,
+                                // code-carrying abort is not the peer finishing politely (#398). Bytes the
+                                // transport already accepted still outrank the verdict (the #318/#393 rule).
+                                if (slot.end == StreamEnd.Open) {
+                                    slot.end = StreamEnd.Reset(result.applicationErrorCode)
+                                }
+                                return@withTimeout takePending() ?: ReadResult.Reset
                             }
-                            return@withTimeout pendingData() ?: ReadResult.Reset
-                        }
-                        is StreamRecvResult.ConnectionGone -> {
-                            // Includes the teardown sentinel from failCommand: the connection went away
-                            // while this StreamRecv was queued, so whatever quiche still held for us was
-                            // drained into the slot on the way out — deliver it before ending the stream.
-                            return@withTimeout pendingData() ?: ReadResult.End
+                            is StreamRecvResult.ConnectionGone -> {
+                                // Includes the teardown sentinel from failCommand: the connection went away
+                                // while this StreamRecv was queued, so whatever quiche still held for us was
+                                // drained into the slot on the way out — deliver it before ending the stream.
+                                return@withTimeout takePending() ?: ReadResult.End
+                            }
                         }
                     }
+                    @Suppress("UNREACHABLE_CODE")
+                    ReadResult.End
                 }
-                @Suppress("UNREACHABLE_CODE")
-                ReadResult.End
+            // Handed to the caller — the finally must not put it back.
+            pendingTaken = null
+            return result
+        } catch (e: TimeoutCancellationException) {
+            // Bytes the transport already accepted outrank the deadline, exactly as they outrank the FIN
+            // (RFC 9000 §2.4 — a final size marks where the data ends, it does not discard it) and the
+            // connection's death (§10.2). quiche has already advanced this stream's receive offset and
+            // credited flow control for these bytes, so the peer will never resend them: throwing here
+            // would punch a permanent hole in the stream — #393's failure mode reached through the
+            // delivery edge instead of the cancellation edge. The read did not time out; it had an
+            // answer, and the answer arrived before the deadline did.
+            pendingTaken?.let {
+                pendingTaken = null
+                return it
             }
+            throw e
         } catch (_: ClosedSendChannelException) {
             // The connection closed before this read could enqueue its StreamRecv. transitionToClosed
             // drains quiche into the slot *before* closing `commands`, so anything still owed to this
@@ -2160,6 +2193,23 @@ class DriverStreamAdapter(
             // Same, for a reader parked on dataSignal when cleanup() closed it.
             return pendingData() ?: ReadResult.End
         } finally {
+            // Taken from the queue but never delivered — an external cancellation unwound us after the
+            // take (the timeout case returned it above). Put it back so the next read() still gets it,
+            // rather than dropping it as the pre-#414 code did.
+            //
+            // Ordered BEFORE salvageCancelledRecv deliberately: this chunk came off the front of the
+            // queue and is therefore older than anything the salvage is about to append. Requeueing
+            // after the salvage would reorder the stream.
+            //
+            // pendingData is Channel.UNLIMITED, so trySend fails only once the channel is closed — and a
+            // closed queue means no read() will ever drain it again, so freeing is then the only way not
+            // to leak.
+            pendingTaken?.let { undelivered ->
+                pendingTaken = null
+                if (slot.pendingData.trySend(undelivered.buffer).isFailure) {
+                    undelivered.buffer.freeIfNeeded()
+                }
+            }
             // The driver ALWAYS completes the deferred — in execute() after connStreamRecv, or in
             // cleanup()/failCommand() on teardown (which does NOT dereference `addr`) — so this join can
             // never hang. After it returns, quiche is provably done with `addr`; only then release.
