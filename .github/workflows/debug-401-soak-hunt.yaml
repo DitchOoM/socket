@@ -60,13 +60,14 @@ jobs:
         # Round 15: SUITE BISECTION. The victim is deterministic (StaleConnectionDiagnosticTests);
         # some other test creates the corrupting conditions. Each shard runs a candidate trigger set
         # + the victim, many fast iterations; the corrupting shard names the trigger.
+        # Round 16: method-level bisection inside the soak suite (r15: only Soak+Concurrency triggers).
         include:
-          - { shard: 1, mode: subset, filter: "--tests *Sim* --tests *Fuzz* --tests *StaleConnection*" }
-          - { shard: 2, mode: subset, filter: "--tests *CallerClock* --tests *StaleConnection*" }
-          - { shard: 3, mode: subset, filter: "--tests *Migration* --tests *StaleConnection*" }
-          - { shard: 4, mode: subset, filter: "--tests *Soak* --tests *Concurrency* --tests *StaleConnection*" }
-          - { shard: 5, mode: subset, filter: "--tests *StaleConnection*" }
-          - { shard: 6, mode: full, filter: "" }
+          - { shard: 1, mode: subset, filter: "--tests *manyConcurrentStreamsOnOneConnectionRoundTrip* --tests *StaleConnection*" }
+          - { shard: 2, mode: subset, filter: "--tests *manyConcurrentStreamsHighConcurrencyRoundTrip* --tests *StaleConnection*" }
+          - { shard: 3, mode: subset, filter: "--tests *manyConnectionsConcurrentlyRoundTrip* --tests *StaleConnection*" }
+          - { shard: 4, mode: subset, filter: "--tests *manyConnectionsHighConcurrencyRoundTrip* --tests *StaleConnection*" }
+          - { shard: 5, mode: subset, filter: "--tests *sustainedEchoLoop* --tests *StaleConnection*" }
+          - { shard: 6, mode: subset, filter: "--tests *Soak* --tests *Concurrency* --tests *StaleConnection*" }
     env:
       MALLOC_PERTURB_: ""
       # Round 13: glibc's own double-/invalid-free detector. If ANY pointer in the process is freed
