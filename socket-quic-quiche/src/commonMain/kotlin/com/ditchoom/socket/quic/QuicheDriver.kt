@@ -2154,8 +2154,28 @@ class DriverStreamAdapter(
                                 continue
                             }
                             is StreamRecvResult.Error -> {
-                                // Any other quiche stream-recv error (e.g. QUICHE_ERR_INVALID_STREAM_STATE).
-                                return@withTimeout takePending() ?: ReadResult.End
+                                // Bytes quiche already handed over outrank the failure, exactly as they
+                                // outrank a FIN (RFC 9000 §2.4) and the connection's death (§10.2) — the
+                                // #318/#393 ordering rule. Only once the slot is dry does the failure surface.
+                                takePending()?.let { return@withTimeout it }
+                                // ...and it surfaces AS a failure. Mapping this onto ReadResult.End told every
+                                // caller the peer had finished politely, which is a contract — stop reading,
+                                // release the stream — and the wrong response to an error. It is also
+                                // undiagnosable: 30 minutes of `End` in the #393 device recording could not say
+                                // whether the peer closed the stream or quiche was failing every read, and those
+                                // have opposite fixes. Throwing matches what streamWrite already does for a
+                                // stream-scoped failure; the complete fix is a typed failure in the read RESULT,
+                                // which needs buffer's ReadResult to gain a case (DitchOoM/buffer#376, v7). #421.
+                                throw QuicStreamReadException(
+                                    streamId = streamId.id,
+                                    error =
+                                        if (result.code == QuicheDriver.QUICHE_ERR_INVALID_STREAM_STATE) {
+                                            QuicStreamReadError.InvalidStreamState
+                                        } else {
+                                            QuicStreamReadError.Quiche(result.code)
+                                        },
+                                    message = "QUIC stream ${streamId.id} read failed (quiche code ${result.code})",
+                                )
                             }
                             is StreamRecvResult.Reset -> {
                                 // The peer sent RESET_STREAM. Latch the abort (with its application error
