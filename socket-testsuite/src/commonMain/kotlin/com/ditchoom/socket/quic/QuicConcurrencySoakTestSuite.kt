@@ -344,7 +344,8 @@ abstract class QuicConcurrencySoakTestSuite {
             bytes.decodeToString(throwOnInvalidSequence = true)
         } catch (e: CharacterCodingException) {
             throw AssertionError(
-                describeCorruption(expected, bytes, chunks) + "\n  " + fillEvidence.joinToString("\n  "),
+                describeCorruption(expected, bytes, chunks) + "\n  " + fillEvidence.joinToString("\n  ") +
+                    "\n  stream chain (both ends, oldest->newest):\n" + Probe401.history(streamId.id),
                 e,
             )
         }

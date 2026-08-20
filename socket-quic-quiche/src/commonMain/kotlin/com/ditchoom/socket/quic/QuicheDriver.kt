@@ -2117,6 +2117,16 @@ class DriverStreamAdapter(
         // native address — a zero-length buffer may not expose one — and never park on an empty write.
         if (remaining == 0) return 0
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position()
+        Probe401.recordSend(
+            addr,
+            streamId.id,
+            remaining,
+            buildString {
+                for (i in 0 until minOf(16, remaining)) {
+                    append(buffer[buffer.position() + i].toUByte().toString(16).padStart(2, '0')).append(' ')
+                }
+            }.trim(),
+        )
 
         // A StreamSend we enqueued but the driver has not yet completed. While this is set, the driver may
         // still READ `addr` inside connStreamSend. The caller owns `buffer` and frees it (or drops its last
