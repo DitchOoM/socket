@@ -162,12 +162,13 @@ object JniQuicheApi : QuicheApi {
                 peerAddr,
                 peerAddrLen,
                 config.handle,
-            ),
+            ).also { noteBorn(it) },
         )
 
     override fun connFree(conn: QuicheConn) =
         guarded(conn, "connFree") {
             nConnFree(conn.handle)
+            noteFreed(conn.handle)
         }
 
     override fun connRecv(
@@ -201,11 +202,32 @@ object JniQuicheApi : QuicheApi {
     // is Rust UB through the FFI and the leading suspect for the freed-Vec emit).
     private val inCall = java.util.concurrent.ConcurrentHashMap<Long, String>()
 
+    // DEBUG (#401 hunt round 11): use-after-free ledger. connFree(H) records H (with the freeing
+    // context); accept/connect returning H clears it (glibc reused the chunk for a NEW conn — the
+    // exact aliasing round 10's census exposed: coroutine#88 connClose/connFree on the same handle
+    // coroutine#99 was actively driving). ANY call on a handle still in the ledger is a stale call
+    // into freed (or, worse, reborn-as-someone-else's) quiche memory — the smoking gun.
+    private val freedConns = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    private fun noteFreed(handle: Long) {
+        freedConns[handle] = Thread.currentThread().name
+    }
+
+    private fun noteBorn(handle: Long) {
+        freedConns.remove(handle)
+    }
+
     fun enterConn(
         conn: QuicheConn,
         method: String,
     ): Boolean {
         census(conn, method)
+        freedConns[conn.handle]?.let { freer ->
+            Probe401.recordOverlap(
+                "STALE-CALL conn=0x" + conn.handle.toString(16) + ": [" +
+                    Thread.currentThread().name + " " + method + "] AFTER connFree by [" + freer + "]",
+            )
+        }
         val me = Thread.currentThread().name + " " + method
         val prev = inCall.putIfAbsent(conn.handle, me)
         if (prev != null) {
@@ -712,7 +734,7 @@ object JniQuicheApi : QuicheApi {
                 peerAddr,
                 peerAddrLen,
                 config.handle,
-            ),
+            ).also { noteBorn(it) },
         )
 
     override fun negotiateVersion(
