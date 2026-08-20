@@ -5,6 +5,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 
@@ -222,6 +223,93 @@ class StreamResetReadTests {
                 )
                 assertEquals(2, first.buffer.remaining())
                 assertIs<ReadResult.End>(adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds))
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /**
+     * A quiche stream error is a **failure**, not a polite end (issue #421).
+     *
+     * The read path used to map every [StreamRecvResult.Error] onto [ReadResult.End], so a failure was
+     * indistinguishable from the peer finishing — the same defect #398 fixed for RESET_STREAM, still
+     * open for every other code. `End` is a contract (*stop reading, release the stream, move on*) and
+     * it is the wrong answer to an error.
+     *
+     * It is also undiagnosable: 30 minutes of `End` in the #393 device recording could not say whether
+     * the peer had closed the stream or quiche was failing every read, and those have opposite fixes.
+     *
+     * The typed code is carried because renaming an unexpected quiche code would hide it — see
+     * [QuicStreamReadError.Quiche]. The complete fix puts the failure in the read *result* so callers
+     * are forced to handle it rather than having to catch, which needs a buffer major
+     * (DitchOoM/buffer#376, v7).
+     */
+    @Test
+    fun aQuicheStreamErrorSurfacesAsAFailureNotAnEnd() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Error(QuicheDriver.QUICHE_ERR_INVALID_STREAM_STATE)
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val thrown =
+                    assertFailsWith<QuicStreamReadException>(
+                        "a quiche stream error must not read as a clean end-of-stream",
+                    ) { adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds) }
+                assertEquals(QuicStreamReadError.InvalidStreamState, thrown.error)
+                assertEquals(0L, thrown.streamId)
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /** An unrecognised code arrives intact and obviously unexpected, rather than disguised as a known one. */
+    @Test
+    fun anUnknownQuicheCodeKeepsItsRawValue() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Error(-11) // FLOW_CONTROL: not a documented stream_recv code
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val thrown =
+                    assertFailsWith<QuicStreamReadException> {
+                        adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                    }
+                assertEquals(QuicStreamReadError.Quiche(-11), thrown.error)
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /**
+     * The #318/#393 ordering rule applied to failures: bytes the transport already accepted outrank the
+     * error, exactly as they outrank a reset. A failure that arrived behind buffered data must not
+     * destroy it — quiche has already advanced the receive offset, so nothing re-delivers it.
+     */
+    @Test
+    fun bufferedBytesOutrankAStreamError() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Error(QuicheDriver.QUICHE_ERR_INVALID_STREAM_STATE)
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = StreamSlot(QuicStreamId(0L))
+                val buffered = bufferFactory.allocate(4)
+                repeat(4) { buffered.writeByte(9) }
+                buffered.resetForRead()
+                slot.pendingData.trySend(buffered)
+                val adapter = DriverStreamAdapter(driver, slot)
+
+                val first = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                assertIs<ReadResult.Data>(first, "buffered bytes must be delivered before the failure")
+                assertEquals(4, first.buffer.remaining())
+                assertFailsWith<QuicStreamReadException>("the failure must follow the data it arrived behind") {
+                    adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                }
             } finally {
                 driver.destroy()
             }
