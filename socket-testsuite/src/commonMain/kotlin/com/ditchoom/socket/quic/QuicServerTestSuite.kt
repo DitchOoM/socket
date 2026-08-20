@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.udp.MultiplexedProtocol
 import com.ditchoom.socket.udp.UdpSocket
@@ -144,7 +145,14 @@ abstract class QuicServerTestSuite {
                                 val stream = acceptStream()
                                 val data = stream.read(5.seconds)
                                 if (data is ReadResult.Data) {
-                                    stream.write(data.buffer, 5.seconds)
+                                    try {
+                                        stream.writeFully(data.buffer, 5.seconds)
+                                    } finally {
+                                        // read transfers ownership; write is zero-copy and takes none — without this
+                                        // free every echoed chunk leaks, and accumulated echo leaks were the #401
+                                        // corruption's primer. writeFully because a QUIC write may be partial.
+                                        data.buffer.freeIfNeeded()
+                                    }
                                 }
                                 stream.close()
                             }
@@ -639,7 +647,14 @@ abstract class QuicServerTestSuite {
                                 val stream = acceptStream()
                                 val data = stream.read(5.seconds)
                                 if (data is ReadResult.Data) {
-                                    stream.write(data.buffer, 5.seconds)
+                                    try {
+                                        stream.writeFully(data.buffer, 5.seconds)
+                                    } finally {
+                                        // read transfers ownership; write is zero-copy and takes none — without this
+                                        // free every echoed chunk leaks, and accumulated echo leaks were the #401
+                                        // corruption's primer. writeFully because a QUIC write may be partial.
+                                        data.buffer.freeIfNeeded()
+                                    }
                                 }
                                 stream.close()
                             }
