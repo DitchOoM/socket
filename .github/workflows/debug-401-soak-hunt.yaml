@@ -57,15 +57,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Round 3: all shards full-suite — round 2 proved only full-suite load reproduces
-        # (6/6 full shards captured, 0/450 class-only runs ever did).
+        # Round 15: SUITE BISECTION. The victim is deterministic (StaleConnectionDiagnosticTests);
+        # some other test creates the corrupting conditions. Each shard runs a candidate trigger set
+        # + the victim, many fast iterations; the corrupting shard names the trigger.
         include:
-          - { shard: 1, mode: full }
-          - { shard: 2, mode: full }
-          - { shard: 3, mode: full }
-          - { shard: 4, mode: full }
-          - { shard: 5, mode: full }
-          - { shard: 6, mode: full }
+          - { shard: 1, mode: subset, filter: "--tests *Sim* --tests *Fuzz* --tests *StaleConnection*" }
+          - { shard: 2, mode: subset, filter: "--tests *CallerClock* --tests *StaleConnection*" }
+          - { shard: 3, mode: subset, filter: "--tests *Migration* --tests *StaleConnection*" }
+          - { shard: 4, mode: subset, filter: "--tests *Soak* --tests *Concurrency* --tests *StaleConnection*" }
+          - { shard: 5, mode: subset, filter: "--tests *StaleConnection*" }
+          - { shard: 6, mode: full, filter: "" }
     env:
       MALLOC_PERTURB_: ""
       # Round 13: glibc's own double-/invalid-free detector. If ANY pointer in the process is freed
@@ -111,8 +112,8 @@ jobs:
           set -uo pipefail
           mkdir -p hunt-results
           base=25
-          if [ "${{ matrix.mode }}" = "class" ]; then
-            n=$(( base * 3 ))
+          if [ "${{ matrix.mode }}" = "subset" ]; then
+            n=40
           else
             n=$(( base / 2 ))
           fi
@@ -120,8 +121,8 @@ jobs:
           for i in $(seq 1 "$n"); do
             echo "=== hunt iteration $i/$n ($(date -u +%H:%M:%S)) ==="
             set +e
-            if [ "${{ matrix.mode }}" = "class" ]; then
-              ./gradlew :socket-quic-quiche:jvmTest --tests "*QuicConcurrencySoakTests*" \
+            if [ "${{ matrix.mode }}" = "subset" ]; then
+              ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.filter }} \
                 --rerun --continue --no-configuration-cache \
                 -PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
             else
