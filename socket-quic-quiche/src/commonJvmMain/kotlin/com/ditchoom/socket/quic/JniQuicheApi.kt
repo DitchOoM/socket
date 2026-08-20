@@ -166,8 +166,7 @@ object JniQuicheApi : QuicheApi {
         )
 
     override fun connFree(conn: QuicheConn) =
-        run {
-            census(conn, "connFree")
+        guarded(conn, "connFree") {
             nConnFree(conn.handle)
         }
 
@@ -177,8 +176,7 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
     ): Int =
-        run {
-            census(conn, "connRecv")
+        guarded(conn, "connRecv") {
             nConnRecv(conn.handle, buf, bufLen, recvInfo.handle)
         }
 
@@ -188,8 +186,7 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         sendInfo: QuicheSendInfo,
     ): Int =
-        run {
-            census(conn, "connSend")
+        guarded(conn, "connSend") {
             nConnSend(conn.handle, buf, bufLen, sendInfo.handle)
         }
 
@@ -198,6 +195,45 @@ object JniQuicheApi : QuicheApi {
         conn: QuicheConn,
         method: String,
     ) = Probe401.recordThread(conn.handle, Thread.currentThread().name, method)
+
+    // DEBUG (#401 hunt round 10): reentrancy guard — proves two contexts inside libquiche on the
+    // same conn AT THE SAME TIME (quiche conns are single-threaded by contract; concurrent entry
+    // is Rust UB through the FFI and the leading suspect for the freed-Vec emit).
+    private val inCall = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    fun enterConn(
+        conn: QuicheConn,
+        method: String,
+    ): Boolean {
+        census(conn, method)
+        val me = Thread.currentThread().name + " " + method
+        val prev = inCall.putIfAbsent(conn.handle, me)
+        if (prev != null) {
+            Probe401.recordOverlap("conn=0x" + conn.handle.toString(16) + ": [" + me + "] entered while [" + prev + "] still inside")
+            return false // not the owner; do not clear on exit
+        }
+        return true
+    }
+
+    fun exitConn(
+        conn: QuicheConn,
+        owner: Boolean,
+    ) {
+        if (owner) inCall.remove(conn.handle)
+    }
+
+    private inline fun <T> guarded(
+        conn: QuicheConn,
+        method: String,
+        body: () -> T,
+    ): T {
+        val owner = enterConn(conn, method)
+        try {
+            return body()
+        } finally {
+            exitConn(conn, owner)
+        }
+    }
 
     // DEBUG (#401 hunt): raw-memory reader so the destination bytes can be recorded AT EXECUTE
     // TIME, on the driver thread, immediately after quiche's native call returns — before the
@@ -216,7 +252,8 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): StreamRecvResult {
-        census(conn, "connStreamRecv")
+        val __owner = enterConn(conn, "connStreamRecv")
+        try {
         // Per-call 8-byte native scratch for quiche's out_error_code, same reasoning as
         // connStreamSend's scratch: JniQuicheApi is a shared singleton called from every connection's
         // driver thread, so one reused scratch would race.
@@ -248,6 +285,9 @@ object JniQuicheApi : QuicheApi {
         } finally {
             scratch.freeNativeMemory()
         }
+        } finally {
+            exitConn(conn, __owner)
+        }
     }
 
     override fun connStreamSend(
@@ -257,7 +297,8 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         fin: Boolean,
     ): StreamSendResult {
-        census(conn, "connStreamSend")
+        val __owner = enterConn(conn, "connStreamSend")
+        try {
         // Hand the C shim an 8-byte native scratch to receive quiche's out_error_code — a buffer address
         // (FastNative-safe primitive), not a Java array. Per-call rather than reused: JniQuicheApi is a
         // shared singleton called from every connection's driver thread, so one scratch would race; the
@@ -282,6 +323,9 @@ object JniQuicheApi : QuicheApi {
         } finally {
             scratch.freeNativeMemory()
         }
+        } finally {
+            exitConn(conn, __owner)
+        }
     }
 
     override fun connStreamShutdown(
@@ -290,8 +334,7 @@ object JniQuicheApi : QuicheApi {
         direction: Int,
         err: Long,
     ): Int =
-        run {
-            census(conn, "connStreamShutdown")
+        guarded(conn, "connStreamShutdown") {
             nConnStreamShutdown(conn.handle, streamId.id, direction, err)
         }
 
@@ -300,8 +343,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        run {
-            census(conn, "connPeerCert")
+        guarded(conn, "connPeerCert") {
             nConnPeerCert(conn.handle, buf, bufLen)
         }
 
@@ -310,8 +352,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        run {
-            census(conn, "connApplicationProto")
+        guarded(conn, "connApplicationProto") {
             nConnApplicationProto(conn.handle, buf, bufLen)
         }
 
@@ -320,8 +361,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        run {
-            census(conn, "connTraceId")
+        guarded(conn, "connTraceId") {
             nConnTraceId(conn.handle, buf, bufLen)
         }
 
@@ -330,8 +370,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        run {
-            census(conn, "connSourceId")
+        guarded(conn, "connSourceId") {
             nConnSourceId(conn.handle, buf, bufLen)
         }
 
@@ -349,8 +388,7 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        run {
-            census(conn, "connDgramSend")
+        guarded(conn, "connDgramSend") {
             nConnDgramSend(conn.handle, buf, bufLen)
         }
 
@@ -378,32 +416,27 @@ object JniQuicheApi : QuicheApi {
     }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean =
-        run {
-            census(conn, "connIsEstablished")
+        guarded(conn, "connIsEstablished") {
             nConnIsEstablished(conn.handle)
         }
 
     override fun connIsClosed(conn: QuicheConn): Boolean =
-        run {
-            census(conn, "connIsClosed")
+        guarded(conn, "connIsClosed") {
             nConnIsClosed(conn.handle)
         }
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean =
-        run {
-            census(conn, "connIsTimedOut")
+        guarded(conn, "connIsTimedOut") {
             nConnIsTimedOut(conn.handle)
         }
 
     override fun connPeerError(conn: QuicheConn): QuicError? =
-        run {
-            census(conn, "connPeerError")
+        guarded(conn, "connPeerError") {
             readConnError(conn, peer = true)
         }
 
     override fun connLocalError(conn: QuicheConn): QuicError? =
-        run {
-            census(conn, "connLocalError")
+        guarded(conn, "connLocalError") {
             readConnError(conn, peer = false)
         }
 
@@ -504,8 +537,7 @@ object JniQuicheApi : QuicheApi {
     }
 
     override fun connOnTimeout(conn: QuicheConn) =
-        run {
-            census(conn, "connOnTimeout")
+        guarded(conn, "connOnTimeout") {
             nConnOnTimeout(conn.handle)
         }
 
@@ -514,8 +546,7 @@ object JniQuicheApi : QuicheApi {
     override fun clearThreadVirtualTime() = nClearVirtualTime()
 
     override fun connSendAckEliciting(conn: QuicheConn): Int =
-        run {
-            census(conn, "connSendAckEliciting")
+        guarded(conn, "connSendAckEliciting") {
             nConnSendAckEliciting(conn.handle).toInt()
         }
 
@@ -523,8 +554,7 @@ object JniQuicheApi : QuicheApi {
         conn: QuicheConn,
         error: QuicError,
     ): Int =
-        run {
-            census(conn, "connClose")
+        guarded(conn, "connClose") {
             nConnClose(conn.handle, error is QuicError.ApplicationError, error.code, 0L, 0)
         }
 
@@ -534,8 +564,7 @@ object JniQuicheApi : QuicheApi {
         title: String,
         desc: String,
     ): Boolean =
-        run {
-            census(conn, "connSetQlogPath")
+        guarded(conn, "connSetQlogPath") {
             nConnSetQlogPath(conn.handle, path, title, desc)
         }
 
@@ -548,8 +577,7 @@ object JniQuicheApi : QuicheApi {
         peerLen: Int,
         seqOut: Long,
     ): Int =
-        run {
-            census(conn, "connProbePath")
+        guarded(conn, "connProbePath") {
             nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
         }
 
@@ -561,8 +589,7 @@ object JniQuicheApi : QuicheApi {
         retireIfNeeded: Boolean,
         seqOut: Long,
     ): Int =
-        run {
-            census(conn, "connNewScid")
+        guarded(conn, "connNewScid") {
             nConnNewScid(conn.handle, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut)
         }
 
@@ -584,8 +611,7 @@ object JniQuicheApi : QuicheApi {
         conn: QuicheConn,
         dcidSeq: Long,
     ): Int =
-        run {
-            census(conn, "connRetireDcid")
+        guarded(conn, "connRetireDcid") {
             nConnRetireDcid(conn.handle, dcidSeq)
         }
 
@@ -595,20 +621,17 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         seqOut: Long,
     ): Int =
-        run {
-            census(conn, "connMigrateSource")
+        guarded(conn, "connMigrateSource") {
             nConnMigrateSource(conn.handle, localAddr, localLen, seqOut)
         }
 
     override fun connAvailableDcids(conn: QuicheConn): Long =
-        run {
-            census(conn, "connAvailableDcids")
+        guarded(conn, "connAvailableDcids") {
             nConnAvailableDcids(conn.handle)
         }
 
     override fun connScidsLeft(conn: QuicheConn): Long =
-        run {
-            census(conn, "connScidsLeft")
+        guarded(conn, "connScidsLeft") {
             nConnScidsLeft(conn.handle)
         }
 
@@ -703,14 +726,12 @@ object JniQuicheApi : QuicheApi {
 
     // --- Stream iteration ---
     override fun connReadable(conn: QuicheConn): QuicheStreamIter =
-        run {
-            census(conn, "connReadable")
+        guarded(conn, "connReadable") {
             QuicheStreamIter(nConnReadable(conn.handle))
         }
 
     override fun connWritable(conn: QuicheConn): QuicheStreamIter =
-        run {
-            census(conn, "connWritable")
+        guarded(conn, "connWritable") {
             QuicheStreamIter(nConnWritable(conn.handle))
         }
 

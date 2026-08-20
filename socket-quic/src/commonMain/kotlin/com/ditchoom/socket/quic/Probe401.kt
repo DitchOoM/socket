@@ -129,6 +129,22 @@ object Probe401 {
         }
     }
 
+    private val overlaps = AtomicReference<List<String>>(emptyList())
+
+    /** Two contexts provably INSIDE libquiche on the same conn at the same time — the smoking gun. */
+    fun recordOverlap(desc: String) {
+        while (true) {
+            val cur = overlaps.load()
+            if (cur.size >= 50) return
+            if (overlaps.compareAndSet(cur, cur + desc)) return
+        }
+    }
+
+    fun overlapReport(): String {
+        val v = overlaps.load()
+        return if (v.isEmpty()) "  (no concurrent same-conn calls observed)" else v.joinToString("\n") { "  $it" }
+    }
+
     /** Connections touched by more than one distinct thread, with the methods each thread used. */
     fun threadReport(): String {
         val snap = connThreads.load()
