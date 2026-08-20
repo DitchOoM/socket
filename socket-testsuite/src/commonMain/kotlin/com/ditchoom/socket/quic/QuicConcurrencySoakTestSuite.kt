@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.TransportConfig
@@ -281,7 +282,11 @@ abstract class QuicConcurrencySoakTestSuite {
                     while (true) {
                         val data = stream.read(15.seconds.scaled)
                         if (data is ReadResult.Data) {
-                            stream.write(data.buffer, 10.seconds.scaled)
+                            try {
+                                stream.writeFully(data.buffer, 10.seconds.scaled)
+                            } finally {
+                                data.buffer.freeIfNeeded()
+                            }
                         } else {
                             break
                         }
