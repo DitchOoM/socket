@@ -3791,7 +3791,11 @@ afterEvaluate {
             val dir = outDir.get().asFile
             dir.mkdirs()
             dir.resolve("jvm-test-classpath.txt").writeText(jvmTest.get().classpath.asPath)
-            dir.resolve("java21-launcher.txt").writeText(launcher.get().executablePath.asFile.absolutePath)
+            dir.resolve("java21-launcher.txt").writeText(
+                launcher
+                    .get()
+                    .executablePath.asFile.absolutePath,
+            )
         }
     }
 }
