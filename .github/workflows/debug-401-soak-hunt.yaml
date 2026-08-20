@@ -67,10 +67,12 @@ jobs:
           - { shard: 5, mode: full }
           - { shard: 6, mode: full }
     env:
-      # Round 2: poisoning OFF. 522 poisoned executions across both trees produced zero events —
-      # but MALLOC_PERTURB_ memsets every malloc/free, a timing perturbation that can itself
-      # suppress a race. This round reproduces the 03:44 capture's NATURAL allocator conditions.
       MALLOC_PERTURB_: ""
+      # Round 13: glibc's own double-/invalid-free detector. If ANY pointer in the process is freed
+      # twice (the leading remaining mechanism: a re-freed shim pointer whose chunk glibc had
+      # already handed to a quiche Vec frees quiche's LIVE memory), glibc aborts at the offending
+      # free and the JVM writes an hs_err naming the thread and native stack.
+      MALLOC_CHECK_: "3"
       # linux-quiche-env enforces the #329 per-job version pin. A fixed dummy is exactly right
       # here: nothing publishes, and it keeps the hunt hermetic (no live Central metadata fetch).
       ORG_GRADLE_PROJECT_version: "0.0.0-hunt"
@@ -130,6 +132,13 @@ jobs:
             rc=$?
             set -e
             if [ "$rc" -ne 0 ]; then
+              # A glibc abort kills the test JVM: no XML, but hs_err files name the freeing stack.
+              find . -name "hs_err_pid*.log" -newer gradlew -exec cp {} hunt-results/ \; 2>/dev/null || true
+              if compgen -G "hunt-results/hs_err_pid*.log" >/dev/null; then
+                echo "::error::JVM native crash captured at iteration $i (glibc abort?) — hs_err uploaded"
+                grep -m1 -A4 "Problematic frame\|SIGABRT\|double free\|invalid pointer" hunt-results/hs_err_pid*.log | head -20 || true
+                exit 1
+              fi
               if grep -rlE "<failure|<error" socket-quic-quiche/build/test-results/jvmTest >/dev/null 2>&1; then
                 echo "::error::CAPTURED test failure at iteration $i (mode=${{ matrix.mode }})"
                 cp -r socket-quic-quiche/build/test-results/jvmTest "hunt-results/fail-iter-$i"
