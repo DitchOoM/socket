@@ -210,9 +210,19 @@ class QuicheDriver(
      * and a second copy here could disagree with it. Also excludes everything internal — no `PathKey`
      * (opaque bits, deliberately not reversible into an address) and no native connection handle.
      */
+    /**
+     * Identity latched on the driver loop just before [cleanup] frees the quiche handles. Round 11
+     * of the #401 hunt caught [closeAttribution] — constructed on CALLER threads inside
+     * QuicCloseExceptions — reading connTraceId/connSourceId off an already-freed conn: the lazy
+     * [sessionId] and the deliberately-fresh [wireConnectionId] have no lifecycle gate of their own.
+     * Once this is non-null the conn may be gone; nothing may touch it for identity again.
+     */
+    @kotlin.concurrent.Volatile
+    private var latchedIdentity: QuicConnectionIdentity? = null
+
     internal fun closeAttribution(): QuicCloseAttribution =
         QuicCloseAttribution.Attributed(
-            identity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
+            identity = latchedIdentity ?: QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
             network = NetworkAtClose.NotObserved,
         )
 
@@ -1609,6 +1619,10 @@ class QuicheDriver(
     }
 
     private fun cleanup() {
+        // Latch identity while the conn is still alive and we are on its loop: after the api.*Free
+        // calls below, any closeAttribution() from a caller thread must use this snapshot instead
+        // of dereferencing freed quiche memory (#401 hunt round 12).
+        latchedIdentity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId)
         commands.close()
 
         while (true) {

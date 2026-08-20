@@ -214,7 +214,12 @@ object JniQuicheApi : QuicheApi {
     }
 
     private fun noteBorn(handle: Long) {
-        freedConns.remove(handle)
+        freedConns.remove(handle)?.let { freer ->
+            Probe401.recordOverlap(
+                "REBORN conn=0x" + handle.toString(16) + " (freed by [" + freer + "], now reallocated as a NEW conn — " +
+                    "stale wrapper calls from the old connection are no longer flaggable by handle)",
+            )
+        }
     }
 
     fun enterConn(
