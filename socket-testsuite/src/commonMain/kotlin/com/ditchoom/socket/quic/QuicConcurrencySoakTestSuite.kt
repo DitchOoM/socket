@@ -26,18 +26,29 @@ import kotlin.time.Duration.Companion.seconds
  * the lifecycle / race / leak class behind the recent flake fixes (#79, #82).
  *
  * Same 3-tier shape as [QuicImpairmentTestSuite] / [QuicPassiveMigrationTestSuite]: each platform
- * supplies a [testTlsConfig]; the test bodies are inherited. (Android's equivalent is a parallel copy
- * in `androidInstrumentedTest`, which can't see `commonTest` — see `AndroidQuicConcurrencySoakTests`.)
+ * supplies a [testTlsConfig]; the test bodies are inherited — Android included, since this suite lives in
+ * socket-testsuite's `commonMain` and `AndroidQuicConcurrencySoakTests` extends it directly (it replaced
+ * an earlier hand-copy that also duplicated [TrackingBufferFactory]).
  *
- * **Leak assertion.** The soak test injects a [TrackingBufferFactory] as the client's
+ * **Leak assertion — client half.** The soak test injects a [TrackingBufferFactory] as the client's
  * [TransportConfig.bufferFactory]. That factory feeds *both* the driver's internal buffers and every
  * stream-read buffer (verified: `connectionOptions.bufferFactory` flows into `QuicheDriver` and
  * `QuicheStreamByteStream`). After `withQuicConnection` returns — i.e. the connection is fully closed —
- * `assertNoLeaks()` requires every one of those buffers to have been freed: the read buffers by the
+ * the live-buffer count must be within the driver's O(1) pool residual: the read buffers freed by the
  * test (read transfers ownership; we `freeIfNeeded()` each), the driver internals by the framework's
- * teardown. A single missed free fails with the leaking allocation's stack trace. `TrackingBufferFactory`
- * is not concurrency-safe, so the leak assertion lives in the *sequential* soak test only; the
- * concurrency tests use the default factory and still free every read buffer.
+ * teardown. This half lives in the *sequential* soak test, where a per-round leak is cleanly separable
+ * from that bounded residual.
+ *
+ * **Leak assertion — server half.** A QUIC server binds with a hardcoded `BufferFactory.network()`;
+ * `QuicEngine.bind` has no buffer-factory seam, so no injected factory can ever see the server's
+ * allocations. For most of this suite's life that left the entire server half unmeasured — and that is
+ * precisely how eleven echo-loop leaks in this repo's own harnesses survived to become the allocator
+ * primer behind #401, with the client-side assertion green throughout. [EchoOwnershipLedger] closes the
+ * gap from the other direction: it audits whether harness code released every buffer a server-side
+ * `read()` transferred to it. The take is recorded at the read boundary and the release performs the
+ * free, so a dropped free leaves its own evidence behind instead of vanishing with it. Every test here
+ * asserts it, not just the sequential one — the ledger is thread-safe, and the pool-starvation failure
+ * mode it guards needs concurrency to show up at all.
  *
  * **Determinism.** Fixed, bounded workloads (exact stream/connection/round counts) with exact-content
  * assertions — not probabilistic flake-catchers. Sizes are tuned to finish well inside `runQuicTest`'s
@@ -81,9 +92,10 @@ abstract class QuicConcurrencySoakTestSuite {
     fun manyConcurrentStreamsOnOneConnectionRoundTrip() =
         runQuicTest {
             wrapTestBody {
+                val serverLedger = EchoOwnershipLedger()
                 coroutineScope {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                        val serverJob = launch { connections { echoEveryStream() } }
+                        val serverJob = launch { connections { echoEveryStream(serverLedger) } }
                         try {
                             withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds.scaled) {
                                 val results =
@@ -105,6 +117,7 @@ abstract class QuicConcurrencySoakTestSuite {
                         }
                     }
                 }
+                serverLedger.assertNoLeaks("manyConcurrentStreamsOnOneConnectionRoundTrip")
             }
         }
 
@@ -122,9 +135,10 @@ abstract class QuicConcurrencySoakTestSuite {
         runQuicTest(timeout = 25.seconds) {
             wrapTestBody {
                 withDiffDebug("manyConcurrentStreamsHighConcurrency", { "scale=${testTimeScale()} streams=$HIGH_CONCURRENT_STREAMS" }) {
+                    val serverLedger = EchoOwnershipLedger()
                     coroutineScope {
                         withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                            val serverJob = launch { connections { echoEveryStream() } }
+                            val serverJob = launch { connections { echoEveryStream(serverLedger) } }
                             try {
                                 withQuicConnection("127.0.0.1", port, options, timeout = 20.seconds.scaled) {
                                     val results =
@@ -146,6 +160,7 @@ abstract class QuicConcurrencySoakTestSuite {
                             }
                         }
                     }
+                    serverLedger.assertNoLeaks("manyConcurrentStreamsHighConcurrencyRoundTrip")
                 }
             }
         }
@@ -155,9 +170,10 @@ abstract class QuicConcurrencySoakTestSuite {
     fun manyConnectionsConcurrentlyRoundTrip() =
         runQuicTest {
             wrapTestBody {
+                val serverLedger = EchoOwnershipLedger()
                 coroutineScope {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                        val serverJob = launch { connections { echoEveryStream() } }
+                        val serverJob = launch { connections { echoEveryStream(serverLedger) } }
                         try {
                             val results =
                                 (0 until CONCURRENT_CONNECTIONS)
@@ -179,6 +195,7 @@ abstract class QuicConcurrencySoakTestSuite {
                         }
                     }
                 }
+                serverLedger.assertNoLeaks("manyConnectionsConcurrentlyRoundTrip")
             }
         }
 
@@ -194,9 +211,10 @@ abstract class QuicConcurrencySoakTestSuite {
         runQuicTest(timeout = 30.seconds) {
             wrapTestBody {
                 withDiffDebug("manyConnectionsHighConcurrency", { "scale=${testTimeScale()} connections=$HIGH_CONCURRENT_CONNECTIONS" }) {
+                    val serverLedger = EchoOwnershipLedger()
                     coroutineScope {
                         withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                            val serverJob = launch { connections { echoEveryStream() } }
+                            val serverJob = launch { connections { echoEveryStream(serverLedger) } }
                             try {
                                 val results =
                                     (0 until HIGH_CONCURRENT_CONNECTIONS)
@@ -218,6 +236,7 @@ abstract class QuicConcurrencySoakTestSuite {
                             }
                         }
                     }
+                    serverLedger.assertNoLeaks("manyConnectionsHighConcurrencyRoundTrip")
                 }
             }
         }
@@ -239,9 +258,10 @@ abstract class QuicConcurrencySoakTestSuite {
         runQuicTest {
             wrapTestBody {
                 val tracking = TrackingBufferFactory()
+                val serverLedger = EchoOwnershipLedger()
                 coroutineScope {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                        val serverJob = launch { connections { echoEveryStream() } }
+                        val serverJob = launch { connections { echoEveryStream(serverLedger) } }
                         try {
                             withQuicConnection(
                                 "127.0.0.1",
@@ -268,6 +288,7 @@ abstract class QuicConcurrencySoakTestSuite {
                     live <= MAX_RESIDUAL_BUFFERS,
                     "soak left $live live client buffers (> $MAX_RESIDUAL_BUFFERS over $SOAK_ROUNDS rounds) — a per-operation buffer leak",
                 )
+                serverLedger.assertNoLeaks("sustainedEchoLoopHasNoPerOperationLeak")
             }
         }
 
@@ -279,22 +300,26 @@ abstract class QuicConcurrencySoakTestSuite {
      * [writeFully], not a bare `write`: a QUIC stream write returns a possibly-partial count at a
      * flow-control boundary, and the old single `write` silently truncated the echo under exactly the
      * concurrency these suites exist to create (the defect class Http3StreamWriter's header documents).
-     * And the read buffer is FREED once echoed — read transfers ownership here, `write` is zero-copy
-     * and takes none, so the old loop leaked one pooled/native buffer per chunk, permanently starving
-     * the driver's streamReadPool (cap 16) under 64-stream load and turning every subsequent drain
-     * allocation into a fresh malloc (found during the #401 hunt).
+     *
+     * Every read buffer is handed to [EchoOwnershipLedger.took] the instant `read()` returns it and
+     * released in a `finally` — read transfers ownership here, `write` is zero-copy and takes none, so
+     * the pre-#401 loop leaked one pooled/native buffer per chunk, permanently starving the driver's
+     * streamReadPool (cap 16) under 64-stream load and turning every subsequent drain allocation into a
+     * fresh malloc. The ledger is what makes a dropped release *visible* rather than merely fatal three
+     * suites later: delete the `finally` and every test here fails by name.
      */
-    private suspend fun QuicScope.echoEveryStream() {
+    private suspend fun QuicScope.echoEveryStream(ledger: EchoOwnershipLedger) {
         streams().collect { stream ->
             launch {
                 try {
                     while (true) {
                         val data = stream.read(15.seconds.scaled)
                         if (data is ReadResult.Data) {
+                            val receipt = ledger.took(data.buffer)
                             try {
                                 stream.writeFully(data.buffer, 10.seconds.scaled)
                             } finally {
-                                data.buffer.freeIfNeeded()
+                                ledger.release(receipt)
                             }
                         } else {
                             break
