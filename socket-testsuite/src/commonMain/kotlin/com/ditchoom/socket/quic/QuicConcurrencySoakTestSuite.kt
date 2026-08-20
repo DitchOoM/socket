@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.async
@@ -272,7 +273,17 @@ abstract class QuicConcurrencySoakTestSuite {
 
     // ---- helpers -----------------------------------------------------------------------------------
 
-    /** Server side: echo every stream on this connection back to the client, each in its own coroutine. */
+    /**
+     * Server side: echo every stream on this connection back to the client, each in its own coroutine.
+     *
+     * [writeFully], not a bare `write`: a QUIC stream write returns a possibly-partial count at a
+     * flow-control boundary, and the old single `write` silently truncated the echo under exactly the
+     * concurrency these suites exist to create (the defect class Http3StreamWriter's header documents).
+     * And the read buffer is FREED once echoed — read transfers ownership here, `write` is zero-copy
+     * and takes none, so the old loop leaked one pooled/native buffer per chunk, permanently starving
+     * the driver's streamReadPool (cap 16) under 64-stream load and turning every subsequent drain
+     * allocation into a fresh malloc (found during the #401 hunt).
+     */
     private suspend fun QuicScope.echoEveryStream() {
         streams().collect { stream ->
             launch {
@@ -280,7 +291,11 @@ abstract class QuicConcurrencySoakTestSuite {
                     while (true) {
                         val data = stream.read(15.seconds.scaled)
                         if (data is ReadResult.Data) {
-                            stream.write(data.buffer, 10.seconds.scaled)
+                            try {
+                                stream.writeFully(data.buffer, 10.seconds.scaled)
+                            } finally {
+                                data.buffer.freeIfNeeded()
+                            }
                         } else {
                             break
                         }
