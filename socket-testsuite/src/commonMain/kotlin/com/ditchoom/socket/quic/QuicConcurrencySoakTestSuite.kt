@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -323,11 +324,15 @@ abstract class QuicConcurrencySoakTestSuite {
         expected: String,
     ): String {
         val received = ArrayList<Byte>(total)
+        val fillEvidence = ArrayList<String>()
         var chunks = 0
         while (received.size < total) {
             val r = read(timeout)
             if (r is ReadResult.Data) {
                 chunks++
+                (r.buffer as? com.ditchoom.buffer.PlatformBuffer)
+                    ?.nativeMemoryAccess?.nativeAddress?.toLong()
+                    ?.let { fillEvidence.add(Probe401.describe(it)) }
                 repeat(r.buffer.remaining()) { received.add(r.buffer.readByte()) }
                 r.buffer.freeIfNeeded() // read transfers buffer ownership to us (see QuicheStreamAdapter)
             } else {
@@ -338,7 +343,10 @@ abstract class QuicConcurrencySoakTestSuite {
         return try {
             bytes.decodeToString(throwOnInvalidSequence = true)
         } catch (e: CharacterCodingException) {
-            throw AssertionError(describeCorruption(expected, bytes, chunks), e)
+            throw AssertionError(
+                describeCorruption(expected, bytes, chunks) + "\n  " + fillEvidence.joinToString("\n  "),
+                e,
+            )
         }
     }
 

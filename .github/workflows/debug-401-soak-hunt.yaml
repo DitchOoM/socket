@@ -57,10 +57,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Round 3: all shards full-suite — round 2 proved only full-suite load reproduces
+        # (6/6 full shards captured, 0/450 class-only runs ever did).
         include:
-          - { shard: 1, mode: class }
-          - { shard: 2, mode: class }
-          - { shard: 3, mode: class }
+          - { shard: 1, mode: full }
+          - { shard: 2, mode: full }
+          - { shard: 3, mode: full }
           - { shard: 4, mode: full }
           - { shard: 5, mode: full }
           - { shard: 6, mode: full }

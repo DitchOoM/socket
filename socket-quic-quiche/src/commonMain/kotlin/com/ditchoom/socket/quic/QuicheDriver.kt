@@ -1056,6 +1056,7 @@ class QuicheDriver(
             if (result.bytesRead > 0) {
                 buffer.position(result.bytesRead)
                 buffer.resetForRead()
+                Probe401.recordFill(addr(buffer), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
                 // UNLIMITED and never closed before this point, so the send cannot fail; on the
                 // impossible branch release the buffer rather than leaking it.
                 if (slot.pendingData.trySend(buffer).isFailure) {
@@ -1674,6 +1675,7 @@ class QuicheDriver(
         if (clock.quicheTime() is DriverTime.Virtual) api.clearThreadVirtualTime()
     }
 
+
     private fun failCommand(cmd: QuicheCmd) {
         when (cmd) {
             is QuicheCmd.RecvPacket -> {
@@ -1957,6 +1959,7 @@ class DriverStreamAdapter(
         if (result.bytesRead > 0) {
             buffer.position(result.bytesRead)
             buffer.resetForRead()
+            Probe401.recordFill(buffer.nativeMemoryAccess!!.nativeAddress.toLong(), slot.id.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
             // UNLIMITED and never closed, so the send cannot fail; on the impossible branch report "not
             // transferred" so the caller frees the buffer rather than leaking it.
             queued = slot.pendingData.trySend(buffer).isSuccess
@@ -2022,6 +2025,7 @@ class DriverStreamAdapter(
                                 buffer.position(result.bytesRead)
                                 buffer.resetForRead()
                                 // Ownership transfers to the caller — do not release in the finally.
+                                Probe401.recordFill(addr, streamId.id, result.bytesRead, firstBytesHex(buffer, result.bytesRead))
                                 transferred = true
                                 return@withTimeout ReadResult.Data(buffer)
                             }
@@ -2217,3 +2221,9 @@ class DriverStreamAdapter(
         }
     }
 }
+
+/** DEBUG (#401 hunt): hex of the first minOf(16, len) bytes read via absolute index. */
+private fun firstBytesHex(
+    buffer: PlatformBuffer,
+    len: Int,
+): String = buildString { for (i in 0 until minOf(16, len)) append(buffer[i].toUByte().toString(16).padStart(2, '0')).append(' ') }.trim()
