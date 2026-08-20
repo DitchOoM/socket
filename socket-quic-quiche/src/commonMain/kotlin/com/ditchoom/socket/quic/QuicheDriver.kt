@@ -203,14 +203,6 @@ class QuicheDriver(
     val state: StateFlow<QuicConnectionState> = _state
 
     /**
-     * This connection's identity and network correlation, as a value snapshot for a
-     * [QuicCloseException].
-     *
-     * Deliberately excludes the close *reason*: the exception carries that already as its `quicError`,
-     * and a second copy here could disagree with it. Also excludes everything internal — no `PathKey`
-     * (opaque bits, deliberately not reversible into an address) and no native connection handle.
-     */
-    /**
      * Identity latched on the driver loop just before [cleanup] frees the quiche handles.
      *
      * [closeAttribution] is evaluated on CALLER threads — inside every QuicCloseException a
@@ -223,6 +215,14 @@ class QuicheDriver(
     @kotlin.concurrent.Volatile
     private var latchedIdentity: QuicConnectionIdentity? = null
 
+    /**
+     * This connection's identity and network correlation, as a value snapshot for a
+     * [QuicCloseException].
+     *
+     * Deliberately excludes the close *reason*: the exception carries that already as its `quicError`,
+     * and a second copy here could disagree with it. Also excludes everything internal — no `PathKey`
+     * (opaque bits, deliberately not reversible into an address) and no native connection handle.
+     */
     internal fun closeAttribution(): QuicCloseAttribution =
         QuicCloseAttribution.Attributed(
             identity = latchedIdentity ?: QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
