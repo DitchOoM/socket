@@ -3,9 +3,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
