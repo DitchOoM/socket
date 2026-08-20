@@ -116,6 +116,33 @@ sealed interface TraceEvent {
     }
 
     /**
+     * Bytes quiche delivered to this endpoint that the application will never receive (STREAM_LOSS).
+     *
+     * WHY this exists: by the time the transport hands a chunk up, quiche has already advanced the
+     * stream's receive offset and credited flow control for it, so the peer will never resend — a
+     * chunk released without being delivered is a PERMANENT hole in the stream. Every release site in
+     * the read path used to be silent, which is why #393 could only ever be seen from the far end, as
+     * an application-level ledger noticing bytes that never came back.
+     *
+     * This makes the loss self-reporting at the moment and place it happens. It is deliberately
+     * recorded even where the release is *correct* (the reader closed the stream, so queued chunks
+     * must be freed rather than leaked): "correct to release" and "the application did not get these
+     * bytes" are different statements, and only the second one explains a short stream.
+     *
+     * [cause] is a frozen v1 wire token, translated from a sealed type at the recorder — the same
+     * boundary discipline [PathState] uses, so the driver can reshape its model without invalidating
+     * a recorded trace.
+     */
+    data class StreamLoss(
+        override val at: Duration,
+        val streamId: Long,
+        val bytes: Int,
+        val cause: String,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * A `QuicConnectionState` transition. [name] is the state's **qualified** class name
      * (`…QuicConnectionState.Handshaking`, `.Established`, `.Closed`, …); [detail] carries the
      * state's payload rendered one-line (negotiated ALPN, typed close reason via
@@ -261,7 +288,10 @@ sealed interface TraceEvent {
         get() =
             when (this) {
                 is DgramIn, is Error, is Net, is NetGap, is NetCapability, is Liveness -> true
-                is DgramOut, is State, is PathState, is Stats -> false
+                // StreamLoss is an OBSERVATION: it records what this endpoint did with bytes it had
+                // already received. Replay drives the transport from the far side, so feeding one back
+                // in would be replaying our own reaction, not the input that caused it.
+                is DgramOut, is State, is PathState, is Stats, is StreamLoss -> false
             }
 
     /**
