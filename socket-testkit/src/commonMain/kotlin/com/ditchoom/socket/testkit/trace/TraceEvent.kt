@@ -143,6 +143,33 @@ sealed interface TraceEvent {
     }
 
     /**
+     * The read side of a stream reached its terminal verdict (STREAM_END) — the moment `StreamSlot.end`
+     * latches from `Open` to a FIN or a peer RESET_STREAM.
+     *
+     * Recorded because a latch is **irreversible and answers every later read**: once set, `streamRead`
+     * returns the verdict from the slot without ever asking quiche again, so a latch that fires early
+     * kills a stream that the connection then happily keeps alive. That is the shape issue #393 takes on
+     * device — an instant `End` repeated for 101 minutes across eight further migrations — and it is
+     * invisible to [StreamLoss], which records bytes *released*: the suspect path
+     * (`salvageCancelledRecv`) latches on the branch where the salvaged chunk was queued successfully,
+     * so no byte is lost and no loss is recorded. Without this event a trace can say "nothing was
+     * dropped" while the stream was in fact terminated early, which reads as an exoneration.
+     *
+     * [kind] and [site] are frozen v1 wire tokens translated from sealed types at the recorder, the same
+     * boundary discipline [StreamLoss] and [PathState] use. [site] is what carries the diagnosis: the
+     * three latch sites are the teardown drain, the cancelled-recv salvage, and ordinary read delivery,
+     * and only the second is a suspect. Observation, never a replay input.
+     */
+    data class StreamEndLatched(
+        override val at: Duration,
+        val streamId: Long,
+        val kind: String,
+        val site: String,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * A `QuicConnectionState` transition. [name] is the state's **qualified** class name
      * (`…QuicConnectionState.Handshaking`, `.Established`, `.Closed`, …); [detail] carries the
      * state's payload rendered one-line (negotiated ALPN, typed close reason via
@@ -291,7 +318,10 @@ sealed interface TraceEvent {
                 // StreamLoss is an OBSERVATION: it records what this endpoint did with bytes it had
                 // already received. Replay drives the transport from the far side, so feeding one back
                 // in would be replaying our own reaction, not the input that caused it.
-                is DgramOut, is State, is PathState, is Stats, is StreamLoss -> false
+                // StreamEndLatched is an OBSERVATION for the same reason as StreamLoss: it records this
+                // endpoint's own terminal verdict, not the peer frame that prompted it. Replay drives the
+                // transport from the far side, which re-derives the latch on its own.
+                is DgramOut, is State, is PathState, is Stats, is StreamLoss, is StreamEndLatched -> false
             }
 
     /**

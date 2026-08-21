@@ -5,18 +5,25 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -91,6 +98,7 @@ class StreamReadCancellationTests {
     private fun gatedStartupDriver(
         api: StubQuicheApi,
         udpGate: CompletableDeferred<Unit>,
+        recorder: QuicTraceRecorder? = null,
     ): QuicheDriver {
         api.connSendOnce = 1300
         val gatedUdp =
@@ -120,6 +128,7 @@ class StreamReadCancellationTests {
             udpChannel = gatedUdp,
             clientMode = false,
             isServer = false,
+            recorder = recorder,
         )
     }
 
@@ -251,6 +260,61 @@ class StreamReadCancellationTests {
             } finally {
                 if (!udpGate.isCompleted) udpGate.complete(Unit)
                 driver.destroy()
+            }
+        }
+
+    /**
+     * **The salvaged FIN announces itself.** `salvageCancelledRecv` is the one latch site that can end a
+     * stream while losing nothing: it rescues the cancelled recv's bytes *and* its FIN, and latches on
+     * the branch where the chunk queued successfully. `STREAM_LOSS` is therefore silent here by
+     * construction, so a trace of a stream killed this way used to read as "nothing was dropped" — an
+     * exoneration of the exact path issue #393 suspects.
+     *
+     * This drives the same interleaving as [aFinCoalescedIntoATimedOutReadStillEndsTheStream] and asserts
+     * on the *trace* rather than on the reads: a `STREAM_END` naming `CancelledRecvSalvage`, and no
+     * `STREAM_LOSS` beside it. Without this, the instrument's emission at its most important site would
+     * be unproven — the round-trip tests only pin the codec, and the end-to-end suites cannot force this
+     * window through the public API at all.
+     */
+    @Test
+    fun aFinSalvagedOutOfATimedOutReadIsRecordedAtItsSite() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val udpGate = CompletableDeferred<Unit>()
+            val events = mutableListOf<TraceEvent>()
+            val driver = gatedStartupDriver(api, udpGate, QuicTraceRecorder(TraceSink { events += it }))
+            // A recorder makes `start` launch two StateFlow collectors into whatever scope it is handed
+            // (QuicheDriver.start), and a StateFlow collector never completes on its own — by design, it
+            // ends when the connection's scope does. Handed this test's own scope it would instead hold
+            // the test open to the whole-test budget, which is a 15s timeout rather than an assertion.
+            // So the driver gets a child scope that this test cancels itself.
+            val driverScope = CoroutineScope(coroutineContext + Job())
+            try {
+                with(driverScope) {
+                    afterATimedOutReadAnsweredWith(
+                        StreamRecvResult.Data(bytesRead = CHUNK, fin = true),
+                        api,
+                        udpGate,
+                        driver,
+                    )
+                }
+
+                val ends = events.filterIsInstance<TraceEvent.StreamEndLatched>()
+                assertEquals(1, ends.size, "expected exactly one STREAM_END for the salvaged FIN, got $ends")
+                assertEquals("Fin", ends.single().kind)
+                assertEquals(
+                    "CancelledRecvSalvage",
+                    ends.single().site,
+                    "the salvage site is the whole diagnostic value — a FIN latched here is the #393 shape",
+                )
+                assertTrue(
+                    events.filterIsInstance<TraceEvent.StreamLoss>().isEmpty(),
+                    "nothing was dropped on this path, which is exactly why STREAM_LOSS alone could not see it",
+                )
+            } finally {
+                if (!udpGate.isCompleted) udpGate.complete(Unit)
+                driver.destroy()
+                driverScope.cancel()
             }
         }
 

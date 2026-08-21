@@ -73,10 +73,19 @@ class StreamSlot(
 sealed interface StreamEnd {
     data object Open : StreamEnd
 
-    data object Fin : StreamEnd
+    /**
+     * The two latched verdicts, grouped so a consumer that only makes sense for a *finished* stream can
+     * say so in its signature instead of handling — or silently ignoring — an [Open] it can never
+     * legitimately be given. `QuicTraceRecorder.streamEnd` is the first such consumer: recording "this
+     * stream ended" for a stream that has not ended is not a case to no-op, it is a case to make
+     * unrepresentable.
+     */
+    sealed interface Terminal : StreamEnd
+
+    data object Fin : Terminal
 
     /** Peer RESET_STREAM (RFC 9000 §19.4); [applicationErrorCode] is the peer's code. */
     data class Reset(
         val applicationErrorCode: QuicAppErrorCode,
-    ) : StreamEnd
+    ) : Terminal
 }

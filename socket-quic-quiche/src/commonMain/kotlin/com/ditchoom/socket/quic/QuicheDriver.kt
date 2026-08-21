@@ -14,6 +14,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.StreamEndSite
 import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
@@ -1076,7 +1077,9 @@ class QuicheDriver(
             // Done and everything else deliver nothing further.
             if (result !is StreamRecvResult.Data) {
                 if (result is StreamRecvResult.Reset && slot.end == StreamEnd.Open) {
-                    slot.end = StreamEnd.Reset(result.applicationErrorCode)
+                    val end = StreamEnd.Reset(result.applicationErrorCode)
+                    slot.end = end
+                    recorder?.streamEnd(slot.id.id, end, StreamEndSite.TeardownDrain)
                 }
                 buffer.freeNativeMemory()
                 return
@@ -1099,7 +1102,10 @@ class QuicheDriver(
             // data, otherwise the End verdict would race ahead of the bytes it is supposed to follow.
             // Guarded so a drain can never downgrade an already-latched terminal state.
             if (result.fin) {
-                if (slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+                if (slot.end == StreamEnd.Open) {
+                    slot.end = StreamEnd.Fin
+                    recorder?.streamEnd(slot.id.id, StreamEnd.Fin, StreamEndSite.TeardownDrain)
+                }
                 return
             }
             // 0 bytes without a FIN: quiche has nothing more to hand over.
@@ -2022,7 +2028,11 @@ class DriverStreamAdapter(
         // stream on delivery, so nothing re-answers it — dropping it here would leave the next read
         // parked until its own deadline and the peer's abort lost for good (#398, the #393 shape).
         if (answered is StreamRecvResult.Reset) {
-            if (slot.end == StreamEnd.Open) slot.end = StreamEnd.Reset(answered.applicationErrorCode)
+            if (slot.end == StreamEnd.Open) {
+                val end = StreamEnd.Reset(answered.applicationErrorCode)
+                slot.end = end
+                driver.recorder?.streamEnd(slot.id.id, end, StreamEndSite.CancelledRecvSalvage)
+            }
             return false
         }
         // Done / Error deliver nothing: quiche advanced no offset, so there is nothing to salvage.
@@ -2041,7 +2051,12 @@ class DriverStreamAdapter(
                 driver.recorder?.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed)
             }
         }
-        if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+        if (result.fin && slot.end == StreamEnd.Open) {
+            slot.end = StreamEnd.Fin
+            // The #393 suspect, and the reason this event exists: nothing was lost on this branch
+            // (the chunk queued), so streamLoss stays silent while the stream is finished for good.
+            driver.recorder?.streamEnd(slot.id.id, StreamEnd.Fin, StreamEndSite.CancelledRecvSalvage)
+        }
         return queued
     }
 
@@ -2119,7 +2134,10 @@ class DriverStreamAdapter(
                                 // Record the FIN whether or not this chunk also carried data — a coalesced
                                 // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
                                 // Guarded so this can never downgrade an already-latched terminal state.
-                                if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+                                if (result.fin && slot.end == StreamEnd.Open) {
+                                    slot.end = StreamEnd.Fin
+                                    driver.recorder?.streamEnd(slot.id.id, StreamEnd.Fin, StreamEndSite.ReadDelivery)
+                                }
                                 if (result.bytesRead > 0) {
                                     buffer.position(result.bytesRead)
                                     buffer.resetForRead()
@@ -2184,7 +2202,9 @@ class DriverStreamAdapter(
                                 // code-carrying abort is not the peer finishing politely (#398). Bytes the
                                 // transport already accepted still outrank the verdict (the #318/#393 rule).
                                 if (slot.end == StreamEnd.Open) {
-                                    slot.end = StreamEnd.Reset(result.applicationErrorCode)
+                                    val end = StreamEnd.Reset(result.applicationErrorCode)
+                                    slot.end = end
+                                    driver.recorder?.streamEnd(slot.id.id, end, StreamEndSite.ReadDelivery)
                                 }
                                 return@withTimeout takePending() ?: ReadResult.Reset
                             }
