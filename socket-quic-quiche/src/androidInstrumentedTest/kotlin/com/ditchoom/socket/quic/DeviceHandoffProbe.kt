@@ -89,10 +89,27 @@ class DeviceHandoffProbe {
             android.util.Log.i("QuicHandoffProbe", rendered)
         }
 
+        // Frame-level evidence, off by default. The driver's qlog seam reads the `quic.qlog.dir`
+        // system property (or QUIC_QLOG_DIR, which an `am instrument` run cannot set) — so a device is
+        // the one place a real handoff can be recorded and, until that property existed, the one place
+        // qlog could not be turned on. Writes one .sqlog per connection into the app's external files
+        // dir, where `adb pull` can reach it. Off by default because at a 100ms cadence it is megabytes
+        // per minute and it is an instrument, not a feature.
+        val qlog = arg("probeQlog", "").isNotEmpty()
+        val qlogDir = File(dir, "qlog")
+        if (qlog) {
+            qlogDir.mkdirs()
+            qlogDir.listFiles()?.forEach { it.delete() }
+            System.setProperty("quic.qlog.dir", qlogDir.absolutePath)
+        } else {
+            System.clearProperty("quic.qlog.dir")
+        }
+
         log.writeText("")
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
-                "minutes=$minutes readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs",
+                "minutes=$minutes readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs " +
+                "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
         )
 
         val options =
