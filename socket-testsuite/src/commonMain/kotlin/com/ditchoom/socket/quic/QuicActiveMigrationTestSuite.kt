@@ -6,8 +6,12 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -349,74 +353,86 @@ abstract class QuicActiveMigrationTestSuite {
             wrapTestBody {
                 val serverLedger = EchoOwnershipLedger()
                 val data = StreamContinuityLedger()
-                // coroutineScope so the echo coroutines are provably finished before assertNoLeaks reads
-                // the ledger — asserting between serverJob.cancel() and the join would race a release.
-                coroutineScope {
-                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = transferQuicOptions) {
-                        val serverJob = launch { connections { echoOneStream(serverLedger) } }
-                        try {
-                            withQuicConnection("127.0.0.1", port, transferQuicOptions, timeout = 10.seconds.scaled) {
-                                val stream = openStream()
-                                // Warm-up round, and not only for liveness: openStream() reserves a
-                                // stream id locally without putting anything on the wire, so a read that
-                                // races the first write asks quiche about a stream it has never heard of
-                                // and the driver reports that error as a clean ReadResult.End. Writing
-                                // chunk 0 and draining it makes the stream real on both sides before the
-                                // concurrent phase, so an End below is a genuine terminal verdict.
-                                stream.sendChunk(0, data)
-                                stream.drainUntilCaughtUp(data, "warm-up")
+                val trace = MigrationTrace()
+                trace.explaining("streamBytesRemainAnInOrderPrefixAcrossAMigration") {
+                    // coroutineScope so the echo coroutines are provably finished before assertNoLeaks reads
+                    // the ledger — asserting between serverJob.cancel() and the join would race a release.
+                    coroutineScope {
+                        withQuicServer(
+                            port = 0,
+                            tlsConfig = testTlsConfig(),
+                            quicOptions = transferQuicOptions.copy(trace = trace.capture("server")),
+                        ) {
+                            val serverJob = launch { connections { echoOneStream(serverLedger) } }
+                            try {
+                                withQuicConnection(
+                                    "127.0.0.1",
+                                    port,
+                                    transferQuicOptions.copy(trace = trace.capture("client")),
+                                    timeout = 10.seconds.scaled,
+                                ) {
+                                    val stream = openStream()
+                                    // Warm-up round, and not only for liveness: openStream() reserves a
+                                    // stream id locally without putting anything on the wire, so a read that
+                                    // races the first write asks quiche about a stream it has never heard of
+                                    // and the driver reports that error as a clean ReadResult.End. Writing
+                                    // chunk 0 and draining it makes the stream real on both sides before the
+                                    // concurrent phase, so an End below is a genuine terminal verdict.
+                                    stream.sendChunk(0, data)
+                                    stream.drainUntilCaughtUp(data, "warm-up")
 
-                                // The two halves of the writer↔migrator rendezvous. Deferreds, not flags:
-                                // an await is a suspension the scheduler resolves, where a polled flag
-                                // would be a wall-clock race dressed up as a loop.
-                                val writerAtBarrier = CompletableDeferred<Unit>()
-                                val migrationCommitted = CompletableDeferred<Unit>()
+                                    // The two halves of the writer↔migrator rendezvous. Deferreds, not flags:
+                                    // an await is a suspension the scheduler resolves, where a polled flag
+                                    // would be a wall-clock race dressed up as a loop.
+                                    val writerAtBarrier = CompletableDeferred<Unit>()
+                                    val migrationCommitted = CompletableDeferred<Unit>()
 
-                                coroutineScope {
-                                    launch {
-                                        while (data.receivedCount < CONTINUITY_CHUNKS * CHUNK_BYTES) {
-                                            stream.receiveInto(data, STREAM_READ_DEADLINE, "migration echo reader")
-                                        }
-                                    }
-                                    launch {
-                                        for (i in 1 until CONTINUITY_CHUNKS) {
-                                            // Pipeline window: never more than PIPELINE_WINDOW chunks ahead
-                                            // of what has come back, so the writer can neither run the
-                                            // stream dry nor finish the payload before the path moves.
-                                            awaitUntil(
-                                                PIPELINE_STALL_BUDGET,
-                                                "the echo stalled: chunk $i could not be sent because only " +
-                                                    "${data.progress()} — the stream stopped carrying bytes",
-                                            ) { data.receivedCount >= (i - PIPELINE_WINDOW) * CHUNK_BYTES }
-                                            if (i == MIGRATE_AT_CHUNK) {
-                                                writerAtBarrier.complete(Unit)
-                                                migrationCommitted.await()
+                                    coroutineScope {
+                                        launch {
+                                            while (data.receivedCount < CONTINUITY_CHUNKS * CHUNK_BYTES) {
+                                                stream.receiveInto(data, STREAM_READ_DEADLINE, "migration echo reader")
                                             }
-                                            stream.sendChunk(i, data)
                                         }
+                                        launch {
+                                            for (i in 1 until CONTINUITY_CHUNKS) {
+                                                // Pipeline window: never more than PIPELINE_WINDOW chunks ahead
+                                                // of what has come back, so the writer can neither run the
+                                                // stream dry nor finish the payload before the path moves.
+                                                awaitUntil(
+                                                    PIPELINE_STALL_BUDGET,
+                                                    "the echo stalled: chunk $i could not be sent because only " +
+                                                        "${data.progress()} — the stream stopped carrying bytes",
+                                                ) { data.receivedCount >= (i - PIPELINE_WINDOW) * CHUNK_BYTES }
+                                                if (i == MIGRATE_AT_CHUNK) {
+                                                    writerAtBarrier.complete(Unit)
+                                                    migrationCommitted.await()
+                                                }
+                                                stream.sendChunk(i, data)
+                                            }
+                                        }
+
+                                        writerAtBarrier.await()
+                                        // Reaching the barrier already proves the stream round-trips (the
+                                        // window gate could not have released otherwise), so the migration
+                                        // needs no separate liveness probe to be non-vacuous.
+                                        migrationCommitted.complete(Unit)
+                                        val result = migrate()
+                                        assertTrue(
+                                            result is MigrationResult.Succeeded,
+                                            "expected the mid-transfer migration to succeed (${data.progress()}), got $result",
+                                        )
+                                        assertTrue(
+                                            pathState.value is QuicPathState.Migrated,
+                                            "pathState must report the connection moved, got ${pathState.value}",
+                                        )
                                     }
 
-                                    writerAtBarrier.await()
-                                    // Reaching the barrier already proves the stream round-trips (the
-                                    // window gate could not have released otherwise), so the migration
-                                    // needs no separate liveness probe to be non-vacuous.
-                                    migrationCommitted.complete(Unit)
-                                    val result = migrate()
-                                    assertTrue(
-                                        result is MigrationResult.Succeeded,
-                                        "expected the mid-transfer migration to succeed (${data.progress()}), got $result",
-                                    )
-                                    assertTrue(
-                                        pathState.value is QuicPathState.Migrated,
-                                        "pathState must report the connection moved, got ${pathState.value}",
-                                    )
+                                    data.assertEverySentByteCameBack("streamBytesRemainAnInOrderPrefixAcrossAMigration")
+                                    stream.close()
                                 }
-
-                                data.assertEverySentByteCameBack("streamBytesRemainAnInOrderPrefixAcrossAMigration")
-                                stream.close()
+                            } finally {
+                                serverJob.cancel()
                             }
-                        } finally {
-                            serverJob.cancel()
                         }
                     }
                 }
@@ -467,85 +483,97 @@ abstract class QuicActiveMigrationTestSuite {
         runQuicTest(timeout = 60.seconds) {
             wrapTestBody {
                 val serverLedger = EchoOwnershipLedger()
+                val trace = MigrationTrace()
                 val data = StreamContinuityLedger()
-                coroutineScope {
-                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = transferQuicOptions) {
-                        val serverJob = launch { connections { echoOneStream(serverLedger) } }
-                        try {
-                            withQuicConnection("127.0.0.1", port, transferQuicOptions, timeout = 10.seconds.scaled) {
-                                val stream = openStream()
-                                // Warm-up round: openStream() reserves a stream id locally without putting
-                                // anything on the wire, so a read that races the first write asks quiche
-                                // about a stream it has never heard of and the driver reports that error
-                                // as a clean ReadResult.End. Draining one chunk makes the stream real on
-                                // both sides, so an End below is a genuine terminal verdict — and proves
-                                // the stream carries bytes before any deadline is under test.
-                                stream.sendChunk(0, data)
-                                stream.drainUntilCaughtUp(data, "warm-up")
+                trace.explaining("aMigrationAcrossAnInFlightReadLosesNoBytes") {
+                    coroutineScope {
+                        withQuicServer(
+                            port = 0,
+                            tlsConfig = testTlsConfig(),
+                            quicOptions = transferQuicOptions.copy(trace = trace.capture("server")),
+                        ) {
+                            val serverJob = launch { connections { echoOneStream(serverLedger) } }
+                            try {
+                                withQuicConnection(
+                                    "127.0.0.1",
+                                    port,
+                                    transferQuicOptions.copy(trace = trace.capture("client")),
+                                    timeout = 10.seconds.scaled,
+                                ) {
+                                    val stream = openStream()
+                                    // Warm-up round: openStream() reserves a stream id locally without putting
+                                    // anything on the wire, so a read that races the first write asks quiche
+                                    // about a stream it has never heard of and the driver reports that error
+                                    // as a clean ReadResult.End. Draining one chunk makes the stream real on
+                                    // both sides, so an End below is a genuine terminal verdict — and proves
+                                    // the stream carries bytes before any deadline is under test.
+                                    stream.sendChunk(0, data)
+                                    stream.drainUntilCaughtUp(data, "warm-up")
 
-                                // ---- phase 1: a read parked across the entire migration ----
-                                coroutineScope {
-                                    val readStarted = CompletableDeferred<Unit>()
-                                    val parkedRead =
-                                        launch {
-                                            readStarted.complete(Unit)
-                                            stream.receiveIntoToleratingTimeout(data, PARKED_READ_DEADLINE)
-                                        }
-                                    // Ordering, not timing: migrate() is entered only once the reading
-                                    // coroutine has been scheduled — and with the stream drained, nothing
-                                    // can wake that read until the write below, so the whole path switch
-                                    // happens underneath it.
-                                    readStarted.await()
-                                    val result = migrateReplenishingConnectionIds()
-                                    assertTrue(
-                                        result is MigrationResult.Succeeded,
-                                        "the migration under a parked read failed with $result",
-                                    )
-                                    // Written on the NEW path, into a read issued on the old one.
-                                    stream.sendChunk(1, data)
-                                    parkedRead.join()
-                                }
-                                stream.drainUntilCaughtUp(data, "after a migration under a parked read")
-
-                                // ---- phase 2: short deadlines against a backlogged driver ----
-                                coroutineScope {
-                                    launch {
-                                        // Mid-sweep, so reads are unwinding both before and after the
-                                        // path moves rather than only around one edge of it.
-                                        awaitUntil(
-                                            PIPELINE_STALL_BUDGET,
-                                            "the sweep stalled before its migration: ${data.progress()}",
-                                        ) { data.sentCount >= (2 + PRESSURE_CHUNKS / 2) * CHUNK_BYTES }
+                                    // ---- phase 1: a read parked across the entire migration ----
+                                    coroutineScope {
+                                        val readStarted = CompletableDeferred<Unit>()
+                                        val parkedRead =
+                                            launch {
+                                                readStarted.complete(Unit)
+                                                stream.receiveIntoToleratingTimeout(data, PARKED_READ_DEADLINE)
+                                            }
+                                        // Ordering, not timing: migrate() is entered only once the reading
+                                        // coroutine has been scheduled — and with the stream drained, nothing
+                                        // can wake that read until the write below, so the whole path switch
+                                        // happens underneath it.
+                                        readStarted.await()
                                         val result = migrateReplenishingConnectionIds()
                                         assertTrue(
                                             result is MigrationResult.Succeeded,
-                                            "the migration under the deadline sweep failed with $result",
+                                            "the migration under a parked read failed with $result",
                                         )
+                                        // Written on the NEW path, into a read issued on the old one.
+                                        stream.sendChunk(1, data)
+                                        parkedRead.join()
                                     }
-                                    for (i in 0 until PRESSURE_CHUNKS) {
-                                        // No pipeline window here on purpose: back-to-back writes leave a
-                                        // backlog in the driver's command queue, so a StreamRecv enqueued
-                                        // behind them is answered late — widening the window in which a
-                                        // read's deadline can expire with a delivery still outstanding.
-                                        stream.sendChunk(2 + i, data)
-                                        stream.receiveIntoToleratingTimeout(
-                                            data,
-                                            READ_DEADLINE_LADDER[i % READ_DEADLINE_LADDER.size].scaled,
-                                        )
-                                    }
-                                }
-                                // Every byte written during the sweep must still arrive, in order. If a
-                                // read that unwound mid-delivery ever loses the bytes quiche had already
-                                // handed it — the #393 defect — this is where the stream's permanent hole
-                                // surfaces: the drain never catches up, and it names the shortfall rather
-                                // than hanging to the whole-test budget.
-                                stream.drainUntilCaughtUp(data, "after the deadline sweep")
+                                    stream.drainUntilCaughtUp(data, "after a migration under a parked read")
 
-                                data.assertEverySentByteCameBack("aMigrationAcrossAnInFlightReadLosesNoBytes")
-                                stream.close()
+                                    // ---- phase 2: short deadlines against a backlogged driver ----
+                                    coroutineScope {
+                                        launch {
+                                            // Mid-sweep, so reads are unwinding both before and after the
+                                            // path moves rather than only around one edge of it.
+                                            awaitUntil(
+                                                PIPELINE_STALL_BUDGET,
+                                                "the sweep stalled before its migration: ${data.progress()}",
+                                            ) { data.sentCount >= (2 + PRESSURE_CHUNKS / 2) * CHUNK_BYTES }
+                                            val result = migrateReplenishingConnectionIds()
+                                            assertTrue(
+                                                result is MigrationResult.Succeeded,
+                                                "the migration under the deadline sweep failed with $result",
+                                            )
+                                        }
+                                        for (i in 0 until PRESSURE_CHUNKS) {
+                                            // No pipeline window here on purpose: back-to-back writes leave a
+                                            // backlog in the driver's command queue, so a StreamRecv enqueued
+                                            // behind them is answered late — widening the window in which a
+                                            // read's deadline can expire with a delivery still outstanding.
+                                            stream.sendChunk(2 + i, data)
+                                            stream.receiveIntoToleratingTimeout(
+                                                data,
+                                                READ_DEADLINE_LADDER[i % READ_DEADLINE_LADDER.size].scaled,
+                                            )
+                                        }
+                                    }
+                                    // Every byte written during the sweep must still arrive, in order. If a
+                                    // read that unwound mid-delivery ever loses the bytes quiche had already
+                                    // handed it — the #393 defect — this is where the stream's permanent hole
+                                    // surfaces: the drain never catches up, and it names the shortfall rather
+                                    // than hanging to the whole-test budget.
+                                    stream.drainUntilCaughtUp(data, "after the deadline sweep")
+
+                                    data.assertEverySentByteCameBack("aMigrationAcrossAnInFlightReadLosesNoBytes")
+                                    stream.close()
+                                }
+                            } finally {
+                                serverJob.cancel()
                             }
-                        } finally {
-                            serverJob.cancel()
                         }
                     }
                 }
@@ -741,6 +769,137 @@ abstract class QuicActiveMigrationTestSuite {
         /** Bounded retry for a CID the peer has not re-issued yet; same shape as the #395 loop above. */
         private const val CID_REPLENISH_RETRIES = 40
         private val CID_REPLENISH_BACKOFF = 50.milliseconds
+    }
+}
+
+/**
+ * Trace capture for the two byte-continuity tests, whose job is to make a lost byte name its own cause.
+ *
+ * ## Why the tests must carry this, rather than a trace being read after the fact
+ * `STREAM_LOSS` ([com.ditchoom.socket.testkit.trace.TraceEvent.StreamLoss], the instrumentation added
+ * with #414) reaches a trace through `driver.recorder?.streamLoss(...)` — three call sites, every one of
+ * them null-safe. [com.ditchoom.socket.quic.QuicOptions.trace] defaults to `null`, so on a connection
+ * that did not opt in there is no recorder and all three are no-ops.
+ *
+ * That matters because of how this trace is meant to be read. A run that loses bytes either carries
+ * `STREAM_LOSS` lines naming the stream, the byte count and the cause, **or** carries none — and the
+ * second answer is the informative one: it puts the loss upstream of `DriverStreamAdapter` altogether
+ * (quiche's own receive path, or `recv_info`), because the adapter records every chunk it releases.
+ * Without capture a run prints zero `STREAM_LOSS` lines *whatever the cause was*, and that reading is
+ * not merely unproven but unavailable — an absence that means "the feature was switched off" would be
+ * read as an absence that means "the adapter is innocent". Capture is what makes the absence evidence.
+ *
+ * ## Both sides, and labelled
+ * The client ledger compares what the client received against what the client sent, so a server that
+ * drops bytes while echoing fails it in a way byte-identical to a client that drops them on delivery.
+ * Both connections therefore record onto this one sink behind a `client`/`server` prefix: aggregate
+ * diagnostics rather than per-connection replay, which is exactly what [QuicTraceCapture]'s
+ * single-sink constructor is for.
+ *
+ * ## A digest, not the trace
+ * A full trace of these tests is thousands of `DGRAM_OUT`/`DGRAM_IN` lines carrying payload hex — on the
+ * order of a megabyte, which buries the handful of lines that decide the question and is unreadable in a
+ * CI log anyway. [digest] keeps every `STREAM_LOSS`, `PATH_STATE`, `STATE` and `ERROR` line verbatim and
+ * **counts** everything else by kind, so what was dropped is stated rather than silently truncated.
+ * Filtering is on the typed event, so a discarded datagram never pays to be rendered.
+ */
+private class MigrationTrace {
+    // UNLIMITED + trySend: the recorder emits from driver coroutines (non-suspending, and off-thread on
+    // K/N as well as JVM), so a channel is the simplest thread-safe collector that needs no atomics.
+    // Counting dropped events by pushing a short token avoids a cross-platform atomic counter entirely.
+    private val lines = Channel<String>(Channel.UNLIMITED)
+
+    /** Capture for one side of the connection; [role] prefixes its lines so the two stay separable. */
+    fun capture(role: String): QuicTraceCapture =
+        QuicTraceCapture(
+            sink =
+                TraceSink { event ->
+                    when (event) {
+                        is TraceEvent.StreamLoss,
+                        is TraceEvent.PathState,
+                        is TraceEvent.State,
+                        is TraceEvent.Error,
+                        -> lines.trySend("$role $event")
+                        // Everything else is volume, not evidence: recorded as a bare kind token so the
+                        // digest can report how much it dropped without holding any of it.
+                        else -> lines.trySend(DROPPED + (event::class.simpleName ?: "unknown"))
+                    }
+                },
+        )
+
+    /**
+     * Drain what was captured and render the verdict. Closes the channel — call once, on the failure
+     * path only.
+     */
+    fun digest(): String {
+        lines.close()
+        val kept = ArrayList<String>()
+        val dropped = LinkedHashMap<String, Int>()
+        while (true) {
+            val line = lines.tryReceive().getOrNull() ?: break
+            if (line.startsWith(DROPPED)) {
+                val kind = line.substring(DROPPED.length)
+                dropped[kind] = (dropped[kind] ?: 0) + 1
+            } else {
+                kept.add(line)
+            }
+        }
+        val losses = kept.filter { it.contains(" STREAM_LOSS ") }
+        val total = kept.size + dropped.values.sum()
+
+        val verdict =
+            when {
+                losses.isNotEmpty() ->
+                    "VERDICT: ${losses.size} STREAM_LOSS line(s) — DriverStreamAdapter released bytes it had " +
+                        "accepted. The cause token on each line names which of the three windows it was " +
+                        "(ReaderGone / QueueClosed / SalvageUnclaimed)."
+                total > 0 ->
+                    "VERDICT: capture was ACTIVE ($total events recorded) and emitted NO STREAM_LOSS. The " +
+                        "adapter released nothing it had accepted — so IF this failure is a missing byte, it " +
+                        "was lost UPSTREAM of DriverStreamAdapter (quiche's receive path, or recv_info), not " +
+                        "on the read path #414 instrumented. For any other failure this line is only context."
+                // The guard that keeps the line above honest: zero events means the wiring did not take,
+                // and then "no STREAM_LOSS" is a statement about this harness, not about the driver.
+                else ->
+                    "VERDICT: NO trace events were recorded at all — capture did not run, so this trace says " +
+                        "NOTHING about whether STREAM_LOSS fired. Treat the absence as missing data, not as " +
+                        "evidence, and fix the wiring before reading anything into it."
+            }
+
+        return buildString {
+            appendLine(verdict)
+            // Capture order, deliberately not sorted by timestamp: each connection records against its
+            // own clock origin (v1 carries no connection id), so client and server nanos are not
+            // comparable and a merged sort would invent an interleaving that never happened.
+            appendLine("--- captured (STREAM_LOSS / PATH_STATE / STATE / ERROR, both sides, in capture order) ---")
+            if (kept.isEmpty()) appendLine("(none)") else kept.forEach { appendLine(it) }
+            if (dropped.isNotEmpty()) {
+                appendLine(
+                    "--- dropped from this digest (volume, not evidence): " +
+                        dropped.entries.joinToString(", ") { "${it.key}=${it.value}" } + " ---",
+                )
+            }
+        }
+    }
+
+    /**
+     * Run [block], folding [digest] into the failure when it throws. The trace is discarded on the
+     * passing path, so capture costs a green run nothing but the recording itself.
+     */
+    suspend fun explaining(
+        label: String,
+        block: suspend () -> Unit,
+    ) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            throw AssertionError("$label failed — QUIC trace digest follows.\n${digest()}", t)
+        }
+    }
+
+    private companion object {
+        /** Marks a kind token rather than a kept line. A space keeps it unambiguous against `v1 …` lines. */
+        private const val DROPPED = "~dropped "
     }
 }
 
