@@ -605,6 +605,47 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnScidsLeft)(JNIEnv *env, jclass cls, jlong co
     return (jlong)quiche_conn_scids_left((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConnRetiredScids)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jint)quiche_conn_retired_scids((const quiche_conn *)(uintptr_t)conn);
+}
+
+/* Drains quiche's retired source connection IDs into `out` as `max_ids` slots of
+   1 + QUICHE_MAX_CONN_ID_LEN bytes: length byte, then that many id bytes. Returns the count written.
+
+   quiche_conn_retired_scid_iter DRAINS -- every id it yields is gone from quiche's list -- so the
+   loop must run to completion even once the buffer is full, or the iterator's remaining ids would be
+   freed without this side ever seeing them.
+
+   Returns the number the iterator YIELDED, not the number written: `min(returned, max_ids)` slots are
+   valid, and a return greater than `max_ids` says exactly how many were lost. One non-negative count
+   with one meaning -- the caller sizes `out` from nConnRetiredScids on the same (single) connection
+   thread, so a short buffer is unreachable, and this makes it inspectable rather than silent if that
+   assumption ever breaks. */
+JNIEXPORT jint JNICALL JNI_FN(nConnDrainRetiredScids)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong out, jint max_ids) {
+    quiche_connection_id_iter *it =
+        quiche_conn_retired_scid_iter((quiche_conn *)(uintptr_t)conn);
+    if (it == NULL) return 0;
+
+    uint8_t *dst = (uint8_t *)(uintptr_t)out;
+    const uint8_t *cid = NULL;
+    size_t cid_len = 0;
+    jint yielded = 0;
+
+    while (quiche_connection_id_iter_next(it, &cid, &cid_len)) {
+        if (yielded < max_ids && cid != NULL && cid_len <= QUICHE_MAX_CONN_ID_LEN) {
+            uint8_t *slot = dst + (size_t)yielded * (1 + QUICHE_MAX_CONN_ID_LEN);
+            slot[0] = (uint8_t)cid_len;
+            memcpy(slot + 1, cid, cid_len);
+        }
+        yielded++;
+    }
+
+    quiche_connection_id_iter_free(it);
+    return yielded;
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnPathEventNext)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_out, jlong local_len_out,

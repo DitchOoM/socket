@@ -159,6 +159,23 @@ class QuicheDriver(
      */
     private val onScidIssued: ((PlatformBuffer, Int) -> Unit)? = null,
     /**
+     * Server-only: invoked with each source CID quiche has **retired**, before that buffer is reused.
+     * The mirror image of [onScidIssued], and load-bearing for the same reason: the server's
+     * DCID→driver map is what decides whether a datagram reaches this connection, so a CID the peer
+     * has stopped using must stop routing at the same moment quiche stops recognising it.
+     *
+     * Without this the two views diverge, and the gap is not benign. A packet legitimately sent before
+     * the peer retired the CID can arrive after — different paths have different latencies, and a
+     * RETIRE_CONNECTION_ID sent on a fast new path routinely overtakes data still in flight on the
+     * slow old one. Our map still routes it here; quiche no longer knows the CID, reports
+     * `InvalidState`, and its `to_wire()` catch-all turns that into PROTOCOL_VIOLATION — killing a
+     * healthy connection over a packet RFC 9000 §5.2.2 says to drop (#437). Unregistering closes the
+     * window: the datagram matches nothing, and the receive loop drops it at the door.
+     *
+     * Clients leave it null (they demux by per-path socket, not by an app-level DCID map).
+     */
+    private val onScidRetired: ((PlatformBuffer, Int) -> Unit)? = null,
+    /**
      * Per-connection datagram recv buffer pool — mirrors the server-side pool in
      * CommonJvmWithQuicServer. Two acquirers: the client-mode [udpReaderLoop]
      * (server-accepted drivers receive packets via commands.send() from the
@@ -978,6 +995,7 @@ class QuicheDriver(
         // state costs one connScidsLeft read per wake, alongside the two state reads above.
         if (_state.value is QuicConnectionState.Established) {
             issueSpareCids()
+            drainRetiredScids()
         }
         if (api.connIsClosed(conn)) {
             transitionToClosed()
@@ -1631,6 +1649,46 @@ class QuicheDriver(
             token.freeNativeMemory()
             if (rc < 0) break
             count++
+        }
+    }
+
+    /**
+     * Hand every source CID quiche has retired to [onScidRetired], so the server's DCID→driver map
+     * stops routing it at the same moment quiche stops recognising it (#437 — see [onScidRetired]).
+     *
+     * Costs one [QuicheApi.connRetiredScids] read per established wake, alongside [issueSpareCids]'s
+     * `connScidsLeft`; everything else runs only when the peer has actually retired something, which
+     * happens a handful of times per migration.
+     *
+     * The count is read first and sizes the drain, and both run here on the driver coroutine — the
+     * only place allowed to touch the connection — so nothing can retire an id in between. That
+     * matters because `quiche_conn_retired_scid_iter` *drains*: an id this call fails to collect is
+     * gone from quiche and would keep routing here forever.
+     */
+    private fun drainRetiredScids() {
+        val callback = onScidRetired ?: return
+        val count = api.connRetiredScids(conn)
+        if (count <= 0) return
+        val slots = bufferFactory.allocate(count * RETIRED_SCID_SLOT_BYTES)
+        try {
+            val yielded = api.connDrainRetiredScids(conn, addr(slots), count)
+            // A backend that yields more than it was sized for has lost the excess — impossible while
+            // the read above and this call share the driver coroutine, so it is reported rather than
+            // handled. The ids that DID fit are still unregistered below.
+            if (yielded > count) {
+                recorder?.error(RetiredScidOverflow(yielded, count))
+            }
+            repeat(minOf(yielded, count)) { i ->
+                slots.position(i * RETIRED_SCID_SLOT_BYTES)
+                val len = slots.readByte().toInt() and 0xFF
+                if (len in 1..QUIC_MAX_CONN_ID_LEN) {
+                    // The callback snapshots the bytes; this buffer is reused for the next slot and
+                    // freed below, exactly as issueSpareCids' scid buffer is.
+                    callback(slots, len)
+                }
+            }
+        } finally {
+            slots.freeNativeMemory()
         }
     }
 
@@ -2400,3 +2458,21 @@ class DriverStreamAdapter(
         }
     }
 }
+
+/**
+ * quiche yielded more retired connection IDs than the count it reported a moment earlier, so the
+ * excess was lost — and a lost id keeps routing to a connection that no longer recognises it, which
+ * is #437 returning silently.
+ *
+ * Unreachable by construction: [QuicheDriver.drainRetiredScids] reads the count and drains on the same
+ * driver coroutine, the only one allowed to touch the connection. It exists so the impossible case is
+ * *recorded* rather than assumed — as a type, because the trace channel takes qualified class names
+ * and never bare strings.
+ */
+internal class RetiredScidOverflow(
+    yielded: Int,
+    capacity: Int,
+) : IllegalStateException(
+        "quiche yielded $yielded retired connection ids into room for $capacity; " +
+            "${yielded - capacity} will keep routing to a connection that no longer knows them",
+    )

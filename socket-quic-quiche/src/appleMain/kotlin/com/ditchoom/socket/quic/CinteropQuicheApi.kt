@@ -59,6 +59,8 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
+import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
+import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
@@ -72,6 +74,8 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
 import com.ditchoom.socket.quic.quiche.quiche_conn_trace_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
+import com.ditchoom.socket.quic.quiche.quiche_connection_id_iter_free
+import com.ditchoom.socket.quic.quiche.quiche_connection_id_iter_next
 import com.ditchoom.socket.quic.quiche.quiche_header_info
 import com.ditchoom.socket.quic.quiche.quiche_negotiate_version
 import com.ditchoom.socket.quic.quiche.quiche_path_event_closed
@@ -741,6 +745,44 @@ internal object CinteropQuicheApi : QuicheApi {
         conn: QuicheConn,
         dcidSeq: Long,
     ): Int = quiche_conn_retire_dcid(conn.handle.toCPointer()!!, dcidSeq.toULong())
+
+    override fun connRetiredScids(conn: QuicheConn): Int = quiche_conn_retired_scids(conn.handle.toCPointer()!!).toInt()
+
+    override fun connDrainRetiredScids(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        // A null iterator is "nothing retired", not a failure — same shape as connPathEventNext's null.
+        val iter = quiche_conn_retired_scid_iter(conn.handle.toCPointer()!!) ?: return 0
+        return memScoped {
+            val idOut = alloc<CPointerVar<UByteVar>>() // const uint8_t **out
+            val idLen = alloc<ULongVar>() // size_t *out_len
+            var yielded = 0
+            try {
+                // Runs to completion even once the buffer is full: the iterator has already drained
+                // quiche's list, so stopping early would free ids nothing has recorded.
+                while (quiche_connection_id_iter_next(iter, idOut.ptr, idLen.ptr)) {
+                    val len = idLen.value.toInt()
+                    val src = idOut.value
+                    if (yielded < maxIds && src != null && len in 1..QUIC_MAX_CONN_ID_LEN) {
+                        val slot = (out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES).toCPointer<UByteVar>()!!
+                        // `pointed.value`, not `slot[0] = ...`: the indexed setter needs a
+                        // `kotlinx.cinterop.set` import this file does not carry, and one write is one
+                        // write either way.
+                        slot.pointed.value = len.toUByte()
+                        // quiche hands back a pointer into memory the iterator owns, so it must be
+                        // copied before the free below.
+                        memcpy(slot + 1, src, len.convert())
+                    }
+                    yielded++
+                }
+            } finally {
+                quiche_connection_id_iter_free(iter)
+            }
+            yielded
+        }
+    }
 
     override fun connMigrateSource(
         conn: QuicheConn,

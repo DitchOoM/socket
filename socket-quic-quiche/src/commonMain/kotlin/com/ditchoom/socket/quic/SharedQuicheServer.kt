@@ -487,6 +487,17 @@ internal class SharedQuicheServer(
                         wakeups.trySend(Unit)
                     }
                 },
+                onScidRetired = { scid, len ->
+                    // The mirror of onScidIssued: the peer has stopped using this CID and quiche has
+                    // already dropped it, so the routing map must too — otherwise a packet that was
+                    // legitimately in flight when the peer retired it still reaches quiche, which no
+                    // longer recognises the CID and kills the connection over it (#437). Same snapshot
+                    // rule: the buffer is reused for the next id and freed on return.
+                    driverRef?.let { d ->
+                        registry.enqueueScidRetirement(ConnectionIdKey.from(scid, len), d)
+                        wakeups.trySend(Unit)
+                    }
+                },
             )
         driverRef = driver
 

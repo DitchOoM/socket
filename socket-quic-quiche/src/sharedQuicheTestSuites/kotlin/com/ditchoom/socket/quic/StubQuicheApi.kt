@@ -659,6 +659,43 @@ internal class StubQuicheApi : QuicheApi {
     override fun connScidsLeft(conn: QuicheConn) = scidsLeft
 
     /**
+     * How many source CIDs the peer has retired (`quiche_conn_retired_scids`). **0 by default**, so a
+     * test that has not scripted a retirement never reaches [connDrainRetiredScids] — the same
+     * "historical answer" shape as [scidsLeft].
+     */
+    @Volatile var retiredScidCount = 0
+
+    /** Every [connDrainRetiredScids] call — how a test proves the driver drains only when it must. */
+    @Volatile var drainRetiredScidCalls = 0
+        private set
+
+    /** The `maxIds` of the last [connDrainRetiredScids] call — proves the buffer was sized from the count. */
+    @Volatile var lastDrainCapacity = -1
+        private set
+
+    override fun connRetiredScids(conn: QuicheConn) = retiredScidCount
+
+    /**
+     * Yields **nothing**, for the reason [connPathEventNext] registers a sockaddr instead of writing
+     * one: this stub decodes no real memory, and filling the driver's buffer with fabricated connection
+     * IDs would be a lie dressed as coverage. What it does record is the *policy* — that the driver
+     * drains exactly when the count says to, and sizes the buffer from that count.
+     *
+     * The bytes are covered where they mean something: `RetiredScidDrainTests` runs this against real
+     * quiche over a real migration, which is also the only place the four FFI backends are exercised.
+     */
+    override fun connDrainRetiredScids(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        drainRetiredScidCalls++
+        lastDrainCapacity = maxIds
+        retiredScidCount = 0
+        return 0
+    }
+
+    /**
      * Scripted `quiche_conn_path_event_next` queue, drained one event per call in FIFO order.
      *
      * **Empty by default**, so [connPathEventNext] answers `null` — "no events" — exactly as it always
