@@ -829,7 +829,9 @@ private class MigrationTrace {
                         is TraceEvent.Stats -> lines.trySend(STAT + role + " " + renderStats(event.stats))
                         // Everything else is volume, not evidence: recorded as a short key so the digest
                         // can report how much it dropped without holding any of it.
-                        else -> lines.trySend(DROPPED + role + "/" + summarize(event))
+                        // The timestamp rides along: a bare count cannot say WHEN a channel carried its
+                        // datagrams, and that is the whole question after a migration.
+                        else -> lines.trySend(DROPPED + role + "/" + summarize(event) + " " + event.at.inWholeMilliseconds)
                     }
                 },
         )
@@ -879,7 +881,7 @@ private class MigrationTrace {
     fun digest(): String {
         lines.close()
         val kept = ArrayList<String>()
-        val dropped = LinkedHashMap<String, Int>()
+        val dropped = LinkedHashMap<String, Span>()
         // Last writer wins: only the most recent sample per role survives, which is the one describing
         // the connection at the moment it gave up.
         val lastStats = LinkedHashMap<String, String>()
@@ -887,8 +889,10 @@ private class MigrationTrace {
             val line = lines.tryReceive().getOrNull() ?: break
             when {
                 line.startsWith(DROPPED) -> {
-                    val kind = line.substring(DROPPED.length)
-                    dropped[kind] = (dropped[kind] ?: 0) + 1
+                    val body = line.substring(DROPPED.length)
+                    val kind = body.substringBeforeLast(' ')
+                    val at = body.substringAfterLast(' ').toLongOrNull() ?: 0L
+                    dropped[kind] = (dropped[kind] ?: Span()).plus(at)
                 }
                 line.startsWith(STAT) -> {
                     val body = line.substring(STAT.length)
@@ -901,7 +905,7 @@ private class MigrationTrace {
         val ends = kept.filter { it.contains(" STREAM_END ") }
         // The suspect site, named in StreamEndSite: a stream finished by a salvaged cancelled recv.
         val salvageEnds = ends.filter { it.endsWith(" CancelledRecvSalvage") }
-        val total = kept.size + dropped.values.sum() + lastStats.size
+        val total = kept.size + dropped.values.sumOf { it.count } + lastStats.size
 
         val verdict =
             when {
@@ -952,10 +956,8 @@ private class MigrationTrace {
             appendLine("--- captured (STREAM_LOSS / STREAM_END / PATH_STATE / STATE / ERROR, both sides, in capture order) ---")
             if (kept.isEmpty()) appendLine("(none)") else kept.forEach { appendLine(it) }
             if (dropped.isNotEmpty()) {
-                appendLine(
-                    "--- dropped from this digest (volume, not evidence): " +
-                        dropped.entries.joinToString(", ") { "${it.key}=${it.value}" } + " ---",
-                )
+                appendLine("--- datagram volume by role/channel, with the window each was active ---")
+                dropped.entries.forEach { (key, span) -> appendLine("$key ${span.render()}") }
             }
         }
     }
@@ -1013,6 +1015,30 @@ private class MigrationTrace {
         /** Marks a path-stats sample; the digest keeps only the last per role. */
         private const val STAT = "~stat "
     }
+}
+
+/**
+ * How many events landed in a bucket and over what window, in milliseconds on that connection's clock.
+ *
+ * A count alone cannot answer the question a post-migration stall raises. `server/DgramOut@:61599=29`
+ * is consistent with "29 handshake datagrams before the path moved" and with "the server kept talking to
+ * a retired path for the whole test", and those are opposite diagnoses. The first and last timestamps
+ * separate them, and also give the rate — 13 datagrams spread across 30s is a different failure from 13
+ * datagrams in the first 40ms followed by silence.
+ */
+private class Span(
+    var count: Int = 0,
+    var first: Long = Long.MAX_VALUE,
+    var last: Long = Long.MIN_VALUE,
+) {
+    fun plus(at: Long): Span =
+        apply {
+            count++
+            if (at < first) first = at
+            if (at > last) last = at
+        }
+
+    fun render(): String = if (count == 0) "0" else "n=$count t=$first..${last}ms"
 }
 
 /**
