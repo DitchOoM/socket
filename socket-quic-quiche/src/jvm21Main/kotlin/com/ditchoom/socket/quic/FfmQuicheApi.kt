@@ -300,6 +300,18 @@ class FfmQuicheApi private constructor(
     private val hConnPathEventNext by lazy {
         downcall("quiche_conn_path_event_next", FunctionDescriptor.of(ADDRESS, ADDRESS))
     }
+    private val hConnRetiredScids by lazy {
+        downcall("quiche_conn_retired_scids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+    private val hConnRetiredScidIter by lazy {
+        downcall("quiche_conn_retired_scid_iter", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
+    private val hConnIdIterNext by lazy {
+        downcall("quiche_connection_id_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hConnIdIterFree by lazy {
+        downcall("quiche_connection_id_iter_free", FunctionDescriptor.ofVoid(ADDRESS))
+    }
     private val hPathEventType by lazy {
         downcall("quiche_path_event_type", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     }
@@ -911,6 +923,42 @@ class FfmQuicheApi private constructor(
         conn: QuicheConn,
         dcidSeq: Long,
     ): Int = hConnRetireDcid.invokeExact(seg(conn.handle), dcidSeq) as Int
+
+    override fun connRetiredScids(conn: QuicheConn): Int = (hConnRetiredScids.invokeExact(seg(conn.handle)) as Long).toInt()
+
+    override fun connDrainRetiredScids(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        val iter = hConnRetiredScidIter.invokeExact(seg(conn.handle)) as MemorySegment
+        // A null iterator is "nothing retired", not a failure — same shape as connPathEventNext's null.
+        if (iter.address() == 0L) return 0
+        return Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
+            var yielded = 0
+            try {
+                // Runs to completion even once the buffer is full: the iterator has already drained
+                // quiche's list, so stopping early would free ids nothing has recorded.
+                while (hConnIdIterNext.invokeExact(iter, outPtr, outLen) as Boolean) {
+                    val len = outLen.get(JAVA_LONG, 0).toInt()
+                    if (yielded < maxIds && len in 1..QUIC_MAX_CONN_ID_LEN) {
+                        val slot = out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES
+                        val dst = seg(slot).reinterpret(RETIRED_SCID_SLOT_BYTES.toLong())
+                        dst.set(JAVA_BYTE, 0L, len.toByte())
+                        // Same `reinterpret` copy as connApplicationProto: quiche hands back a pointer
+                        // into memory the iterator owns, so it must be copied before the free below.
+                        MemorySegment.copy(outPtr.get(ADDRESS, 0).reinterpret(len.toLong()), 0L, dst, 1L, len.toLong())
+                    }
+                    yielded++
+                }
+            } finally {
+                hConnIdIterFree.invokeExact(iter)
+            }
+            yielded
+        }
+    }
 
     override fun connMigrateSource(
         conn: QuicheConn,

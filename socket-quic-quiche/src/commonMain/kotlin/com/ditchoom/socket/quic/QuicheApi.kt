@@ -527,6 +527,50 @@ interface QuicheApi {
     fun connScidsLeft(conn: QuicheConn): Long
 
     /**
+     * How many source connection IDs the peer has retired and quiche has not yet handed back
+     * (`quiche_conn_retired_scids`).
+     *
+     * The counterpart to [connNewScid]: an endpoint that issues CIDs must also learn which ones the
+     * peer has stopped using, because *its own routing table* is what decides whether a datagram
+     * reaches this connection at all. quiche removes a retired CID from its internal table the moment
+     * it processes the peer's RETIRE_CONNECTION_ID; anything still mapping that CID to this connection
+     * outlives quiche's own view of it, and a packet arriving on it is then delivered to a connection
+     * that no longer recognises it — which quiche reports as a protocol violation and closes over
+     * (#437). Reading this on every established wake is what keeps the two views from diverging.
+     *
+     * Defaults to 0 — the [connStats]/[connPeerError] default-for-test-doubles convention. A backend
+     * that has not bound the accessor reports "nothing retired", which is also the correct answer for
+     * a connection whose peer has retired nothing.
+     */
+    fun connRetiredScids(conn: QuicheConn): Int = 0
+
+    /**
+     * Drain every retired source connection ID into [out], returning how many were written.
+     *
+     * `quiche_conn_retired_scid_iter` **drains** — the ids it yields are removed from quiche's list,
+     * so a caller that fails to record one has lost it permanently. That is why the count comes from
+     * [connRetiredScids] first and sizes this call: both run on the driver coroutine, which is the
+     * only thread allowed to touch the connection, so nothing can retire an id in between and the
+     * count is exact.
+     *
+     * [out] points at [maxIds] slots of `1 + QUIC_MAX_CONN_ID_LEN` bytes; each slot is the id's length
+     * in its first byte followed by that many id bytes. One flat buffer with a length prefix rather
+     * than a second out-param for the lengths: a connection ID is at most 20 bytes (RFC 9000 §5.1), so
+     * a byte holds any length, and there is no integer width or endianness to agree on across four
+     * backends.
+     *
+     * Returns the number the iterator **yielded**, not the number written: `min(result, maxIds)` slots
+     * are valid, and a result greater than [maxIds] says exactly how many ids were lost for want of
+     * space. Sizing from [connRetiredScids] makes that unreachable; reporting it rather than clamping
+     * is what would make a broken assumption inspectable instead of silent.
+     */
+    fun connDrainRetiredScids(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int = 0
+
+    /**
      * Poll and CONSUME the next path event (frees it before returning). Returns the
      * event type, or null if none pending. For every type except
      * [QuichePathEventType.ReusedSourceConnectionId], fills the caller-provided
@@ -668,3 +712,13 @@ interface QuicheApi {
     /** Low 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
     fun sockAddrV6Lo(addr: Long): Long
 }
+
+/**
+ * Slot width for [QuicheApi.connDrainRetiredScids]'s output buffer: one length byte followed by the
+ * connection ID's bytes. Declared once here so the four backends and the driver cannot disagree about
+ * the layout they are writing and reading.
+ *
+ * Public for the same reason [QuicheApi] itself is: the FFM backend lives in the `jvm21` compilation,
+ * which `internal` does not reach.
+ */
+const val RETIRED_SCID_SLOT_BYTES = 1 + QUIC_MAX_CONN_ID_LEN

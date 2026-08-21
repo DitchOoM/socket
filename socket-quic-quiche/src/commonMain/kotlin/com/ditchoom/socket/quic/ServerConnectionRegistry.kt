@@ -86,6 +86,13 @@ internal class ServerConnectionRegistry<K>(
     private val scidRegistrationQueue = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
 
     /**
+     * Source CIDs quiche has retired, awaiting removal from [connectionsByDcid] — the mirror of
+     * [scidRegistrationQueue], and queued for the same reason: retirement is discovered on a driver
+     * coroutine and the map belongs to the receive loop.
+     */
+    private val scidRetirementQueue = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
+
+    /**
      * Passive-migration support: one server socket sees a client's source address change after the
      * client migrates (RFC 9000 §9). quiche needs the *actual* per-datagram source as `recv_info.from`
      * to recognise the new path, so the platform caches one recv_info per distinct source (its `to` is
@@ -130,9 +137,29 @@ internal class ServerConnectionRegistry<K>(
     }
 
     /**
-     * Drain both routing queues into [connectionsByDcid]: cleanup removals first (so a stale
-     * registration for an already-removed driver is harmless), then spare-SCID additions. Receive-loop
-     * coroutine only.
+     * A source CID [driver]'s connection has retired: stop routing it (#437).
+     *
+     * Carries the driver, not just the key, so the removal below can verify the entry still belongs to
+     * this connection. A CID is unique per connection while it is live, but a retired one may be
+     * re-registered by a *later* connection, and removing by key alone would then unroute a healthy
+     * connection because an older one had finished with the same bytes.
+     */
+    fun enqueueScidRetirement(
+        key: ConnectionIdKey,
+        driver: QuicheDriver,
+    ) {
+        scidRetirementQueue.trySend(key to driver)
+    }
+
+    /**
+     * Drain the routing queues into [connectionsByDcid]: cleanup removals first (so a stale
+     * registration for an already-removed driver is harmless), then spare-SCID additions, then
+     * retirements. Receive-loop coroutine only.
+     *
+     * Retirements last, and matched on identity: a CID is registered when quiche issues it and retired
+     * when the peer stops using it, so processing a retirement before an addition that names the same
+     * key would leave the map holding a CID quiche has already forgotten — the divergence this queue
+     * exists to prevent.
      */
     fun drainRoutingQueues() {
         while (true) {
@@ -142,6 +169,12 @@ internal class ServerConnectionRegistry<K>(
         while (true) {
             val (key, driver) = scidRegistrationQueue.tryReceive().getOrNull() ?: break
             connectionsByDcid[key] = driver
+        }
+        while (true) {
+            val (key, driver) = scidRetirementQueue.tryReceive().getOrNull() ?: break
+            // Identity-checked: only unroute the CID if it still points at the connection that retired
+            // it (see [enqueueScidRetirement]).
+            if (connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
         }
     }
 
@@ -239,6 +272,7 @@ internal class ServerConnectionRegistry<K>(
         acceptedDrivers.close()
         driverCleanupQueue.close()
         scidRegistrationQueue.close()
+        scidRetirementQueue.close()
     }
 
     /**

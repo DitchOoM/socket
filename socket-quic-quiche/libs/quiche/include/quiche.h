@@ -837,8 +837,14 @@ ssize_t quiche_conn_send_ack_eliciting_on_path(quiche_conn *conn,
                            const struct sockaddr *local, socklen_t local_len,
                            const struct sockaddr *peer, socklen_t peer_len);
 
-// Returns true if there are retired source connection ids and fill the parameters
-bool quiche_conn_retired_scid_next(const quiche_conn *conn, const uint8_t **out, size_t *out_len);
+// Drains and collects all currently retired source connection IDs into an
+// iterator. The caller must use quiche_connection_id_iter_next() to iterate and
+// quiche_connection_id_iter_free() to free the iterator.
+//
+// NOTE: this replaced a hand-copied `quiche_conn_retired_scid_next` declaration that quiche 0.29.3
+// does not export -- it was declared here and absent from libquiche.a, which compiles cleanly and
+// then resolves to nothing. Kept in sync with the pinned quiche by RetiredScidHeaderSyncTest.
+quiche_connection_id_iter *quiche_conn_retired_scid_iter(quiche_conn *conn);
 
 // Returns the number of source Connection IDs that are retired.
 size_t quiche_conn_retired_scids(const quiche_conn *conn);
