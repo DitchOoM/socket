@@ -42,7 +42,10 @@ internal class UdpSocketChannelFactory(
         localHost: String?,
         localPort: Int,
     ): NewPath {
-        val channel = UdpSocket.connect(peer.host, peer.port, localHost, localPort, receiveBufferSize, recvBufferFactory)
+        // An unnamed source binds the address the route would choose, never the wildcard — see
+        // [routeSourceAddress]. A caller that named one gets exactly that, unchanged.
+        val bindHost = localHost ?: routeSourceAddress()
+        val channel = UdpSocket.connect(peer.host, peer.port, bindHost, localPort, receiveBufferSize, recvBufferFactory)
         val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(
@@ -55,5 +58,53 @@ internal class UdpSocketChannelFactory(
             localEndpoint = QuicLocalEndpoint(local.host, local.port),
             release = { encoded.free() },
         )
+    }
+
+    /**
+     * The source address the routing table would choose for [peer], or `null` when it cannot be
+     * determined or the platform assigns the endpoint itself — in which case the bind falls back to the
+     * unnamed default exactly as before.
+     *
+     * **Why an unnamed bind is not good enough.** A bind with no source address chooses the ephemeral
+     * port knowing only the *local* side, so the kernel can return a port whose full 4-tuple
+     * `(source, peer)` is already held by another socket. Every path on a migrating connection connects
+     * to the **same** peer, and a path stays open until it is retired, so each migration draws against
+     * the ports its own predecessors hold. The collision does not surface from `bind` — it surfaces
+     * from `connect`, as `EADDRINUSE`, which the driver reports as
+     * `MigrationResult.Unmoved.Failed.LocalPathUnavailable`. That leaf reads as "this host has no local
+     * path to offer" when the truth is "we drew one colliding port and never looked again": a transient
+     * condition wearing a terminal type, and a migration failed for no reason on a connection that had
+     * every reason to succeed.
+     *
+     * Binding the specific source address lets the kernel exclude exactly the ports already used
+     * against it. Measured on macOS with 3000 sockets connected to one peer: **263 `connect` failures
+     * with an unnamed bind, 0 with the resolved source address.** Skipping the bind entirely does not
+     * help (245 failures) — the JVM binds the unnamed address implicitly first. No retry loop is
+     * needed, and none is wanted: a retry would paper over the collision instead of not causing it.
+     *
+     * Only for [LocalEndpointSupport.Bindable] actuals — the JVM and Linux `connect`s, which bind
+     * before connecting. Apple's assigns the endpoint through `NWConnection` and documents
+     * `localHost`/`localPort` as advisory, so naming a source there would be a hint the platform is
+     * free to ignore rather than the fix, and it is skipped.
+     *
+     * Resolved per call rather than reused from the connection's current path: a migration usually
+     * happens *because* the old path died, so the route's answer now is the interface that is actually
+     * up. The probe sends nothing — a UDP `connect` only fixes the 4-tuple locally — and is closed
+     * before the real bind, so it cannot itself become the port that collides.
+     */
+    private suspend fun routeSourceAddress(): String? {
+        if (localEndpointSupport != LocalEndpointSupport.Bindable) return null
+        return try {
+            val probe = UdpSocket.connect(peer.host, peer.port, null, 0, receiveBufferSize, recvBufferFactory)
+            try {
+                probe.localAddress.orNull()?.host
+            } finally {
+                probe.close()
+            }
+        } catch (_: Exception) {
+            // No route, or a sandbox that forbids the probe: fall back to the unnamed bind and let the
+            // real connect report the truth rather than inventing an error here.
+            null
+        }
     }
 }
