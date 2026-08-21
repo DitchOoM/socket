@@ -843,7 +843,7 @@ ssize_t quiche_conn_send_ack_eliciting_on_path(quiche_conn *conn,
 //
 // NOTE: this replaced a hand-copied `quiche_conn_retired_scid_next` declaration that quiche 0.29.3
 // does not export -- it was declared here and absent from libquiche.a, which compiles cleanly and
-// then resolves to nothing. Kept in sync with the pinned quiche by RetiredScidHeaderSyncTest.
+// then resolves to nothing. Kept in sync with the pinned quiche by VendoredQuicheHeaderSyncTest.
 quiche_connection_id_iter *quiche_conn_retired_scid_iter(quiche_conn *conn);
 
 // Returns the number of source Connection IDs that are retired.
