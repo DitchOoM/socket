@@ -826,7 +826,19 @@ private class MigrationTrace {
                         // them per role. It answers the question a stalled transfer actually raises (was
                         // the path slow, or was nothing sent?) and the counts alone cannot: rtt/pto/lost
                         // separate a PTO-backoff collapse from a test that simply ran out of budget.
-                        is TraceEvent.Stats -> lines.trySend(STAT + role + " " + renderStats(event.stats))
+                        // The timestamp is the point: STATS is sampled on a driver timer wake, so its time is
+                        // a moment the driver provably ran.
+                        //
+                        // ⚠️ It is a LOWER BOUND and nothing more. Sampling only happens on a wake that had no
+                        // command to process, which is rare — a healthy local run produces samples=1 and
+                        // samples=2 for the two roles across the whole test. So a last sample at t does NOT
+                        // license "the driver stopped at t"; that would be reading absence as evidence, which
+                        // on this hunt has already been wrong twice. [samples=N] is printed next to it so the
+                        // reader can see how thin the series is before drawing anything from its end.
+                        is TraceEvent.Stats ->
+                            lines.trySend(
+                                STAT + role + " t=${event.at.inWholeMilliseconds}ms " + renderStats(event.stats),
+                            )
                         // Everything else is volume, not evidence: recorded as a short key so the digest
                         // can report how much it dropped without holding any of it.
                         // The timestamp rides along: a bare count cannot say WHEN a channel carried its
@@ -885,6 +897,7 @@ private class MigrationTrace {
         // Last writer wins: only the most recent sample per role survives, which is the one describing
         // the connection at the moment it gave up.
         val lastStats = LinkedHashMap<String, String>()
+        val statCount = LinkedHashMap<String, Int>()
         while (true) {
             val line = lines.tryReceive().getOrNull() ?: break
             when {
@@ -896,7 +909,9 @@ private class MigrationTrace {
                 }
                 line.startsWith(STAT) -> {
                     val body = line.substring(STAT.length)
-                    lastStats[body.substringBefore(' ')] = body.substringAfter(' ')
+                    val role = body.substringBefore(' ')
+                    statCount[role] = (statCount[role] ?: 0) + 1
+                    lastStats[role] = body.substringAfter(' ')
                 }
                 else -> kept.add(line)
             }
@@ -947,8 +962,8 @@ private class MigrationTrace {
             appendLine("timeScale=${testTimeScale()}")
             appendLine(verdict)
             if (lastStats.isNotEmpty()) {
-                appendLine("--- last path stats per role (congestion state when it gave up) ---")
-                lastStats.forEach { (role, body) -> appendLine("$role $body") }
+                appendLine("--- last path stats per role (t = a moment the driver provably ran; see samples=N) ---")
+                lastStats.forEach { (role, body) -> appendLine("$role $body [samples=${statCount[role]}]") }
             }
             // Capture order, deliberately not sorted by timestamp: each connection records against its
             // own clock origin (v1 carries no connection id), so client and server nanos are not
