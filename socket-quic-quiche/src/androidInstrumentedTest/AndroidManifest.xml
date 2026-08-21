@@ -7,4 +7,13 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      POST_NOTIFICATIONS carries DeviceHandoffProbe's live status notification, which is how a walk is
+      driven by what the connection did rather than by a stopwatch. Declared here, but on API 33+ it is
+      also a RUNTIME grant the instrumentation cannot request for itself:
+        adb shell pm grant com.ditchoom.socket.quic.quiche.test android.permission.POST_NOTIFICATIONS
+      Without it the probe logs one line and carries on notification-less — the recording is the
+      deliverable, and it must not depend on the shade.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
