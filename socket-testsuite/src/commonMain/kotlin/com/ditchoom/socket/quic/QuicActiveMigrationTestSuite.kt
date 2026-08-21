@@ -816,6 +816,7 @@ private class MigrationTrace {
                 TraceSink { event ->
                     when (event) {
                         is TraceEvent.StreamLoss,
+                        is TraceEvent.StreamEndLatched,
                         is TraceEvent.PathState,
                         is TraceEvent.State,
                         is TraceEvent.Error,
@@ -872,19 +873,36 @@ private class MigrationTrace {
             }
         }
         val losses = kept.filter { it.contains(" STREAM_LOSS ") }
+        val ends = kept.filter { it.contains(" STREAM_END ") }
+        // The suspect site, named in StreamEndSite: a stream finished by a salvaged cancelled recv.
+        val salvageEnds = ends.filter { it.endsWith(" CancelledRecvSalvage") }
         val total = kept.size + dropped.values.sum()
 
         val verdict =
             when {
+                // Checked before STREAM_LOSS because it is the more specific finding: this site latches
+                // on the branch where the salvaged chunk WAS queued, so it loses no byte and would
+                // otherwise be reported under the "nothing was dropped" verdict below — the exact
+                // exoneration this event was added to prevent.
+                salvageEnds.isNotEmpty() ->
+                    "VERDICT: ${salvageEnds.size} STREAM_END line(s) at CancelledRecvSalvage — a stream was " +
+                        "finished for good by a recv salvaged out of a read that had already timed out. That " +
+                        "is the #393 mechanism: the latch answers every later read from the slot, so the " +
+                        "stream is dead while the connection stays healthy. Check whether traffic follows it."
+                ends.isNotEmpty() && losses.isEmpty() ->
+                    "VERDICT: no STREAM_LOSS, but ${ends.size} STREAM_END line(s) — no byte was dropped, the " +
+                        "stream was ENDED. Read the site token on each: TeardownDrain and ReadDelivery are " +
+                        "ordinary, and a stream that keeps being written to after any of them is the bug."
                 losses.isNotEmpty() ->
                     "VERDICT: ${losses.size} STREAM_LOSS line(s) — DriverStreamAdapter released bytes it had " +
                         "accepted. The cause token on each line names which of the three windows it was " +
                         "(ReaderGone / QueueClosed / SalvageUnclaimed)."
                 total > 0 ->
-                    "VERDICT: capture was ACTIVE ($total events recorded) and emitted NO STREAM_LOSS. The " +
-                        "adapter released nothing it had accepted — so IF this failure is a missing byte, it " +
-                        "was lost UPSTREAM of DriverStreamAdapter (quiche's receive path, or recv_info), not " +
-                        "on the read path #414 instrumented. For any other failure this line is only context."
+                    "VERDICT: capture was ACTIVE ($total events recorded) and emitted NEITHER STREAM_LOSS NOR " +
+                        "STREAM_END. The adapter released nothing and no stream was ended — so this is a STALL, " +
+                        "not a loss and not a truncation: bytes stopped arriving while the stream stayed open. " +
+                        "Read the per-role DgramOut@:port counts below for which channel went quiet after the " +
+                        "migration, and remember a server connection records no DgramIn at all."
                 // The guard that keeps the line above honest: zero events means the wiring did not take,
                 // and then "no STREAM_LOSS" is a statement about this harness, not about the driver.
                 else ->
@@ -898,7 +916,7 @@ private class MigrationTrace {
             // Capture order, deliberately not sorted by timestamp: each connection records against its
             // own clock origin (v1 carries no connection id), so client and server nanos are not
             // comparable and a merged sort would invent an interleaving that never happened.
-            appendLine("--- captured (STREAM_LOSS / PATH_STATE / STATE / ERROR, both sides, in capture order) ---")
+            appendLine("--- captured (STREAM_LOSS / STREAM_END / PATH_STATE / STATE / ERROR, both sides, in capture order) ---")
             if (kept.isEmpty()) appendLine("(none)") else kept.forEach { appendLine(it) }
             if (dropped.isNotEmpty()) {
                 appendLine(
