@@ -544,17 +544,22 @@ abstract class QuicServerTestSuite {
      * The typed reason a peer observes when the remote aborts the whole CONNECTION with an
      * application error code (RFC 9000 §19.19, CONNECTION_CLOSE frame type 0x1d).
      *
-     * The quiche-backed targets (JVM/Android/Linux) decode the peer's code via
+     * Takes the whole [QuicCloseReason], not just the error, because **which side closed** is half the
+     * contract: the remote aborted this connection, so a caught [QuicCloseException] must say
+     * [QuicCloseReason.ByPeer]. That bit is resolved from `quiche_conn_peer_error` and used to be
+     * dropped at the throw site, leaving a caught exception unable to tell "the peer rejected us" from
+     * "we aborted locally" — the observability gap that blocked #437.
+     *
+     * The quiche-backed targets (JVM/Android/Linux/Apple) decode the peer's code via
      * `quiche_conn_peer_error` into [QuicError.ApplicationError] — the default asserts the exact
-     * round-trip. Network.framework does **not** expose a peer's CONNECTION_CLOSE application code
-     * to the client (the same surfacing limitation that makes Apple unable to distinguish RESET from
-     * STOP_SENDING, #134), so the Apple subclass loosens this to "a terminal close was observed".
+     * round-trip. A backend that cannot surface a peer's application close code can loosen this to
+     * "a terminal close was observed" by overriding.
      */
-    protected open fun assertConnectionCloseErrorObservedByPeer(observed: QuicError) {
+    protected open fun assertConnectionCloseErrorObservedByPeer(observed: QuicCloseReason) {
         assertEquals(
-            QuicError.ApplicationError(connectionCloseAppCode),
+            QuicCloseReason.ByPeer(QuicError.ApplicationError(connectionCloseAppCode)),
             observed,
-            "the peer's CONNECTION_CLOSE application error code must round-trip as a typed QuicError",
+            "the peer's CONNECTION_CLOSE must round-trip as a typed QuicError attributed to the peer",
         )
     }
 
@@ -617,7 +622,7 @@ abstract class QuicServerTestSuite {
                                         delay(100)
                                     }
                                 }
-                            assertConnectionCloseErrorObservedByPeer(closeError.quicError)
+                            assertConnectionCloseErrorObservedByPeer(closeError.closeReason)
                         }
                     } finally {
                         serverJob.cancel()

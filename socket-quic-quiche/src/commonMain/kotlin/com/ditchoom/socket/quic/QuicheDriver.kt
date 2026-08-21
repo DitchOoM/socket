@@ -292,19 +292,28 @@ class QuicheDriver(
 
     /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
-     * the recorded close error if the connection has reached [QuicConnectionState.Closed], otherwise
-     * [fallback]. Connection state is the single source of truth for the close reason — the driver,
-     * [DriverStreamAdapter], and every platform facade funnel through here so a [QuicCloseException]
-     * always carries the most specific reason available.
+     * the recorded close reason if the connection has reached [QuicConnectionState.Closed], otherwise
+     * one built from [fallback]. Connection state is the single source of truth for the close reason —
+     * the driver, [DriverStreamAdapter], and every platform facade funnel through here so a
+     * [QuicCloseException] always carries the most specific reason available.
+     *
+     * Returns the reason, not a bare [QuicError], so **which side closed** survives the throw. It is
+     * resolved here, from quiche's `peer_error`/`local_error` (see [resolveCloseReason]), and used to
+     * be discarded one line later at every throw site — which is why a post-migration
+     * `PROTOCOL_VIOLATION` (#437) could not be told from one the peer sent us.
      */
-    fun closeReasonOr(fallback: QuicError): QuicError =
-        when (val r = (state.value as? QuicConnectionState.Closed)?.reason) {
-            is QuicCloseReason.ByPeer -> r.error
-            is QuicCloseReason.ByLocal -> r.error
-            // Graceful, Unspecified, and a state that is not Closed at all carry no specific error —
-            // the caller's fallback stays the answer, exactly as under the old nullable.
-            QuicCloseReason.Graceful, QuicCloseReason.Unspecified, null -> fallback
-        }
+    fun closeReasonOr(fallback: QuicError): QuicCloseReason {
+        val recorded = (state.value as? QuicConnectionState.Closed)?.reason
+        // A recorded side is the most specific answer there is; nothing the caller passes beats it.
+        if (recorded is QuicCloseReason.ByPeer || recorded is QuicCloseReason.ByLocal) return recorded
+        // No recorded failure. A NoError fallback names none either, so the recorded shape stands
+        // (Graceful when the protocol said so, Unspecified when nothing did, and Unspecified for a
+        // state that is not Closed at all) — the same answer this returned under the old nullable.
+        if (fallback is QuicError.NoError) return recorded ?: QuicCloseReason.Unspecified
+        // The caller computed this error itself, here, so it is a local one: this endpoint failed the
+        // operation, whatever the connection state does or does not say.
+        return QuicCloseReason.ByLocal(fallback)
+    }
 
     /**
      * Suspend until the handshake **settles**, and fail if it settled anywhere other than

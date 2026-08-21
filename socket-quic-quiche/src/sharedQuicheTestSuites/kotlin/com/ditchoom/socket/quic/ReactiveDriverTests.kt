@@ -280,7 +280,9 @@ class ReactiveDriverTests {
                 // The peer's reason flows into Closed.error as an exhaustive QuicError (was always null
                 // before) — and closeReasonOr surfaces it instead of the NoError fallback.
                 assertEquals(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), closed.reason)
-                assertEquals(QuicError.ProtocolViolation, driver.closeReasonOr(QuicError.NoError))
+                // ...and closeReasonOr hands the whole reason — side included — to every throw site,
+                // instead of collapsing it to the error and losing who closed us (#437).
+                assertEquals(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), driver.closeReasonOr(QuicError.NoError))
                 assertTrue(!closed.isCleanShutdown)
             } finally {
                 driver.destroy()
@@ -371,7 +373,7 @@ class ReactiveDriverTests {
                     withTimeout(5.seconds) { driver.state.first { it is QuicConnectionState.Closed } },
                 )
             assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason)
-            assertEquals(QuicError.IdleTimeout, driver.closeReasonOr(QuicError.NoError))
+            assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), driver.closeReasonOr(QuicError.NoError))
             Unit
         }
 

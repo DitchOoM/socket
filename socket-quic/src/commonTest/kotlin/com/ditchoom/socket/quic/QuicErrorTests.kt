@@ -213,21 +213,62 @@ class QuicErrorTests {
 
     @Test
     fun quicCloseException_isSocketClosedException_andCarriesError() {
-        val ex = QuicCloseException(QuicError.ProtocolViolation, "boom")
+        val ex = QuicCloseException(QuicCloseReason.ByLocal(QuicError.ProtocolViolation), "boom")
         // Caught uniformly with TCP/TLS connection-lost errors...
         assertIs<SocketClosedException>(ex)
         // ...while the structured protocol reason survives the throw.
         assertIs<QuicError.ProtocolViolation>(ex.quicError)
         // ...and the human message is enriched with the typed reason + hex code (no stringly parsing
-        // needed — quicError stays the source of truth; this is only the rendering).
-        assertEquals("boom [ProtocolViolation (0xa)]", ex.message)
+        // needed — closeReason stays the source of truth; this is only the rendering).
+        assertEquals("boom [local: ProtocolViolation (0xa)]", ex.message)
+    }
+
+    @Test
+    fun quicCloseException_keepsWhichSideClosedTheConnection() {
+        // The same error code, thrown for opposite reasons. Before the exception carried a reason,
+        // these two were indistinguishable once caught — and "we sent a bad frame" vs "the peer
+        // rejected ours" have opposite fixes (#437).
+        val byPeer = QuicCloseException(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), "connection closed")
+        val byLocal = QuicCloseException(QuicCloseReason.ByLocal(QuicError.ProtocolViolation), "connection closed")
+
+        assertEquals(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), byPeer.closeReason)
+        assertEquals(QuicCloseReason.ByLocal(QuicError.ProtocolViolation), byLocal.closeReason)
+        // The error alone cannot tell them apart — which is exactly why it is not the thing to branch on.
+        assertEquals(byPeer.quicError, byLocal.quicError)
+        // The rendering says the side too, so a device log line is self-sufficient.
+        assertEquals("connection closed [peer: ProtocolViolation (0xa)]", byPeer.message)
+        assertEquals("connection closed [local: ProtocolViolation (0xa)]", byLocal.message)
     }
 
     @Test
     fun quicCloseException_cleanShutdown_doesNotAppendNoError() {
         // A clean close carries NoError; appending "[NoError]" would be noise, so the bare message wins.
-        val ex = QuicCloseException(QuicError.NoError, "connection closed")
+        val ex = QuicCloseException(QuicCloseReason.Graceful, "connection closed")
         assertEquals("connection closed", ex.message)
+        assertEquals(QuicError.NoError, ex.quicError)
+    }
+
+    @Test
+    fun quicCloseException_unexplainedTeardown_saysSo() {
+        // No CONNECTION_CLOSE, no timeout — the case the old nullable error reported as a clean
+        // shutdown. It folds to NoError for callers reading the code, and says "unexplained" in the
+        // message, so a log line does not read as a polite goodbye.
+        val ex = QuicCloseException(QuicCloseReason.Unspecified, "connection closed")
+        assertEquals("connection closed [unexplained]", ex.message)
+        assertEquals(QuicError.NoError, ex.quicError)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun quicCloseException_bareErrorConstructor_isHonestAboutWhatItCannotKnow() {
+        // A site holding only an error computed it locally...
+        assertEquals(
+            QuicCloseReason.ByLocal(QuicError.ProtocolViolation),
+            QuicCloseException(QuicError.ProtocolViolation, "boom").closeReason,
+        )
+        // ...and NoError named no failure at all, so it becomes Unspecified rather than claiming a
+        // NO_ERROR close was exchanged when the caller never saw one.
+        assertEquals(QuicCloseReason.Unspecified, QuicCloseException(QuicError.NoError, "closed").closeReason)
     }
 
     // --- describe(): human rendering of the exhaustive type ---

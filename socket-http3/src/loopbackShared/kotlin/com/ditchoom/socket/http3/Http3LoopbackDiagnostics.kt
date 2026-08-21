@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.concurrent.atomics.AtomicReference
@@ -158,11 +159,11 @@ class Http3LoopbackDiagnostics {
             appendLine("=== HTTP/3 loopback failure diagnostics ===")
             appendLine("cause: ${typeName(cause)}: ${cause.message}")
             causeChain(cause).forEach { appendLine("  caused by: ${typeName(it)}: ${it.message}") }
-            // The typed QUIC reason the failure carries. `NoError` here means the connection state
-            // held no reason when the exception was minted, and the STATE / ERROR lines in the trace
-            // below are then the only place the real cause appears.
+            // The typed QUIC reason the failure carries, side included — `Unspecified` here means the
+            // connection state held no reason when the exception was minted, and the STATE / ERROR
+            // lines in the trace below are then the only place the real cause appears.
             (listOf(cause) + causeChain(cause)).filterIsInstance<QuicCloseException>().firstOrNull()?.let {
-                appendLine("typed QUIC reason: ${it.quicError.describe()}")
+                appendLine("typed QUIC reason: ${it.closeReason.describe()}")
             }
             appendLine("last step reached: ${lastStep.load()}")
             // The typed violation behind an opaque application close code. `ApplicationError(514)` alone
@@ -180,7 +181,7 @@ class Http3LoopbackDiagnostics {
             }
             // Normal termination when a test asked the peer to abort; the typed reason is what says so.
             connectionCloses.load().forEach { (side, e) ->
-                appendLine("$side absorbed a connection close (server role ended): ${e.quicError.describe()}")
+                appendLine("$side absorbed a connection close (server role ended): ${e.closeReason.describe()}")
             }
             val captured = events.load()
             // Lines are in capture order, which is the comparable axis: each recorder stamps against

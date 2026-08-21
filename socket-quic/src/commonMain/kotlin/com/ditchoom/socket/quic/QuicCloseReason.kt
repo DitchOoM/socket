@@ -80,3 +80,22 @@ sealed interface QuicCloseReason {
      */
     data object Unspecified : QuicCloseReason
 }
+
+/**
+ * A short human rendering of a close reason — the *side* plus the error's own [QuicError.describe],
+ * e.g. `peer: ProtocolViolation (0xa)`.
+ *
+ * One rendering, in one place, because this string is what ends up in a log line, an HTTP/3 loopback
+ * diagnostic, and a device probe's output — and three copies of "how a close is spelled" would drift
+ * apart exactly when someone is correlating them. The `peer:`/`local:` prefixes match what the QUIC
+ * trace recorder writes for a `STATE … Closed` event, so a log and a trace read the same way.
+ *
+ * It is a rendering, never a parse target: the reason itself is the exhaustive type to match on.
+ */
+fun QuicCloseReason.describe(): String =
+    when (this) {
+        QuicCloseReason.Graceful -> "graceful"
+        QuicCloseReason.Unspecified -> "unexplained"
+        is QuicCloseReason.ByPeer -> "peer: ${error.describe()}"
+        is QuicCloseReason.ByLocal -> "local: ${error.describe()}"
+    }
