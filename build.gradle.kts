@@ -804,12 +804,26 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
 //
 // Read from the CLIENT environment via the provider API (the daemon may predate the value) and
 // forward every variable the test binaries actually read.
-// Deliberately NOT including QUIC_TEST_TIME_SCALE, which build-apple.yaml sets to 3 workflow-wide:
-// forwarding it would triple every `.scaled` budget inside the simulator suites for the first time,
-// which is a timing change to lanes that currently pass and belongs in its own commit. It is the same
-// bug — a workflow-level variable that never reaches the simulator — and it is now visible here
-// rather than silently absent.
-val simulatorForwardedEnv = listOf("SOCKET_REQUIRE_ALL_TESTS", "QUIC_SIM_BOOTED")
+//
+// QUIC_TEST_TIME_SCALE was deliberately held back when this list was introduced — forwarding it
+// triples every `.scaled` budget inside the simulator suites for the first time, and that is a timing
+// change to lanes that were passing, so it was left for its own commit. This is that commit.
+//
+// What made it urgent: the simulator lanes were not merely un-scaled, they were scaled WRONG in the
+// direction that manufactures failures. build-apple.yaml sets QUIC_TEST_TIME_SCALE=3 workflow-wide
+// because a loaded runner needs proportionally more wall-clock; the simulator lanes silently ran at
+// scale 1, i.e. **a third of the budget every other lane gets**, on the slowest hardware in the
+// matrix. Measured on PR #430's iosSimulatorArm64 lane, with the workflow env showing
+// `QUIC_TEST_TIME_SCALE: 3`: both migration transfer tests failed with
+// `TimeoutCancellationException: Timed out waiting for 10000 ms` — 10s, not the intended 30s — while
+// the macOS-ARM64 lane, which is not a simulator and does receive the variable, timed out at
+// `30000 ms`. Same suite, same commit, budgets 3x apart, and the two tests took turns failing between
+// runs, which is what a budget sitting on the edge looks like rather than a defect in either test.
+//
+// So this is not "make the simulator lanes more tolerant". It is making them agree with the eight
+// lanes that already read the variable, and it removes a standing source of false red that was being
+// investigated as a QUIC bug.
+val simulatorForwardedEnv = listOf("SOCKET_REQUIRE_ALL_TESTS", "QUIC_SIM_BOOTED", "QUIC_TEST_TIME_SCALE")
 
 allprojects {
     tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>().configureEach {
