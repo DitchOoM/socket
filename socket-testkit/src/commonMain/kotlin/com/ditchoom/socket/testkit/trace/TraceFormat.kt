@@ -63,6 +63,14 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append(' ')
                 append(event.cause)
             }
+            is TraceEvent.StreamEndLatched -> {
+                append("STREAM_END ")
+                append(event.streamId)
+                append(' ')
+                append(event.kind)
+                append(' ')
+                append(event.site)
+            }
             is TraceEvent.Error -> {
                 append("ERROR ")
                 append(event.type)
@@ -152,6 +160,11 @@ internal fun decodeTraceLine(line: String): TraceEvent {
             val f = fields.split(' ')
             require(f.size == 3) { "STREAM_LOSS expects 3 fields, got ${f.size}: $line" }
             TraceEvent.StreamLoss(at, streamId = f[0].toLong(), bytes = f[1].toInt(), cause = f[2])
+        }
+        "STREAM_END" -> {
+            val f = fields.split(' ')
+            require(f.size == 3) { "STREAM_END expects 3 fields, got ${f.size}: $line" }
+            TraceEvent.StreamEndLatched(at, streamId = f[0].toLong(), kind = f[1], site = f[2])
         }
         "ERROR" -> {
             val sp = fields.indexOf(' ')

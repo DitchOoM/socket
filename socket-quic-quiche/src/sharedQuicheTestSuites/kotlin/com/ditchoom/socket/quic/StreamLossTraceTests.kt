@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.StreamEndSite
 import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -50,6 +51,8 @@ class StreamLossTraceTests {
         }
 
         fun losses(): List<TraceEvent.StreamLoss> = events.filterIsInstance<TraceEvent.StreamLoss>()
+
+        fun ends(): List<TraceEvent.StreamEndLatched> = events.filterIsInstance<TraceEvent.StreamEndLatched>()
     }
 
     private fun driverRecording(sink: CollectingSink): QuicheDriver =
@@ -144,6 +147,42 @@ class StreamLossTraceTests {
             recorded.map { it.cause },
             "the v1 tokens are frozen — changing one invalidates every recorded trace",
         )
+    }
+
+    @Test
+    fun everyStreamEndKindAndSiteRoundTripsThroughTheV1Format() {
+        // Same boundary as the losses above, and the same reason: a STREAM_END line that cannot be read
+        // back is no use to the deobfuscator, the fixtures, or a failure dump.
+        val sink = CollectingSink()
+        val recorder = QuicTraceRecorder(sink)
+        val sites = listOf(StreamEndSite.TeardownDrain, StreamEndSite.CancelledRecvSalvage, StreamEndSite.ReadDelivery)
+        sites.forEachIndexed { i, site ->
+            recorder.streamEnd(streamId = i.toLong(), end = StreamEnd.Fin, site = site)
+            recorder.streamEnd(streamId = i.toLong(), end = StreamEnd.Reset(QuicAppErrorCode(7L)), site = site)
+        }
+
+        val recorded = sink.ends()
+        assertEquals(sites.size * 2, recorded.size, "one line per kind per site")
+        recorded.forEach { event ->
+            assertEquals(event, TraceEvent.parse(event.toString()), "parse(emit(e)) != e for $event")
+        }
+        assertEquals(
+            listOf("TeardownDrain", "CancelledRecvSalvage", "ReadDelivery"),
+            recorded.map { it.site }.distinct(),
+            "the v1 site tokens are frozen — changing one invalidates every recorded trace",
+        )
+        assertEquals(
+            listOf("Fin", "Reset-7"),
+            recorded.map { it.kind }.distinct(),
+            "a reset carries the peer's application error code in its token, and stays one whitespace-free word",
+        )
+    }
+
+    @Test
+    fun aStreamEndIsAnObservationNotAReplayableInput() {
+        // Same rule as STREAM_LOSS below: this is our own terminal verdict, not the peer frame that
+        // caused it. Replay drives the far side, which re-derives the latch for itself.
+        assertTrue(!TraceEvent.StreamEndLatched(1.nanoseconds, 4L, "Fin", "ReadDelivery").isInput)
     }
 
     @Test

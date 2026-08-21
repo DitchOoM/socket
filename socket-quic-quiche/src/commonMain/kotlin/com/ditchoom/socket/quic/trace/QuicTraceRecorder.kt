@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.RealDriverClock
 import com.ditchoom.socket.quic.SendOutcome
+import com.ditchoom.socket.quic.StreamEnd
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
@@ -159,6 +160,42 @@ class QuicTraceRecorder(
                 StreamLossCause.SalvageUnclaimed -> "SalvageUnclaimed"
             }
         record(TraceEvent.StreamLoss(now(), streamId, bytes, token))
+    }
+
+    /**
+     * Record a stream's read side reaching its terminal verdict (STREAM_END).
+     *
+     * The counterpart to [streamLoss], and deliberately a separate event: that one records bytes the
+     * application will never receive, this one records the stream being *finished*, which can happen
+     * with no byte lost at all. `salvageCancelledRecv` latches the FIN on the branch where the salvaged
+     * chunk queued successfully — nothing is dropped, so [streamLoss] stays silent — and every later
+     * read is then answered `End` from the slot without quiche being asked again. A trace that could
+     * only say "no bytes were dropped" therefore read as an exoneration of exactly the path under
+     * suspicion in issue #393.
+     *
+     * Both sealed inputs are translated onto frozen v1 tokens here, at the wire boundary, as
+     * [streamLoss] and [pathState] do. The parameter is [StreamEnd.Terminal], not [StreamEnd]: an
+     * un-ended stream has no verdict to record, so that case is unrepresentable rather than no-oped.
+     */
+    fun streamEnd(
+        streamId: Long,
+        end: StreamEnd.Terminal,
+        site: StreamEndSite,
+    ) {
+        val kind =
+            when (end) {
+                // `Reset-<code>` and not `Reset(<code>)`: v1 lines are space-delimited and read by shell
+                // tooling as often as by the parser, so the token stays one word with no brackets.
+                is StreamEnd.Reset -> "Reset-${end.applicationErrorCode.value}"
+                StreamEnd.Fin -> "Fin"
+            }
+        val siteToken =
+            when (site) {
+                StreamEndSite.TeardownDrain -> "TeardownDrain"
+                StreamEndSite.CancelledRecvSalvage -> "CancelledRecvSalvage"
+                StreamEndSite.ReadDelivery -> "ReadDelivery"
+            }
+        record(TraceEvent.StreamEndLatched(now(), streamId, kind, siteToken))
     }
 
     /**
