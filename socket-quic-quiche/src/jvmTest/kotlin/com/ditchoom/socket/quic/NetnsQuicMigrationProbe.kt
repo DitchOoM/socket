@@ -7,9 +7,11 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -64,6 +66,31 @@ object NetnsQuicMigrationProbe {
     private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
 
     private fun note(message: String) = println("[netns-quic] $message")
+
+    /**
+     * Migrate to [target], retrying the one answer that is transient **by design**.
+     *
+     * [MigrationResult.Unmoved.Failed.NoSpareConnectionId] does not mean the migration is impossible; it
+     * means the peer has not yet issued a replacement for the connection ID the previous migration
+     * retired (RFC 9000 Section 5.1.1). That is one round trip, and the next attempt succeeds. Treating it
+     * as fatal made this probe report a failure for a reason it was never written to test — and it
+     * already cost #424 a CI rerun on a lane that was working correctly.
+     *
+     * `QuicActiveMigrationTestSuite.migrateReplenishingConnectionIds` does exactly this, for exactly this
+     * reason; this is the same rule where the netns probe needs it. Every other non-success is returned
+     * untouched, so a real failure still fails the probe on the first attempt.
+     */
+    private suspend fun QuicScope.migrateReplenishingConnectionIds(target: MigrationTarget): MigrationResult {
+        var result = migrate(target)
+        var attempts = 0
+        while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && attempts < CID_REPLENISH_ATTEMPTS) {
+            delay(CID_REPLENISH_DELAY)
+            result = migrate(target)
+            attempts++
+        }
+        if (attempts > 0) note("migrate to ${'$'}target needed ${'$'}attempts retry(s) for a spare connection id")
+        return result
+    }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -169,7 +196,7 @@ object NetnsQuicMigrationProbe {
 
                         // 1. Move onto path A explicitly. There is no client-side local-bind at connect time —
                         //    MigrationTarget.LocalAddress is the only way to choose the source address.
-                        when (val onA = migrate(MigrationTarget.LocalAddress(pathA))) {
+                        when (val onA = migrateReplenishingConnectionIds(MigrationTarget.LocalAddress(pathA))) {
                             is MigrationResult.Succeeded ->
                                 if (onA.localEndpoint.host != pathA) {
                                     failures += "migrate to A resolved to ${onA.localEndpoint.host}, expected $pathA"
@@ -194,7 +221,7 @@ object NetnsQuicMigrationProbe {
 
                         // 3. Migrate onto path B across that death, then prove the stream still carries data AND
                         //    that nothing sent before the migration was lost.
-                        when (val onB = migrate(MigrationTarget.LocalAddress(pathB))) {
+                        when (val onB = migrateReplenishingConnectionIds(MigrationTarget.LocalAddress(pathB))) {
                             is MigrationResult.Succeeded ->
                                 if (onB.localEndpoint.host != pathB) {
                                     failures += "migrate to B resolved to ${onB.localEndpoint.host}, expected $pathB"
@@ -250,6 +277,16 @@ object NetnsQuicMigrationProbe {
             }
         }
     }
+
+    /**
+     * How many times a migration may wait for the peer to replenish a retired connection ID before the
+     * probe calls it a failure. Four attempts over ~400ms is far more than the single round trip RFC 9000
+     * Section 5.1.1 needs, and still bounded so a genuinely stuck peer fails the probe rather than hanging it.
+     */
+    private const val CID_REPLENISH_ATTEMPTS = 4
+
+    /** One namespace round trip is sub-millisecond; 100ms is slack, not a guess at the RTT. */
+    private val CID_REPLENISH_DELAY = 100.milliseconds
 
     /** Cert/key the namespace driver stages; paths come from the same env contract. */
     private fun netnsTlsConfig(): QuicTlsConfig =
