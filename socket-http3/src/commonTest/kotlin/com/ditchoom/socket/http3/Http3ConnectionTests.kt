@@ -15,7 +15,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CoroutineScope
@@ -355,7 +355,7 @@ class Http3ConnectionTests {
         ): BytesWritten {
             writeAttempts++
             if (writeAttempts > 1) {
-                throw QuicCloseException(QuicError.NoError, "connection closed")
+                throw QuicCloseException(QuicCloseReason.Unspecified, "connection closed")
             }
             val n = buffer.remaining()
             repeat(n) { buffer.readByte() }

@@ -46,9 +46,20 @@ internal class DriverDatagramAdapter(
     private val driver: QuicheDriver,
     private val remote: SocketAddress,
 ) : ConnectedDatagramChannel {
-    /** The structured close reason if the connection has closed, else [fallback]. */
-    private fun closedReason(fallback: QuicError): QuicError =
-        (driver.state.value as? QuicConnectionState.Closed)?.reason?.errorOrNull ?: fallback
+    /**
+     * The structured close reason if the connection has closed, else one built from [fallback].
+     *
+     * Delegates to [QuicheDriver.closeReasonOr] rather than reading `driver.state` itself: the driver's
+     * KDoc names connection state the single source of truth for a close reason, and two copies of that
+     * resolution can drift.
+     */
+    private fun closedReason(fallback: QuicError): QuicCloseReason = driver.closeReasonOr(fallback)
+
+    /**
+     * The close reason folded to a bare [QuicError], for [DatagramReadResult.Closed] — buffer-flow's
+     * datagram result predates [QuicCloseReason] and carries an error, not a side.
+     */
+    private fun closedError(fallback: QuicError): QuicError = closedReason(fallback).errorOrNull ?: fallback
 
     override val isOpen: Boolean
         get() = driver.state.value !is QuicConnectionState.Closed
@@ -151,20 +162,20 @@ internal class DriverDatagramAdapter(
                         )
                     }
                     is StreamRecvResult.Done -> driver.dgramSignal.receive() // park until one arrives, then retry
-                    is StreamRecvResult.Error -> return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+                    is StreamRecvResult.Error -> return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
                     // Datagrams have no stream to reset. Reset -> here would mean a backend bug (quiche
                     // decoded a stream-only sentinel out of a dgram recv); ConnectionGone is the old -2
                     // teardown sentinel. Both land on the same verdict as any other Error above.
                     is StreamRecvResult.Reset, is StreamRecvResult.ConnectionGone ->
-                        return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+                        return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
                 }
             }
             @Suppress("UNREACHABLE_CODE")
-            DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+            DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
         } catch (_: ClosedSendChannelException) {
-            return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+            return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
         } catch (_: ClosedReceiveChannelException) {
-            return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+            return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
         } finally {
             inFlight?.let { withContext(NonCancellable) { it.join() } }
             if (!transferred) buffer.freeNativeMemory()

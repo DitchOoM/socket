@@ -200,7 +200,13 @@ class DeviceHandoffProbe {
                                 // outer loop reconnect — a reconnect is itself data (it is precisely what
                                 // distinguishes "migrated" from "had to start over").
                                 if (e is QuicCloseException) {
-                                    emit("CONNECTION-DEAD seq=$seq — leaving scope to reconnect")
+                                    // The typed reason, side included: "we sent a frame the peer
+                                    // rejected" and "the peer sent us one" are opposite bugs, and a
+                                    // device log is all we get from a real handoff (#437).
+                                    emit(
+                                        "CONNECTION-DEAD seq=$seq reason=${e.closeReason.describe()} " +
+                                            "— leaving scope to reconnect",
+                                    )
                                     return@withQuicConnection
                                 }
                             }

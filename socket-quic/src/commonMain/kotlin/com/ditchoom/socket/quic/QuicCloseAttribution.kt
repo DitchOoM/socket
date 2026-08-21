@@ -3,14 +3,14 @@ package com.ditchoom.socket.quic
 /**
  * *Which* connection a [QuicCloseException] came from.
  *
- * The exception already carries *why* as its [QuicCloseException.quicError]. This adds the other half —
+ * The exception already carries *why* as its [QuicCloseException.closeReason]. This adds the other half —
  * identity, and what the network was doing — because a caught exception is what most callers actually
  * log, and in a process holding several connections a reason alone cannot say which one died. That is
  * precisely why consumer issue #1152 (133.5s ± 0.2s reconnect cycles) stayed unresolved: the logs had
  * reasons and no way to attribute them.
  *
  * ## Why this does not carry the reason as well
- * It would duplicate [QuicCloseException.quicError], and two fields describing one fact can disagree —
+ * It would duplicate [QuicCloseException.closeReason], and two fields describing one fact can disagree —
  * at which point the discrepancy becomes the bug you are debugging. [QuicCloseContext] is the bundle
  * that pairs reason with identity for the *state* channel, where the reason is the richer
  * [QuicCloseReason]; the exception keeps its own error and borrows only the identity half.

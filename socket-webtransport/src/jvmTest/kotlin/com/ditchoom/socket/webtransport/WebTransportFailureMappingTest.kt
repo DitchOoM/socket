@@ -5,6 +5,7 @@ import com.ditchoom.socket.CertificateHashPinningFailure
 import com.ditchoom.socket.ConnectionFailureReason
 import com.ditchoom.socket.SSLHandshakeFailedException
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicError
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -51,7 +52,7 @@ class WebTransportFailureMappingTest {
     @Test
     fun quicCryptoError_certAlert_mapsToTlsHandshakeCert() {
         // TLS alert 45 = certificate_expired → a certificate rejection.
-        val f = QuicCloseException(QuicError.CryptoError(45), "cert expired").toNeutralWebTransportFailure()
+        val f = QuicCloseException(QuicCloseReason.ByLocal(QuicError.CryptoError(45)), "cert expired").toNeutralWebTransportFailure()
         assertIs<WebTransportFailure.TlsHandshake>(f)
         assertEquals(true, f.badCertificate)
     }
@@ -59,14 +60,14 @@ class WebTransportFailureMappingTest {
     @Test
     fun quicCryptoError_handshakeAlert_mapsToTlsHandshakeNotCert() {
         // TLS alert 40 = handshake_failure → a generic handshake failure, not a cert rejection.
-        val f = QuicCloseException(QuicError.CryptoError(40), "handshake failure").toNeutralWebTransportFailure()
+        val f = QuicCloseException(QuicCloseReason.ByLocal(QuicError.CryptoError(40)), "handshake failure").toNeutralWebTransportFailure()
         assertIs<WebTransportFailure.TlsHandshake>(f)
         assertEquals(false, f.badCertificate)
     }
 
     @Test
     fun quicNonCryptoClose_mapsToSessionError() {
-        val f = QuicCloseException(QuicError.IdleTimeout, "idle timeout").toNeutralWebTransportFailure()
+        val f = QuicCloseException(QuicCloseReason.ByLocal(QuicError.IdleTimeout), "idle timeout").toNeutralWebTransportFailure()
         assertIs<WebTransportFailure.SessionError>(f)
     }
 
