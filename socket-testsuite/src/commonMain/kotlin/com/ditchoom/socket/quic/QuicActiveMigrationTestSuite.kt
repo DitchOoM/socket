@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -821,12 +822,28 @@ private class MigrationTrace {
                         is TraceEvent.State,
                         is TraceEvent.Error,
                         -> lines.trySend("$role $event")
+                        // Congestion state is the one "volume" event worth keeping — but only the LAST of
+                        // them per role. It answers the question a stalled transfer actually raises (was
+                        // the path slow, or was nothing sent?) and the counts alone cannot: rtt/pto/lost
+                        // separate a PTO-backoff collapse from a test that simply ran out of budget.
+                        is TraceEvent.Stats -> lines.trySend(STAT + role + " " + renderStats(event.stats))
                         // Everything else is volume, not evidence: recorded as a short key so the digest
                         // can report how much it dropped without holding any of it.
                         else -> lines.trySend(DROPPED + role + "/" + summarize(event))
                     }
                 },
         )
+
+    /**
+     * The congestion fields that distinguish "the path collapsed" from "the clock ran out" — the only
+     * two readings a stalled transfer leaves open once STREAM_LOSS and STREAM_END are both absent. A
+     * PTO/RTT explosion is a transport defect; flat rtt with a low pto count and a healthy cwnd means
+     * the test was simply not given enough wall-clock.
+     */
+    private fun renderStats(s: TracePathStats): String =
+        "rtt=${s.rtt.inWholeMilliseconds}ms min=${s.minRtt.inWholeMilliseconds}ms " +
+            "max=${s.maxRtt.inWholeMilliseconds}ms pto=${s.totalPtoCount} lost=${s.lost} " +
+            "retrans=${s.retrans} cwnd=${s.cwnd} sent=${s.sent} recv=${s.recv}"
 
     /**
      * The bucket a dropped event is counted under.
@@ -863,20 +880,28 @@ private class MigrationTrace {
         lines.close()
         val kept = ArrayList<String>()
         val dropped = LinkedHashMap<String, Int>()
+        // Last writer wins: only the most recent sample per role survives, which is the one describing
+        // the connection at the moment it gave up.
+        val lastStats = LinkedHashMap<String, String>()
         while (true) {
             val line = lines.tryReceive().getOrNull() ?: break
-            if (line.startsWith(DROPPED)) {
-                val kind = line.substring(DROPPED.length)
-                dropped[kind] = (dropped[kind] ?: 0) + 1
-            } else {
-                kept.add(line)
+            when {
+                line.startsWith(DROPPED) -> {
+                    val kind = line.substring(DROPPED.length)
+                    dropped[kind] = (dropped[kind] ?: 0) + 1
+                }
+                line.startsWith(STAT) -> {
+                    val body = line.substring(STAT.length)
+                    lastStats[body.substringBefore(' ')] = body.substringAfter(' ')
+                }
+                else -> kept.add(line)
             }
         }
         val losses = kept.filter { it.contains(" STREAM_LOSS ") }
         val ends = kept.filter { it.contains(" STREAM_END ") }
         // The suspect site, named in StreamEndSite: a stream finished by a salvaged cancelled recv.
         val salvageEnds = ends.filter { it.endsWith(" CancelledRecvSalvage") }
-        val total = kept.size + dropped.values.sum()
+        val total = kept.size + dropped.values.sum() + lastStats.size
 
         val verdict =
             when {
@@ -912,7 +937,15 @@ private class MigrationTrace {
             }
 
         return buildString {
+            // The scale is stated because a timeout budget is only interpretable with it: a lane that
+            // never received QUIC_TEST_TIME_SCALE runs every `.scaled` deadline at 1.0, and a failure
+            // there says more about the harness than the transport (see PR #431).
+            appendLine("timeScale=${testTimeScale()}")
             appendLine(verdict)
+            if (lastStats.isNotEmpty()) {
+                appendLine("--- last path stats per role (congestion state when it gave up) ---")
+                lastStats.forEach { (role, body) -> appendLine("$role $body") }
+            }
             // Capture order, deliberately not sorted by timestamp: each connection records against its
             // own clock origin (v1 carries no connection id), so client and server nanos are not
             // comparable and a merged sort would invent an interleaving that never happened.
@@ -976,6 +1009,9 @@ private class MigrationTrace {
 
         /** Bound on the flattened cause chain — a cycle must not hang the failure path. */
         private const val MAX_CAUSE_DEPTH = 5
+
+        /** Marks a path-stats sample; the digest keeps only the last per role. */
+        private const val STAT = "~stat "
     }
 }
 
