@@ -1,0 +1,4 @@
+# Vendored specification texts: reference material, not this project's code or prose. Marking them
+# keeps GitHub's language statistics and its "N files changed" review view honest — a 400KB RFC is
+# not a source file, and it never changes (see docs/rfc/README.md).
+docs/rfc/*.txt linguist-vendored
