@@ -146,6 +146,10 @@ fun downloadQuicheSource(
     // migrated-from path becomes evictable and the 4th migration stops failing (#395). Idempotent,
     // fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheRetireDcidNoRelink(sourceDir)
+    // Let an ACK that acknowledges nothing a given path sent still advance that path's loss detection,
+    // so a path the peer migrated away from cannot orphan its in-flight packets forever (#393).
+    // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheOrphanPathLoss(sourceDir)
 
     return sourceDir
 }
@@ -192,6 +196,193 @@ fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
         """.trimMargin()
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
+}
+
+/**
+ * Patch quiche so an **ACK advances loss detection on every path**, not only on the path that happens
+ * to have sent the acknowledged packets — otherwise a path the peer has migrated away from orphans its
+ * in-flight packets for the life of the connection.
+ *
+ * **Why this is needed (DitchOoM/socket#393).** Packet numbers are per packet-number *space*, not per
+ * path (RFC 9002 Section 2), but quiche keeps `largest_acked_packet` and the sent-packet list per path.
+ * `Recovery::on_ack_received` returns early — before advancing `largest_acked_packet` and before
+ * `detect_lost_packets` — whenever the ACK acknowledges nothing *this* path sent. For a path the
+ * connection is still using that early return is a harmless optimisation. For a path the peer has
+ * moved away from it is terminal, because all three ways a packet can leave flight are closed at once:
+ *
+ *  1. **It can never be acked** — the peer is no longer at that address and never received it.
+ *  2. **It can never be declared lost** — the only ACK-driven loss pass for the path is behind this
+ *     early return, and its `largest_acked_packet` is frozen at whatever it was when the path last had
+ *     a packet acked, so neither the time nor the packet-number threshold can ever fire again.
+ *  3. **Its PTO can never be probed** — `on_timeout` still runs the path's loss-detection timer, but
+ *     `get_send_path_id` only ever returns the *active* path or one that is `probing_required()`, so
+ *     `send()` returns `Done` and the probe never leaves the host.
+ *
+ * The packets sit in flight forever. The STREAM data they carry is never retransmitted, so the peer's
+ * stream stalls at that offset permanently while the connection itself stays healthy — established,
+ * rtt normal, cwnd open, `lost=0` — and the driver is woken by a doubling PTO that can never send
+ * anything. Measured on a loopback migration (macOS arm64, quiche 0.29.3): server path 0
+ * `pto` climbing 2 -> 11 with `lost=0` and `connSend` returning `Done` on every one of those wakes,
+ * while the client sat parked on a 90-second idle timer waiting for one 64-byte chunk that had been
+ * sent, once, to the address it had just left.
+ *
+ * The edit advances `largest_acked_packet` from the ACK and runs the path's ordinary loss detection —
+ * nothing more. It changes no threshold and invents no loss: it lets the existing time and
+ * packet-number rules see an ACK that is already proof those packets are late. Recovered frames leave
+ * on the active path, because `send_single` already drains lost frames from **every** path.
+ *
+ * Reproducer / regression guard:
+ * `QuicActiveMigrationTestSuite.streamBytesRemainAnInOrderPrefixAcrossAMigration`. Before the patch it
+ * wedged for the full test budget in 11 of 200 local runs; after it, 0 of 200 (same binary, the patch
+ * toggled by env var so both arms shared one build).
+ *
+ * Both recovery implementations are patched: `congestion` (CUBIC/RENO, quiche's default and what this
+ * library ships) and `gcongestion` (BBR2, reachable through the public `CongestionControl.Bbr2`). The
+ * congestion arm is the one covered by the measurement above; the gcongestion arm is the same edit
+ * against the same early return and is carried so selecting BBR2 does not silently reintroduce the
+ * defect.
+ *
+ * Upstream-reportable like the `TransportParams` repr bug and the DCID re-linking; carried here until
+ * then. **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline): the
+ * marker returns early, and a moved or upstream-fixed anchor throws rather than silently no-opping.
+ */
+fun patchQuicheOrphanPathLoss(sourceDir: File) {
+    val legacyRs = sourceDir.resolve("quiche/src/recovery/congestion/recovery.rs")
+    val gcongestionRs = sourceDir.resolve("quiche/src/recovery/gcongestion/recovery.rs")
+    if (!legacyRs.exists() || !gcongestionRs.exists()) return
+
+    fun missingAnchor(what: String): Nothing =
+        throw GradleException(
+            "socket-orphan-path-loss (DitchOoM/socket#393): $what was not found. A quiche bump moved or " +
+                "reshaped it — possibly fixing the per-path loss-detection gap this patch works around (an " +
+                "ACK that acknowledges nothing a path sent never advances that path's largest_acked_packet, " +
+                "so a migrated-from path can never declare its in-flight packets lost). If upstream fixed it: " +
+                "DELETE this patch and its call site, and KEEP the regression guard " +
+                "(QuicActiveMigrationTestSuite.streamBytesRemainAnInOrderPrefixAcrossAMigration), which " +
+                "outlives the patch. Otherwise re-fit the anchor and re-verify with that test — it reproduces " +
+                "the stall at roughly 1 run in 18 on a loopback macOS build, so a single green run proves " +
+                "nothing. See https://github.com/DitchOoM/socket/issues/393",
+        )
+
+    val marker = "socket-orphan-path-loss"
+
+    // ── Edit 1 (congestion/recovery.rs): CUBIC/RENO — quiche's default, and what this library ships.
+    val legacyText = legacyRs.readText()
+    if (!legacyText.contains(marker)) {
+        val anchor =
+            """
+            |        if self.newly_acked.is_empty() {
+            |            return Ok(OnAckReceivedOutcome::default());
+            |        }
+            """.trimMargin()
+        if (!legacyText.contains(anchor)) {
+            missingAnchor(
+                "Recovery::on_ack_received's empty-newly_acked early return in " +
+                    "quiche/src/recovery/congestion/recovery.rs",
+            )
+        }
+        val replacement =
+            """
+            |        // $marker (DitchOoM/socket#393): an ACK that acknowledges nothing THIS path sent is
+            |        // still evidence about this path. Packet numbers are per packet-number SPACE, not per
+            |        // path (RFC 9002 Section 2), so an ACK for a higher-numbered packet sent on another
+            |        // path proves this path's older packets are late. Returning here without advancing
+            |        // `largest_acked_packet` freezes loss detection for any path the peer has migrated
+            |        // away from: its packets can never be acked (the peer left that address), never be
+            |        // declared lost (no threshold can fire against a frozen largest_acked), and its PTO
+            |        // can never be probed (`get_send_path_id` only returns the active or a probing path).
+            |        // The STREAM data they carry is then never retransmitted and the peer's stream stalls
+            |        // at that offset for the life of an otherwise healthy connection.
+            |        if self.newly_acked.is_empty() {
+            |            let mut lost_packets = 0;
+            |            let mut lost_bytes = 0;
+            |
+            |            if let Some(largest_in_ack) = peer_sent_ack_ranges.last() {
+            |                let advanced = self.epochs[epoch]
+            |                    .largest_acked_packet
+            |                    .is_none_or(|current| largest_in_ack > current);
+            |
+            |                if advanced && self.epochs[epoch].in_flight_count > 0 {
+            |                    self.epochs[epoch].largest_acked_packet = Some(largest_in_ack);
+            |
+            |                    let (lp, lb) = self.detect_lost_packets(epoch, now, trace_id);
+            |                    lost_packets = lp;
+            |                    lost_bytes = lb;
+            |
+            |                    self.set_loss_detection_timer(handshake_status, now);
+            |                }
+            |            }
+            |
+            |            return Ok(OnAckReceivedOutcome {
+            |                lost_packets,
+            |                lost_bytes,
+            |                ..Default::default()
+            |            });
+            |        }
+            """.trimMargin()
+        legacyRs.writeText(legacyText.replaceFirst(anchor, replacement))
+        logger.lifecycle("Patched quiche source: $marker in congestion/recovery.rs (CUBIC/RENO)")
+    }
+
+    // ── Edit 2 (gcongestion/recovery.rs): BBR2, reachable via the public CongestionControl.Bbr2. Same
+    // early return, same repair; this arm carries `acked_bytes`/`spurious_losses` through as upstream does.
+    val gcongestionText = gcongestionRs.readText()
+    if (!gcongestionText.contains(marker)) {
+        val anchor =
+            """
+            |        if self.newly_acked.is_empty() {
+            |            return Ok(OnAckReceivedOutcome {
+            |                acked_bytes,
+            |                spurious_losses,
+            |                ..Default::default()
+            |            });
+            |        }
+            """.trimMargin()
+        if (!gcongestionText.contains(anchor)) {
+            missingAnchor(
+                "GRecovery::on_ack_received's empty-newly_acked early return in " +
+                    "quiche/src/recovery/gcongestion/recovery.rs",
+            )
+        }
+        val replacement =
+            """
+            |        // $marker (DitchOoM/socket#393): see the congestion/recovery.rs twin — an ACK that
+            |        // acknowledges nothing this path sent must still advance the path's loss detection,
+            |        // or a path the peer migrated away from orphans its in-flight packets forever.
+            |        if self.newly_acked.is_empty() {
+            |            if let Some(largest_in_ack) = peer_sent_ack_ranges.last() {
+            |                let advanced = self.epochs[epoch]
+            |                    .largest_acked_packet
+            |                    .is_none_or(|current| largest_in_ack > current);
+            |
+            |                if advanced && self.epochs[epoch].pkts_in_flight > 0 {
+            |                    self.epochs[epoch].largest_acked_packet = Some(largest_in_ack);
+            |
+            |                    let (lost_bytes, lost_packets) =
+            |                        self.detect_and_remove_lost_packets(epoch, now);
+            |
+            |                    self.lost_count += lost_packets;
+            |                    self.set_loss_detection_timer(handshake_status, now);
+            |
+            |                    return Ok(OnAckReceivedOutcome {
+            |                        lost_packets,
+            |                        lost_bytes,
+            |                        acked_bytes,
+            |                        spurious_losses,
+            |                    });
+            |                }
+            |            }
+            |
+            |            return Ok(OnAckReceivedOutcome {
+            |                acked_bytes,
+            |                spurious_losses,
+            |                ..Default::default()
+            |            });
+            |        }
+            """.trimMargin()
+        gcongestionRs.writeText(gcongestionText.replaceFirst(anchor, replacement))
+        logger.lifecycle("Patched quiche source: $marker in gcongestion/recovery.rs (BBR2)")
+    }
 }
 
 /**
