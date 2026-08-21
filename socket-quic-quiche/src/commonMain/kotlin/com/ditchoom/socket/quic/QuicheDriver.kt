@@ -2068,6 +2068,16 @@ class DriverStreamAdapter(
         // is released.
         var inFlight: CompletableDeferred<StreamRecvResult>? = null
         var transferred = false
+        // The chunk this read produced, kept for the same reason [pendingTaken] is: `withTimeout` can
+        // discard the value its block returns when the deadline lands in the gap between producing it and
+        // delivering it. For a chunk taken off [StreamSlot.pendingData] that gap was closed by #414. This
+        // is the other edge — bytes quiche delivered into OUR buffer — and it was still open: `transferred`
+        // is set on the line before the return, so a deadline that won the race left the chunk owned by
+        // nobody. The caller never saw it, and the finally below skipped [salvageCancelledRecv] precisely
+        // BECAUSE `transferred` said the caller had it, so not even a STREAM_LOSS was recorded. One
+        // 64-byte chunk vanished from a healthy stream, and the byte-continuity ledger reported it as the
+        // peer sending the wrong bytes (#433).
+        var delivered: ReadResult.Data? = null
         // A chunk already taken out of slot.pendingData but not yet handed to the caller.
         //
         // pendingData() is destructive: the buffer leaves the queue and its ownership moves to us. If the
@@ -2125,7 +2135,8 @@ class DriverStreamAdapter(
                                     buffer.resetForRead()
                                     // Ownership transfers to the caller — do not release in the finally.
                                     transferred = true
-                                    return@withTimeout ReadResult.Data(buffer)
+                                    delivered = ReadResult.Data(buffer)
+                                    return@withTimeout delivered
                                 }
                                 // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
                                 // the same driver wake that answers this FIN, and End must never overtake
@@ -2214,6 +2225,12 @@ class DriverStreamAdapter(
                 pendingTaken = null
                 return it
             }
+            // The same rule on the other edge: quiche wrote these bytes into our buffer and advanced the
+            // stream's receive offset for them, so the peer will never resend them. Ordered after
+            // [pendingTaken] because that chunk came off the front of the queue and is the older of the
+            // two — though only one of them can ever be set, since every path that takes from the queue
+            // returns immediately.
+            delivered?.let { return it }
             throw e
         } catch (_: ClosedSendChannelException) {
             // The connection closed before this read could enqueue its StreamRecv. transitionToClosed
