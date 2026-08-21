@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.os.PowerManager
@@ -66,6 +69,12 @@ class DeviceHandoffProbe {
         // records zero and proves nothing about the cancellation edge. Setting this just under the
         // cellular RTT (~200ms median, ~500ms post-migration spikes) makes timeouts routine.
         val readTimeoutMs = arg("probeReadTimeoutMs", "8000").toLong()
+        // Echo cadence, injectable for the same reason the read deadline is. At the 2s default the
+        // connection is very nearly IDLE at the instant a handoff lands — and an idle connection has
+        // nothing in flight to strand on the path it is leaving, which is precisely the condition #393
+        // needed. A 2s probe therefore exercises the easy case and reports it as a pass. Drop this to
+        // ~100ms and every migration happens with traffic actually crossing it.
+        val echoIntervalMs = arg("probeEchoIntervalMs", "2000").toLong()
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
@@ -81,7 +90,10 @@ class DeviceHandoffProbe {
         }
 
         log.writeText("")
-        emit("START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port minutes=$minutes readTimeoutMs=$readTimeoutMs")
+        emit(
+            "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
+                "minutes=$minutes readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs",
+        )
 
         val options =
             QuicOptions(
@@ -107,10 +119,15 @@ class DeviceHandoffProbe {
         wakeLock.acquire(minutes * 60_000L + 120_000L)
         emit("WAKELOCK acquired held=${wakeLock.isHeld} timeoutMs=${minutes * 60_000L + 120_000L}")
 
+        // Live status in the shade, so the walk can be driven by what the connection actually did
+        // rather than by a stopwatch. See [ProbeStatus].
+        val status = ProbeStatus(ctx, ::emit)
+
         runBlocking(Dispatchers.IO) {
             while (System.currentTimeMillis() < deadline) {
                 attempt++
                 emit("CONNECT-ATTEMPT n=$attempt")
+                if (attempt > 1) status.onEnded("reconnecting (attempt $attempt)")
                 try {
                     // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
                     // measured, the first run of this probe tore the connection down every 15s with
@@ -144,7 +161,12 @@ class DeviceHandoffProbe {
                         // of a 2s poll and go UNCOUNTED — which would make a working fix look broken,
                         // because the acceptance criterion here is "N handoffs produce N migration
                         // attempts". StateFlow still conflates, but now at collector speed.
-                        launch { pathState.collect { emit("PATH $it") } }
+                        launch {
+                            pathState.collect {
+                                emit("PATH $it")
+                                status.onPath(it.toString())
+                            }
+                        }
 
                         while (System.currentTimeMillis() < deadline) {
                             // A wire CID that rotates while the session id holds is exactly what a
@@ -172,10 +194,12 @@ class DeviceHandoffProbe {
                                     val intact = sentAll.startsWith(recvAll)
                                     val pending = sentAll.length - recvAll.length
                                     emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
+                                    status.onEcho(gotData = true, intactNow = intact, pendingBytes = pending)
                                     if (!intact && !integrityBroken) {
                                         integrityBroken = true
                                         // The whole point of the run. Capture both sides at the divergence.
                                         val at = recvAll.indices.firstOrNull { it >= sentAll.length || sentAll[it] != recvAll[it] } ?: 0
+                                        status.onBroken(at)
                                         emit(
                                             "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
                                                 "sent=[${sentAll.substring(maxOf(0, at - 24), minOf(sentAll.length, at + 24))}] " +
@@ -184,6 +208,11 @@ class DeviceHandoffProbe {
                                     }
                                 } else {
                                     emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
+                                    status.onEcho(
+                                        gotData = false,
+                                        intactNow = sentAll.startsWith(recvAll),
+                                        pendingBytes = sentAll.length - recvAll.length,
+                                    )
                                 }
                             } catch (e: Throwable) {
                                 // The interesting case. Record and keep going — the connection may still
@@ -191,6 +220,18 @@ class DeviceHandoffProbe {
                                 emit(
                                     "ECHO-FAIL seq=$seq after=${System.currentTimeMillis() - sentAt}ms " +
                                         "err=${e::class.simpleName} msg=${e.message}",
+                                )
+                                // A read that times out THROWS — it does not return a non-Data result — so
+                                // this branch, not ECHO-NO-DATA, is where a deadline lands. Wiring the
+                                // counter only to the other branch left the shade frozen on the last good
+                                // state while every read was failing: measured, 30s of
+                                // `timeouts=0 intact=yes` against a server that had been dead the whole
+                                // time. With a sub-RTT deadline this is the COMMON case during a handoff,
+                                // which is exactly when the operator is reading it.
+                                status.onEcho(
+                                    gotData = false,
+                                    intactNow = sentAll.startsWith(recvAll),
+                                    pendingBytes = sentAll.length - recvAll.length,
                                 )
                                 // ...unless it is DEAD, in which case "keep going" means spinning this
                                 // loop against a closed connection for the rest of the run. Measured: a
@@ -200,11 +241,12 @@ class DeviceHandoffProbe {
                                 // outer loop reconnect — a reconnect is itself data (it is precisely what
                                 // distinguishes "migrated" from "had to start over").
                                 if (e is QuicCloseException) {
+                                    status.onEnded("connection dead — reconnecting")
                                     emit("CONNECTION-DEAD seq=$seq — leaving scope to reconnect")
                                     return@withQuicConnection
                                 }
                             }
-                            delay(2_000)
+                            delay(echoIntervalMs)
                         }
                     }
                     emit("SCOPE-EXITED cleanly")
@@ -221,5 +263,141 @@ class DeviceHandoffProbe {
         if (wakeLock.isHeld) wakeLock.release()
         emit("WAKELOCK released")
         emit("DONE attempts=$attempt log=${log.absolutePath}")
+    }
+}
+
+/**
+ * A live status notification for the walk — because the operator cannot watch logcat while walking,
+ * and the one question a walk actually raises is "has it moved yet, and has the new path carried
+ * enough traffic that I can go back?".
+ *
+ * Reactive, not a countdown: every line is driven by an event the probe observed (a path-state change,
+ * an echo, an integrity break). The number that answers "can I move on" is **echoes since the last
+ * path change** — a migration with two echoes behind it has proven nothing, one with thirty has
+ * exercised the new path properly.
+ *
+ * Best-effort by construction. Notifications need a channel on API 26+ and a runtime grant on API 33+
+ * (`adb shell pm grant <test-pkg> android.permission.POST_NOTIFICATIONS`), and this probe's whole
+ * contract is that it logs rather than asserts — the recording is the deliverable. So every failure
+ * here is swallowed after one line: a device that will not show a notification must still complete the
+ * walk it was sent on.
+ */
+private class ProbeStatus(
+    private val ctx: Context,
+    private val emit: (String) -> Unit,
+) {
+    private val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+    private var usable = false
+    private var path = "connecting"
+    private var migrations = 0
+    private var echoes = 0
+    private var sinceMove = 0
+    private var timeouts = 0
+    private var intact = true
+    private var pending = 0
+    private var broken: String? = null
+
+    init {
+        val mgr = manager
+        if (mgr == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            emit("STATUS-NOTIFICATION unavailable (sdk=${Build.VERSION.SDK_INT}) — log only")
+        } else {
+            usable =
+                runCatching {
+                    mgr.createNotificationChannel(
+                        // DEFAULT, not LOW: One UI files a LOW channel under a collapsed "Silent
+                        // notifications" section, where an operator mid-walk will not find it. Paired with
+                        // setOnlyAlertOnce so it announces itself once and then updates silently — the
+                        // point is to be READABLE at a glance, not to buzz every 2 seconds.
+                        NotificationChannel(CHANNEL, "QUIC handoff probe", NotificationManager.IMPORTANCE_DEFAULT),
+                    )
+                    true
+                }.getOrElse {
+                    emit("STATUS-NOTIFICATION channel failed: ${it::class.simpleName} ${it.message} — log only")
+                    false
+                }
+        }
+        // Post immediately rather than waiting for the first event. A probe that shows nothing until it
+        // has connected is indistinguishable, in the shade, from one that never started — and the
+        // operator is about to walk away from the machine that could tell them otherwise.
+        post()
+    }
+
+    @Synchronized
+    fun onPath(state: String) {
+        path = state.substringBefore('(').substringAfterLast('.')
+        if (state.contains("Migrated")) {
+            migrations++
+            sinceMove = 0
+        }
+        post()
+    }
+
+    @Synchronized
+    fun onEcho(
+        gotData: Boolean,
+        intactNow: Boolean,
+        pendingBytes: Int,
+    ) {
+        echoes++
+        sinceMove++
+        if (!gotData) timeouts++
+        intact = intactNow
+        pending = pendingBytes
+        post()
+    }
+
+    @Synchronized
+    fun onBroken(atByte: Int) {
+        broken = "byte $atByte"
+        intact = false
+        post()
+    }
+
+    @Synchronized
+    fun onEnded(reason: String) {
+        path = reason
+        post()
+    }
+
+    private fun post() {
+        if (!usable) return
+        val title =
+            when {
+                broken != null -> "⚠ STREAM INTEGRITY BROKEN at $broken"
+                migrations == 0 -> "QUIC probe · no migration yet"
+                else -> "QUIC probe · $migrations migration(s) · $sinceMove echoes since"
+            }
+        val text =
+            "path=$path · echoes=$echoes · timeouts=$timeouts · " +
+                "intact=${if (intact) "yes" else "NO"} · pending=${pending}B"
+        runCatching {
+            val builder =
+                Notification
+                    .Builder(ctx, CHANNEL)
+                    .setSmallIcon(android.R.drawable.stat_notify_sync)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(Notification.BigTextStyle().bigText(text))
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+            manager?.notify(NOTIFICATION_ID, builder.build())
+        }.onFailure {
+            // Almost always a missing POST_NOTIFICATIONS grant on API 33+. Say so once, then stop
+            // trying: a walk must not be spent re-throwing the same SecurityException every 2s.
+            usable = false
+            emit(
+                "STATUS-NOTIFICATION post failed: ${it::class.simpleName} ${it.message} — " +
+                    "grant with: adb shell pm grant <test-pkg> android.permission.POST_NOTIFICATIONS",
+            )
+        }
+    }
+
+    private companion object {
+        // -v2 because a NotificationChannel's importance is IMMUTABLE once created: raising it under the
+        // old id is a silent no-op on any device that already ran the probe, and reinstalling does not
+        // reset it (only uninstall does). A new id is the only way the bump actually takes effect.
+        private const val CHANNEL = "quic-handoff-probe-v2"
+        private const val NOTIFICATION_ID = 0x9C1C
     }
 }
