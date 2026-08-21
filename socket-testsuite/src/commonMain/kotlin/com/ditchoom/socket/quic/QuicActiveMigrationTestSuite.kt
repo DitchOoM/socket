@@ -820,12 +820,39 @@ private class MigrationTrace {
                         is TraceEvent.State,
                         is TraceEvent.Error,
                         -> lines.trySend("$role $event")
-                        // Everything else is volume, not evidence: recorded as a bare kind token so the
-                        // digest can report how much it dropped without holding any of it.
-                        else -> lines.trySend(DROPPED + (event::class.simpleName ?: "unknown"))
+                        // Everything else is volume, not evidence: recorded as a short key so the digest
+                        // can report how much it dropped without holding any of it.
+                        else -> lines.trySend(DROPPED + role + "/" + summarize(event))
                     }
                 },
         )
+
+    /**
+     * The bucket a dropped event is counted under.
+     *
+     * Datagrams carry their **channel port**, which is what makes the counts diagnostic rather than
+     * decorative. A migration gives the client a second `UdpChannel`, so post-migration traffic is
+     * counted under a different port from pre-migration traffic — and "which channel stopped carrying
+     * datagrams, and did its peer keep talking to the old one" is precisely the question a stream that
+     * stalls after a successful migration raises. A single total cannot answer it: on the run that
+     * prompted this, `DgramOut=80, DgramIn=30` was consistent with a quiet link and with one side
+     * shouting into a dead 4-tuple, and nothing distinguished them. Keyed per role as well, because on
+     * one shared sink the two endpoints' counts otherwise add into a number that hides the asymmetry.
+     *
+     * ⚠️ The port is the **channel's own key**, not a source or destination: `RecordingUdpChannel`
+     * records the `PathKey` it was wrapped with (`QuicheDriver`'s `recorder?.wrap(channel, key…)`) for
+     * receives *and* sends, ignoring the `dest` passed to `send`. So `@:60826` reads "on the channel
+     * keyed 60826", and an arrow notation here would assert a direction the recorder never captured.
+     *
+     * Port only, not the whole [com.ditchoom.socket.testkit.trace.TracePath]: these tests are loopback,
+     * so the address is constant and the port is the entire distinction.
+     */
+    private fun summarize(event: TraceEvent): String =
+        when (event) {
+            is TraceEvent.DgramOut -> "DgramOut@:${event.path?.port ?: "-"}"
+            is TraceEvent.DgramIn -> "DgramIn@:${event.path?.port ?: "-"}"
+            else -> event::class.simpleName ?: "unknown"
+        }
 
     /**
      * Drain what was captured and render the verdict. Closes the channel — call once, on the failure
@@ -893,13 +920,44 @@ private class MigrationTrace {
         try {
             block()
         } catch (t: Throwable) {
-            throw AssertionError("$label failed — QUIC trace digest follows.\n${digest()}", t)
+            throw AssertionError("$label failed.\n${describeCause(t)}${digest()}", t)
         }
     }
+
+    /**
+     * Flatten the cause chain into our own message text.
+     *
+     * Whether a `Caused by:` is printed at all depends on the **reporter**, not the platform, so relying
+     * on exception chaining is relying on which lane happened to run. Measured on one CI run of this very
+     * suite: the macOS-ARM64 integration lane (K/Native, GoogleTest-style runner) printed
+     * `Caused by: TimeoutCancellationException`, while the iOS-simulator lane (K/Native, Gradle reporter)
+     * printed this wrapper's message followed by 24 frames of `at …` and **no cause anywhere in the
+     * log** — the underlying assertion, the one naming the byte offset or the stalled byte counts, was
+     * simply gone. Wrapping therefore has to carry the message itself or it destroys evidence on some
+     * lanes: the #401 lesson applied to the diagnostic instead of the code under test.
+     *
+     * Depth-bounded rather than trusting the chain to terminate: a cause cycle would otherwise hang the
+     * failure path, turning a red test into a timed-out one.
+     */
+    private fun describeCause(t: Throwable): String =
+        buildString {
+            appendLine("--- cause (flattened: some lanes' reporters print no `Caused by:`) ---")
+            var e: Throwable? = t
+            var depth = 0
+            while (e != null && depth < MAX_CAUSE_DEPTH) {
+                append(if (depth == 0) "" else "caused by: ")
+                appendLine("${e::class.simpleName ?: "Throwable"}: ${e.message}")
+                e = e.cause
+                depth++
+            }
+        }
 
     private companion object {
         /** Marks a kind token rather than a kept line. A space keeps it unambiguous against `v1 …` lines. */
         private const val DROPPED = "~dropped "
+
+        /** Bound on the flattened cause chain — a cycle must not hang the failure path. */
+        private const val MAX_CAUSE_DEPTH = 5
     }
 }
 
