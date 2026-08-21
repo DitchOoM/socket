@@ -169,7 +169,11 @@ jobs:
       #   7 distinct refs in 24h = ~12 GiB of AVD writes against a 10 GiB cap.
       #   This job (13-16 min) is nowhere near review.yaml's 48-55 min critical path, so the
       #   ~100s costs zero wall-clock on the run as a whole.
+      # Measured 1.0-1.3 min with a warm cache. The cap is for the cold/poisoned-snapshot case,
+      # which surfaces as "Timeout waiting for emulator to boot" and otherwise burns the job budget
+      # before `run tests` even starts (the failure mode #333 fixed).
       - name: create AVD and generate boot snapshot
+        timeout-minutes: 8
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
@@ -191,6 +195,13 @@ jobs:
           script: echo "Generated the AVD + boot snapshot this job's test step will reuse."
 
       - name: run tests
+        # Bounded well below the job budget so a HANG fails this step while the job still has time
+        # to run the capture steps below. Without it the only bound is `timeout-minutes: 25` on the
+        # job, and a hung test consumes all of it — then the job is CANCELLED, which is not
+        # `failure()`, so every upload is skipped and the hang leaves nothing to read (#417). That
+        # is not hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
+        # artifacts at all. Measured 5.2-6.6 min across 10 recent green job-runs; 12 is ~2x that.
+        timeout-minutes: 12
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
@@ -277,8 +288,14 @@ jobs:
       # stack (run 31027926910): no per-test HTML/XML report, and no logcat — where the Android
       # failure diagnostics actually live (see the `run tests` script above). Both are uploaded
       # together so the next occurrence can be read end-to-end from the artifact.
+      # `failure() || cancelled()`, not `failure()`: a job killed by its timeout budget is
+      # CANCELLED, and `failure()` is false for a cancelled job — so the one run that most needs
+      # diagnostics is exactly the run that uploaded none of them (#417). The logcat streamer in
+      # scripts/android-emulator-tests.sh writes continuously, so the evidence already exists on
+      # disk when a hang is killed; only the gate was throwing it away.
       - name: Upload instrumented test reports + logcat on failure
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: android-test-reports-${{ matrix.api-level }}
@@ -293,7 +310,8 @@ jobs:
       # (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact instead
       # of hunting through interleaved BoringSSL/cargo output in the job log.
       - name: Upload quiche build logs on failure
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: quiche-build-logs-android-${{ matrix.api-level }}

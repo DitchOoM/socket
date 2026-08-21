@@ -594,7 +594,8 @@ jobs:
       # missing rustup cross target → E0463) is diagnosable from an artifact instead of hunting
       # through interleaved BoringSSL/cargo output in the job log.
       - name: Upload quiche build logs on failure
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: quiche-build-logs-linux
@@ -1022,7 +1023,8 @@ jobs:
       # (The :socket-quic-quiche:jvmTest half of that story now uploads from the `quiche-jvm` job,
       # under test-reports-linux-quiche-jvm-<leg>; this artifact keeps its exact name.)
       - name: Upload test reports (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-linux
@@ -1326,7 +1328,7 @@ jobs:
       # is exactly the shape that deleted two jobs in #368), then run the backtrace.
       - name: Check for a core dump to post-mortem
         id: core-check
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
@@ -1364,7 +1366,8 @@ jobs:
       # are the whole point here: a native abort in :socket-quic-quiche:jvmTest is otherwise an
       # invisible "exit 134" with no failing JUnit case.
       - name: Upload test reports (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-linux-quiche-jvm-${{ strategy.job-index }}
@@ -2039,7 +2042,7 @@ jobs:
       # is exactly the shape that deleted two jobs in #368), then run the backtrace.
       - name: Check for a core dump to post-mortem
         id: core-check
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
@@ -2076,7 +2079,8 @@ jobs:
       # malloc-check native abort. Distinct artifact name so it never collides with
       # checks-tests' `test-reports-linux` or the fuzz jobs' crash uploads.
       - name: Upload malloc-check reports (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-malloc-check
@@ -2229,7 +2233,8 @@ jobs:
       # JNI shim the crash occurred in — everything needed to reproduce/triage offline. Lane in the
       # artifact name so parallel legs don't collide.
       - name: Upload fuzz crash + native-crash context
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes-jvm-${{ matrix.lane }}
@@ -2306,7 +2311,8 @@ jobs:
       # heap-overflow/UAF find is reproducible + triageable offline. Lane in the name so the two
       # native legs don't collide on upload.
       - name: Upload fuzz crash repros + ASAN report
-        if: failure()
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes-native-${{ matrix.lane }}
