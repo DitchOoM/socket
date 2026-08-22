@@ -269,7 +269,7 @@ jobs:
       # missing rustup target → E0463) is diagnosable from an artifact instead of hunting through
       # interleaved BoringSSL/cargo output in the job log.
       - name: Upload quiche build logs on failure
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -473,7 +473,7 @@ jobs:
           key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
       - name: Upload test reports (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -547,7 +547,7 @@ jobs:
       # otherwise. continue-on-error: this is diagnostics for an already-failing job, and a finalize
       # 403 here must not replace the real failure with an artifact error in the job summary.
       - name: Upload test reports (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -774,7 +774,7 @@ jobs:
       # Standalone .kexe runs print results to stdout (no JUnit XML like a Gradle run), so on
       # failure capture the combined log for diagnosis.
       - name: Upload macosArm64 test log (on failure)
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
