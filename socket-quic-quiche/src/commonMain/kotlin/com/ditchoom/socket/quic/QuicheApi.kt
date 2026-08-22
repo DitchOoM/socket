@@ -571,6 +571,44 @@ interface QuicheApi {
     ): Int = 0
 
     /**
+     * How many source connection IDs quiche currently considers active (`quiche_conn_active_scids`).
+     *
+     * The **read** counterpart to [connRetiredScids]. This project has always called quiche's CID
+     * *write* API — [connNewScid] to issue, [connRetireDcid] to retire — and, since #441,
+     * [connDrainRetiredScids] to learn what the peer retired. What it never asked is what quiche
+     * believes the live set actually **is**. That gap is why a divergence between quiche's table and
+     * our own routing map is structurally invisible rather than merely rare: there is no second
+     * opinion to compare against, so drift shows up as a dropped packet (#437) or a path slot pinned
+     * forever (#395, #447), long after the moment it happened.
+     *
+     * Defaults to 0 — the [connStats]/[connPeerError] default-for-test-doubles convention.
+     */
+    fun connActiveScids(conn: QuicheConn): Int = 0
+
+    /**
+     * Copy quiche's **current** source connection IDs into [out], returning how many were yielded.
+     *
+     * Same slot layout as [connDrainRetiredScids] — [maxIds] slots of `1 + QUIC_MAX_CONN_ID_LEN`
+     * bytes, each the id's length in its first byte followed by that many id bytes — and the same
+     * "returns what the iterator yielded, not what was written" contract, so a result greater than
+     * [maxIds] says exactly how many did not fit.
+     *
+     * **Unlike [connDrainRetiredScids], this does not drain.** `quiche_conn_source_ids` is a plain
+     * read: calling it is side-effect free and repeatable, which is what makes it usable as a
+     * reconciliation oracle on every wake. The verbs differ in the names for that reason — a caller
+     * that mistook the drain for a read would lose ids permanently, and the two must never be
+     * confused at a call site.
+     *
+     * Size the buffer from [connActiveScids]; both run on the driver coroutine, the only thread
+     * allowed to touch the connection, so nothing can change the set in between.
+     */
+    fun connReadSourceIds(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int = 0
+
+    /**
      * Poll and CONSUME the next path event (frees it before returning). Returns the
      * event type, or null if none pending. For every type except
      * [QuichePathEventType.ReusedSourceConnectionId], fills the caller-provided
