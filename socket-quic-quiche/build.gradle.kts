@@ -150,6 +150,10 @@ fun downloadQuicheSource(
     // so a path the peer migrated away from cannot orphan its in-flight packets forever (#393).
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheOrphanPathLoss(sourceDir)
+    // Make a packet whose DCID quiche has already retired a DROP instead of a fatal InvalidState, so a
+    // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
+    // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheRetiredCidRecvIsDrop(sourceDir)
 
     return sourceDir
 }
@@ -196,6 +200,87 @@ fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
         """.trimMargin()
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
+}
+
+/**
+ * Make a packet carrying a **retired** Destination CID a *discard* rather than a connection-killing
+ * error (DitchOoM/socket#437 residue).
+ *
+ * `get_or_create_recv_path_id()` resolves the packet's DCID against the CID table and maps a miss to
+ * `Error::InvalidState`. `recv()` has exactly two dispositions for a `recv_single` failure:
+ * `Error::Done` — drop the packet and carry on — and *everything else*, which does
+ * `self.close(false, e.to_wire(), b"")`. `InvalidState.to_wire()` is PROTOCOL_VIOLATION (0x0a), so a
+ * single unrecognised DCID kills an otherwise healthy connection.
+ *
+ * That is reachable in normal operation, not just under attack. After a path migration the peer
+ * retires the CID it used on the old path (RFC 9000 §9.5), but packets it already sent on that path
+ * are still in flight. The RETIRE_CONNECTION_ID travels the NEW path, which is typically the faster
+ * one — a Wi-Fi path at 35ms RTT overtaking cellular at ~80ms one-way — so the retirement is
+ * processed BEFORE the packets it invalidates arrive. Every one of those then lands here.
+ *
+ * RFC 9000 §5.2 (Matching Packets to Connections) is explicit about the required behaviour:
+ *
+ * > Packets that are matched to an existing connection are discarded if the packets are inconsistent
+ * > with the state of that connection.
+ *
+ * Discarded — not answered with a CONNECTION_CLOSE. `Error::Done` is quiche's own spelling of
+ * "discard this packet": the same arm already absorbs undecryptable packets, and it still runs the
+ * stateless-reset check on the way out.
+ *
+ * **Measured, both ends, on real hardware.** A 116-minute Wi-Fi↔cellular walk (Samsung SM-F956U1
+ * against a public server) killed 2 of 11 migrations this way, and a forced-handoff run reproduced it
+ * again after #441: the server's qlog shows `retire_connection_id(seq=3)` received at t=138636.973
+ * and `connection_close error_code=10` sent at t=138641.894 — 5ms later, with no `packet_received`
+ * between them, because the packet that caused it failed before quiche could log it.
+ *
+ * #441 (`ServerConnectionRegistry` unrouting retired SCIDs) narrows this window but cannot close it:
+ * quiche retires the CID synchronously inside `recv()`, while the routing table learns of it one
+ * cross-coroutine hop later. Any packet arriving inside that hop is still routed into quiche. This
+ * patch removes the failure mode rather than shrinking the window, and — unlike #441 — it also
+ * protects our **client** against third-party quiche servers, which no change to our server can.
+ *
+ * Only one call site (`recv_single`), so the widened disposition cannot leak into another path.
+ *
+ * Idempotent and loud in both directions (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+
+    val text = libRs.readText()
+    if (text.contains("socket-retired-cid-recv-is-drop")) return // already patched
+
+    val anchor =
+        """
+        |        let (in_scid_seq, mut in_scid_pid) =
+        |            ids.find_scid_seq(dcid).ok_or(Error::InvalidState)?;
+        """.trimMargin()
+
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "socket-retired-cid-recv-is-drop (DitchOoM/socket#437): the find_scid_seq miss in " +
+                "get_or_create_recv_path_id was not found. A quiche bump moved or reshaped it — possibly " +
+                "fixing this upstream, which is the outcome we want. If the miss now yields Error::Done (or " +
+                "is otherwise non-fatal): DELETE this patch and its call site, and KEEP the regression guard " +
+                "that outlives it — a held-back in-flight 1RTT packet delivered after the peer retires its " +
+                "CID, asserting the connection survives. Otherwise re-fit the anchor and re-verify with that " +
+                "guard before shipping. See https://github.com/DitchOoM/socket/issues/445",
+        )
+    }
+
+    val replacement =
+        """
+        |        // socket-retired-cid-recv-is-drop (DitchOoM/socket#437): a DCID this connection no
+        |        // longer recognises means the packet is inconsistent with connection state, which
+        |        // RFC 9000 §5.2 says to DISCARD. InvalidState instead reaches recv()'s catch-all,
+        |        // which closes the connection with PROTOCOL_VIOLATION (InvalidState.to_wire()) —
+        |        // so one reordered packet from a path the peer just migrated away from kills a
+        |        // healthy connection. Error::Done is quiche's own "drop this packet" disposition.
+        |        let (in_scid_seq, mut in_scid_pid) =
+        |            ids.find_scid_seq(dcid).ok_or(Error::Done)?;
+        """.trimMargin()
+
+    libRs.writeText(text.replaceFirst(anchor, replacement))
 }
 
 /**
