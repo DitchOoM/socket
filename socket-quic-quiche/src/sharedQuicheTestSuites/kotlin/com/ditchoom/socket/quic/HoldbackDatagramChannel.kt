@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.concurrent.Volatile
 
 /**
  * A server-side [AddressedDatagramChannel] decorator that can **withhold one inbound datagram** and
@@ -24,6 +25,9 @@ import kotlinx.coroutines.CompletableDeferred
  *
  * Wired in via [QuicPortBinding.Shared], the same production seam a demultiplexed port uses, so
  * nothing about the server under test is test-only.
+ *
+ * Single-writer by construction: only the server's reader coroutine calls [receive], so the
+ * `@Volatile` fields need no atomics — the test coroutine only ever reads them or sets a flag.
  */
 internal class HoldbackDatagramChannel(
     private val delegate: AddressedDatagramChannel,

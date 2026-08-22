@@ -1,8 +1,7 @@
 package com.ditchoom.socket.quic
 
 import kotlinx.coroutines.CompletableDeferred
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.Volatile
 
 /**
  * A [QuicheApi] spy that holds the server's *routing table* view of CID retirement behind quiche's
@@ -26,14 +25,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class LaggingScidRetirementQuicheApi(
     private val delegate: QuicheApi,
 ) : QuicheApi by delegate {
-    private val gated = AtomicBoolean(true)
+    @Volatile
+    private var gated = true
     private val firstRetirement = CompletableDeferred<Int>()
 
     /** Suspends until quiche itself has retired at least one source CID; returns how many. */
     suspend fun awaitQuicheRetiredAnScid(): Int = firstRetirement.await()
 
     /** Let the server's routing table catch up with quiche again. */
-    fun ungate() = gated.set(false)
+    fun ungate() {
+        gated = false
+    }
 
     /**
      * Every `quiche_conn_recv` return code seen since [recordRecvResults], so the test can assert on
@@ -41,23 +43,34 @@ internal class LaggingScidRetirementQuicheApi(
      * never rejected with [QUICHE_ERR_INVALID_STATE], which is the code `recv()` turns into a
      * PROTOCOL_VIOLATION CONNECTION_CLOSE.
      */
-    val recvResults = CopyOnWriteArrayList<Int>()
+    @Volatile
+    var recvResults: List<Int> = emptyList()
+        private set
 
-    private val recording = AtomicBoolean(false)
+    @Volatile
+    private var recording = false
 
-    fun recordRecvResults() = recording.set(true)
+    fun recordRecvResults() {
+        recording = true
+    }
 
     override fun connRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ): Int = delegate.connRecv(conn, buf, bufLen, recvInfo).also { if (recording.get()) recvResults.add(it) }
+    ): Int =
+        delegate.connRecv(conn, buf, bufLen, recvInfo).also {
+            // Copy-on-write rather than a concurrent list: `java.util.concurrent` does not exist on
+            // Kotlin/Native, and connRecv is called only from the driver coroutine — the single thread
+            // allowed to touch the connection — so the read-modify-write has one writer by construction.
+            if (recording) recvResults = recvResults + it
+        }
 
     override fun connRetiredScids(conn: QuicheConn): Int {
         val actual = delegate.connRetiredScids(conn)
         if (actual > 0) firstRetirement.complete(actual)
-        return if (gated.get()) 0 else actual
+        return if (gated) 0 else actual
     }
 }
 

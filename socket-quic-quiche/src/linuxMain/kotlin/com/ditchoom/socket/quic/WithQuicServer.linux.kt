@@ -30,8 +30,12 @@ internal suspend fun buildLinuxQuicServer(
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    // Injectable backend — defaults to this platform's cinterop binding. A test passes a delegating
+    // spy exactly as buildJvmQuicServer already allows; without the same seam here, a regression
+    // guard that needs one can only ever run on the JVM, and the native this target actually links
+    // goes unexercised by it.
+    api: QuicheApi = CinteropQuicheApi,
 ): SharedQuicheServer {
-    val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
     var bound = false
