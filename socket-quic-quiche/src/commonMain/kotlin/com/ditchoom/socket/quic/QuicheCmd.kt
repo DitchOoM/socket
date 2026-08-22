@@ -154,6 +154,18 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<PeerTransportParams>,
     ) : QuicheCmd
 
+    /**
+     * Read the source connection IDs quiche currently considers active.
+     *
+     * Routed through the channel for the same reason [PeerTransportParamsRead] is: a read racing
+     * `connSend`/`connRecv` would be concurrent access to a `quiche_conn`, which is UB. That
+     * confinement is also what makes the count-then-read pair exact — nothing can change the set
+     * between [QuicheApi.connActiveScids] and [QuicheApi.connReadSourceIds] on this coroutine.
+     */
+    class SourceIdsRead(
+        val result: CompletableDeferred<List<ByteArray>>,
+    ) : QuicheCmd
+
     /** Gracefully close the connection. */
     class Close(
         val error: QuicError,

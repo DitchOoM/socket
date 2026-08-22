@@ -497,6 +497,14 @@ object JniQuicheApi : QuicheApi {
         maxIds: Int,
     ): Int = nConnDrainRetiredScids(conn.handle, out, maxIds)
 
+    override fun connActiveScids(conn: QuicheConn): Int = nConnActiveScids(conn.handle)
+
+    override fun connReadSourceIds(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int = nConnReadSourceIds(conn.handle, out, maxIds)
+
     override fun connPathEventNext(
         conn: QuicheConn,
         localOut: Long,
@@ -995,6 +1003,14 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnRetiredScids(conn: Long): Int
 
     @JvmStatic private external fun nConnDrainRetiredScids(
+        conn: Long,
+        out: Long,
+        maxIds: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnActiveScids(conn: Long): Int
+
+    @JvmStatic private external fun nConnReadSourceIds(
         conn: Long,
         out: Long,
         maxIds: Int,

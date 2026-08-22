@@ -34,6 +34,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_si
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
+import com.ditchoom.socket.quic.quiche.quiche_conn_active_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_application_proto
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
@@ -66,6 +67,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
+import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
@@ -848,6 +850,39 @@ internal object CinteropQuicheApi : QuicheApi {
         }
         quiche_path_event_free(ev)
         return QuichePathEventType.entries[t]
+    }
+
+    override fun connActiveScids(conn: QuicheConn): Int = quiche_conn_active_scids(conn.handle.toCPointer()!!).toInt()
+
+    override fun connReadSourceIds(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        val iter = quiche_conn_source_ids(conn.handle.toCPointer()!!) ?: return 0
+        return memScoped {
+            val idOut = alloc<CPointerVar<UByteVar>>()
+            val idLen = alloc<ULongVar>()
+            var yielded = 0
+            try {
+                // Runs to completion even once the buffer is full — not because ids would be lost
+                // (quiche_conn_source_ids does not drain) but so the return reports the true total,
+                // which is what makes an undersized buffer inspectable rather than silent.
+                while (quiche_connection_id_iter_next(iter, idOut.ptr, idLen.ptr)) {
+                    val len = idLen.value.toInt()
+                    val src = idOut.value
+                    if (yielded < maxIds && src != null && len in 1..QUIC_MAX_CONN_ID_LEN) {
+                        val slot = (out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES).toCPointer<UByteVar>()!!
+                        slot.pointed.value = len.toUByte()
+                        memcpy(slot + 1, src, len.convert())
+                    }
+                    yielded++
+                }
+            } finally {
+                quiche_connection_id_iter_free(iter)
+            }
+            yielded
+        }
     }
 
     // --- Server-side ---

@@ -892,6 +892,10 @@ class QuicheDriver(
                 cmd.result.complete(api.connPeerTransportParams(conn))
             }
 
+            is QuicheCmd.SourceIdsRead -> {
+                cmd.result.complete(readSourceIds())
+            }
+
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
@@ -1801,6 +1805,7 @@ class QuicheDriver(
             is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
             // Nothing negotiated can be read from a freed handle, which is exactly what this case means.
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
+            is QuicheCmd.SourceIdsRead -> cmd.result.complete(emptyList())
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
         }
@@ -1839,6 +1844,7 @@ class QuicheDriver(
             is QuicheCmd.PeerCert -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Stats -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.SourceIdsRead -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
         }
@@ -1857,6 +1863,49 @@ class QuicheDriver(
         } catch (_: ClosedSendChannelException) {
             QuicStatsSnapshot(null, null)
         }
+
+    /**
+     * The source connection IDs quiche currently considers active, newest-first as the iterator
+     * yields them. Empty once the connection is gone — the same honest answer
+     * [peerTransportParams] gives for a freed handle.
+     *
+     * This is the read-back half of the CID API (`quiche_conn_source_ids`), which this project
+     * issued and retired against for years without ever asking quiche what the live set IS. Until it
+     * existed there was no second opinion to reconcile our own routing table against, so a
+     * divergence could only ever be discovered downstream — as a dropped packet (#437) or a path
+     * slot pinned forever (#395, #447).
+     */
+    suspend fun sourceIds(): List<ByteArray> =
+        try {
+            val deferred = CompletableDeferred<List<ByteArray>>()
+            commands.send(QuicheCmd.SourceIdsRead(deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            emptyList()
+        }
+
+    /**
+     * Count-then-read on the driver coroutine, sized from [QuicheApi.connActiveScids]. Mirrors
+     * [drainRetiredScids]'s buffer discipline; unlike it, `quiche_conn_source_ids` does not drain, so
+     * a short read loses nothing permanent — it is still reported rather than clamped, because a
+     * count and a read that disagree mean the confinement assumption above has broken.
+     */
+    private fun readSourceIds(): List<ByteArray> {
+        val count = api.connActiveScids(conn)
+        if (count <= 0) return emptyList()
+        val slots = bufferFactory.allocate(count * RETIRED_SCID_SLOT_BYTES)
+        try {
+            val yielded = api.connReadSourceIds(conn, addr(slots), count)
+            if (yielded > count) recorder?.error(RetiredScidOverflow(yielded, count))
+            return (0 until minOf(yielded, count)).mapNotNull { i ->
+                slots.position(i * RETIRED_SCID_SLOT_BYTES)
+                val len = slots.readByte().toInt() and 0xFF
+                if (len in 1..QUIC_MAX_CONN_ID_LEN) ByteArray(len) { slots.readByte() } else null
+            }
+        } finally {
+            slots.freeNativeMemory()
+        }
+    }
 
     /**
      * Read the peer's transport parameters (RFC 9000 §18) on the driver loop — quiche is
