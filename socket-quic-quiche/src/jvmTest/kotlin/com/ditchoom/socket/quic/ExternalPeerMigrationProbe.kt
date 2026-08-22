@@ -48,6 +48,13 @@ class ExternalPeerMigrationProbe {
         assumeTrue("hand-driven probe — set QUIC_PROBE_HOST (see class KDoc)", host.isNotEmpty())
         val port = env("QUIC_PROBE_PORT", "443").toInt()
         val alpn = env("QUIC_PROBE_ALPN", "h3")
+        // Frame-level evidence, opt-in. The driver's qlog seam reads this system property; without it
+        // "the peer never gave us a spare CID" and "we consumed it and never got another" look identical.
+        env("QUIC_PROBE_QLOG", "").takeIf { it.isNotEmpty() }?.let {
+            java.io.File(it).mkdirs()
+            System.setProperty("quic.qlog.dir", it)
+            println("PROBE qlog -> $it")
+        }
 
         val options =
             QuicOptions(
