@@ -147,6 +147,11 @@ abstract class RetiredCidInFlightPacketTestSuite {
                         val heldDcid = withTimeout(30.seconds) { channel.awaitHeld() }
                         assertTrue(heldDcid.contentEquals(retiringDcid), "withheld a datagram for the wrong connection id")
 
+                        // Freeze the server's routing view from here. Before this line the connection
+                        // is established and its spare SCIDs are routed — the migration below switches
+                        // to one of them, so gating any earlier would stop the PATH_CHALLENGE at the
+                        // demux and there would be no migration to hold a retirement back from.
+                        api.gate()
                         val migration = migrate()
                         assertTrue(migration is MigrationResult.Succeeded, "expected the migration to succeed, got $migration")
 
@@ -159,6 +164,16 @@ abstract class RetiredCidInFlightPacketTestSuite {
                             channel.lastShortHeaderDcid()?.contentEquals(retiringDcid) == false,
                             "the client is still using the same destination CID after migrating, so the withheld " +
                                 "packet's CID is not actually stale and this test would prove nothing",
+                        )
+
+                        // The premise, asserted rather than assumed: the routing map must STILL route
+                        // the CID quiche has already forgotten. If it did not, the released packet
+                        // would be dropped at the demux and never reach quiche — which produces exactly
+                        // the same green as a working fix, and would make everything below vacuous.
+                        assertTrue(
+                            server.routesConnectionIdForTest(connectionIdKey(retiringDcid)),
+                            "the server has already stopped routing the retired CID, so the released packet " +
+                                "cannot reach quiche and this test would prove nothing",
                         )
 
                         // Deliver the packet the network held onto. Unpatched, this is where the server
@@ -205,6 +220,14 @@ abstract class RetiredCidInFlightPacketTestSuite {
                 }
             }
         }
+
+    /** The routing key the server would hold for [cid] — the same snapshot its demux builds. */
+    private fun connectionIdKey(cid: ByteArray): ConnectionIdKey {
+        val buf = BufferFactory.deterministic().allocate(cid.size)
+        cid.forEach { buf.writeByte(it) }
+        buf.resetForRead()
+        return ConnectionIdKey.from(buf, offset = 0, length = cid.size)
+    }
 
     private fun ReadResult.text(): String = if (this is ReadResult.Data) buffer.readString(buffer.remaining(), Charset.UTF8) else NO_DATA
 

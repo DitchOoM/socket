@@ -63,7 +63,7 @@ class ServerConnectionRegistryTests {
         val buf: PlatformBuffer = bufferFactory.allocate(bytes.size)
         for (b in bytes) buf.writeByte(b.toByte())
         buf.resetForRead()
-        return ConnectionIdKey.from(buf, bytes.size)
+        return ConnectionIdKey.from(buf, offset = 0, length = bytes.size)
     }
 
     // ── The #179 invariant: the close sweep reaps EVERY live driver, not just routable ones ──
@@ -168,21 +168,33 @@ class ServerConnectionRegistryTests {
             assertSame(other, registry.driverForDcid(cid(0xCC)), "the other driver is untouched")
         }
 
-    // ── Routing queues: cleanup removals are applied before spare-SCID additions ──
+    // ── Routing queues: a driver cleanup outranks everything queued for that driver ──
 
+    /**
+     * **The drain order inverted with #449, deliberately.** It used to be cleanups-then-additions, so
+     * that a stale registration for a dead driver was "harmless"; a route added after the cleanup was
+     * simply left to be reaped by the next failed `trySend`. Now projections are applied first and
+     * cleanups last, which is a stronger guarantee: a cleanup is a terminal fact about a driver, a
+     * projection is a snapshot of one that was live when it was read, so the terminal fact wins and a
+     * closed connection cannot be re-routed at all.
+     */
     @Test
-    fun drainRoutingQueuesAppliesCleanupThenScidRegistrations() =
+    fun drainRoutingQueuesLetsACleanupOutrankAProjection() =
         runQuicTest {
             val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
             val driver = idleDriver()
             registry.routeDriver(cid(1), driver)
 
+            registry.enqueueRouteProjection(driver, setOf(cid(2))) // read while the driver was live
             registry.enqueueCleanup(driver) // handler closed it → drop its routes
-            registry.enqueueScidRegistration(cid(2), driver) // driver issued a spare SCID → add route
 
             registry.drainRoutingQueues()
 
-            assertNull(registry.driverForDcid(cid(1)), "cleanup removed the old route")
-            assertSame(driver, registry.driverForDcid(cid(2)), "spare-SCID registration was applied")
+            assertNull(registry.driverForDcid(cid(1)), "cleanup removed the accept-time route")
+            assertNull(
+                registry.driverForDcid(cid(2)),
+                "a projection read just before the connection closed re-routed a dead driver — the " +
+                    "cleanup must outrank it",
+            )
         }
 }

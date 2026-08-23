@@ -291,6 +291,57 @@ class PathValidationTimeoutTests {
         }
 
     /**
+     * **#447, on the exit only this suite can reach: the abandon timer.**
+     *
+     * `quiche_conn_probe_path` takes a spare destination CID and links it to the path it creates
+     * (`create_path_on_client` → `link_dcid_to_path_id`), so `available_dcids()` drops the moment a
+     * probe is armed. When quiche then reports *neither* `Validated` nor `FailedValidation` — the exact
+     * silence measured on the 2026-08-17 handoff walk — the RFC 9000 §8.2.4 timer is what ends the
+     * migration, and it is therefore also the only thing that can hand the id back. It did not: the
+     * probe's sequence number went into native scratch and was never read, so this exit had no value to
+     * forget and the CID was gone for the life of the connection (#447).
+     *
+     * The companion assertions in `PathRetirementTests` cover the `FailedValidation` and refused-switch
+     * exits; this one needs the virtual [SimClock], which is why it lives here.
+     */
+    @Test
+    fun anAbandonedProbeRetiresTheConnectionIdItConsumed() =
+        runTest {
+            val f = Fixture(this)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(1, f.factory.opened, "no probe was armed — nothing to abandon")
+                assertEquals(
+                    setOf(0L, 1L),
+                    f.stub.linkedDcidSeqs,
+                    "the probe must have consumed a spare destination CID for this test to mean anything",
+                )
+
+                testScheduler.advanceTimeBy(expectedBudget + 1.milliseconds)
+                runCurrent()
+
+                assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
+                assertEquals(
+                    listOf(1L),
+                    f.stub.retiredDcids,
+                    "the abandoned probe's destination CID was never retired — quiche keeps it linked to a " +
+                        "path nothing will use again, so it never returns to the spare pool (#447)",
+                )
+                assertEquals(
+                    setOf(0L),
+                    f.stub.linkedDcidSeqs,
+                    "after the abandon, the only destination CID still linked to a path must be the one the " +
+                        "connection is living on (#447)",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **The ordering trap.** `afterCommand()` — which drains quiche's path events — runs *after* the
      * driver's timer branch, so a `Validated` event can be sitting in quiche's queue on the very wake the
      * deadline comes due. Expiring first would fail a path the peer actually answered.

@@ -150,31 +150,27 @@ class QuicheDriver(
      */
     private val onCleanup: () -> Unit = {},
     /**
-     * Server-only: invoked with each spare source CID issued by [issueSpareCids], before that
-     * scid buffer is freed. The server registers the CID in its DCID->driver routing map, because
-     * a migrating peer switches to a *new* DCID (one of these issued CIDs) on the new path; without
-     * the mapping those packets miss the demux, look like a new connection, and get dropped — the
-     * server never sees the PATH_CHALLENGE and validation fails. Clients leave it null (they demux
-     * incoming packets by their per-path socket, not by an app-level DCID map).
-     */
-    private val onScidIssued: ((PlatformBuffer, Int) -> Unit)? = null,
-    /**
-     * Server-only: invoked with each source CID quiche has **retired**, before that buffer is reused.
-     * The mirror image of [onScidIssued], and load-bearing for the same reason: the server's
-     * DCID→driver map is what decides whether a datagram reaches this connection, so a CID the peer
-     * has stopped using must stop routing at the same moment quiche stops recognising it.
+     * Server-only: where this connection's **current** source-connection-id set is published, so the
+     * server's DCID→driver routing map is a projection of quiche's own table rather than a ledger
+     * replayed from events (#449). Clients leave it null — they demux incoming packets by their
+     * per-path socket, not by an app-level DCID map.
      *
-     * Without this the two views diverge, and the gap is not benign. A packet legitimately sent before
-     * the peer retired the CID can arrive after — different paths have different latencies, and a
-     * RETIRE_CONNECTION_ID sent on a fast new path routinely overtakes data still in flight on the
-     * slow old one. Our map still routes it here; quiche no longer knows the CID, reports
-     * `InvalidState`, and its `to_wire()` catch-all turns that into PROTOCOL_VIOLATION — killing a
-     * healthy connection over a packet RFC 9000 §5.2.2 says to drop (#437). Unregistering closes the
-     * window: the datagram matches nothing, and the receive loop drops it at the door.
+     * The map is load-bearing: it is what decides whether a datagram reaches this connection at all.
+     * A CID the peer has stopped using must stop routing at the same moment quiche stops recognising
+     * it, because a packet legitimately sent *before* the peer retired the CID can arrive after — a
+     * RETIRE_CONNECTION_ID travelling a fast new path routinely overtakes data still in flight on the
+     * slow old one. A map that still routes it hands quiche a CID it no longer knows, which quiche
+     * reports as `InvalidState` and whose `to_wire()` catch-all becomes PROTOCOL_VIOLATION, killing a
+     * healthy connection over a packet RFC 9000 §5.2.2 says to drop (#437). And a CID quiche has
+     * issued but the map has not learned is the mirror failure: a migrating peer's packets on the new
+     * DCID miss the demux entirely, so the PATH_CHALLENGE never arrives and validation fails.
      *
-     * Clients leave it null (they demux by per-path socket, not by an app-level DCID map).
+     * This replaces a pair of `onScidIssued`/`onScidRetired` notifications. Two event streams meant
+     * the map could be wrong forever if either were dropped or applied out of order, and nothing ever
+     * compared the result with quiche. One set-sync has no order to get wrong and repairs itself on
+     * the next projection. See [SourceIdSink].
      */
-    private val onScidRetired: ((PlatformBuffer, Int) -> Unit)? = null,
+    private val onSourceIds: SourceIdSink? = null,
     /**
      * Per-connection datagram recv buffer pool — mirrors the server-side pool in
      * CommonJvmWithQuicServer. Two acquirers: the client-mode [udpReaderLoop]
@@ -439,8 +435,67 @@ class QuicheDriver(
         val localLen: Int,
         val isPrimary: Boolean,
         val release: () -> Unit,
+        slot: PathSlot,
     ) {
         var readerJob: Job? = null
+
+        /**
+         * Where this path stands, and the destination CID quiche has linked to it while it stands
+         * there. Set only through [transitionTo], because every change of this value is also a
+         * decision about a connection ID.
+         */
+        var slot: PathSlot = slot
+            private set
+
+        /**
+         * Move this path to [next], **retiring the destination CID the previous state held** whenever
+         * [next] does not carry that same id forward.
+         *
+         * The retirement is not something a caller can forget, because it is not a separate step: it
+         * happens here, inside the transition, since "this path stopped holding this id" and "this id
+         * was retired" are one event. Every exit from a probe — `FailedValidation`, the RFC 9000
+         * §8.2.4 abandon timer, a `quiche_conn_migrate` that refuses an already-validated path, and
+         * the ordinary supersede-by-the-next-migration — goes through it, which is what closes #447.
+         * Only the *success* exit used to retire anything, and it did so at a separate call site with
+         * a sequence number kept in a separate holder.
+         *
+         * Best-effort by design, exactly as the post-migration §9.5 retirement always was: a refusal
+         * (`OutOfIdentifiers` when this is the last usable id, or a re-retirement of an id quiche has
+         * already dropped) costs one pinned slot, not the transition that has already happened. The
+         * systemic check that it works is the conformance suite, not this line.
+         */
+        fun transitionTo(next: PathSlot) {
+            val previous = slot
+            slot = next
+            when (previous) {
+                is PathSlot.Linked ->
+                    when (next) {
+                        is PathSlot.Linked -> if (next.dcidSeq != previous.dcidSeq) retire(previous.dcidSeq)
+                        PathSlot.Abandoned -> retire(previous.dcidSeq)
+                    }
+
+                PathSlot.Abandoned -> Unit
+            }
+        }
+
+        /**
+         * The peer answered this path's PATH_CHALLENGE. A validated path holds exactly the connection
+         * ID it probed with, so this carries [PathSlot.Linked.dcidSeq] forward and retires nothing —
+         * it exists so that the *next* exit (a switch quiche refuses) is a transition out of
+         * [PathSlot.Validated] rather than out of a state the path has already left.
+         */
+        fun validated() {
+            when (val current = slot) {
+                is PathSlot.Linked -> transitionTo(PathSlot.Validated(current.dcidSeq))
+                // Unreachable: `paths` never holds an abandoned entry — teardownPath abandons and
+                // removes in one statement — so there is nothing to carry forward and nothing owed.
+                PathSlot.Abandoned -> Unit
+            }
+        }
+
+        private fun retire(dcidSeq: Long) {
+            api.connRetireDcid(conn, dcidSeq)
+        }
     }
 
     /** Wrap [channel] in the recording decorator when tracing is on; identity otherwise. */
@@ -475,6 +530,9 @@ class QuicheDriver(
             isPrimary = true,
             // Primary sockaddr lifetime is owned by the connection setup's onCleanup; nothing to release here.
             release = {},
+            // RFC 9000 §5.1.1: the connection starts out using the initial destination CID, sequence 0.
+            // That is why a first migration's §9.5 retirement names 0, which PathRetirementTests pins.
+            slot = PathSlot.Active(dcidSeq = 0),
         )
     private val paths = mutableMapOf(primary.key to primary)
 
@@ -498,24 +556,20 @@ class QuicheDriver(
     private val migrationEnabled: Boolean = migrationWiring != null
 
     /**
-     * The connection's current identity, as one value: the path it lives on and the DCID sequence in
-     * use there. Two facts that are only ever true *together* — the §9.5 retirement needs exactly
-     * this pair for the path being left — so they travel in one immutable holder and can never be
-     * observed disagreeing mid-update.
-     */
-    private class ActivePath(
-        /** [primary] until the first successful migration, then whatever the latest `Validated` arm switched to. */
-        val entry: PathEntry,
-        /** 0 at start (the initial CID's sequence, RFC 9000 §5.1.1), then what each successful `connMigrate` reports. */
-        val dcidSeq: Long,
-    )
-
-    /**
+     * The path the connection is currently living on — [primary] until the first successful
+     * migration, then whatever the latest `Validated` arm switched to.
+     *
      * Every fallback that used to name [primary] ([flushOutgoing]'s single-path egress, the
      * [PacketSource.Unattributed] recv_info) names this instead: after the primary is retired,
      * [primary] points at a closed socket and a recv_info the connection no longer uses.
+     *
+     * The DCID sequence in use here is **not** a second field beside this one. It used to be — an
+     * `ActivePath(entry, dcidSeq)` holder — and that shape is precisely why only the active path ever
+     * had an id anyone could retire (#447). It now lives in [PathEntry.slot], where every path has
+     * one, so the §9.5 retirement is a property of leaving a path rather than of one code path
+     * remembering to.
      */
-    private var active = ActivePath(primary, dcidSeq = 0)
+    private var active: PathEntry = primary
 
     /**
      * True once any probe path has ever opened; never true before, never false after. While false,
@@ -1007,8 +1061,11 @@ class QuicheDriver(
         // the peer of a migrating client ran dry after ~MAX_SPARE_SCIDS migrations (#395). The steady
         // state costs one connScidsLeft read per wake, alongside the two state reads above.
         if (_state.value is QuicConnectionState.Established) {
-            issueSpareCids()
-            drainRetiredScids()
+            val issued = issueSpareCids()
+            val retired = drainRetiredScids()
+            // The routing table is set to what quiche says, not adjusted by what just happened: the
+            // two counts only decide WHETHER to look, never what the answer is (#449).
+            projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
         }
         if (api.connIsClosed(conn)) {
             transitionToClosed()
@@ -1184,7 +1241,7 @@ class QuicheDriver(
                     if (from.family == 0) {
                         // A backend that exposes no egress address (test doubles decode nothing);
                         // quiche schedules non-probing data on the active path, so honour that.
-                        active.entry.channel
+                        active.channel
                     } else {
                         val entry = paths[from]
                         if (entry == null) {
@@ -1433,11 +1490,7 @@ class QuicheDriver(
             // reader and recv_info with no owner (#395 item 3). Refuse instead: release what the probe
             // acquired (no recv_info exists yet — the guard sits before recvInfoNew on purpose) and
             // report a retryable local failure, since a later bind can land elsewhere.
-            try {
-                newPath.channel.close()
-            } catch (_: Exception) {
-            }
-            newPath.release()
+            releaseUnprobedPath(newPath)
             cmd.result.complete(
                 MigrationResult.Unmoved.Failed.LocalPathUnavailable(
                     IllegalStateException(
@@ -1447,6 +1500,32 @@ class QuicheDriver(
             )
             return
         }
+
+        // Probe BEFORE the path entry exists, because the entry cannot be built without the DCID this
+        // call returns (see [PathSlot]). The old order — insert, then probe, then read nothing —
+        // is what made #447 writable: the sequence number went into `seqScratch` and no failure exit
+        // had a value to retire. A rejected probe allocates nothing in quiche (every failure inside
+        // `create_path_on_client` returns before `link_dcid_to_path_id`), so there is no recv_info,
+        // no map entry and no connection ID to unwind here.
+        val probe =
+            api.connProbePath(
+                conn,
+                newPath.localSockAddrAddress,
+                newPath.localSockAddrLength,
+                wiring.peer.address,
+                wiring.peer.length,
+            )
+        val probed =
+            when (probe) {
+                is ProbeOutcome.Rejected -> {
+                    releaseUnprobedPath(newPath)
+                    cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
+                    return
+                }
+
+                is ProbeOutcome.Probed -> probe
+            }
+
         val pathRecvInfo =
             api.recvInfoNew(wiring.peer.address, wiring.peer.length, newPath.localSockAddrAddress, newPath.localSockAddrLength)
         val entry =
@@ -1458,20 +1537,31 @@ class QuicheDriver(
                 localLen = newPath.localSockAddrLength,
                 isPrimary = false,
                 release = newPath.release,
+                // The path now owns the connection ID quiche linked to it. Every way out of here —
+                // validated, failed, abandoned, refused — runs through teardownPath, which retires it.
+                slot = PathSlot.Probing(probed.dcidSeq),
             )
         paths[key] = entry
-
-        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
-        if (rc < 0) {
-            teardownPath(entry)
-            cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(rc))
-            return
-        }
 
         // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
         pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
+    }
+
+    /**
+     * Give back everything [newPath] acquired, for the two exits that abandon it before
+     * `quiche_conn_probe_path` ever links a connection ID to it: a bind that collided with the live
+     * path's 4-tuple, and a probe quiche refused. Neither has a `recv_info` yet — the collision guard
+     * sits before `recvInfoNew` on purpose — and neither owes a retirement, so this is deliberately
+     * not [teardownPath]: there is no path entry and no [PathSlot] to leave.
+     */
+    private fun releaseUnprobedPath(newPath: NewPath) {
+        try {
+            newPath.channel.close()
+        } catch (_: Exception) {
+        }
+        newPath.release()
     }
 
     /**
@@ -1524,23 +1614,30 @@ class QuicheDriver(
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                         continue
                     }
+                    entry.validated()
                     _pathState.value = QuicPathState.Validated(pending.localEndpoint)
                     when (val outcome = api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
                         is MigrateOutcome.Migrated -> {
-                            // Retire the path we migrated FROM, now, while the connection is live —
-                            // not at cleanup(). Order matters: `active` moves first so nothing below
-                            // (or concurrent teardown-triggered routing) can resolve to the old entry.
+                            // Order matters: `active` moves first so nothing below (or concurrent
+                            // teardown-triggered routing) can resolve to the old entry.
+                            //
+                            // quiche 0.29's `migrate()` on an existing path returns that path's own
+                            // `active_dcid_seq` — the id `probe_path` already linked — so this
+                            // transition normally carries the same sequence forward and retires
+                            // nothing. It is written as a transition anyway because it is the one
+                            // place quiche could report a *different* id, and if it ever did, the
+                            // probe's would be orphaned: PathEntry.transitionTo retires the displaced
+                            // one instead of dropping it on the floor.
                             val previous = active
-                            active = ActivePath(entry, outcome.dcidSeq)
-                            teardownPath(previous.entry)
-                            // RFC 9000 §9.5: retire the DCID used on the old path. This — with the
-                            // retire-no-relink source patch — is what clears the old path's
-                            // `active_dcid_seq` inside quiche, making its slot evictable; without it
-                            // the table fills at active_conn_id_limit and the 4th probe is refused
-                            // (#395). Best-effort: a refusal (e.g. OutOfIdentifiers under the no-spare
-                            // guard) costs one pinned slot, not the migration that already happened —
-                            // the multi-migration conformance test is the systemic check.
-                            api.connRetireDcid(conn, previous.dcidSeq)
+                            entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
+                            active = entry
+                            // RFC 9000 §9.5: retire the DCID used on the old path — done by the
+                            // teardown itself now, not by a separate call with a separately-tracked
+                            // sequence number. This — with the retire-no-relink source patch — is what
+                            // clears the old path's `active_dcid_seq` inside quiche, making its slot
+                            // evictable; without it the table fills at active_conn_id_limit and the
+                            // 4th probe is refused (#395).
+                            teardownPath(previous)
                             completeMigration(
                                 pending,
                                 MigrationResult.Succeeded(pending.localEndpoint),
@@ -1548,6 +1645,12 @@ class QuicheDriver(
                             )
                         }
                         is MigrateOutcome.Rejected -> {
+                            // quiche validated the path and then refused to switch to it. Nothing will
+                            // ever retry *this* path — `pendingMigration` clears below and the next
+                            // migrate() opens a fresh socket — so leaving it in `paths` pins its DCID
+                            // and its slot in quiche's path table for the connection's life, exactly
+                            // as a failed validation used to (#447). Tear it down, which retires.
+                            teardownPath(entry)
                             completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
                         }
                     }
@@ -1568,7 +1671,7 @@ class QuicheDriver(
                     // for paths make_room_for_new_path evicted — which are never active — so this
                     // guard is a backstop, replacing the old `!isPrimary` (post-migration the entry
                     // to protect is `active`, which need not be the primary).
-                    paths[key]?.let { if (it !== active.entry) teardownPath(it) }
+                    paths[key]?.let { if (it !== active) teardownPath(it) }
                 }
 
                 QuichePathEventType.New,
@@ -1621,6 +1724,13 @@ class QuicheDriver(
      * released, #395).
      */
     private fun teardownPath(entry: PathEntry) {
+        // First, and unconditionally: the path stops holding its destination CID, which retires it
+        // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a
+        // FailedValidation, the §8.2.4 abandon timer, a refused switch, a quiche path eviction — so
+        // this is the one place a CID can be released, and there is no way to remove a path from
+        // `paths` that bypasses it. It runs before the socket closes because it is a quiche call, not
+        // an I/O one, and the connection is still live for all of them.
+        entry.transitionTo(PathSlot.Abandoned)
         paths.remove(entry.key)
         entry.readerJob?.cancel()
         try {
@@ -1639,8 +1749,12 @@ class QuicheDriver(
      * costing one [connScidsLeft] read when the peer-granted capacity is full — so retired capacity
      * is replenished (RFC 9000 §5.1.1), not issued exactly once. [MAX_SPARE_SCIDS] bounds the burst
      * per wake, [connScidsLeft] the total outstanding (the peer's active_connection_id_limit).
+     *
+     * Returns how many were issued. The issued CIDs are not announced one by one any more — the ids
+     * are now read back out of quiche by [projectSourceIds], and this count is simply one of the
+     * three signals that says the set may have moved.
      */
-    private fun issueSpareCids() {
+    private fun issueSpareCids(): Int {
         var count = 0
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
             val scid = generateScid(bufferFactory, random) // 20 random bytes, reset for read
@@ -1656,50 +1770,105 @@ class QuicheDriver(
                     true,
                     addr(seqScratch),
                 )
-            // Surface the issued CID (server registers it for routing) before freeing the buffer.
-            if (rc >= 0) onScidIssued?.invoke(scid, QUIC_MAX_CONN_ID_LEN)
             scid.freeNativeMemory()
             token.freeNativeMemory()
             if (rc < 0) break
             count++
         }
+        return count
     }
 
     /**
-     * Hand every source CID quiche has retired to [onScidRetired], so the server's DCID→driver map
-     * stops routing it at the same moment quiche stops recognising it (#437 — see [onScidRetired]).
+     * Drain the source CIDs the peer has retired, returning how many quiche yielded.
+     *
+     * `quiche_conn_retired_scid_iter` **drains** — an id this never collects stays queued inside
+     * quiche forever — so this must keep running even though the routing table no longer learns
+     * retirements from it. Since #449 the ids themselves are not what the server needs: it takes the
+     * live set from [projectSourceIds] instead, and a CID the peer retired is already absent from
+     * `quiche_conn_source_ids` (quiche removes it from `ids.scids` in the same call that queues it
+     * here). What this call still provides is the *fact* that the set moved, which is why the count
+     * is returned.
      *
      * Costs one [QuicheApi.connRetiredScids] read per established wake, alongside [issueSpareCids]'s
      * `connScidsLeft`; everything else runs only when the peer has actually retired something, which
      * happens a handful of times per migration.
      *
      * The count is read first and sizes the drain, and both run here on the driver coroutine — the
-     * only place allowed to touch the connection — so nothing can retire an id in between. That
-     * matters because `quiche_conn_retired_scid_iter` *drains*: an id this call fails to collect is
-     * gone from quiche and would keep routing here forever.
+     * only place allowed to touch the connection — so nothing can retire an id in between.
      */
-    private fun drainRetiredScids() {
-        val callback = onScidRetired ?: return
+    private fun drainRetiredScids(): Int {
         val count = api.connRetiredScids(conn)
-        if (count <= 0) return
+        if (count <= 0) return 0
         val slots = bufferFactory.allocate(count * RETIRED_SCID_SLOT_BYTES)
-        try {
+        return try {
             val yielded = api.connDrainRetiredScids(conn, addr(slots), count)
             // A backend that yields more than it was sized for has lost the excess — impossible while
             // the read above and this call share the driver coroutine, so it is reported rather than
-            // handled. The ids that DID fit are still unregistered below.
+            // handled.
             if (yielded > count) {
                 recorder?.error(RetiredScidOverflow(yielded, count))
             }
-            repeat(minOf(yielded, count)) { i ->
-                slots.position(i * RETIRED_SCID_SLOT_BYTES)
-                val len = slots.readByte().toInt() and 0xFF
-                if (len in 1..QUIC_MAX_CONN_ID_LEN) {
-                    // The callback snapshots the bytes; this buffer is reused for the next slot and
-                    // freed below, exactly as issueSpareCids' scid buffer is.
-                    callback(slots, len)
-                }
+            minOf(yielded, count)
+        } finally {
+            slots.freeNativeMemory()
+        }
+    }
+
+    /**
+     * How many source CIDs the last [projectSourceIds] published. Compared against
+     * [QuicheApi.connActiveScids] on every established wake so the projection is **self-correcting**:
+     * if the two disagree for any reason at all — a retirement quiche performed on its own via
+     * `retire_prior_to`, a signal this driver did not predict, a projection that never landed — the
+     * next wake notices and re-projects. That is the difference between a projection and the ledger
+     * it replaces: the ledger could only ever be as right as the events it was fed.
+     *
+     * Starts at 0, which is also what a [QuicheApi] test double reports, so a backend that has not
+     * bound the readback projects nothing rather than projecting an empty set over live routes.
+     */
+    private var projectedScidCount = 0
+
+    /**
+     * Publish quiche's current source-connection-id set to [onSourceIds], if it may have changed.
+     *
+     * [setMayHaveMoved] carries the two changes this driver *caused* on this wake (it issued a CID,
+     * or the peer retired one); the count comparison catches everything else. In the steady state
+     * neither fires and this is a single `quiche_conn_active_scids` integer read.
+     *
+     * Server-only in practice: a client leaves [onSourceIds] null because it demuxes by per-path
+     * socket and has no DCID map to keep in step.
+     */
+    private fun projectSourceIds(setMayHaveMoved: Boolean) {
+        val sink = onSourceIds ?: return
+        val active = api.connActiveScids(conn)
+        if (!setMayHaveMoved && active == projectedScidCount) return
+        if (active <= 0) {
+            // Nothing to route, or a backend with no readback bound (the interface default answers 0).
+            // Either way, publishing an empty set over the accept-time routes would unroute a live
+            // connection, so the projection stays silent and the count stays where it was.
+            return
+        }
+        val slots = bufferFactory.allocate(active * RETIRED_SCID_SLOT_BYTES)
+        try {
+            val yielded = api.connReadSourceIds(conn, addr(slots), active)
+            if (yielded > active) {
+                // Sized from connActiveScids one line earlier, on this same coroutine, so this cannot
+                // happen — reported rather than handled, and the projection is abandoned rather than
+                // published, because a partial set would unroute the ids that did not fit.
+                recorder?.error(RetiredScidOverflow(yielded, active))
+                return
             }
+            if (yielded <= 0) {
+                // connActiveScids says there is a set and connReadSourceIds yielded none: a backend
+                // with only half the readback bound (the other half answering the QuicheApi default).
+                // Publishing that would unroute every id this connection has — the exact opposite of
+                // what a projection is for — so report it and leave the map alone.
+                recorder?.error(RetiredScidOverflow(yielded, active))
+                return
+            }
+            // Unlike the retired-id drain this is a plain read, so a sink that snapshots the bytes
+            // can be handed the same scratch buffer slot by slot; nothing is lost by repeating it.
+            sink.replaceRoutes(slots, yielded)
+            projectedScidCount = yielded
         } finally {
             slots.freeNativeMemory()
         }

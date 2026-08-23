@@ -456,9 +456,13 @@ interface QuicheApi {
     // --- Path migration ---
 
     /**
-     * Probe the given path for reachability. Returns 0 on success or a negative quiche error code.
-     * [seqOut] is the native address of a `uint64_t` buffer the implementation writes the probed
-     * path's sequence number to.
+     * Probe the given path for reachability (`quiche_conn_probe_path`). Returns a [ProbeOutcome]:
+     * [ProbeOutcome.Probed] with the destination CID sequence number quiche **linked to the new
+     * path** on success, or [ProbeOutcome.Rejected] with the raw quiche error code on failure.
+     *
+     * The sequence number is a return value rather than the `seqOut` out-param it used to be because
+     * it is not diagnostic — it is a resource the caller now owns. See [ProbeOutcome] for why a
+     * driver that cannot see it leaks one connection ID per failed migration (#447).
      */
     fun connProbePath(
         conn: QuicheConn,
@@ -466,8 +470,7 @@ interface QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int
+    ): ProbeOutcome
 
     /**
      * Supply a spare source connection ID to the peer (`quiche_conn_new_scid`). quiche does

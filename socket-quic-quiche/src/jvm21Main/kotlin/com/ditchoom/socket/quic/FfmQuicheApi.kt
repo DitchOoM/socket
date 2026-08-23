@@ -876,16 +876,20 @@ class FfmQuicheApi private constructor(
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int =
-        hConnProbePath.invokeExact(
-            seg(conn.handle),
-            seg(localAddr),
-            localLen,
-            seg(peerAddr),
-            peerLen,
-            seg(seqOut),
-        ) as Int
+    ): ProbeOutcome =
+        Arena.ofConfined().use { arena ->
+            val seqOut = arena.allocate(JAVA_LONG)
+            val rc =
+                hConnProbePath.invokeExact(
+                    seg(conn.handle),
+                    seg(localAddr),
+                    localLen,
+                    seg(peerAddr),
+                    peerLen,
+                    seqOut,
+                ) as Int
+            if (rc >= 0) ProbeOutcome.Probed(seqOut.get(JAVA_LONG, 0)) else ProbeOutcome.Rejected(rc)
+        }
 
     override fun connNewScid(
         conn: QuicheConn,

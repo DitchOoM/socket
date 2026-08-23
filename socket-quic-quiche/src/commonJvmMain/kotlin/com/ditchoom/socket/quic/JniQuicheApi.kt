@@ -448,8 +448,13 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+    ): ProbeOutcome {
+        // Same packing as nConnMigrate: >= 0 is the DCID sequence number quiche linked to the probed
+        // path, < 0 is a quiche error code. Real DCID sequence numbers are tiny, so this is
+        // unambiguous in practice.
+        val raw = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen)
+        return if (raw >= 0) ProbeOutcome.Probed(raw) else ProbeOutcome.Rejected(raw.toInt())
+    }
 
     override fun connNewScid(
         conn: QuicheConn,
@@ -963,8 +968,7 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int
+    ): Long
 
     @JvmStatic private external fun nConnNewScid(
         conn: Long,
