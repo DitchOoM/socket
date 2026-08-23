@@ -646,6 +646,51 @@ JNIEXPORT jint JNICALL JNI_FN(nConnDrainRetiredScids)(
     return yielded;
 }
 
+/* How many source connection IDs quiche currently considers active (quiche_conn_active_scids).
+
+   The READ counterpart to nConnRetiredScids. Together with nConnReadSourceIds this is the half of
+   quiche's CID API this project never called: we issue CIDs and learn about retirements, but never
+   ask quiche what it believes the live set IS -- so our routing table could diverge from it with
+   nothing to notice (DitchOoM/socket#437, #395, #447). */
+JNIEXPORT jint JNICALL JNI_FN(nConnActiveScids)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jint)quiche_conn_active_scids((quiche_conn *)(uintptr_t)conn);
+}
+
+/* Copies quiche's CURRENT source connection IDs into `out` as `max_ids` slots of
+   1 + QUICHE_MAX_CONN_ID_LEN bytes: length byte, then that many id bytes. Returns the count yielded.
+
+   Unlike nConnDrainRetiredScids this does NOT drain -- quiche_conn_source_ids is a plain read, so
+   calling it is side-effect free and repeatable. That difference is the whole point of the separate
+   name: a caller that treated this as draining would be wrong in the safe direction, but a caller
+   that treated the drain as a read would silently lose ids forever.
+
+   Same "return what was YIELDED, not what was written" contract as the drain, for the same reason:
+   `min(returned, max_ids)` slots are valid, and a larger return says exactly how many did not fit. */
+JNIEXPORT jint JNICALL JNI_FN(nConnReadSourceIds)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong out, jint max_ids) {
+    quiche_connection_id_iter *it =
+        quiche_conn_source_ids((quiche_conn *)(uintptr_t)conn);
+    if (it == NULL) return 0;
+
+    uint8_t *dst = (uint8_t *)(uintptr_t)out;
+    const uint8_t *cid = NULL;
+    size_t cid_len = 0;
+    jint yielded = 0;
+
+    while (quiche_connection_id_iter_next(it, &cid, &cid_len)) {
+        if (yielded < max_ids && cid != NULL && cid_len <= QUICHE_MAX_CONN_ID_LEN) {
+            uint8_t *slot = dst + (size_t)yielded * (1 + QUICHE_MAX_CONN_ID_LEN);
+            slot[0] = (uint8_t)cid_len;
+            memcpy(slot + 1, cid, cid_len);
+        }
+        yielded++;
+    }
+
+    quiche_connection_id_iter_free(it);
+    return yielded;
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnPathEventNext)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_out, jlong local_len_out,

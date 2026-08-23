@@ -306,6 +306,12 @@ class FfmQuicheApi private constructor(
     private val hConnRetiredScidIter by lazy {
         downcall("quiche_conn_retired_scid_iter", FunctionDescriptor.of(ADDRESS, ADDRESS))
     }
+    private val hConnActiveScids by lazy {
+        downcall("quiche_conn_active_scids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+    private val hConnSourceIds by lazy {
+        downcall("quiche_conn_source_ids", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
     private val hConnIdIterNext by lazy {
         downcall("quiche_connection_id_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS))
     }
@@ -949,6 +955,40 @@ class FfmQuicheApi private constructor(
                         dst.set(JAVA_BYTE, 0L, len.toByte())
                         // Same `reinterpret` copy as connApplicationProto: quiche hands back a pointer
                         // into memory the iterator owns, so it must be copied before the free below.
+                        MemorySegment.copy(outPtr.get(ADDRESS, 0).reinterpret(len.toLong()), 0L, dst, 1L, len.toLong())
+                    }
+                    yielded++
+                }
+            } finally {
+                hConnIdIterFree.invokeExact(iter)
+            }
+            yielded
+        }
+    }
+
+    override fun connActiveScids(conn: QuicheConn): Int = (hConnActiveScids.invokeExact(seg(conn.handle)) as Long).toInt()
+
+    override fun connReadSourceIds(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        val iter = hConnSourceIds.invokeExact(seg(conn.handle)) as MemorySegment
+        if (iter.address() == 0L) return 0
+        return Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS)
+            val outLen = arena.allocate(JAVA_LONG)
+            var yielded = 0
+            try {
+                // Runs to completion even once the buffer is full — not because ids would be lost
+                // (quiche_conn_source_ids does not drain) but so the return value reports the true
+                // total, which is what makes an undersized buffer inspectable rather than silent.
+                while (hConnIdIterNext.invokeExact(iter, outPtr, outLen) as Boolean) {
+                    val len = outLen.get(JAVA_LONG, 0).toInt()
+                    if (yielded < maxIds && len in 1..QUIC_MAX_CONN_ID_LEN) {
+                        val slot = out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES
+                        val dst = seg(slot).reinterpret(RETIRED_SCID_SLOT_BYTES.toLong())
+                        dst.set(JAVA_BYTE, 0L, len.toByte())
                         MemorySegment.copy(outPtr.get(ADDRESS, 0).reinterpret(len.toLong()), 0L, dst, 1L, len.toLong())
                     }
                     yielded++
