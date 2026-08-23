@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.quic.sim.SimClock
@@ -73,6 +74,8 @@ private const val SERVER_PORT = 42002
  * a discovery channel; it does not retire a per-platform guard.
  */
 internal class MigrationSimScope(
+    val client: DriverQuicConnection,
+    val server: DriverQuicConnection,
     val clientDriver: QuicheDriver,
     val serverDriver: QuicheDriver,
     val pipe: MultiPathPipe,
@@ -418,12 +421,26 @@ internal suspend fun <R> withMigrationSim(
         serverDriver.start(simScope)
         clientDriver.start(simScope)
 
+        val client = DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope)
+        val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
         try {
             withTimeout(establishTimeout) {
                 clientDriver.state.first { it !is QuicConnectionState.Handshaking }
                 serverDriver.state.first { it !is QuicConnectionState.Handshaking }
             }
-            MigrationSimScope(clientDriver, serverDriver, pipe, api, clientConn, serverConn, clientAudit, serverAudit, factory).block()
+            MigrationSimScope(
+                client,
+                server,
+                clientDriver,
+                serverDriver,
+                pipe,
+                api,
+                clientConn,
+                serverConn,
+                clientAudit,
+                serverAudit,
+                factory,
+            ).block()
         } finally {
             withContext(NonCancellable) {
                 pump.cancel()
