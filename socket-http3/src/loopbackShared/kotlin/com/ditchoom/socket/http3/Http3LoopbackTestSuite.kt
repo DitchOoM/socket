@@ -1265,14 +1265,23 @@ abstract class Http3LoopbackTestSuite {
                     connectionOptions = connectionOptions,
                     webTransport = WebTransportOptions(maxSessions = 4),
                     onWebTransport = {
+                        // The server half is a child coroutine: if it stalls or is cancelled here, the
+                        // client simply waits and the whole-test budget fires with no indication that
+                        // the other end never got as far as writing. These marks are the only record of
+                        // that, and they are ordered so the LAST one reached names the culprit.
+                        diagnostics.mark("server: awaiting session accept")
                         val session = accept()
+                        diagnostics.mark("server: session accepted; opening uni stream")
                         // Server-initiated unidirectional stream toward the client.
                         val stream = session.openUniStream()
+                        diagnostics.mark("server: uni stream opened; writing")
                         stream.write(textBuffer("from-server"))
                         stream.close()
+                        diagnostics.mark("server: wrote and closed uni stream")
                     },
                     onRequest = { response.send(404) },
                 ) {
+                    diagnostics.mark("server up; dialing")
                     val got =
                         withHttp3Connection(
                             "localhost",
@@ -1282,10 +1291,23 @@ abstract class Http3LoopbackTestSuite {
                             15.seconds,
                             webTransport = WebTransportOptions(maxSessions = 4),
                         ) {
+                            diagnostics.registerConnection("C", this)
+                            // Four stages, four marks. Three of these were the SAME
+                            // `withTimeout(5.seconds)` and the fourth is unbounded, so when this test
+                            // failed on CI the exception could not say which one hung — and the reported
+                            // frame was the outer budget, not any of them. The marks are what turn the
+                            // next occurrence from "it timed out" into "it timed out waiting for the
+                            // server's uni stream, having already exchanged SETTINGS".
+                            diagnostics.mark("connected; awaiting peer SETTINGS")
                             withTimeout(5.seconds) { peerSettings() }
+                            diagnostics.mark("SETTINGS exchanged; connecting WebTransport session")
                             val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            diagnostics.mark("session connected; awaiting server-opened uni stream")
                             val stream = withTimeout(5.seconds) { session.incomingUniStreams.first() }
-                            withTimeout(5.seconds) { stream.readUtf8() }
+                            diagnostics.mark("uni stream accepted; reading body")
+                            withTimeout(5.seconds) { stream.readUtf8() }.also {
+                                diagnostics.mark("body read")
+                            }
                         }
                     assertEquals("from-server", got)
                 }
@@ -2055,8 +2077,21 @@ private fun Http3LoopbackTestSuite.runHttp3LoopbackTest(
             try {
                 withTimeout(timeout) { block() }
             } catch (t: Throwable) {
-                emitDiagnostics(diagnostics.report(t))
-                throw t
+                val report = diagnostics.report(t)
+                // Emitted AND folded into the exception, because those two land in different places and
+                // only one of them survives CI. emitDiagnostics writes to system-out (logcat on
+                // Android), which reaches the test XML — but a CI job log shows the exception, and the
+                // XML is clobbered outright by the JNI->FFM re-run. A WebTransport timeout on the Linux
+                // lane was diagnosed from nothing but `TimeoutCancellationException at
+                // JvmHttp3LoopbackTest.kt:34` for exactly this reason: the report existed and nobody
+                // could see it. Same fix `withTracedQuicConnection` already applies in :socket-testsuite.
+                emitDiagnostics(report)
+                // AssertionError, not the original: a TimeoutCancellationException IS a
+                // CancellationException, and rethrowing one here lets the surrounding machinery treat a
+                // real failure as an ordinary cancellation. At the outermost test boundary a
+                // cancellation is a failure, so naming it as one costs nothing and keeps the report
+                // attached to the thing CI prints. The original stays as the cause.
+                throw AssertionError(report, t)
             }
         }
     }
