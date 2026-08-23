@@ -312,6 +312,7 @@ private fun runUnansweredProbe(useVirtualClock: Boolean): ProbeOutcomeMeasuremen
         // Issuing only the server's is what a first attempt at this test does, and it fails -18 with
         // `availableDcids=1` — a genuinely confusing signature worth naming here.
         val rng = Random(11)
+
         fun issueSpareScid(
             conn: QuicheConn,
             role: String,

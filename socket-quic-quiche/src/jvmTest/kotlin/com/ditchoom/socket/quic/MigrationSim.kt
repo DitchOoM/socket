@@ -78,6 +78,9 @@ internal class MigrationSimScope(
     val pipe: MultiPathPipe,
     val api: QuicheApi,
     private val clientConn: QuicheConn,
+    internal val serverConn: QuicheConn,
+    val clientAudit: CidAuditQuicheApi,
+    val serverAudit: CidAuditQuicheApi,
     private val factory: PipeUdpChannelFactory,
 ) {
     /** Local endpoints the client has bound, in open order. Index 0 is the primary. */
@@ -101,6 +104,27 @@ internal class MigrationSimScope(
      */
     fun clientAvailableDcids(): Long = api.connAvailableDcids(clientConn)
 
+    /** Diagnostic: quiche's own client-side path table — index, validation state, active flag. */
+    fun clientPathTable(): String {
+        val n = api.connStats(clientConn)?.pathsCount ?: 0L
+        return (0 until n).joinToString(" ") { idx ->
+            val st = api.connPathStats(clientConn, idx)
+            "[$idx state=${st?.validationState} active=${st?.active}]"
+        }
+    }
+
+    /** Diagnostic: how many more source CIDs the server is still allowed to issue. */
+    fun serverScidsLeft(): Long = api.connScidsLeft(serverConn)
+
+    /** Diagnostic: how many source CIDs the server currently has outstanding. */
+    fun serverActiveScids(): Int = api.connActiveScids(serverConn)
+
+    /** Diagnostic: per-path datagram counts, so "was anything actually sent" is answerable. */
+    fun pipeTraffic(): String =
+        pipe.paths().joinToString(" ") {
+            "[${it.local.port} ->srv=${it.stats.sentToServer} ->cli=${it.stats.sentToClient} bh=${it.stats.blackholed}]"
+        }
+
     /**
      * Suspend until the peer's NEW_CONNECTION_ID has landed and the client holds at least
      * [count] spare destination CIDs.
@@ -114,6 +138,7 @@ internal class MigrationSimScope(
      * The `delay` is virtual, so the wait costs no wall clock; it drives the scheduler, which is what
      * lets the pipe's queued deliveries run.
      */
+
     suspend fun awaitSpareDcids(
         count: Long = 1,
         timeout: Duration = 30.seconds,
@@ -159,6 +184,42 @@ internal class PipeUdpChannelFactory(
             release = {},
         )
     }
+}
+
+/**
+ * Records the connection-ID calls each side makes, so a scenario can assert on the *mechanism*
+ * ("the abandon retired the id it held") rather than only on the aggregate `available_dcids` count,
+ * which several independent effects move.
+ */
+internal class CidAuditQuicheApi(
+    private val delegate: QuicheApi,
+) : QuicheApi by delegate {
+    val retireCalls = mutableListOf<Pair<Long, Int>>() // dcidSeq -> return code
+    var newScidCalls = 0
+        private set
+
+    /** Non-zero returns from `quiche_conn_retired_scid_iter`'s count — i.e. the peer retired one of ours. */
+    var retiredScidsSeen = 0
+        private set
+
+    override fun connRetiredScids(conn: QuicheConn): Int = delegate.connRetiredScids(conn).also { if (it > 0) retiredScidsSeen += it }
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int = delegate.connRetireDcid(conn, dcidSeq).also { retireCalls += dcidSeq to it }
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int =
+        delegate.connNewScid(conn, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut).also {
+            newScidCalls++
+        }
 }
 
 private fun migrationSimCertPath(name: String): String {
@@ -288,6 +349,9 @@ internal suspend fun <R> withMigrationSim(
             api.recvInfoNew(primaryPath.sockAddr.address, primaryPath.sockAddr.length, serverLocalSock.address, serverLocalSock.length)
         val serverSendInfo = api.sendInfoNew()
 
+        val clientAudit = CidAuditQuicheApi(api)
+        val serverAudit = CidAuditQuicheApi(api)
+
         val clientDriver =
             QuicheDriver(
                 migration =
@@ -296,7 +360,7 @@ internal suspend fun <R> withMigrationSim(
                         primaryLocal = PinnedSockAddr(primaryPath.sockAddr.address, primaryPath.sockAddr.length),
                         channelFactory = factory,
                     ),
-                rawApi = api,
+                rawApi = clientAudit,
                 conn = clientConn,
                 bufferFactory = bufferFactory,
                 recvInfo = clientRecvInfo,
@@ -313,7 +377,7 @@ internal suspend fun <R> withMigrationSim(
         val serverDriver =
             QuicheDriver(
                 migration = MigrationCapability.ServerConnection,
-                rawApi = api,
+                rawApi = serverAudit,
                 conn = serverConn,
                 bufferFactory = bufferFactory,
                 recvInfo = serverRecvInfo,
@@ -359,7 +423,7 @@ internal suspend fun <R> withMigrationSim(
                 clientDriver.state.first { it !is QuicConnectionState.Handshaking }
                 serverDriver.state.first { it !is QuicConnectionState.Handshaking }
             }
-            MigrationSimScope(clientDriver, serverDriver, pipe, api, clientConn, factory).block()
+            MigrationSimScope(clientDriver, serverDriver, pipe, api, clientConn, serverConn, clientAudit, serverAudit, factory).block()
         } finally {
             withContext(NonCancellable) {
                 pump.cancel()
