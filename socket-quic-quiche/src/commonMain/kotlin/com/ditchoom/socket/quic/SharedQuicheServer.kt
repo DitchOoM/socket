@@ -93,6 +93,12 @@ internal class SharedQuicheServer(
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 
+    /**
+     * TEST SEAM (do not call in production): is [cid] still in the DCID→driver routing table?
+     * See [ServerConnectionRegistry.routesForTest].
+     */
+    internal fun routesConnectionIdForTest(cid: ConnectionIdKey): Boolean = registry.routesForTest(cid)
+
     // Child scope of the per-call parent — cancelling it takes down every handler coroutine spawned
     // via connections() plus the receive loop.
     private val serverJob = SupervisorJob(parentScope.coroutineContext[Job])
@@ -318,7 +324,7 @@ internal class SharedQuicheServer(
                     }
 
                     val dcidLen = readNativeSizeT(dcidLenBuf)
-                    val dcidKey = ConnectionIdKey.from(dcidBuf, dcidLen)
+                    val dcidKey = ConnectionIdKey.from(dcidBuf, offset = 0, length = dcidLen)
 
                     val existingDriver = registry.driverForDcid(dcidKey)
                     if (existingDriver != null) {
@@ -447,7 +453,7 @@ internal class SharedQuicheServer(
                 fixedPeerKey = api.decodePathKey(peerSockAddr.address),
                 peerFor = peers::get,
             )
-        // Self-reference for onScidIssued: the driver doesn't exist when we build the callback, so
+        // Self-reference for onSourceIds: the driver doesn't exist when we build the callback, so
         // capture it via this holder, set right after construction.
         var driverRef: QuicheDriver? = null
         val driver =
@@ -479,25 +485,19 @@ internal class SharedQuicheServer(
                     peerSockAddr.free()
                     localSockAddr.free()
                 },
-                onScidIssued = { scid, len ->
-                    // Snapshot the CID (scid is freed right after this returns) and hand the registration
-                    // to the receive loop; poke it to drain promptly so a migrating peer's new DCID routes.
-                    driverRef?.let { d ->
-                        registry.enqueueScidRegistration(ConnectionIdKey.from(scid, len), d)
-                        wakeups.trySend(Unit)
-                    }
-                },
-                onScidRetired = { scid, len ->
-                    // The mirror of onScidIssued: the peer has stopped using this CID and quiche has
-                    // already dropped it, so the routing map must too — otherwise a packet that was
-                    // legitimately in flight when the peer retired it still reaches quiche, which no
-                    // longer recognises the CID and kills the connection over it (#437). Same snapshot
-                    // rule: the buffer is reused for the next id and freed on return.
-                    driverRef?.let { d ->
-                        registry.enqueueScidRetirement(ConnectionIdKey.from(scid, len), d)
-                        wakeups.trySend(Unit)
-                    }
-                },
+                // The routing map is a projection of quiche's own CID table, not a ledger replayed
+                // from issue/retire events (#449). The driver hands over everything quiche currently
+                // recognises for this connection; snapshot it here (the slot buffer is the driver's
+                // scratch and is valid only for this call) and hand the set to the receive loop, which
+                // owns the map. Poke that loop to apply it promptly, so a migrating peer's new DCID
+                // routes before its PATH_CHALLENGE arrives rather than after.
+                onSourceIds =
+                    SourceIdSink { slots, count ->
+                        driverRef?.let { d ->
+                            registry.enqueueRouteProjection(d, decodeConnectionIdSlots(slots, count))
+                            wakeups.trySend(Unit)
+                        }
+                    },
             )
         driverRef = driver
 
@@ -506,7 +506,7 @@ internal class SharedQuicheServer(
         registry.trackLiveDriver(driver)
         driver.start(scope)
 
-        val scidKey = ConnectionIdKey.from(serverScid, QUIC_MAX_CONN_ID_LEN)
+        val scidKey = ConnectionIdKey.from(serverScid, offset = 0, length = QUIC_MAX_CONN_ID_LEN)
         serverScid.freeNativeMemory()
         return driver to scidKey
     }

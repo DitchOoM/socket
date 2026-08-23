@@ -208,6 +208,12 @@ class PathRetirementTests {
             wake()
         }
 
+        /** The mirror of [validate]: quiche gives up on path [index]'s PATH_CHALLENGE. */
+        suspend fun failValidation(index: Int) {
+            stub.pathEvents += StubPathEvent(QuichePathEventType.FailedValidation, factory.portOfPath(index))
+            wake()
+        }
+
         /** One benign driver-loop wake (a no-op stream open), so `afterCommand` runs again. */
         suspend fun wake() {
             driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
@@ -277,8 +283,6 @@ class PathRetirementTests {
     fun aSecondMigrationTearsDownTheFirstMigratedToPathAndItsReader() =
         runTest {
             val f = Fixture()
-            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(5L)
-            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(9L)
             f.driver.start(this)
             try {
                 runCurrent()
@@ -316,10 +320,17 @@ class PathRetirementTests {
                 )
                 assertEquals(1, f.factory.releases, "the retired path's pinned sockaddr was never released")
                 assertEquals(
-                    listOf(0L, 5L),
+                    listOf(0L, 1L),
                     f.stub.retiredDcids,
-                    "the second retirement must name the DCID sequence the first connMigrate reported (5) — " +
-                        "anything else retires a CID the old path never used and leaves the real one pinned",
+                    "the second retirement must name the DCID sequence quiche linked to the FIRST probed " +
+                        "path (1) — anything else retires a CID the old path never used and leaves the " +
+                        "real one pinned",
+                )
+                assertEquals(
+                    setOf(2L),
+                    f.stub.linkedDcidSeqs,
+                    "after two migrations exactly one destination CID may still be linked to a path: the " +
+                        "one the connection is living on (#447)",
                 )
             } finally {
                 f.driver.destroy()
@@ -479,6 +490,240 @@ class PathRetirementTests {
                     recvs,
                     "a packet tagged with the RETIRED path's key was fed to quiche under another path's " +
                         "recv_info — stale attribution, the defect retirement exists to end",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **#447: a probe that fails validation must give its destination CID back.**
+     *
+     * `quiche_conn_probe_path` does not merely arm a PATH_CHALLENGE — `create_path_on_client` takes
+     * `lowest_available_dcid_seq()` and links it to the path it just made, so the id leaves the spare
+     * pool immediately. When the peer never answers, `on_failed_validation()` sets the path to
+     * `Failed` and touches `active_dcid_seq` not at all: quiche will never hand that id back, and the
+     * path itself is not even evictable, because `Path::unused()` requires `active_dcid_seq.is_none()`.
+     *
+     * Before the [PathSlot] lifecycle the driver wrote the probe's sequence number into native scratch
+     * and never read it, so this exit had **no value to forget**. One unanswered challenge — routine on
+     * real cellular — cost the connection a CID permanently; a few of them left every later `migrate()`
+     * answering `NoSpareConnectionId` for the rest of the connection's life (measured live against
+     * Google, 2026-08-22).
+     */
+    @Test
+    fun aFailedPathValidationRetiresTheConnectionIdTheProbeConsumed() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(1, f.factory.opened, "no probe path was ever opened — the test proved nothing")
+                assertEquals(
+                    setOf(0L, 1L),
+                    f.stub.linkedDcidSeqs,
+                    "the probe must have consumed a spare destination CID for this test to mean anything",
+                )
+
+                f.failValidation(1)
+                runCurrent()
+
+                assertEquals(
+                    MigrationResult.Unmoved.Failed.PathNotValidated,
+                    result.await(),
+                    "the failed validation was not reported to the caller",
+                )
+                assertEquals(
+                    listOf(1L),
+                    f.stub.retiredDcids,
+                    "the failed probe's destination CID was never retired — quiche keeps it linked to a " +
+                        "path that will never be used again, so it is gone from the spare pool for the " +
+                        "life of the connection (#447)",
+                )
+                assertEquals(
+                    setOf(0L),
+                    f.stub.linkedDcidSeqs,
+                    "after a failed migration the only destination CID still linked to a path must be the " +
+                        "one the connection is living on (#447)",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **The same leak, one exit further along: quiche validates the path and then refuses the switch.**
+     *
+     * `quiche_conn_migrate` can answer an error on a path it has just reported `Validated` (an
+     * `OutOfIdentifiers` for the *source* CID, for instance). The driver used to complete the caller
+     * with [MigrationResult.Unmoved.Failed.SwitchRejected] and leave the entry sitting in `paths`
+     * holding its DCID — nothing ever retries that path, because `pendingMigration` clears and the next
+     * `migrate()` opens a fresh socket, so the id and the quiche path slot were pinned exactly as a
+     * failed validation pinned them.
+     */
+    @Test
+    fun aValidatedPathWhoseSwitchQuicheRefusesIsTornDownAndItsIdRetired() =
+        runTest {
+            val f = Fixture()
+            f.stub.connMigrateOutcomes += MigrateOutcome.Rejected(QUICHE_ERR_OUT_OF_IDENTIFIERS)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+
+                assertEquals(
+                    MigrationResult.Unmoved.Failed.SwitchRejected(QUICHE_ERR_OUT_OF_IDENTIFIERS),
+                    result.await(),
+                    "the refused switch was not reported to the caller",
+                )
+                assertEquals(
+                    1,
+                    f.factory.channels[0].closeCount,
+                    "the path quiche refused to switch to was left open — nothing will ever use it again",
+                )
+                assertEquals(
+                    setOf(0L),
+                    f.stub.linkedDcidSeqs,
+                    "a validated-then-refused path kept its destination CID — the same leak as a failed " +
+                        "validation, one exit further along (#447)",
+                )
+                assertEquals(
+                    0,
+                    f.primaryChannel.closeCount,
+                    "the connection never moved, so the path it is living on must be untouched",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
+     *
+     * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring
+     * something on every failure, and that would be worse than the leak. Every failure inside
+     * `create_path_on_client` returns *before* `link_dcid_to_path_id`, so a rejected probe never took
+     * an id — retiring one here would drop a spare the connection still owns, or the id it is using.
+     */
+    @Test
+    fun aProbeQuicheRejectsOutrightRetiresNothing() =
+        runTest {
+            val f = Fixture()
+            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_OUT_OF_IDENTIFIERS)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+
+                assertEquals(
+                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_OUT_OF_IDENTIFIERS),
+                    result.await(),
+                )
+                assertEquals(
+                    emptyList(),
+                    f.stub.retiredDcids,
+                    "a probe quiche refused never took a destination CID, so retiring one here throws away " +
+                        "a spare the connection still owns",
+                )
+                assertEquals(
+                    setOf(0L),
+                    f.stub.linkedDcidSeqs,
+                    "a rejected probe must leave the connection's CID accounting exactly as it found it",
+                )
+                assertEquals(1, f.factory.channels[0].closeCount, "the rejected probe's socket was left open")
+                assertEquals(1, f.factory.releases, "the rejected probe's pinned sockaddr was never released")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **The systemic statement of #447**: failed migrations must not accumulate.
+     *
+     * One leaked CID is a curiosity; the defect is that they add up. A flapping network produces failed
+     * probes one after another, and each one used to cost a spare permanently — so after roughly
+     * `active_connection_id_limit` handoffs the connection could no longer migrate at all, and answered
+     * `NoSpareConnectionId` to every attempt for the rest of its life. This walks five consecutive
+     * failures and asserts the invariant that makes that impossible: after each one, the *only*
+     * destination CID linked to a path is the one the connection is living on.
+     */
+    @Test
+    fun repeatedFailedMigrationsNeverAccumulateLinkedConnectionIds() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                runCurrent()
+                repeat(5) { attempt ->
+                    val result = f.migrate()
+                    runCurrent()
+                    assertEquals(
+                        attempt + 1,
+                        f.factory.opened,
+                        "attempt ${attempt + 1} never reached the probe — the test stopped measuring here",
+                    )
+                    f.failValidation(attempt + 1)
+                    runCurrent()
+                    assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
+                    assertEquals(
+                        setOf(0L),
+                        f.stub.linkedDcidSeqs,
+                        "after ${attempt + 1} failed migration(s) the connection is still holding CIDs for " +
+                            "paths it has torn down — this is the accumulation that ends in " +
+                            "NoSpareConnectionId forever (#447)",
+                    )
+                }
+                assertEquals(
+                    listOf(1L, 2L, 3L, 4L, 5L),
+                    f.stub.retiredDcids,
+                    "each failed probe must retire its OWN id, in order — retiring the same one twice, or " +
+                        "one the connection is still using, would be a different defect wearing this fix",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A `connMigrate` that reports a different id than the probe took orphans the probe's — unless
+     * the transition retires it.**
+     *
+     * quiche 0.29 cannot do this (`migrate()` on an existing path returns that path's own
+     * `active_dcid_seq`, which is what `probe_path` linked), so this is a guard on the *shape* rather
+     * than on today's behaviour: [PathSlot] makes the DCID a property of the path, and any transition
+     * that does not carry it forward hands it back. Written down because the alternative — assuming the
+     * two agree — is exactly the kind of unstated coupling that made #447 invisible for months.
+     */
+    @Test
+    fun aSwitchThatReportsADifferentConnectionIdRetiresTheOneTheProbeTook() =
+        runTest {
+            val f = Fixture()
+            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(7L)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+
+                assertEquals(
+                    listOf(1L, 0L),
+                    f.stub.retiredDcids,
+                    "the probe's id (1) was displaced by the one the switch reported (7) and never handed " +
+                        "back, then the migrated-from path's initial id (0) was retired as usual",
+                )
+                assertEquals(
+                    setOf(7L),
+                    f.stub.linkedDcidSeqs,
+                    "only the id the connection is actually using may still be linked to a path",
                 )
             } finally {
                 f.driver.destroy()

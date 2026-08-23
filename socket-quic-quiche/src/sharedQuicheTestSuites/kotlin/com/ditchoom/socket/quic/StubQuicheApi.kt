@@ -540,15 +540,64 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun sockAddrV6Lo(addr: Long) = 0L
 
-    // --- Path migration (no-ops) ---
+    // --- Path migration ---
+
+    /**
+     * Scripted [ProbeOutcome] queue, drained one outcome per [connProbePath] call in FIFO order.
+     * Falls back to a fresh [ProbeOutcome.Probed] once drained, whose sequence number comes from
+     * [nextProbeDcidSeq] — so an unscripted test keeps the success it has always had, and now also
+     * gets a *distinct*, inspectable connection ID per probe.
+     */
+    val connProbeOutcomes: ArrayDeque<ProbeOutcome> = ArrayDeque()
+
+    /**
+     * The sequence number the next unscripted [connProbePath] hands out; incremented after each.
+     *
+     * Starts at 1, because 0 is the initial destination CID the connection is already living on
+     * (RFC 9000 §5.1.1) — quiche's `lowest_available_dcid_seq()` can never hand it out again, and a
+     * stub that did would let a test pass while the driver retired the id it was still using.
+     */
+    @Volatile var nextProbeDcidSeq = 1L
+
+    /**
+     * Every destination CID quiche has **linked to a path** and not yet been asked to retire — the
+     * stub's mirror of `ids.dcids[seq].path_id`, and the direct measurement of the #447 leak.
+     *
+     * [connProbePath] links one (`create_path_on_client` → `link_dcid_to_path_id`), [connRetireDcid]
+     * unlinks it, and nothing else touches it — exactly as in quiche, where `on_failed_validation()`
+     * leaves `active_dcid_seq` untouched. A driver that abandons a path without retiring its id
+     * leaves that id here forever, one per failed migration, which is what
+     * `NoSpareConnectionId`-for-the-rest-of-the-connection looks like from the inside.
+     *
+     * Sequence 0 is present from construction: the connection is using the initial CID from the
+     * moment it exists.
+     */
+    val linkedDcidSeqs: MutableSet<Long> = mutableSetOf(0L)
+
+    /**
+     * Which destination CID each probed path holds, keyed by the local sockaddr pointer the path was
+     * probed with — the stub's `path.active_dcid_seq`. [connMigrate] reads it so that migrating to a
+     * path reports the id that path is *actually* using, which is what quiche 0.29 does
+     * (`migrate()` on an existing path returns `path.active_dcid_seq`, the one `probe_path` linked).
+     */
+    private val pathDcidSeqs = mutableMapOf<Long, Long>()
+
     override fun connProbePath(
         conn: QuicheConn,
         localAddr: Long,
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ) = 0
+    ): ProbeOutcome {
+        val outcome = connProbeOutcomes.removeFirstOrNull() ?: ProbeOutcome.Probed(nextProbeDcidSeq++)
+        // Mirror quiche: only a probe that actually created a path consumes (links) an id. Every
+        // failure inside create_path_on_client returns before link_dcid_to_path_id.
+        if (outcome is ProbeOutcome.Probed) {
+            linkedDcidSeqs += outcome.dcidSeq
+            pathDcidSeqs[localAddr] = outcome.dcidSeq
+        }
+        return outcome
+    }
 
     override fun connNewScid(
         conn: QuicheConn,
@@ -566,12 +615,14 @@ internal class StubQuicheApi : QuicheApi {
 
     /**
      * Scripted [MigrateOutcome] queue, drained one outcome per [connMigrate] call in FIFO order.
-     * Falls back to [connMigrateOutcome] once drained — **`Migrated(1L)` by default**, matching the
-     * `= 0` (success) every existing test already relies on.
+     * **Empty by default**: an unscripted migration reports the sequence number [connProbePath]
+     * linked to *that* path, because that is what quiche answers and a stub that invented a
+     * different one would make the driver retire an id the connection is still using.
+     *
+     * Script it to model a [MigrateOutcome.Rejected], or the (quiche-0.29-impossible) case where the
+     * reported id disagrees with the probed one.
      */
     val connMigrateOutcomes: ArrayDeque<MigrateOutcome> = ArrayDeque()
-
-    @Volatile var connMigrateOutcome: MigrateOutcome = MigrateOutcome.Migrated(1L)
 
     override fun connMigrate(
         conn: QuicheConn,
@@ -579,7 +630,20 @@ internal class StubQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-    ): MigrateOutcome = connMigrateOutcomes.removeFirstOrNull() ?: connMigrateOutcome
+    ): MigrateOutcome {
+        val outcome =
+            connMigrateOutcomes.removeFirstOrNull()
+                ?: MigrateOutcome.Migrated(pathDcidSeqs[localAddr] ?: INITIAL_DCID_SEQ)
+        // Mirror quiche: a successful migrate onto a path with no destination CID links one to it
+        // (`link_dcid_to_path_id` + `path.active_dcid_seq = Some(..)`). Normally the id is the one
+        // probe_path already linked, so this is idempotent; a script that reports a different one
+        // models quiche linking that one instead, which is what makes the probe's id orphaned.
+        if (outcome is MigrateOutcome.Migrated) {
+            linkedDcidSeqs += outcome.dcidSeq
+            pathDcidSeqs[localAddr] = outcome.dcidSeq
+        }
+        return outcome
+    }
 
     /** Records every [connRetireDcid] call's [dcidSeq], so tests can assert what the driver retired. */
     val retiredDcids: MutableList<Long> = mutableListOf()
@@ -591,6 +655,10 @@ internal class StubQuicheApi : QuicheApi {
         dcidSeq: Long,
     ): Int {
         retiredDcids += dcidSeq
+        // Mirror quiche's `retire_dcid`: the id is removed from the table and unlinked from whatever
+        // path held it. A refusal (connRetireDcidResult < 0) changes nothing, as in quiche, where the
+        // OutOfIdentifiers guard returns before touching `ids`.
+        if (connRetireDcidResult >= 0) linkedDcidSeqs -= dcidSeq
         return connRetireDcidResult
     }
 
@@ -696,6 +764,51 @@ internal class StubQuicheApi : QuicheApi {
     }
 
     /**
+     * How many source CIDs quiche considers active (`quiche_conn_active_scids`). **0 by default** —
+     * the [QuicheApi] "unbound backend" answer, which is what every existing test relies on: with 0
+     * the driver publishes no routing projection at all.
+     */
+    @Volatile var activeScidCount = 0
+
+    /** Every [connActiveScids] call — how a test measures the per-wake cost of the projection. */
+    @Volatile var activeScidCalls = 0
+        private set
+
+    /**
+     * What [connReadSourceIds] reports it yielded. **0 by default**, matching the interface default a
+     * backend with no binding gives — which is also the half-bound case the driver must refuse to
+     * publish, since an empty set would unroute the whole connection.
+     */
+    @Volatile var sourceIdsYielded = 0
+
+    /** Every [connReadSourceIds] call — proves the read happens only when the trigger says to. */
+    @Volatile var readSourceIdCalls = 0
+        private set
+
+    override fun connActiveScids(conn: QuicheConn): Int {
+        activeScidCalls++
+        return activeScidCount
+    }
+
+    /**
+     * Reports a count and writes **nothing**, for the reason [connDrainRetiredScids] does: this stub
+     * decodes no real memory, and filling the driver's buffer with fabricated connection IDs would be
+     * a lie dressed as coverage. What it models is the *policy* — when the driver reads, and what it
+     * does with a count that disagrees with [connActiveScids].
+     *
+     * The bytes are covered where they mean something: `ConnectionIdSlotDecodeTests` against a
+     * hand-built buffer, and `SourceIdReadbackTestSuite` against real quiche on every platform.
+     */
+    override fun connReadSourceIds(
+        conn: QuicheConn,
+        out: Long,
+        maxIds: Int,
+    ): Int {
+        readSourceIdCalls++
+        return sourceIdsYielded
+    }
+
+    /**
      * Scripted `quiche_conn_path_event_next` queue, drained one event per call in FIFO order.
      *
      * **Empty by default**, so [connPathEventNext] answers `null` — "no events" — exactly as it always
@@ -720,6 +833,13 @@ internal class StubQuicheApi : QuicheApi {
     }
 
     private companion object {
+        /**
+         * RFC 9000 §5.1.1's initial destination CID sequence. The answer for a `connMigrate` naming a
+         * local address that was never probed — a migrate onto the path the connection already lives
+         * on, which is the only way to reach it.
+         */
+        const val INITIAL_DCID_SEQ = 0L
+
         /** Live-iterator handles: distinct so [streamIterNext] knows which queue it is draining. */
         const val READABLE_ITER = 2L
         const val WRITABLE_ITER = 1L

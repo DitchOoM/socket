@@ -693,16 +693,20 @@ internal object CinteropQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int =
-        quiche_conn_probe_path(
-            conn.handle.toCPointer()!!,
-            localAddr.toCPointer()!!,
-            localLen.convert(),
-            peerAddr.toCPointer()!!,
-            peerLen.convert(),
-            seqOut.toCPointer<ULongVar>()!!,
-        )
+    ): ProbeOutcome =
+        memScoped {
+            val seqOut = alloc<ULongVar>()
+            val rc =
+                quiche_conn_probe_path(
+                    conn.handle.toCPointer()!!,
+                    localAddr.toCPointer()!!,
+                    localLen.convert(),
+                    peerAddr.toCPointer()!!,
+                    peerLen.convert(),
+                    seqOut.ptr,
+                )
+            if (rc >= 0) ProbeOutcome.Probed(seqOut.value.toLong()) else ProbeOutcome.Rejected(rc)
+        }
 
     override fun connNewScid(
         conn: QuicheConn,

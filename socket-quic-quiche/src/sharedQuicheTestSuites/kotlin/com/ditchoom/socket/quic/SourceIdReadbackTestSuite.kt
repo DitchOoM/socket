@@ -1,11 +1,22 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.buffer.freeIfNeeded
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -39,6 +50,10 @@ import kotlin.time.Duration.Companion.seconds
  * years; asking quiche what the live set *is* is new, and it is what makes a divergence between
  * quiche's table and our own routing map assertable instead of discoverable only downstream as a
  * dropped packet (#437) or a permanently pinned path slot (#395, #447). See #449.
+ *
+ * [theServersRoutingTableIsAProjectionOfQuichesSourceIds] is the other half of the same idea: the
+ * first test proves the backend can *read* the live set; the second proves the routing table is
+ * actually *equal* to it, end to end, across a real migration.
  */
 abstract class SourceIdReadbackTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -102,4 +117,160 @@ abstract class SourceIdReadbackTestSuite {
                 }
             }
         }
+
+    /**
+     * **The routing table equals `quiche_conn_source_ids` — including after the set shrinks** (#449,
+     * and the standing regression guard for #437).
+     *
+     * The server's DCID→driver map decides whether a datagram reaches a connection at all, so it must
+     * hold exactly the ids quiche recognises: an id quiche has forgotten but the map still routes hands
+     * quiche a CID it will answer with PROTOCOL_VIOLATION (#437); an id quiche has issued but the map
+     * has not learned makes a migrating peer's PATH_CHALLENGE miss the demux entirely.
+     *
+     * A client migration is what moves the set: RFC 9000 §9.5 has the client retire the CID it used on
+     * the old path, and quiche drops that id from `source_ids` in the same call that queues it as
+     * retired. So this migrates and then asserts the map followed — in **both** directions, because
+     * only asserting the removal would let a map that had unrouted everything pass.
+     *
+     * Reading the server's table needs the server object rather than a `QuicScope`, which is why this
+     * casts; both ends are this module's own server in this process.
+     */
+    @Test
+    fun theServersRoutingTableIsAProjectionOfQuichesSourceIds() =
+        runQuicTest(timeout = 60.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
+                    val server = this as SharedQuicheServer
+                    val serverDriver = CompletableDeferred<QuicheDriver>()
+                    val serverJob =
+                        launch {
+                            connections {
+                                serverDriver.complete((this as QuicheBackedConnection).quicheDriver)
+                                val stream = acceptStream()
+                                while (true) {
+                                    val data = stream.read(30.seconds)
+                                    if (data !is ReadResult.Data) break
+                                    try {
+                                        stream.writeFully(data.buffer, 5.seconds)
+                                    } finally {
+                                        data.buffer.freeIfNeeded()
+                                    }
+                                }
+                            }
+                        }
+                    try {
+                        // The block runs INSIDE this timeout (withQuicConnection wraps it), so every
+                        // poll below is bounded well under it and reports its own verdict — an opaque
+                        // connection timeout would say nothing about which half of the projection failed.
+                        withQuicConnection("127.0.0.1", port, options, timeout = 45.seconds) {
+                            val stream = openStream()
+                            assertEquals("before", stream.echo("before"), "the connection must be healthy to start")
+                            val driver =
+                                assertNotNull(
+                                    withTimeoutOrNull(SYNC_BUDGET) { serverDriver.await() },
+                                    "the server never accepted the connection",
+                                )
+
+                            val before =
+                                assertNotNull(
+                                    withTimeoutOrNull(SYNC_BUDGET) { driver.awaitRoutedSourceIds(server) },
+                                    "the server never routed the ids quiche lists for this connection: a peer " +
+                                        "migrating onto one of them would miss the demux entirely",
+                                )
+                            assertTrue(
+                                before.size > 1,
+                                "the server has only ${before.size} routed source CID, so the shrink below cannot " +
+                                    "be distinguished from an empty table",
+                            )
+
+                            val migration = migrate()
+                            assertTrue(migration is MigrationResult.Succeeded, "expected a migration, got $migration")
+                            assertEquals("after", stream.echo("after"), "the stream must survive the migration")
+
+                            // The client retired the CID it used on the old path; quiche removed it from
+                            // source_ids the moment it processed the RETIRE_CONNECTION_ID frame.
+                            val after =
+                                assertNotNull(
+                                    withTimeoutOrNull(SYNC_BUDGET) {
+                                        var ids = driver.sourceIdKeys()
+                                        while (ids.containsAll(before)) {
+                                            delay(POLL_INTERVAL)
+                                            ids = driver.sourceIdKeys()
+                                        }
+                                        ids
+                                    },
+                                    "quiche never dropped an id after the migration, so nothing is being measured " +
+                                        "— RFC 9000 §9.5 has the client retire the CID it used on the old path",
+                                )
+                            val retired = before - after
+
+                            assertNotNull(
+                                withTimeoutOrNull(SYNC_BUDGET) {
+                                    while (retired.any { server.routesConnectionIdForTest(it) }) delay(POLL_INTERVAL)
+                                },
+                                "the server is STILL routing $retired, which quiche has already forgotten. A " +
+                                    "packet still in flight under that CID now reaches a quiche that does not " +
+                                    "recognise it, and its InvalidState becomes a PROTOCOL_VIOLATION close (#437)",
+                            )
+                            for (id in after) {
+                                assertTrue(
+                                    server.routesConnectionIdForTest(id),
+                                    "an id quiche still lists is not routed — a migrating peer switching to it " +
+                                        "would have its packets dropped at the demux, so the path never validates",
+                                )
+                            }
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /** Every id quiche lists for [this], as the routing keys the server's demux would build. */
+    private suspend fun QuicheDriver.sourceIdKeys(): Set<ConnectionIdKey> =
+        sourceIds()
+            .map { id ->
+                val buf = BufferFactory.deterministic().allocate(id.size)
+                id.forEach { buf.writeByte(it) }
+                buf.resetForRead()
+                ConnectionIdKey.from(buf, offset = 0, length = id.size)
+            }.toSet()
+
+    /**
+     * quiche's ids for this connection once the server is routing all of them — the projection is
+     * published on a driver wake and applied on the receive loop, so a read taken the instant the
+     * handshake completes can legitimately be one hop early. Polling here rather than asserting
+     * immediately keeps that ordinary lag out of the assertions that matter.
+     */
+    private suspend fun QuicheDriver.awaitRoutedSourceIds(server: SharedQuicheServer): Set<ConnectionIdKey> {
+        while (true) {
+            val ids = sourceIdKeys()
+            if (ids.isNotEmpty() && ids.all { server.routesConnectionIdForTest(it) }) return ids
+            delay(POLL_INTERVAL)
+        }
+    }
+
+    private fun ReadResult.text(): String = if (this is ReadResult.Data) buffer.readString(buffer.remaining(), Charset.UTF8) else "no_data"
+
+    private suspend fun QuicByteStream.echo(payload: String): String {
+        val out = BufferFactory.deterministic().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, 5.seconds)
+        return read(30.seconds).text()
+    }
+
+    private companion object {
+        /** Poll step while waiting for a projection to be published and applied. */
+        val POLL_INTERVAL = 25.milliseconds
+
+        /**
+         * How long any one of the waits above may take. A projection crosses one coroutine hop on
+         * loopback, so this is orders of magnitude more than enough — it exists to turn "never" into a
+         * named failure, not to tolerate slowness.
+         */
+        val SYNC_BUDGET = 10.seconds
+    }
 }

@@ -542,15 +542,22 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnSetQlogPath)(
 
 /* --- Path migration --- */
 
-JNIEXPORT jint JNICALL JNI_FN(nConnProbePath)(
+/* Packs quiche_conn_probe_path's (seq, rc) pair into a single jlong exactly as nConnMigrate does
+   below: on success the result is (jlong)seq (>= 0), on failure it is (jlong)rc (< 0). The sequence
+   number is the DCID quiche just linked to the probed path, and the caller owes it a
+   quiche_conn_retire_dcid once that path stops being used — see ProbeOutcome (#447). */
+JNIEXPORT jlong JNICALL JNI_FN(nConnProbePath)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_addr, jint local_len,
-    jlong peer_addr, jint peer_len, jlong seq_out) {
-    return (jint)quiche_conn_probe_path(
+    jlong peer_addr, jint peer_len) {
+    uint64_t seq = 0;
+    int rc = quiche_conn_probe_path(
         (quiche_conn *)(uintptr_t)conn,
         (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
         (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
-        (uint64_t *)(uintptr_t)seq_out);
+        &seq);
+    if (rc == 0) return (jlong)seq;
+    return (jlong)rc;
 }
 
 JNIEXPORT jint JNICALL JNI_FN(nConnNewScid)(

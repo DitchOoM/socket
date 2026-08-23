@@ -16,7 +16,7 @@ import kotlinx.coroutines.channels.Channel
  *  - the [connectionsByDcid] *routing* table (DCID/SCID → driver),
  *  - the authoritative [liveDrivers] lifecycle ledger,
  *  - the per-source `recv_info` cache (passive-migration support) with its reference-counted eviction,
- *  - the driver-cleanup and spare-SCID registration queues, and
+ *  - the driver-cleanup and source-CID projection queues, and
  *  - the load-bearing [reapAllDriversAndFreeRecvInfoCache] close sweep.
  *
  * This layer was independently reimplemented in all three server files and drifted — the intermittent
@@ -78,19 +78,31 @@ internal class ServerConnectionRegistry<K>(
     private val driverCleanupQueue = Channel<QuicheDriver>(Channel.UNLIMITED)
 
     /**
-     * Queue of spare-SCID registrations from drivers' `onScidIssued` (fired on a driver coroutine when
-     * a driver issues spare CIDs at establishment). The receive loop drains it into [connectionsByDcid]
-     * ([drainRoutingQueues]) so a migrating peer's new DCID (a server-issued SCID) routes to the right
-     * driver — without this, active migration fails path validation.
+     * Source-CID **projections** from drivers ([QuicheDriver.onSourceIds], fired on a driver
+     * coroutine whenever quiche's set may have moved). Each element is a driver together with
+     * everything quiche currently recognises for it; the receive loop applies it to
+     * [connectionsByDcid] in [drainRoutingQueues], because the map belongs to that coroutine.
+     *
+     * **One queue, where there used to be two.** Registrations and retirements were separate event
+     * streams whose relative order had to be reasoned about (the old drain applied additions before
+     * removals, precisely so a re-registered id would not be unrouted by an older connection's
+     * retirement), and either of which could leave the map permanently wrong if dropped. A whole set
+     * has no ordering question and no accumulation: applying the same projection twice changes
+     * nothing, and a projection that never lands is superseded by the next one (#449).
      */
-    private val scidRegistrationQueue = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
+    private val routeProjectionQueue = Channel<RouteProjection>(Channel.UNLIMITED)
 
     /**
-     * Source CIDs quiche has retired, awaiting removal from [connectionsByDcid] — the mirror of
-     * [scidRegistrationQueue], and queued for the same reason: retirement is discovered on a driver
-     * coroutine and the map belongs to the receive loop.
+     * What the last applied projection routed to each driver — the baseline the next one is diffed
+     * against, and the reason a projection removes only ids **it** placed.
+     *
+     * A server routes more than its own source CIDs: the client's original destination CID, chosen by
+     * the client during the handshake, is registered at accept ([routeDriver]) and is not, and never
+     * was, one of quiche's `source_ids` (`Connection::source_ids()` is `ids.scids_iter()`). quiche
+     * therefore has no opinion about it, and a projection that removed every key it did not mention
+     * would unroute the connection mid-handshake, dropping the client's Initial retransmissions.
      */
-    private val scidRetirementQueue = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
+    private val projectedRoutes = mutableMapOf<QuicheDriver, Set<ConnectionIdKey>>()
 
     /**
      * Passive-migration support: one server socket sees a client's source address change after the
@@ -123,59 +135,71 @@ internal class ServerConnectionRegistry<K>(
     /** Remove ALL routing entries pointing at [driver] (a driver may hold several: SCID + DCIDs). */
     fun deRouteDriver(driver: QuicheDriver) {
         connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
+        // The projection baseline goes with them: it describes what is in the map, and claiming
+        // routes the map no longer holds would make the next diff a no-op.
+        projectedRoutes.remove(driver)
     }
 
     fun enqueueCleanup(driver: QuicheDriver) {
         driverCleanupQueue.trySend(driver)
     }
 
-    fun enqueueScidRegistration(
-        key: ConnectionIdKey,
-        driver: QuicheDriver,
-    ) {
-        scidRegistrationQueue.trySend(key to driver)
-    }
-
     /**
-     * A source CID [driver]'s connection has retired: stop routing it (#437).
+     * Publish [driver]'s current source-CID set — everything quiche recognises for it, right now.
      *
-     * Carries the driver, not just the key, so the removal below can verify the entry still belongs to
-     * this connection. A CID is unique per connection while it is live, but a retired one may be
-     * re-registered by a *later* connection, and removing by key alone would then unroute a healthy
-     * connection because an older one had finished with the same bytes.
+     * Called from a driver coroutine; the receive loop applies it. Carries the driver, not just the
+     * ids, for the same reason the retirement queue it replaces did: a CID is unique per connection
+     * while it is live, but the same bytes may be re-issued by a *later* connection, and touching the
+     * map by key alone would let one connection's bookkeeping unroute another's.
      */
-    fun enqueueScidRetirement(
-        key: ConnectionIdKey,
+    fun enqueueRouteProjection(
         driver: QuicheDriver,
+        sourceIds: Set<ConnectionIdKey>,
     ) {
-        scidRetirementQueue.trySend(key to driver)
+        routeProjectionQueue.trySend(RouteProjection(driver, sourceIds))
     }
 
     /**
-     * Drain the routing queues into [connectionsByDcid]: cleanup removals first (so a stale
-     * registration for an already-removed driver is harmless), then spare-SCID additions, then
-     * retirements. Receive-loop coroutine only.
+     * Apply the routing queues to [connectionsByDcid]: projections first, cleanup removals last.
+     * Receive-loop coroutine only.
      *
-     * Retirements last, and matched on identity: a CID is registered when quiche issues it and retired
-     * when the peer stops using it, so processing a retirement before an addition that names the same
-     * key would leave the map holding a CID quiche has already forgotten — the divergence this queue
-     * exists to prevent.
+     * **Cleanups last** — the reverse of the old order, and for a stronger reason than the comment it
+     * replaces. A cleanup is a terminal fact about a driver; a projection is a snapshot of a driver
+     * that was live when it was taken. Draining cleanups last means the terminal fact always wins, so
+     * a projection taken just before a handler closed its connection cannot resurrect routes for it.
+     * (Nothing depends on ordering *within* the projections: each is a whole set, so applying them in
+     * any order leaves the map at the newest one per driver.)
      */
     fun drainRoutingQueues() {
         while (true) {
+            val projection = routeProjectionQueue.tryReceive().getOrNull() ?: break
+            applyProjection(projection)
+        }
+        while (true) {
             val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
             connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
+            projectedRoutes.remove(driver)
         }
-        while (true) {
-            val (key, driver) = scidRegistrationQueue.tryReceive().getOrNull() ?: break
+    }
+
+    /**
+     * Make [projection]'s driver route exactly its source ids, plus whatever else was registered for
+     * it outside the projection (the accept-time handshake DCID — see [projectedRoutes]).
+     *
+     * Idempotent by construction: it is a set difference in both directions, so replaying the same
+     * projection is a no-op and a projection that was never applied is fully subsumed by the next.
+     * Removals are identity-checked, so a key another connection has since claimed is left alone.
+     */
+    private fun applyProjection(projection: RouteProjection) {
+        val driver = projection.driver
+        val previous = projectedRoutes[driver] ?: emptySet()
+        for (key in previous) {
+            if (key !in projection.sourceIds && connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
+        }
+        for (key in projection.sourceIds) {
             connectionsByDcid[key] = driver
         }
-        while (true) {
-            val (key, driver) = scidRetirementQueue.tryReceive().getOrNull() ?: break
-            // Identity-checked: only unroute the CID if it still points at the connection that retired
-            // it (see [enqueueScidRetirement]).
-            if (connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
-        }
+        projectedRoutes[driver] = projection.sourceIds
     }
 
     // --- Live-driver ledger ---
@@ -257,6 +281,7 @@ internal class ServerConnectionRegistry<K>(
         }
         liveDrivers.clear()
         connectionsByDcid.clear()
+        projectedRoutes.clear()
         for (cached in peerRecvInfos.values) {
             check(cached.inFlight.get() == 0) {
                 "recv_info still in-flight at server close (inFlight=${cached.inFlight.get()})"
@@ -271,9 +296,19 @@ internal class ServerConnectionRegistry<K>(
     fun closeChannels() {
         acceptedDrivers.close()
         driverCleanupQueue.close()
-        scidRegistrationQueue.close()
-        scidRetirementQueue.close()
+        routeProjectionQueue.close()
     }
+
+    /**
+     * TEST SEAM (do not call in production): is [key] currently routed to a driver?
+     *
+     * Exists so a test can assert the *premise* it depends on rather than assume it — specifically
+     * `RetiredCidInFlightPacketTestSuite`, whose whole construction is "the routing map still routes a
+     * CID quiche has already forgotten". Without this the suite could go green because the packet it
+     * released was dropped at the demux and never reached quiche at all, which is the same green a
+     * working fix produces. Safe only while the receive loop is idle; the caller guarantees that.
+     */
+    internal fun routesForTest(key: ConnectionIdKey): Boolean = connectionsByDcid.containsKey(key)
 
     /**
      * TEST SEAM (do not call in production): drop every driver from the routing table without
@@ -284,8 +319,46 @@ internal class ServerConnectionRegistry<K>(
      */
     internal fun deRouteAllDriversForTest() {
         connectionsByDcid.clear()
+        projectedRoutes.clear()
     }
 }
+
+/**
+ * Decode a [QuicheApi.connReadSourceIds] / [QuicheApi.connDrainRetiredScids] readback buffer — [count]
+ * slots of [RETIRED_SCID_SLOT_BYTES], each a length byte followed by that many id bytes — into routing
+ * keys.
+ *
+ * Extracted rather than inlined at the one call site because this decode is where the layout can be
+ * got wrong invisibly: a key built from the wrong offset is not a crash, it is a key that matches no
+ * datagram, which looks exactly like "the peer never used that CID". `ConnectionIdKeyDecodeTests`
+ * exercises it directly against a hand-built multi-slot buffer.
+ *
+ * A slot whose length byte is out of range (0, or beyond RFC 9000 §5.1's 20-byte maximum) is skipped:
+ * the readback is our own buffer coming back out of quiche, not peer-framed input, so there is no
+ * protocol violation to report — and a bad slot must not take the good ones with it.
+ */
+internal fun decodeConnectionIdSlots(
+    slots: PlatformBuffer,
+    count: Int,
+): Set<ConnectionIdKey> {
+    val ids = LinkedHashSet<ConnectionIdKey>(count)
+    for (i in 0 until count) {
+        val slot = i * RETIRED_SCID_SLOT_BYTES
+        val length = slots[slot].toInt() and 0xFF
+        // The id starts one byte past the slot, never at the slot itself — see ConnectionIdKey.from.
+        if (length in 1..QUIC_MAX_CONN_ID_LEN) ids += ConnectionIdKey.from(slots, slot + 1, length)
+    }
+    return ids
+}
+
+/**
+ * One driver's source-connection-id set as quiche reported it, on its way from the driver coroutine
+ * that read it to the receive loop that owns the routing map.
+ */
+internal class RouteProjection(
+    val driver: QuicheDriver,
+    val sourceIds: Set<ConnectionIdKey>,
+)
 
 /**
  * A cached per-source `recv_info` (passive-migration path). [info] is the native handle; [releaseSource]
@@ -317,13 +390,36 @@ internal class ConnectionIdKey private constructor(
 
     override fun hashCode(): Int = bufferHashCode(snapshot)
 
+    /**
+     * The id in hex, so a failure that names a routing key says WHICH id — a default identity string
+     * turns "the server is still routing X" into a sentence with no information in it. Rebuilt on each
+     * call rather than cached: this runs in diagnostics, never on the demux path.
+     */
+    override fun toString(): String {
+        val hex = StringBuilder(snapshot.limit() * 2)
+        for (i in 0 until snapshot.limit()) hex.append((snapshot[i].toInt() and 0xFF).toString(16).padStart(2, '0'))
+        return hex.toString()
+    }
+
     companion object {
+        /**
+         * Snapshot [length] id bytes starting at **absolute index** [offset] in [buffer].
+         *
+         * [offset] is explicit and undefaulted on purpose. This reads by absolute index and ignores
+         * the buffer's position, which is a trap when the source is a multi-slot readback buffer
+         * (`connReadSourceIds` / `connDrainRetiredScids` lay ids out as a length byte followed by the
+         * bytes, one slot per id). A caller that positioned the buffer at a slot and then passed only
+         * a length silently snapshotted the *first* slot's length byte plus the first id's leading
+         * bytes — a key that matches nothing. Requiring the offset makes that mistake unwritable
+         * rather than merely fixed.
+         */
         fun from(
             buffer: PlatformBuffer,
+            offset: Int,
             length: Int,
         ): ConnectionIdKey {
             val snapshot = BufferFactory.managed().allocate(length)
-            for (i in 0 until length) snapshot.writeByte(buffer.get(i))
+            for (i in 0 until length) snapshot.writeByte(buffer[offset + i])
             snapshot.resetForRead()
             return ConnectionIdKey(snapshot)
         }

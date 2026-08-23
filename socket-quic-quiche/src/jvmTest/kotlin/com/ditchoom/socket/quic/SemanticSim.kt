@@ -40,25 +40,34 @@ import kotlin.time.Duration.Companion.seconds
  * [Random]s derived from the scenario seed (separate instances because `kotlin.random.Random` is
  * not thread-safe and the two drivers draw concurrently on real dispatchers).
  *
- * ### Virtual-time status (primary W4 finding)
+ * ### Virtual-time status (corrected 2026-08-23 — the old finding here was stale)
  *
- * **Partially virtual-time-drivable.** Everything on OUR side of the FFI — driver loops, the pipe's
- * impairment `delay()`s, `withTimeout` establishment bounds — runs on the test scheduler, and a
- * LOSSLESS handshake completes entirely under `runTest` virtual time (proved by
- * `SemanticSimTests.lossless_handshake_completes_under_virtual_time`): it is a pure event cascade
- * through channels, never waiting on a quiche timer. What canNOT be virtualized is any path that
- * depends on quiche's OWN timers — loss recovery (PTO retransmits) and idle timeout — because the
- * RFC §4 premise that "quiche is caller-clocked" is wrong for the C API we bind:
- * `quiche_conn_timeout_as_nanos` / `quiche_conn_on_timeout` take no `now` parameter; quiche stamps
- * every received packet and computes every deadline against Rust's internal monotonic
- * `Instant::now()`. Advancing the coroutine test scheduler fires [DriverClock.armTimeout] wakes,
- * but the resulting `connOnTimeout` is a no-op until *real* time reaches quiche's internal
- * deadline, and `connTimeout` immediately re-arms at (roughly) the same remaining wait — a
- * virtual-time busy loop instead of a recovery. **Unlock**: quiche's Rust API grew caller-supplied
- * clocks via `Instant`-parameterised variants only in its internal crates; the shipped C FFI has
- * none, so full virtualization requires either patching quiche (a `now`-taking FFI surface) or
- * staying on Tier A (StubQuicheApi) for timer-dependent timelines. Until then, impaired scenarios
- * run on real dispatchers with scaled-down timers (small idle timeouts, millisecond pipe latency).
+ * This KDoc used to state that full virtualization was impossible because "the shipped C FFI has no
+ * `now`-taking surface", so timer-dependent timelines had to stay on real dispatchers with scaled-down
+ * timers. **That was true when written and is not true now**: the #260 caller-clock patch
+ * (`patchQuicheForCallerClock`, RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1) rewrites every `Instant::now()`
+ * in `quiche/src` to a `crate::now()` that reads a per-thread virtual instant, and exposes
+ * `quiche_set_virtual_time_nanos` / `quiche_clear_virtual_time`. quiche's internal clock IS caller-driven.
+ *
+ * What is still true is that it is **not automatic**. Advancing the coroutine test scheduler alone moves
+ * nothing inside quiche; the clock reaches it only through [CallerClockQuicheApi], which [QuicheDriver]
+ * installs when — and only when — its [DriverClock] reports [DriverTime.Virtual]. This sim passes
+ * `clock = RealDriverClock` below, so today it genuinely does run quiche on the wall clock. That is a
+ * wiring choice, not a limitation.
+ *
+ * Measured, not inferred — `PathValidationVirtualClockTests` runs one scenario twice against real quiche
+ * and varies only the clock. An unanswered PATH_CHALLENGE reaches `PathState::Failed` after 3 timer
+ * firings across **7.168s of virtual time in 0ms of wall time**; the same scenario with the clock left
+ * real burns 40 `connOnTimeout` calls in 2ms and never leaves `Validating` — it does not even retransmit
+ * the first challenge. So quiche's *migration* timers — the RFC 9000 §8.2.4 validation budget and
+ * `MAX_PROBING_TIMEOUTS` — are virtualizable, not just the idle timer that [JvmCallerClockTests] and
+ * [JvmCallerClockSimTests] already covered. This is what makes DitchOoM/socket#449 layer 3 (a
+ * deterministic migration search rather than an overnight one) tractable.
+ *
+ * Everything on OUR side of the FFI was always virtual-time-drivable — driver loops, the pipe's
+ * impairment `delay()`s, `withTimeout` establishment bounds — and a LOSSLESS handshake completes
+ * entirely under `runTest` virtual time (`SemanticSimTests.lossless_handshake_completes_under_virtual_time`),
+ * being a pure event cascade through channels that never waits on a quiche timer.
  */
 internal class SemanticSimScope(
     val client: DriverQuicConnection,
