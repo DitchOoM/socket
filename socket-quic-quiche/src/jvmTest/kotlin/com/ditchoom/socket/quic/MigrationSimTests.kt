@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -236,7 +237,128 @@ class MigrationSimTests {
             }
         }
 
+    /**
+     * **A migration strands in-flight packets on the path it left — reproduced from per-path latency
+     * alone, and a measured limit on how far that gets.**
+     *
+     * ## What this does prove
+     * After a migration the client retires the old path's CID (RFC 9000 §9.5), but packets it already
+     * committed to that path are still crossing it. Here that is pure physics rather than a test seam:
+     * the old path is 40ms and degrades to 2s at handoff — which is *why* one migrates — while the new
+     * path is 10ms, so RETIRE_CONNECTION_ID overtakes the stragglers. A datagram then lands at the
+     * server bearing a connection ID that `quiche_conn_source_ids` confirms the server no longer holds.
+     *
+     * That is #445's **precondition**, deterministic and seed-independent, with no
+     * [HoldbackDatagramChannel] and no [LaggingScidRetirementQuicheApi]. Removing the latency asymmetry
+     * removes it entirely (mutation-checked: the retirement is then observed at ingress index 428 of
+     * 430 with nothing following), which matches the 2026-08-22 field measurement that a loopback burst
+     * of 12 migrations survives patched and unpatched alike because RTT≈0 leaves no window.
+     *
+     * ## ⚠️ What it does NOT prove, measured rather than assumed
+     * It is **not** a #445 guard. Built against a deliberately unpatched `libquiche`
+     * (`ok_or(Error::InvalidState)` restored, dylib rebuilt and verified loaded by sha), this test still
+     * **passes**, while `JvmRetiredCidInFlightPacketTests` on that same build fails with the documented
+     * signature `quiche_conn_recv codes [57, 88, -6, 43]`. So the stranded packet never reaches
+     * `get_or_create_recv_path_id`: it is discarded by one of the gates that sit *before* the CID
+     * lookup — `decrypt_pkt` (lib.rs 3312) or the duplicate check `recv_pkt_num.contains(pn)` (3323),
+     * both ahead of the lookup at 3337.
+     *
+     * Which is exactly why `RetiredCidInFlightPacketTestSuite` withholds and replays a *specific*
+     * genuine datagram instead of relying on natural reordering, and why that suite remains the guard —
+     * per platform, since each target links its own `libquiche`. This test covers the half a
+     * simulation can honestly reach; do not let a green here be read as #445 coverage.
+     */
+    @Test
+    fun aMigrationStrandsInFlightPacketsBearingTheRetiredCid() =
+        runTest {
+            try {
+                withMigrationSim(
+                    testScope = this,
+                    seed = 31_337L,
+                    primaryImpairment = PathImpairment(latency = 40.milliseconds),
+                    probeImpairment = { PathImpairment(latency = 10.milliseconds) },
+                ) {
+                    // The server only drains: the traffic that matters is one-way, and must not be paced
+                    // by a round trip or nothing is ever in flight when the handoff happens.
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+
+                        suspend fun push(chunks: Int) {
+                            repeat(chunks) {
+                                val out = BufferFactory.network().allocate(CHUNK_BYTES)
+                                repeat(CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
+                                out.resetForRead()
+                                stream.write(out, 30.seconds)
+                                out.freeNativeMemory()
+                            }
+                        }
+                        push(3)
+                        awaitSpareDcids()
+
+                        val trafficJob = client.launch { push(400) }
+                        delay(20.milliseconds)
+                        // The old path degrades, so whatever the client commits to it from here takes 2s
+                        // and lands long after the 10ms new path has carried RETIRE_CONNECTION_ID.
+                        pipe.impair(pipe.paths().first().local, PathImpairment(latency = 2.seconds))
+                        delay(60.milliseconds)
+
+                        val result = withTimeout(120.seconds) { migrate().await() }
+                        assertTrue(result is MigrationResult.Succeeded, "the migration itself failed: $result")
+                        delay(3.seconds)
+                        trafficJob.cancel()
+                        delay(2.seconds)
+
+                        val newPort = clientPaths().last().port
+                        val firstAfterRetire = serverIngress.indexOfFirst { it.retiredScidsSeenOnArrival >= 1 }
+                        assertTrue(
+                            firstAfterRetire >= 0,
+                            "the server never observed the peer retiring one of its source CIDs, so the " +
+                                "precondition never existed and nothing below means anything",
+                        )
+                        val stranded =
+                            serverIngress.drop(firstAfterRetire).filter { it.fromPort != newPort && it.dcid != null }
+                        assertTrue(
+                            stranded.isNotEmpty(),
+                            "no datagram arrived from the abandoned path after its connection ID was retired " +
+                                "— the overtake window never opened. Ingress ${serverIngress.size}, retirement " +
+                                "observed at index $firstAfterRetire.",
+                        )
+
+                        // The CID those stragglers carry is one the server has genuinely dropped — read
+                        // from quiche itself (`quiche_conn_source_ids`), not inferred from a timing proxy.
+                        val live = serverSourceIdsHex().toSet()
+                        val strandedCids = stranded.mapNotNull { it.dcid }.distinct()
+                        assertTrue(
+                            strandedCids.any { it !in live },
+                            "every stranded datagram carried a CID the server still holds, so none of them " +
+                                "was the retired-CID hazard. stranded=$strandedCids live=$live",
+                        )
+
+                        assertIs<QuicConnectionState.Established>(serverDriver.state.value, "the server connection died")
+                        assertIs<QuicConnectionState.Established>(clientDriver.state.value, "the client connection died")
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(MigrationSimTests::class, e)
+            }
+        }
+
     private companion object {
+        /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
+        const val CHUNK_BYTES = 1000
+
         /**
          * One past exhaustion. [QuicOptions.activeConnectionIdLimit] defaults to 4 and quiche sizes both
          * the CID table and `max_concurrent_paths` from it, so at most 3 spare destination CIDs can be

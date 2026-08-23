@@ -84,6 +84,7 @@ internal class MigrationSimScope(
     internal val serverConn: QuicheConn,
     val clientAudit: CidAuditQuicheApi,
     val serverAudit: CidAuditQuicheApi,
+    val serverIngress: List<ServerIngress>,
     private val factory: PipeUdpChannelFactory,
 ) {
     /** Local endpoints the client has bound, in open order. Index 0 is the primary. */
@@ -121,6 +122,35 @@ internal class MigrationSimScope(
 
     /** Diagnostic: how many source CIDs the server currently has outstanding. */
     fun serverActiveScids(): Int = api.connActiveScids(serverConn)
+
+    /**
+     * Diagnostic: the server's LIVE source connection IDs, hex. The reconciliation oracle #446 bound —
+     * a plain read, never a drain — so "is this DCID still one the server recognises?" is answerable
+     * as fact rather than inferred from a lagging retirement tally.
+     */
+    fun serverSourceIdsHex(): List<String> {
+        val n = api.connActiveScids(serverConn)
+        if (n <= 0) return emptyList()
+        val slot = 1 + QUIC_MAX_CONN_ID_LEN
+        val buf =
+            com.ditchoom.buffer.BufferFactory
+                .network()
+                .allocate(n * slot)
+        return try {
+            val yielded = api.connReadSourceIds(serverConn, buf.nativeMemoryAccess!!.nativeAddress.toLong(), n)
+            (0 until minOf(yielded, n)).mapNotNull { i ->
+                buf.position(i * slot)
+                val len = buf.readByte().toInt() and 0xff
+                if (len <= 0 || len > QUIC_MAX_CONN_ID_LEN) {
+                    null
+                } else {
+                    buf.readByteArray(len).joinToString("") { b -> "%02x".format(b) }
+                }
+            }
+        } finally {
+            buf.freeNativeMemory()
+        }
+    }
 
     /** Diagnostic: per-path datagram counts, so "was anything actually sent" is answerable. */
     fun pipeTraffic(): String =
@@ -190,6 +220,35 @@ internal class PipeUdpChannelFactory(
 }
 
 /**
+ * One 1-RTT datagram as it reached the server: which client local port sent it, and the destination
+ * connection ID it carries — which is one of the *server's* source CIDs, and therefore the thing #445
+ * is about. A long-header packet has no fixed-length DCID here, so [dcid] is null for those.
+ */
+internal class ServerIngress(
+    val fromPort: Int,
+    val dcid: String?,
+    /**
+     * How many of this server's own source CIDs the peer had already retired when this datagram
+     * arrived. Read from the audit's `connRetiredScids` tally, which the driver polls on its
+     * established wakes — so it **lags** the retirement quiche processed inside `connRecv`, never
+     * leads it. That direction is what makes it safe to assert on: `>= 1` means the retirement has
+     * definitely happened, so a datagram still bearing the old CID is definitely a late one.
+     */
+    val retiredScidsSeenOnArrival: Int,
+)
+
+/**
+ * The destination CID of a 1-RTT (short-header) packet, or null for a long-header one. A short header
+ * carries no CID length, so the reader must already know it — every source CID this server issues is
+ * [QUIC_MAX_CONN_ID_LEN] bytes (`generateScid`). Same decode as `HoldbackDatagramChannel`.
+ */
+internal fun shortHeaderDcidHex(bytes: ByteArray): String? {
+    if (bytes.size < 1 + QUIC_MAX_CONN_ID_LEN) return null
+    if (bytes[0].toInt() and 0x80 != 0) return null // long header — its DCID is length-prefixed instead
+    return bytes.copyOfRange(1, 1 + QUIC_MAX_CONN_ID_LEN).joinToString("") { "%02x".format(it) }
+}
+
+/**
  * Records the connection-ID calls each side makes, so a scenario can assert on the *mechanism*
  * ("the abandon retired the id it held") rather than only on the aggregate `available_dcids` count,
  * which several independent effects move.
@@ -201,11 +260,29 @@ internal class CidAuditQuicheApi(
     var newScidCalls = 0
         private set
 
+    /** Every `quiche_conn_recv` return code, in order. #445's signature is -6 (QUICHE_ERR_INVALID_STATE). */
+    val recvCodes = mutableListOf<Int>()
+
+    override fun connRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+        recvInfo: QuicheRecvInfo,
+    ): Int = delegate.connRecv(conn, buf, bufLen, recvInfo).also { recvCodes += it }
+
     /** Non-zero returns from `quiche_conn_retired_scid_iter`'s count — i.e. the peer retired one of ours. */
     var retiredScidsSeen = 0
         private set
 
-    override fun connRetiredScids(conn: QuicheConn): Int = delegate.connRetiredScids(conn).also { if (it > 0) retiredScidsSeen += it }
+    /** How many times the driver polled at all — separates "never asked" from "asked, nothing there". */
+    var retiredScidPolls = 0
+        private set
+
+    override fun connRetiredScids(conn: QuicheConn): Int =
+        delegate.connRetiredScids(conn).also {
+            retiredScidPolls++
+            if (it > 0) retiredScidsSeen += it
+        }
 
     override fun connRetireDcid(
         conn: QuicheConn,
@@ -401,6 +478,7 @@ internal suspend fun <R> withMigrationSim(
         // origin of every datagram, or a probe from a new client address looks like the old path and no
         // migration is ever recognised.
         val serverRecvInfos = HashMap<InetSocketAddress, QuicheRecvInfo>()
+        val serverIngress = mutableListOf<ServerIngress>()
         val pump =
             simScope.launch {
                 while (true) {
@@ -410,6 +488,7 @@ internal suspend fun <R> withMigrationSim(
                             val from = pipe.pathAt(datagram.from).sockAddr
                             api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
                         }
+                    serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(datagram.bytes), serverAudit.retiredScidsSeen)
                     val buf = bufferFactory.allocate(datagram.bytes.size)
                     val bb = (buf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
                     bb.clear()
@@ -439,6 +518,7 @@ internal suspend fun <R> withMigrationSim(
                 serverConn,
                 clientAudit,
                 serverAudit,
+                serverIngress,
                 factory,
             ).block()
         } finally {
