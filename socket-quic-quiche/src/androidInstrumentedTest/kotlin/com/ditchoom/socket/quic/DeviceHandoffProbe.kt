@@ -140,11 +140,20 @@ class DeviceHandoffProbe {
         // rather than by a stopwatch. See [ProbeStatus].
         val status = ProbeStatus(ctx, ::emit)
 
+        // Per-handoff migration capture. Without it a green run is over-read: #447 only bites when a
+        // probe goes UNANSWERED, and on a healthy handoff every probe is answered on the first try —
+        // so a run of thirty clean migrations proves #445 and says nothing whatever about #447, while
+        // reading exactly as if it had validated both. See [MigrationLedger].
+        val totals = MigrationTotals()
+
         runBlocking(Dispatchers.IO) {
             while (System.currentTimeMillis() < deadline) {
                 attempt++
                 emit("CONNECT-ATTEMPT n=$attempt")
                 if (attempt > 1) status.onEnded("reconnecting (attempt $attempt)")
+                // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
+                // exhausted on the previous connection says nothing about this one.
+                val ledger = MigrationLedger(::emit)
                 try {
                     // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
                     // measured, the first run of this probe tore the connection down every 15s with
@@ -182,6 +191,7 @@ class DeviceHandoffProbe {
                             pathState.collect {
                                 emit("PATH $it")
                                 status.onPath(it.toString())
+                                ledger.onPath(it)
                             }
                         }
 
@@ -275,6 +285,8 @@ class DeviceHandoffProbe {
                 } catch (e: Throwable) {
                     emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
                 }
+                ledger.report("connection=$attempt")
+                totals.absorb(ledger)
                 if (System.currentTimeMillis() < deadline) {
                     emit("RECONNECTING in 3s")
                     delay(3_000)
@@ -284,6 +296,7 @@ class DeviceHandoffProbe {
 
         if (wakeLock.isHeld) wakeLock.release()
         emit("WAKELOCK released")
+        totals.report(::emit)
         emit("DONE attempts=$attempt log=${log.absolutePath}")
     }
 }
@@ -421,5 +434,168 @@ private class ProbeStatus(
         // reset it (only uninstall does). A new id is the only way the bump actually takes effect.
         private const val CHANNEL = "quic-handoff-probe-v2"
         private const val NOTIFICATION_ID = 0x9C1C
+    }
+}
+
+/**
+ * What each migration attempt on ONE connection actually did — the capture that keeps a green field
+ * run from being over-read.
+ *
+ * The run this exists for forces ~30 real Wi-Fi↔cellular handoffs and asks whether the connection
+ * survives. That question alone cannot separate the two defects it is meant to validate:
+ *
+ * - **#445** (a packet bearing a retired CID is dropped, not fatal) is exercised by *any* handoff.
+ * - **#447** (a failed probe leaks its spare CID) only bites when a PATH_CHALLENGE goes
+ *   **unanswered** — and on a healthy handoff every probe is answered on the first try. So a run of
+ *   thirty clean migrations proves #445 and says *nothing* about #447, while reading as if it had
+ *   validated both. Field rates: ~18% for #445, #447 seen once.
+ *
+ * So the ledger records, per attempt, which [QuicPathState] leaf resolved it, and then answers the
+ * one question the deterministic suites cannot answer for a real network: **after a probe really
+ * died, could this connection still migrate?**
+ *
+ * The verdict keys on [MigrationResult.Unmoved.Failed.NoSpareConnectionId] rather than on "a later
+ * attempt reached `Probing`", for the same reason [FailedProbeConnectionIdTestSuite] does not assert
+ * "attempt N reports PathNotValidated": which failure a given attempt reports is timing, but whether
+ * the connection can *ever* migrate again is not. It is also the conflation-robust signal —
+ * `pathState` is a `StateFlow`, so a `Probing` can be conflated away, whereas `NoSpareConnectionId`
+ * is emitted *instead of* probing and is therefore never the state that got skipped.
+ *
+ * A run in which no probe ever went unanswered is reported **inconclusive**, out loud. That is the
+ * whole point: the failure mode this guards against is a silent pass.
+ */
+private class MigrationLedger(
+    private val emit: (String) -> Unit,
+) {
+    private var attempts = 0
+    private var succeeded = 0
+    private var openedAt = 0L
+    private var open = false
+    private val leaves = LinkedHashMap<String, Int>()
+
+    /** Attempts resolved by an unanswered PATH_CHALLENGE — the precondition #447 needs to be visible. */
+    private var unanswered = 0
+
+    /** …and what happened on the attempts that came AFTER the first one. This is the verdict. */
+    private var probedAfterUnanswered = 0
+    private var noSpareAfterUnanswered = 0
+
+    @Synchronized
+    fun onPath(state: QuicPathState) {
+        when (state) {
+            QuicPathState.Original -> Unit
+            is QuicPathState.Probing -> {
+                openAttempt()
+                if (unanswered > 0) probedAfterUnanswered++
+            }
+            // Intermediate: the probe was answered, but the active path has not switched yet.
+            is QuicPathState.Validated -> Unit
+            is QuicPathState.Migrated -> {
+                openAttempt()
+                succeeded++
+                close("Succeeded")
+            }
+            is QuicPathState.Failed -> {
+                openAttempt()
+                val leaf = state.result::class.simpleName ?: "Unknown"
+                when (state.result) {
+                    MigrationResult.Unmoved.Failed.PathNotValidated -> unanswered++
+                    MigrationResult.Unmoved.Failed.NoSpareConnectionId ->
+                        if (unanswered > 0) noSpareAfterUnanswered++
+                    else -> Unit
+                }
+                close(leaf)
+            }
+        }
+    }
+
+    /**
+     * A terminal state with no `Probing` in front of it still counts as an attempt: `StateFlow`
+     * conflates, and the failures that never probe at all ([MigrationResult.Unmoved.Failed
+     * .NoSpareConnectionId] above all) are resolved before a probe is ever armed.
+     */
+    private fun openAttempt() {
+        if (open) return
+        open = true
+        attempts++
+        openedAt = System.currentTimeMillis()
+    }
+
+    private fun close(leaf: String) {
+        leaves[leaf] = (leaves[leaf] ?: 0) + 1
+        emit("MIGRATION-ATTEMPT n=$attempts outcome=$leaf tookMs=${System.currentTimeMillis() - openedAt}")
+        open = false
+    }
+
+    @Synchronized
+    fun report(tag: String) {
+        val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
+        emit("MIGRATION-LEDGER $tag attempts=$attempts succeeded=$succeeded outcomes=[$breakdown]")
+        emit("447-VERDICT $tag ${verdict()}")
+    }
+
+    @Synchronized
+    fun verdict(): String =
+        when {
+            unanswered == 0 ->
+                "INCONCLUSIVE — no probe went unanswered on this connection, so it exercises #445 only " +
+                    "and says nothing about #447 (attempts=$attempts)"
+            noSpareAfterUnanswered > 0 ->
+                "REGRESSION — $unanswered unanswered probe(s), then $noSpareAfterUnanswered later " +
+                    "attempt(s) answered NoSpareConnectionId: the pool did not come back (#447 alive)"
+            probedAfterUnanswered > 0 || succeeded > 0 ->
+                "PASS — $unanswered unanswered probe(s), and the connection still armed " +
+                    "$probedAfterUnanswered later probe(s) with $succeeded migration(s) succeeding: " +
+                    "the pool recovered in the field"
+            else ->
+                "INCONCLUSIVE — $unanswered unanswered probe(s) but no migration was attempted " +
+                    "afterwards, so pool recovery was never put to the question"
+        }
+
+    @Synchronized
+    fun fold(into: MigrationTotals) {
+        into.connections++
+        into.attempts += attempts
+        into.succeeded += succeeded
+        into.unanswered += unanswered
+        into.probedAfterUnanswered += probedAfterUnanswered
+        into.noSpareAfterUnanswered += noSpareAfterUnanswered
+        leaves.forEach { (k, v) -> into.leaves[k] = (into.leaves[k] ?: 0) + v }
+    }
+}
+
+/** Run-wide roll-up of every connection's [MigrationLedger] — the line the operator reads at the end. */
+private class MigrationTotals {
+    var connections = 0
+    var attempts = 0
+    var succeeded = 0
+    var unanswered = 0
+    var probedAfterUnanswered = 0
+    var noSpareAfterUnanswered = 0
+    val leaves = LinkedHashMap<String, Int>()
+
+    fun absorb(ledger: MigrationLedger) = ledger.fold(this)
+
+    fun report(emit: (String) -> Unit) {
+        val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
+        emit(
+            "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
+                "unansweredProbes=$unanswered probedAfterUnanswered=$probedAfterUnanswered " +
+                "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
+        )
+        emit(
+            "447-VERDICT run " +
+                when {
+                    unanswered == 0 ->
+                        "INCONCLUSIVE — not one probe went unanswered across $connections connection(s); " +
+                            "this run validates #445 only"
+                    noSpareAfterUnanswered > 0 ->
+                        "REGRESSION — NoSpareConnectionId answered $noSpareAfterUnanswered time(s) after " +
+                            "an unanswered probe (#447 alive in the field)"
+                    else ->
+                        "PASS — $unanswered unanswered probe(s) and no NoSpareConnectionId afterwards; " +
+                            "the pool came back every time"
+                },
+        )
     }
 }
