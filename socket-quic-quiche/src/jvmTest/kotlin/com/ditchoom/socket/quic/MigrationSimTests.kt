@@ -502,26 +502,29 @@ class MigrationSimTests {
         }
 
     /**
-     * **The other half of the #453 contract: retrying is bounded, and the old path keeps working.**
+     * **The other half of the #453 contract: the old path keeps working, and the asking gets cheaper
+     * without ever stopping.**
      *
-     * A retry loop that answers "the probe was lost" with "ask again" has to say where it stops, or
-     * #453 is traded for #385 by another route — a reactor that spends the connection's whole life
-     * probing a link that will never answer. Here the handoff is onto a link that is simply *gone*:
-     * every probe path is a blackhole, forever, and the platform never reports anything again.
+     * Here the handoff is onto a link that is simply *gone*: every probe path is a blackhole, forever,
+     * and the platform never reports anything again. Unlike
+     * [aLostProbeIsRetriedUntilTheConnectionRehomes] the original path stays **healthy**, so the
+     * connection does not die and nothing observable ever tells the reactor to stop. That is the one
+     * situation an attempt count was supposed to cover, and the reason there is no attempt count:
+     * giving up here means sitting forever on a link the platform says we have left, and a link that
+     * is unreachable now may be reachable in five minutes.
      *
-     * Two things must hold, and they are in tension:
-     *  - the reactor stops (bounded by [wireAutoMigration]'s attempt budget, which is itself sized
-     *    against the spare CID pool — past the pool quiche refuses before opening a socket, so those
-     *    attempts are free);
-     *  - the connection **survives**, on the path it never left. A failed migration must not cost the
-     *    caller anything, which is the property `MigrationResult.Unmoved` exists to state.
+     * So the contract is not "it stops" but **"it gets cheaper"** — the backoff decays, asserted as a
+     * comparison between two equal windows rather than against the schedule, so retuning the backoff
+     * cannot silently become retuning this test. Plus the property `MigrationResult.Unmoved` exists to
+     * state: a handoff that could not be made costs the caller nothing, and the original path still
+     * round-trips at the end.
      *
-     * Unlike [aLostProbeIsRetriedUntilTheConnectionRehomes] the original path stays healthy here — the
-     * scenario is "the new link is not usable", not "the old link died", and conflating the two would
-     * make "did it survive" untestable.
+     * ⚠️ Every one of those retries is a **real** probe only because of #459. Before that fix an
+     * abandoned probe never got its connection id back, so past the pool this loop would have been
+     * asking a question quiche answers without opening a socket — cheap, and worthless.
      */
     @Test
-    fun aHandoffOntoALinkThatNeverAnswersStopsAsking() =
+    fun aHandoffOntoALinkThatNeverAnswersBacksOffWithoutGivingUp() =
         runTest {
             val monitor = SimNetworkMonitor.on(WIFI)
             try {
@@ -563,38 +566,29 @@ class MigrationSimTests {
                         awaitSpareDcids()
 
                         monitor.setNetworkId(CELLULAR)
-                        // Far past any bounded backoff: if the reactor is going to stop, it has stopped.
                         delay(GIVE_UP_WINDOW)
-                        val settled = client.attempts.size
+                        val firstWindow = client.attempts.size
+                        delay(GIVE_UP_WINDOW)
+                        val secondWindow = client.attempts.size - firstWindow
 
-                        // Exactly the budget, not merely within it. The link never answers and never
-                        // will, no other link appears, and no leaf here is the one that stops early
-                        // (EndpointNotSelectable) — so a reactor honouring its derivation spends the
-                        // budget to the last attempt and then stops. Asserting a *range* would pass
-                        // against a reactor that ignored the derivation entirely and used some smaller
-                        // constant, which is precisely the regression worth catching.
-                        val budget = migrationAttemptBudget(quietHandoffOptions(monitor))
-                        assertEquals(
-                            budget,
-                            settled,
-                            "one handoff onto a dead link made $settled migration attempt(s) in " +
-                                "$GIVE_UP_WINDOW against a derived budget of $budget. Fewer is a reactor " +
-                                "giving up while its own deadline still had room (one attempt is #453 " +
-                                "itself); more is one that outran the budget and kept probing a link " +
-                                "that will never answer. Attempts: ${client.attempts}",
-                        )
                         assertTrue(
                             client.attempts.none { it is MigrationResult.Succeeded },
                             "every probe path is a blackhole, so no attempt could have succeeded — the " +
                                 "impairment is not reaching the paths: ${client.attempts}",
                         )
-
-                        delay(GIVE_UP_WINDOW)
-                        assertEquals(
-                            settled,
-                            client.attempts.size,
-                            "the reactor was still asking $GIVE_UP_WINDOW later, with no new information " +
-                                "of any kind — that is a spin, not a backoff: ${client.attempts}",
+                        assertTrue(
+                            firstWindow >= 2,
+                            "only $firstWindow attempt(s) in the first $GIVE_UP_WINDOW — one is #453 " +
+                                "itself, a lost probe never retried: ${client.attempts}",
+                        )
+                        assertTrue(
+                            secondWindow in 1 until firstWindow,
+                            "the reactor asked $firstWindow time(s) in the first $GIVE_UP_WINDOW and " +
+                                "$secondWindow time(s) in the second. Not fewer means the cadence never " +
+                                "decays, so an unreachable link costs a probe, a socket and a spare " +
+                                "connection id at that rate for the life of the connection; none at all " +
+                                "means it has quietly given up and a link that comes back is never " +
+                                "taken. Attempts: ${client.attempts}",
                         )
 
                         assertEquals(
@@ -658,15 +652,24 @@ class MigrationSimTests {
                     delay(GIVE_UP_WINDOW)
 
                     val refused = client.attempts.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
+                    // The last attempt of a dead-path handoff is the one that discovers the connection
+                    // has idled out; it answers Impossible and opens no path, which is the loop ENDING
+                    // rather than a retry that failed to reach anywhere. Everything before it must have
+                    // become a real probe.
+                    val reachedTheDriver = client.attempts.filter { it !is MigrationResult.Unmoved.Impossible }
                     assertEquals(
-                        client.attempts.size,
+                        reachedTheDriver.size,
                         clientPaths().size,
-                        "the handoff made ${client.attempts.size} attempt(s) but opened only " +
-                            "${clientPaths().size} probe path(s): ${refused.size} were refused for want of " +
-                            "a spare connection id before a socket was opened, so that much of the retry " +
-                            "budget never reached the network. The spare pool is $SPARE_POOL " +
-                            "(activeConnectionIdLimit - 1) and it must exceed the reactor's attempt " +
-                            "budget. Attempts: ${client.attempts}",
+                        "the handoff made ${reachedTheDriver.size} attempt(s) against a live connection " +
+                            "but opened only ${clientPaths().size} probe path(s): ${refused.size} were " +
+                            "refused for want of a spare connection id before a socket was opened, so " +
+                            "that much of the retry never reached the network. The spare pool is " +
+                            "$SPARE_POOL (activeConnectionIdLimit - 1). Attempts: ${client.attempts}",
+                    )
+                    assertTrue(
+                        refused.isEmpty(),
+                        "${refused.size} attempt(s) were refused for want of a spare connection id on a " +
+                            "handoff the pool of $SPARE_POOL should have covered: ${client.attempts}",
                     )
                     assertTrue(
                         client.attempts.size >= 2,
@@ -685,64 +688,80 @@ class MigrationSimTests {
         }
 
     /**
-     * **The retry budget really is the idle window's, measured end to end rather than by asking the
-     * function that computes it.**
+     * **What ends a dead-path handoff is the connection's own death, and nothing else.**
      *
-     * [aHandoffOntoALinkThatNeverAnswersStopsAsking] asserts the reactor spends exactly
-     * [migrationAttemptBudget]'s answer — which pins them together but cannot tell whether that answer
-     * is derived from anything, since the test calls the same function. This one never mentions the
-     * budget: it runs the identical dead-link handoff under two [QuicOptions.idleTimeout]s and requires
-     * the shorter window to buy strictly fewer attempts. A reactor back on a fixed constant makes the
-     * same number of attempts in both arms and goes red here.
+     * This is the test that says an attempt count is unnecessary rather than merely undesirable. The
+     * old path is dead and never comes back, the link the platform reported never answers, and there is
+     * no keepalive — so the only thing that can end the retry loop is the connection reaching its idle
+     * timeout, at which point `migrate()` answers
+     * [MigrationResult.Unmoved.Impossible.ConnectionClosed] and the observer cancels itself.
      *
-     * Both arms carry a keepalive well inside their own idle timeout, so the connection survives the
-     * whole scenario and the only thing that can stop the loop is the budget. Without it the short arm
-     * would idle out mid-loop and "fewer attempts" would be measuring the connection's death instead of
-     * the policy — the same number, for the wrong reason.
+     * Two arms with different [QuicOptions.idleTimeout]s. The short one must make strictly fewer
+     * attempts, **and both must actually be closed at the end** — that second half is what makes the
+     * first mean something, because "fewer attempts" is only evidence about the deadline if the
+     * deadline is what stopped it.
+     *
+     * ⚠️ The measurement that made the count deletable: with the loop unbounded, a dead-path connection
+     * made 7 attempts and died at 30.1s under a 30s idle timeout — the same instant a *bounded* one
+     * died. RFC 9000 §10.1 restarts the idle timer only on the first ack-eliciting packet sent since
+     * the last one received, so repeated PATH_CHALLENGEs cannot postpone it and the zombie connection a
+     * count would have been protecting against does not exist.
      */
     @Test
-    fun aShorterIdleWindowBuysFewerRetries() =
+    fun aDeadPathHandoffIsEndedByTheConnectionsOwnDeadline() =
         runTest {
-            suspend fun attemptsUnder(idleTimeout: kotlin.time.Duration): Int {
+            class Arm(val attempts: Int, val closed: Boolean)
+
+            suspend fun runArm(idleTimeout: kotlin.time.Duration): Arm {
                 val monitor = SimNetworkMonitor.on(WIFI)
-                var attempts = -1
+                var arm = Arm(-1, false)
                 withMigrationSim(
                     testScope = this,
                     seed = 45_304L,
                     quicOptions =
                         migrationSimOptions(
                             idleTimeout = idleTimeout,
-                            keepAliveInterval = KEEPALIVE,
                             migration = MigrationPolicy.Automatic,
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
                     probeImpairment = { PathImpairment(blackhole = true) },
                 ) {
                     awaitSpareDcids()
+                    // The old path dies with the handoff, as it does in the field — otherwise the
+                    // connection survives, nothing ends the loop, and there is no deadline to measure.
+                    pipe.impair(pipe.paths().first().local, PathImpairment(blackhole = true))
                     monitor.setNetworkId(CELLULAR)
-                    delay(GIVE_UP_WINDOW)
-                    assertIs<QuicConnectionState.Established>(
-                        clientDriver.state.value,
-                        "the connection died under a $idleTimeout idle timeout despite a $KEEPALIVE " +
-                            "keepalive, so the attempt count below would be measuring its death",
-                    )
-                    attempts = client.attempts.size
+                    // Wait for the connection to actually idle out rather than for a fixed window: the
+                    // two arms have different deadlines, and that difference is the whole measurement.
+                    withTimeout(idleTimeout * DEADLINE_SLACK) {
+                        while (clientDriver.state.value !is QuicConnectionState.Closed) delay(100.milliseconds)
+                    }
+                    arm = Arm(client.attempts.size, clientDriver.state.value is QuicConnectionState.Closed)
                 }
-                return attempts
+                return arm
             }
 
             try {
-                val short = attemptsUnder(SHORT_IDLE_WINDOW)
-                val long = attemptsUnder(LONG_IDLE_WINDOW)
+                val short = runArm(SHORT_IDLE_WINDOW)
+                val long = runArm(LONG_IDLE_WINDOW)
+
                 assertTrue(
-                    short < long,
-                    "a $SHORT_IDLE_WINDOW idle window bought $short migration attempt(s) and a " +
-                        "$LONG_IDLE_WINDOW window bought $long — the same or more, so the reactor's " +
-                        "retry budget is not derived from the deadline that ends the connection. A " +
-                        "caller who shortens idleTimeout is then probing a connection that is already " +
-                        "gone, and one who lengthens it is paying for a window the reactor never uses",
+                    short.closed && long.closed,
+                    "both arms must have idled out for the comparison below to be about the deadline: " +
+                        "short closed=${short.closed}, long closed=${long.closed}",
                 )
-                assertTrue(short >= 2, "even the short window must allow a retry, or this is #453 again")
+                assertTrue(
+                    short.attempts < long.attempts,
+                    "a $SHORT_IDLE_WINDOW idle window produced ${short.attempts} migration attempt(s) " +
+                        "and a $LONG_IDLE_WINDOW window ${long.attempts} — the same or fewer, so the " +
+                        "retry loop is not running until the connection ends. Something other than the " +
+                        "connection's own deadline is stopping it, and whatever that is has to justify " +
+                        "itself against a longer window it is refusing to use",
+                )
+                assertTrue(
+                    short.attempts >= 2,
+                    "even the short window must fit a retry, or this is #453 again: ${short.attempts}",
+                )
             } catch (e: UnsatisfiedLinkError) {
                 recordMissingNativeLib(MigrationSimTests::class, e)
             }
@@ -856,7 +875,14 @@ class MigrationSimTests {
          */
         val REPLENISH_SETTLE = 10.seconds
 
-        /** The two idle windows [aShorterIdleWindowBuysFewerRetries] compares. */
+        /**
+         * How much past its own idle timeout each arm of
+         * [aDeadPathHandoffIsEndedByTheConnectionsOwnDeadline] waits for the connection to close.
+         * Generous, and virtual: a tight bound would turn "did it die" into a race.
+         */
+        const val DEADLINE_SLACK = 4
+
+        /** The two idle windows [aDeadPathHandoffIsEndedByTheConnectionsOwnDeadline] compares. */
         val SHORT_IDLE_WINDOW = 10.seconds
         val LONG_IDLE_WINDOW = 60.seconds
 
@@ -867,15 +893,13 @@ class MigrationSimTests {
         val KEEPALIVE = 3.seconds
 
         /**
-         * Options for [aHandoffOntoALinkThatNeverAnswersStopsAsking].
+         * Options for [aHandoffOntoALinkThatNeverAnswersBacksOffWithoutGivingUp].
          *
          * The two quiet windows in that test add up to longer than any real idle timeout, and a
          * blackholed probe brings back nothing to restart the timer, so the idle deadline is moved out
          * of the way deliberately — surviving a *field* deadline is
          * [aLostProbeIsRetriedUntilTheConnectionRehomes]'s assertion, and that test is about where the
-         * asking stops. A factory rather than a value so the test can hand the identical options to
-         * [migrationAttemptBudget] and assert against the reactor's own derivation instead of a literal
-         * that would silently drift from it.
+         * asking stops.
          */
         fun quietHandoffOptions(monitor: SimNetworkMonitor) =
             migrationSimOptions(

@@ -2157,16 +2157,6 @@ class QuicheDriver(
         private const val PATH_VALIDATION_PTO_MULTIPLIER = 3
 
         /**
-         * The **shortest** an unanswered PATH_CHALLENGE can take to be abandoned — ~3 s, and the value
-         * [pathValidationBudget] returns whenever the current path has no better RTT sample to widen it
-         * with. Internal rather than private because it is what one migration attempt costs, and
-         * [wireAutoMigration] has to know that to size a handoff's retry budget against
-         * [QuicOptions.idleTimeout]. Exposed as the *floor* on purpose: the reactor cannot see any
-         * individual path's PTO, so it reasons with the bound that always holds.
-         */
-        internal val PATH_VALIDATION_FLOOR: Duration = INITIAL_PTO * PATH_VALIDATION_PTO_MULTIPLIER
-
-        /**
          * Scratch capacity for the connection-id readers. A CID is at most 20 bytes (RFC 9000 §17.2) and
          * quiche's trace id is its hex rendering, so 64 clears both with room to spare — and the
          * snprintf-style contract means an over-long value reports its length rather than truncating
