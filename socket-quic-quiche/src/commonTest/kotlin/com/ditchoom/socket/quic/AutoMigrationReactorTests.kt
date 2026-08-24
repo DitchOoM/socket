@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -15,12 +17,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Unit coverage for the [wireAutoMigration] reactor branches, isolated from any real backend.
@@ -37,6 +42,13 @@ import kotlin.test.assertTrue
  * `networkId` change synchronously drives the collector and `migrate` bookkeeping before we assert.
  */
 class AutoMigrationReactorTests {
+    /**
+     * How long the real connection survived after its probe was lost before `IdleTimeout` killed it,
+     * on the 2026-08-23 walk. Any retry has to happen inside this window to be worth anything, so it
+     * is the honest deadline for the assertion rather than a number chosen to make a test pass.
+     */
+    private val idleTimeoutInTheField = 30.seconds
+
     private val wifi = NetworkId.Link(NetworkKind.Wifi, 1L)
     private val cellular = NetworkId.Link(NetworkKind.Cellular, 2L)
     private val ethernet = NetworkId.Link(NetworkKind.Ethernet, 3L)
@@ -108,7 +120,10 @@ class AutoMigrationReactorTests {
         monitor: NetworkMonitor,
         policy: MigrationPolicy = MigrationPolicy.Automatic,
         migrateResult: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", 51234)),
-        body: (RecordingQuicConnection) -> Unit,
+        // Receiver, not just a parameter, so a test can advance the virtual clock. Every assertion in
+        // this file used to be driven by a fresh `setNetworkId`, which is exactly the blind spot #453
+        // lived in: the one thing no test could express was *time passing with no further input*.
+        body: TestScope.(RecordingQuicConnection) -> Unit,
     ) = runTest {
         val connection = RecordingQuicConnection(UnconfinedTestDispatcher(testScheduler), migrateResult)
         try {
@@ -281,6 +296,50 @@ class AutoMigrationReactorTests {
             )
             monitor.setNetworkId(cellular) // …and cellular is still a genuine change
             assertEquals(2, conn.migrateCount)
+        }
+    }
+
+    /**
+     * **#453 — a failed probe must be retried while the active path is still dead.**
+     *
+     * Measured on a real Wi-Fi→cellular walk (2026-08-23): the reactor probed the cellular path once,
+     * the PATH_CHALLENGE went unanswered (`PathNotValidated` after the RFC 9000 §8.2.4 abandon timer),
+     * and nothing ever tried again. The connection sat on the dead Wi-Fi path through 57 consecutive
+     * failed reads and died of `IdleTimeout` 30 seconds later.
+     *
+     * The reason is visible in [wireAutoMigration]: the collector is gated by `distinctUntilChanged()`
+     * on `networkId`, so a retry needs the network *identity to change again* — but the handoff has
+     * already happened and the phone is standing still on cellular, so that emission never comes. The
+     * `Failed -> Unit` branch says "keep watching"; what it watches for is an event in the past.
+     *
+     * Note what this test does **not** do: it never calls `setNetworkId` a second time. Every other
+     * failure case in this file drives recovery with a fresh link change, which is why they all pass
+     * against the defect — they encode the same assumption the implementation does. The whole content
+     * of this test is the thirty seconds in which *nothing happens*, because that is the field
+     * condition, and an unanswered PATH_CHALLENGE is routine on real cellular rather than exotic.
+     *
+     * Deliberately asserts only that *a* retry occurs within the window the field gave us, not how
+     * many or on what schedule: the cadence is the fix's to choose (and must stay bounded, or #453
+     * becomes #385 by another route). The contract under test is simply that one lost probe does not
+     * end migration for the life of the connection.
+     */
+    @Test
+    fun aFailedProbeIsRetriedWhileTheActivePathIsStillDead() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated) { conn ->
+            monitor.setNetworkId(cellular) // the handoff: one probe, and it goes unanswered
+            assertEquals(1, conn.migrateCount, "the handoff itself must attempt a migration")
+
+            // …and now nothing else arrives. The device has finished handing off and is sitting
+            // still, so there is no further link change to wake the collector — only time.
+            advanceTimeBy(idleTimeoutInTheField)
+
+            assertTrue(
+                conn.migrateCount > 1,
+                "a lost PATH_CHALLENGE must be retried while the active path is dead: after " +
+                    "$idleTimeoutInTheField with no further network event the reactor made " +
+                    "${conn.migrateCount} attempt(s), so the connection would idle out on a dead path (#453)",
+            )
         }
     }
 
