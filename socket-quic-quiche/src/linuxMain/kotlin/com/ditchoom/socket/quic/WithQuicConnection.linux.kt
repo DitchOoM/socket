@@ -75,7 +75,9 @@ internal suspend fun buildLinuxQuicConnection(
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
-    var established = false
+    // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
+    // acquired and hands over entirely once the connection owns its own release.
+    var progress: ConnectProgress = ConnectProgress.BeforeChannel
     try {
         return run {
             val bufferFactory = connectionOptions.quicBufferFactory()
@@ -128,6 +130,10 @@ internal suspend fun buildLinuxQuicConnection(
                     receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
                     bufferFactory = recvBufPool,
                 )
+            // Wrapped here rather than at driver-construction time so that from this point on there is a
+            // single handle that releases both the socket and its reader coroutine.
+            val udpChannel = DatagramChannelUdpChannel(channel)
+            progress = ConnectProgress.ChannelOpen(udpChannel)
             val local =
                 channel.localAddress.orNull()
                     ?: throw SocketConnectionException.Refused(hostname, port, platformError = "connected UDP channel has no local address")
@@ -170,7 +176,6 @@ internal suspend fun buildLinuxQuicConnection(
             val recvInfo = api.recvInfoNew(peerSockAddr.address, peerSockAddr.length, localSockAddr.address, localSockAddr.length)
             val sendInfo = api.sendInfoNew()
 
-            val udpChannel = DatagramChannelUdpChannel(channel)
             val driver =
                 QuicheDriver(
                     rawApi = api,
@@ -234,9 +239,9 @@ internal suspend fun buildLinuxQuicConnection(
                 )
             quicConn.start()
             quicConn.awaitEstablished(timeout)
-            // Connection owns teardown via onRelease now — set established first so the failure
-            // `finally` won't double-cancel; a pin mismatch tears down via quicConn.close() instead.
-            established = true
+            // Connection owns teardown via onRelease now — hand ownership over before the pin check so
+            // the failure `finally` releases nothing; a pin mismatch tears down via quicConn.close().
+            progress = ConnectProgress.ConnectionOwnsTeardown
             verifyServerCertificateHashes(
                 quicOptions.serverCertificateHashes,
                 bufferFactory,
@@ -250,9 +255,22 @@ internal suspend fun buildLinuxQuicConnection(
             quicConn
         }
     } finally {
-        // On success the connection owns parentScope teardown via onRelease; only release here if
-        // establishment threw before the connection took ownership.
-        if (!established) parentScope.cancel()
+        // Exhaustive on purpose: every stage has to state what it owes, so one added later cannot
+        // inherit a branch by default. See [ConnectProgress].
+        when (val reached = progress) {
+            // Nothing acquired past the config, which the throw sites above free inline.
+            ConnectProgress.BeforeChannel -> parentScope.cancel()
+            // Open and unowned: the connection's onRelease is the only other thing that closes it, and it
+            // runs from close(), which a failed establishment never reaches. The driver's cleanup does
+            // not cover it either, deliberately — it tears down non-primary migration path channels, but
+            // the primary one belongs to the connection.
+            is ConnectProgress.ChannelOpen -> {
+                runCatching { reached.channel.close() }
+                parentScope.cancel()
+            }
+            // The connection owns scope and channel — releasing here would close a live socket.
+            ConnectProgress.ConnectionOwnsTeardown -> Unit
+        }
     }
 }
 

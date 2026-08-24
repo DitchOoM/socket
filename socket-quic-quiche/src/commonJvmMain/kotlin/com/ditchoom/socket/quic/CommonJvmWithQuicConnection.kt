@@ -75,7 +75,9 @@ internal suspend fun buildJvmQuicConnection(
 ): JvmQuicConnection {
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
-    var established = false
+    // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
+    // acquired and hands over entirely once the connection owns its own release.
+    var progress: ConnectProgress = ConnectProgress.BeforeChannel
     val bufferFactory = connectionOptions.quicBufferFactory()
     // One recv pool per connection, created up front so it can be injected into BOTH the :socket-udp
     // receive channel (which allocates each datagram straight from it) and the driver (which frees each
@@ -129,6 +131,10 @@ internal suspend fun buildJvmQuicConnection(
         // ephemeral-port collision instead of letting it surface as a flake.
         val peer = UdpSocket.resolve(hostname, port)
         val channel = openConnectedDatagramChannel(peer, recvBufPool)
+        // Wrapped here rather than at driver-construction time so that from this point on there is a
+        // single handle that releases both the socket and its selector coroutine.
+        val udpChannel = DatagramChannelUdpChannel(channel)
+        progress = ConnectProgress.ChannelOpen(udpChannel)
         val localAddress = channel.localAddress.orNull() ?: error("connected UDP channel has no local address")
 
         // 3. Server name — null-terminated UTF-8 in buffer
@@ -182,7 +188,6 @@ internal suspend fun buildJvmQuicConnection(
         val connSendInfo = api.sendInfoNew()
 
         // 7. Create driver + connection
-        val udpChannel = DatagramChannelUdpChannel(channel)
         val driver =
             QuicheDriver(
                 rawApi = api,
@@ -251,10 +256,10 @@ internal suspend fun buildJvmQuicConnection(
             )
         quicConnection.start()
         quicConnection.awaitEstablished(timeout)
-        // The connection now owns its full teardown (config + scopes) via onRelease — mark established so
-        // the failure `finally` below won't double-free it. A verification failure past this point tears
-        // the connection down via quicConnection.close() instead (inside verifyServerCertificateHashes).
-        established = true
+        // The connection now owns its full teardown (config + scopes + the UDP channel) via onRelease,
+        // so the `finally` below must release nothing. A verification failure past this point tears the
+        // connection down via quicConnection.close() instead (inside verifyServerCertificateHashes).
+        progress = ConnectProgress.ConnectionOwnsTeardown
         verifyServerCertificateHashes(
             quicOptions.serverCertificateHashes,
             bufferFactory,
@@ -267,11 +272,25 @@ internal suspend fun buildJvmQuicConnection(
         )
         return quicConnection
     } finally {
-        // Establishment failed before the connection took ownership of teardown — release here.
-        // (On success the connection owns config + parentScope via onRelease above.)
-        if (!established) {
-            api.configFree(config)
-            parentScope.cancel()
+        // Exhaustive on purpose: every stage has to state what it owes, so one added later cannot
+        // inherit a branch by default. See [ConnectProgress].
+        when (val reached = progress) {
+            // Nothing acquired past the config yet.
+            ConnectProgress.BeforeChannel -> {
+                api.configFree(config)
+                parentScope.cancel()
+            }
+            // Open and unowned: JvmQuicConnection.onRelease is the only other thing that closes it, and
+            // it runs from close(), which a failed establishment never reaches. QuicheDriver.cleanup()
+            // does not cover it either, deliberately — it tears down non-primary migration path channels,
+            // but the primary one belongs to the connection.
+            is ConnectProgress.ChannelOpen -> {
+                runCatching { reached.channel.close() }
+                api.configFree(config)
+                parentScope.cancel()
+            }
+            // The connection owns config, scope and channel — releasing here would close a live socket.
+            ConnectProgress.ConnectionOwnsTeardown -> Unit
         }
     }
 }
