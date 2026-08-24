@@ -8,8 +8,13 @@ import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /*
  * Turns the public migration policy (QuicOptions.migration, Automatic by default) into a live reactor on
@@ -66,21 +71,48 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * below possible: a flap that returns to the link we are already on is free, and a link we failed to
  * migrate onto is not mistaken for the one we live on.
  *
- * **`Impossible` cancels; `Failed` does not** — [MigrationResult.Unmoved.Impossible] is by definition
- * the family where every later call answers the same, whatever the network does, so the observer stops.
- * A [MigrationResult.Unmoved.Failed] attempt leaves `attachedTo` alone and keeps watching; it is
- * deliberately **not** retried on a timer, because the next network change is the next new information
- * and re-attempting at a fixed cadence with nothing changed is a spin. A connection left on a dead path
- * is arbitrated by the idle timeout and reported as a typed `QuicCloseReason.ByLocal(IdleTimeout)`.
+ * **`Impossible` cancels; `Failed` is retried on a bounded backoff** —
+ * [MigrationResult.Unmoved.Impossible] is by definition the family where every later call answers the
+ * same, whatever the network does, so the observer stops. A [MigrationResult.Unmoved.Failed] attempt
+ * leaves `attachedTo` alone and is re-attempted in place, because the emission that would otherwise be
+ * the next new information **never arrives** (#453, and see [retryableWithoutNewInformation]).
  *
- * **No quiet period, deliberately.** [QuicScope.migrate] suspends until the new path has validated and
- * the active path has switched (or the attempt has failed), so a second migration cannot start while one
- * is in flight and the rate is bounded by path validation rather than by a guessed constant. While this
- * collector is suspended the upstream `StateFlow` conflates: intermediate flaps are dropped and it
- * resumes on whichever link is current *then*. Coalescing is therefore already present, keyed to the
- * real cost of the operation. A quiet period on top could only refuse a genuine handoff arriving inside
- * the window — leaving the connection on a dead path for the remainder of it, which is precisely the
- * outage active migration exists to prevent.
+ * ## Why a failed attempt cannot wait for the next network event (#453)
+ *
+ * The original of this function answered a `Failed` with `Unit` and a comment saying "keep watching".
+ * What it kept watching for was an event already in the past. The gate above the collector is
+ * `distinctUntilChanged()` on **network identity**, so a second attempt needs the identity to change
+ * *again* — but the handoff has already happened and the device is now sitting still on the new link,
+ * so nothing further is emitted for the rest of the connection.
+ *
+ * Measured on a real Wi-Fi→cellular walk (2026-08-23): the reactor probed cellular once at
+ * t=865026ms, the `PATH_CHALLENGE` went unanswered, `PathNotValidated` came back 3009ms later on the
+ * RFC 9000 §8.2.4 abandon timer — and nothing tried again. The connection sat on the dead Wi-Fi path
+ * through 57 consecutive failed reads and died of `IdleTimeout` 30 seconds after that. An unanswered
+ * probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per handoff is not
+ * a policy, it is an outage.
+ *
+ * **The backoff is bounded by the connection ids it spends.** Every probe that reaches quiche links a
+ * spare destination connection id to the new path, and every exit from that path — validated, failed,
+ * abandoned — retires it (`PathSlot`, #447). On a path that is already dead the `RETIRE_CONNECTION_ID`
+ * never reaches the peer and the replacing `NEW_CONNECTION_ID` never comes back, so the pool is
+ * finite: [QuicOptions.activeConnectionIdLimit] (4 by default) minus the one in use. Past that quiche
+ * answers `NoSpareConnectionId` *before* opening a socket, so the remaining attempts cost nothing.
+ * [MAX_MIGRATION_ATTEMPTS] is set a little above the pool on purpose, so that the cheap
+ * self-resolving failures (`HandshakeNotConfirmed`, `AlreadyInProgress`) cannot eat the budget the
+ * expensive ones need.
+ *
+ * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
+ * suspends until the new path has validated and the active path has switched (or the attempt has
+ * failed), so a second migration cannot start while one is in flight and the rate is bounded by path
+ * validation rather than by a guessed constant. While this collector is suspended the upstream
+ * `StateFlow` conflates: intermediate flaps are dropped and it resumes on whichever link is current
+ * *then*. Coalescing is therefore already present, keyed to the real cost of the operation. A quiet
+ * period on top could only refuse a genuine handoff arriving inside the window — leaving the
+ * connection on a dead path for the remainder of it, which is precisely the outage active migration
+ * exists to prevent. The retry backoff is the opposite of such a window and must stay that way: it is
+ * abandoned the instant a different routable link appears ([awaitRetrySlot]), because that link is
+ * new information and the collector is about to be handed it.
  *
  * No-op unless [QuicOptions.migration] is [MigrationPolicy.Automatic], and a genuine no-op — nothing is
  * even launched — for [NetworkMonitor.AlwaysAvailable], whose network identity never changes.
@@ -116,15 +148,117 @@ internal fun wireAutoMigration(
                     return@collect
                 }
                 if (id == attachedTo) return@collect // a flap that came home costs nothing
-                when (connection.migrate(MigrationTarget.FreshLocalEndpoint)) {
-                    is MigrationResult.Succeeded -> attachedTo = id
-                    is MigrationResult.Unmoved.Impossible -> {
-                        cancel()
-                        return@collect
+                var attempt = 1
+                while (true) {
+                    when (val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)) {
+                        is MigrationResult.Succeeded -> {
+                            attachedTo = id
+                            return@collect
+                        }
+
+                        is MigrationResult.Unmoved.Impossible -> {
+                            cancel()
+                            return@collect
+                        }
+
+                        // Not this time — and do NOT claim the link we failed to reach. Whether "not
+                        // this time" is worth saying again is the leaf's own answer, never a default.
+                        is MigrationResult.Unmoved.Failed -> {
+                            if (!result.retryableWithoutNewInformation()) return@collect
+                            if (attempt >= MAX_MIGRATION_ATTEMPTS) return@collect
+                            if (!awaitRetrySlot(monitor, id, backoffBeforeAttempt(attempt))) return@collect
+                            attempt++
+                        }
                     }
-                    // Not this time — keep watching, and do NOT claim the link we failed to reach.
-                    is MigrationResult.Unmoved.Failed -> Unit
                 }
             }
     }
 }
+
+/**
+ * How many times one handoff may ask [QuicScope.migrate], the first attempt included.
+ *
+ * Deliberately a little above the spare connection id pool ([QuicOptions.activeConnectionIdLimit],
+ * 4 by default, minus the one in use): the probes that can actually reach the wire are bounded by that
+ * pool whatever this number says, and the slack exists so a run of cheap self-resolving failures
+ * cannot consume the budget the expensive ones need. It is not a duration — the wall-clock cost of a
+ * handoff is dominated by each unanswered probe's own §8.2.4 abandon timer, not by the waits here.
+ */
+private const val MAX_MIGRATION_ATTEMPTS = 6
+
+/**
+ * How long to wait before attempt number `attempt + 1`, given [attempt] has just failed.
+ *
+ * 250ms doubling to a 4s ceiling. The floor is a spin guard, sized for the leaves that return
+ * *immediately* (`AlreadyInProgress` resolves as the in-flight move completes; `HandshakeNotConfirmed`
+ * as the handshake confirms) — for the leaf that matters most, `PathNotValidated`, the attempt has
+ * already spent ~3s inside quiche's abandon timer and the wait here is a rounding error on top. The
+ * ceiling keeps the whole budget inside the window the field actually gave us: 7.75s of waiting across
+ * all [MAX_MIGRATION_ATTEMPTS] attempts, against the 30s the measured connection survived after its
+ * probe was lost.
+ */
+private fun backoffBeforeAttempt(attempt: Int): Duration = minOf(250.milliseconds * (1 shl (attempt - 1)), 4.seconds)
+
+/**
+ * Wait out [backoff] before re-attempting a migration onto [attempting], and report whether the retry
+ * is still the right thing to do.
+ *
+ * Returns `true` when the backoff elapsed with no better idea available — retry. Returns `false` when
+ * a *different* routable, identified link appeared first, which makes this retry stale: that link is
+ * new information, the collector is about to be handed it, and it should be migrated onto instead of
+ * whatever we were failing to reach. Collecting [NetworkMonitor.state] a second time here is free (it
+ * is a `StateFlow`) and is what keeps the backoff from becoming the quiet period this reactor
+ * deliberately does not have — a genuine handoff arriving mid-backoff is acted on at once rather than
+ * waiting it out.
+ *
+ * The filters mirror the main pipeline exactly: a link the monitor cannot name, or says traffic will
+ * not cross, is not a reason to abandon the retry.
+ */
+private suspend fun awaitRetrySlot(
+    monitor: NetworkMonitor,
+    attempting: NetworkId,
+    backoff: Duration,
+): Boolean =
+    withTimeoutOrNull(backoff) {
+        monitor.state
+            .filter { it.canRouteOffLink }
+            .map { it.networkId }
+            .first { it != NetworkId.Unidentified && it != attempting }
+    } == null
+
+/**
+ * Whether asking [QuicScope.migrate] the identical question again can plausibly answer differently
+ * **with nothing else having changed** — which is the only situation this reactor can create, because
+ * the network event that would constitute a change is the one #453 proved never arrives.
+ *
+ * Exhaustive on purpose. A new [MigrationResult.Unmoved.Failed] leaf must state its own answer here
+ * rather than inherit whichever one this function happened to default to; the whole point of the
+ * sealed family is that the compiler asks.
+ */
+private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boolean =
+    when (this) {
+        // Resolves on its own as the handshake confirms; the next attempt is the entire point.
+        MigrationResult.Unmoved.Failed.HandshakeNotConfirmed -> true
+        // One path move at a time — the in-flight one completes and frees the lane.
+        MigrationResult.Unmoved.Failed.AlreadyInProgress -> true
+        // The peer replenishes the pool with NEW_CONNECTION_ID, and at connection start this is
+        // routinely a race against the peer's *first* one rather than a verdict (#448).
+        MigrationResult.Unmoved.Failed.NoSpareConnectionId -> true
+        // The measured #453 case: an unanswered PATH_CHALLENGE is ordinary on cellular, and the next
+        // probe is a fresh 4-tuple the peer may well answer.
+        MigrationResult.Unmoved.Failed.PathNotValidated -> true
+        // A bind that failed or collided with the live path's 4-tuple; a later bind lands elsewhere.
+        is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> true
+        // quiche refused this probe, or refused to switch onto a path that did validate. Both carry a
+        // code rather than a promise, and both have transient sources (a path table at its limit, a
+        // move already under way), so they are worth one more bounded ask.
+        is MigrationResult.Unmoved.Failed.ProbeRejected -> true
+        is MigrationResult.Unmoved.Failed.SwitchRejected -> true
+        // The only leaf that is deterministic *for this reactor*. It reports that the platform assigns
+        // the local endpoint itself, so a named target cannot be bound — and this reactor only ever
+        // asks for FreshLocalEndpoint, which every platform serves. Repeating the identical request
+        // cannot change the answer; a different target could, and the reactor has none to offer. It
+        // stays in `Failed` rather than `Impossible` because a *caller* naming a different target may
+        // still succeed.
+        MigrationResult.Unmoved.Failed.EndpointNotSelectable -> false
+    }
