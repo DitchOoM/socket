@@ -31,6 +31,30 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * One-way latency every simulated path carries unless a scenario says otherwise — so the DEFAULT is a
+ * realistic network and RTT≈0 is something a test has to ask for.
+ *
+ * ⚠️ **This default is a bug fix, not a detail.** It used to be zero, and that hid an incomplete fix
+ * for #459: quiche re-arms `request_validation()` from an abandoned path's own loss timer ~75ms after
+ * the driver's RFC 9000 §8.2.4 abandon, so whether a CID-lifecycle patch held came down to whether an
+ * ACK beat that PTO — which it always does on loopback. The whole migration suite was green while the
+ * shipped behaviour was broken on any real mobile path. 60ms one-way (120ms round trip) is both an
+ * ordinary cellular RTT and comfortably past that ~75ms threshold, so the default now exercises the
+ * class of defect rather than hiding it.
+ *
+ * The same trap in a different place cost #445 a day: "a loopback burst of 12 migrations survives BOTH
+ * patched and unpatched (RTT≈0 = no overtake window), while a real ~40ms path reproduced it
+ * immediately". Virtual time makes latency free — there is no reason for a scenario to be unrealistic
+ * by accident.
+ *
+ * Note the deliberate asymmetry with the probe-path default ([PathImpairment] with no latency): a new
+ * path faster than the one being left IS the #445 overtake window, so the default scenario exercises
+ * that too. A test that needs a specific relationship states both, as
+ * [MigrationSimTests.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
+ */
+internal val DEFAULT_PATH_LATENCY = 60.milliseconds
+
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
@@ -404,7 +428,7 @@ internal fun migrationSimOptions(
 internal suspend fun <R> withMigrationSim(
     testScope: TestScope,
     seed: Long,
-    primaryImpairment: PathImpairment = PathImpairment(),
+    primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
