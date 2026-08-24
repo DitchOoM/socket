@@ -748,6 +748,79 @@ class MigrationSimTests {
             }
         }
 
+    /**
+     * **#459 — an abandoned probe must give its connection id back to the pool.**
+     *
+     * #447 fixed "the abandoned path never retires its connection id". This is the other half, and it
+     * is invisible from that one: we *do* retire, the peer *does* send a replacement, and quiche links
+     * the replacement **straight back into the dead probe path**, which pins it un-evictable
+     * (`PathMap::unused()` is `!active() && active_dcid_seq.is_none()`) and holding a spare forever.
+     *
+     * So every failed handoff costs a spare permanently, on a connection where nothing is wrong. After
+     * [SPARE_POOL] of them, `migrate()` answers
+     * [MigrationResult.Unmoved.Failed.NoSpareConnectionId] for the rest of the connection's life — a
+     * phone that fails a handoff a few times has silently lost active migration, and the only symptom
+     * is that a later, perfectly good handoff does not happen.
+     *
+     * ## Why the original path is HEALTHY here
+     * That is the whole point. On a dead path there is nothing to argue about — the retirement cannot
+     * cross and the pool is *expected* to drain, which is what
+     * [everyRetryInTheBudgetReachesTheNetwork] is about. Here the retirement lands, the peer replies,
+     * and the pool still does not recover. Anything less than a healthy path would leave the failure
+     * explainable by the network.
+     *
+     * ## Why it drives migrate() by hand
+     * [MigrationPolicy.Manual], deliberately: the automatic reactor's retry budget is smaller than the
+     * pool, so it stops one attempt *before* exhaustion and cannot observe this at all. The budget was
+     * hiding the defect, which is why it cannot be removed until this is fixed (#459, #453).
+     */
+    @Test
+    fun anAbandonedProbeGivesItsConnectionIdBackToThePool() =
+        runTest {
+            try {
+                withMigrationSim(
+                    testScope = this,
+                    seed = 45_900L,
+                    quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
+                    probeImpairment = { PathImpairment(blackhole = true) },
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    val trajectory = mutableListOf<String>()
+                    val outcomes = mutableListOf<MigrationResult>()
+
+                    repeat((SPARE_POOL + 2).toInt()) {
+                        val result = withTimeout(200.seconds) { migrate().await() }
+                        outcomes += result
+                        // The RETIRE_CONNECTION_ID -> NEW_CONNECTION_ID round trip is real and the
+                        // original path is healthy, so it completes. Measured at well under this.
+                        delay(REPLENISH_SETTLE)
+                        trajectory += "${result::class.simpleName}->spares=${clientAvailableDcids()}"
+                    }
+
+                    val refused = outcomes.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
+                    assertTrue(
+                        refused.isEmpty(),
+                        "${refused.size} of ${outcomes.size} probes were refused for want of a spare " +
+                            "connection id, on a connection whose original path never stopped working " +
+                            "and whose peer replaced every id we retired " +
+                            "(retires=${clientAudit.retireCalls.size}, server active scids=" +
+                            "${serverActiveScids()}). Each abandoned probe is keeping the replacement " +
+                            "linked to its own dead path, so the pool drains once and never refills " +
+                            "(#459). Trajectory: $trajectory. Path table: ${clientPathTable()}",
+                    )
+                    assertEquals(
+                        SPARE_POOL,
+                        clientAvailableDcids(),
+                        "after ${outcomes.size} abandoned probes and $REPLENISH_SETTLE of settle each, " +
+                            "the spare pool is ${clientAvailableDcids()} instead of $SPARE_POOL. " +
+                            "Trajectory: $trajectory",
+                    )
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(MigrationSimTests::class, e)
+            }
+        }
+
     private companion object {
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
@@ -775,6 +848,13 @@ class MigrationSimTests {
 
         /** Long enough that a bounded backoff has certainly finished; virtual, so it is free. */
         val GIVE_UP_WINDOW = 60.seconds
+
+        /**
+         * Settle after an abandoned probe, for the RETIRE_CONNECTION_ID -> NEW_CONNECTION_ID round
+         * trip on a healthy path. Generous on purpose — it is virtual time, and a tight value would
+         * let #459 read as a race rather than the permanent loss it is.
+         */
+        val REPLENISH_SETTLE = 10.seconds
 
         /** The two idle windows [aShorterIdleWindowBuysFewerRetries] compares. */
         val SHORT_IDLE_WINDOW = 10.seconds
