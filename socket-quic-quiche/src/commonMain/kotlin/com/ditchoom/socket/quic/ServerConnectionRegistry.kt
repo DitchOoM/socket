@@ -252,9 +252,14 @@ internal class ServerConnectionRegistry<K>(
         while (iterator.hasNext()) {
             val cached = iterator.next().value
             if (cached.inFlight.get() == 0) {
+                // Unpublish BEFORE freeing, so that no throw between the two steps can leave a freed
+                // handle reachable from the cache for the next lookupRecvInfo to hand out. The
+                // ordering only began to matter on the FFM backend with #397: until recvInfoFree
+                // actually released memory there, a stale entry pointing at a "freed" handle was
+                // inert. JNI and both cinterop backends have always really freed.
+                iterator.remove()
                 api.recvInfoFree(cached.info)
                 cached.releaseSource()
-                iterator.remove()
                 return
             }
         }
