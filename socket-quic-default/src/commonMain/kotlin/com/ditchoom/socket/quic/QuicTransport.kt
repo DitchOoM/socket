@@ -141,9 +141,14 @@ class QuicTransport(
             // rather than a plain coroutineScope: a stream the caller never closed must not make this
             // function hang waiting for that stream's writer.
             val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+            val mux = QuicStreamMux(connection, codec, config, muxScope, outboundCapacity, overflowPolicy)
             try {
-                QuicStreamMux(connection, codec, config, muxScope, outboundCapacity, overflowPolicy).block()
+                mux.block()
             } finally {
+                // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
+                // let this block return would otherwise lose it silently — and before #382, send()
+                // returning meant written, so that was a correct program (#382, review finding M3).
+                mux.closeMintedConnections()
                 muxScope.cancel()
             }
         }

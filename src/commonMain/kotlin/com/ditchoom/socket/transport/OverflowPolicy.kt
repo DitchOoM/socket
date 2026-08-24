@@ -9,8 +9,11 @@ package com.ditchoom.socket.transport
  * all, and concurrent sends cannot interleave); **the caller states the policy**, because the right
  * answer depends on whether the traffic is recoverable at a higher layer.
  *
- * There is deliberately no default. A defaulted policy would let a new consumer silently inherit
- * someone else's answer to a question only it can answer.
+ * The primary [CodecConnection] constructor deliberately has no default, so a new consumer has to
+ * answer this. The deprecated pre-#382 overloads and the scoped `withMux` entry points do default it,
+ * to [Suspend] — the only arm that never discards a message — so that existing callers receive the fix
+ * without a migration. That is a compatibility affordance, not the recommendation: a caller that has
+ * not chosen has not thought about what a lagging peer should cost it.
  *
  * A lagging peer is the case worth thinking about concretely. Evicting it with an untyped close reads
  * to that peer as a normal close and produces a reconnect loop, so a consumer whose state re-snapshots

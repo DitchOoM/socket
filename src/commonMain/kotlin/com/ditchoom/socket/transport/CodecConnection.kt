@@ -13,6 +13,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.OutboundQueueFullException
 import com.ditchoom.socket.SocketClosedException
@@ -26,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ChannelResult
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,7 +104,9 @@ class CodecConnection<T>(
      * - [OverflowPolicy.Suspend], the only policy that never discards a message, and the closest
      *   analogue to the old behaviour where a caller waited rather than shedding.
      * - [DEFAULT_OUTBOUND_CAPACITY] messages of queue depth.
-     * - A writer scope this connection creates and owns, cancelled by [close].
+     * - A writer scope this connection creates and owns. [close] cancels and joins the *writer*, so no
+     *   coroutine keeps running — but the `SupervisorJob` behind that scope is never itself completed,
+     *   which is one more reason the primary constructor's caller-supplied scope is the better shape.
      *
      * That last one is the reason to migrate. A self-owned scope is outside the caller's structured
      * concurrency, so cancelling the scope that created this connection does **not** stop its writer —
@@ -198,9 +202,47 @@ class CodecConnection<T>(
                 throw e
             } catch (t: Throwable) {
                 outbound.close(t)
+            } finally {
+                // However this writer ended — failure, or [scope] being cancelled out from under it —
+                // nothing can reach the wire any more, so the queue must stop accepting. Without this,
+                // a cancelled scope left a connection that looked alive: `send` queued "successfully"
+                // into a queue nobody drains, then suspended forever once it filled (Suspend), or
+                // cycled messages into onOverflow for ever (DropOldest), or blamed the peer (Fail).
+                // Writer *failure* already closed the channel; writer *cancellation* did not, and that
+                // asymmetry was the bug.
+                //
+                // Both calls are no-ops once the channel is already closed and drained, which is the
+                // normal [close] path — so this only bites the abnormal one. `cancel` hands anything
+                // still queued to the overflow handler, which is the same statement as an overflow:
+                // this message will not reach the wire.
+                outbound.close(
+                    SocketClosedException.General(
+                        "the connection's writer stopped before this message could be written",
+                    ),
+                )
+                outbound.cancel()
             }
         }
-    private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
+
+    /**
+     * MultiThreaded, not the default SingleThreaded, because #382 made this pool genuinely shared: the
+     * writer allocates and frees encode buffers on [scope]'s dispatcher, `receive()` acquires on
+     * whichever thread collects it, and [close] clears it from a third. A SingleThreaded pool is
+     * documented as "faster but NOT thread-safe" — plain ArrayDeque buckets and non-atomic refcounts —
+     * and using one this way corrupts its structure (`ArrayIndexOutOfBoundsException` out of
+     * `popAtLeast`) or livelocks on a double-handed-out buffer.
+     *
+     * Before #382 this was latent and avoidable: `send` ran on the caller's coroutine, so a
+     * single-threaded consumer never crossed a thread. Now the writer is on another thread always, and
+     * this class advertises that callers need no external synchronisation — so the pool has to mean it.
+     * Every other pool in this repository that is shared this way already says MultiThreaded
+     * ([com.ditchoom.socket.ReadBufferSource], QuicheDriver's stream/recv pools).
+     */
+    private val bufferPool: BufferPool =
+        BufferPool(
+            threadingMode = ThreadingMode.MultiThreaded,
+            factory = config.bufferFactory,
+        )
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
     @Volatile
@@ -272,8 +314,8 @@ class CodecConnection<T>(
         when (val policy = overflowPolicy) {
             // DROP_OLDEST never rejects and never suspends: the channel evicts to make room and hands
             // the evicted message to onOverflow itself.
-            is OverflowPolicy.DropOldest -> outbound.send(message)
-            OverflowPolicy.Suspend -> outbound.send(message)
+            is OverflowPolicy.DropOldest -> suspendingSend(message)
+            OverflowPolicy.Suspend -> suspendingSend(message)
             is OverflowPolicy.DropNewest -> {
                 val result = outbound.trySend(message)
                 if (!result.isSuccess) {
@@ -288,6 +330,23 @@ class CodecConnection<T>(
                     throw OutboundQueueFullException(outboundCapacity)
                 }
             }
+        }
+    }
+
+    /**
+     * `outbound.send`, with the channel's own closed-exception re-homed into this library's error
+     * family.
+     *
+     * A caller parked in `send` when the connection closes is resumed by kotlinx with a raw
+     * `ClosedSendChannelException`, which is neither a [com.ditchoom.socket.SocketException] nor
+     * something this API's header promises. The `trySend` paths already translate via [throwIfClosed];
+     * these two did not.
+     */
+    private suspend fun suspendingSend(message: T) {
+        try {
+            outbound.send(message)
+        } catch (e: ClosedSendChannelException) {
+            throw SocketClosedException.General("CodecConnection is closed; the message was not queued", e)
         }
     }
 
@@ -395,6 +454,12 @@ class CodecConnection<T>(
         outbound.close()
         withTimeoutOrNull(config.io.outboundDrainOnClose) { writerJob.join() }
         writerJob.cancel()
+        // JOIN, not just cancel. The writer can be inside encodeAndWriteFully with a pooled buffer it
+        // will hand back in its own finally; clearing the pool before that lands re-pools into a
+        // cleared pool and leaks the buffer's native memory for the process's life. QuicheDriver
+        // documents this same hazard ("BufferPool has no closed state ... the leaf allocation would
+        // never be freed") and fixes it the same way, by joining before cleanup.
+        writerJob.join()
         // Hands anything still queued to onUndeliveredElement; a no-op once the drain completed.
         outbound.cancel()
         stream.close()

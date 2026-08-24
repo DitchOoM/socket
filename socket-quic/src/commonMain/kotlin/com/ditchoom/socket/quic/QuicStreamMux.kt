@@ -26,31 +26,44 @@ import kotlinx.coroutines.SupervisorJob
  * Heterogeneous protocols that must classify each accepted stream before choosing a decoder
  * (HTTP/3-style self-describing streams, RFC 9114 §6.2) use [QuicByteStreamMux] directly instead.
  */
-class QuicStreamMux<T>(
-    connection: QuicScope,
-    codec: Codec<T>,
-    options: TransportConfig,
+class QuicStreamMux<T> private constructor(
+    private val view: TypedMuxView<T>,
+) : StreamMux<T> by view {
     /**
-     * Writer lifetime and outbound queue policy for every stream this mux mints — see
-     * [com.ditchoom.socket.transport.CodecConnection] and [OverflowPolicy] (#382). Required rather
-     * than defaulted: each QUIC stream gets its own writer, and only the caller knows what a full
-     * queue should mean for the traffic it puts on them.
+     * @param scope writer lifetime, and [outboundCapacity]/[overflowPolicy] the outbound queue policy,
+     *   for every stream this mux mints — see [CodecConnection] and [OverflowPolicy] (#382). Each QUIC
+     *   stream gets its own writer, and only the caller knows what a full queue should mean for the
+     *   traffic it puts on them.
      */
-    scope: CoroutineScope,
-    outboundCapacity: Int,
-    overflowPolicy: OverflowPolicy<T>,
-    decodeContext: DecodeContext = DecodeContext.Empty,
-    encodeContext: EncodeContext = EncodeContext.Empty,
-) : StreamMux<T> by TypedMuxView(
-        raw = QuicByteStreamMux(connection),
-        codec = codec,
-        scope = scope,
-        outboundCapacity = outboundCapacity,
-        overflowPolicy = overflowPolicy,
-        config = options,
-        decodeContext = decodeContext,
-        encodeContext = encodeContext,
-    ) {
+    constructor(
+        connection: QuicScope,
+        codec: Codec<T>,
+        options: TransportConfig,
+        scope: CoroutineScope,
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+    ) : this(
+        TypedMuxView(
+            raw = QuicByteStreamMux(connection),
+            codec = codec,
+            scope = scope,
+            outboundCapacity = outboundCapacity,
+            overflowPolicy = overflowPolicy,
+            config = options,
+            decodeContext = decodeContext,
+            encodeContext = encodeContext,
+        ),
+    )
+
+    /**
+     * Closes every stream this mux minted, draining each one's outbound queue first (#382). A scoped
+     * session calls this before cancelling the writers' scope, so a caller that queued a frame and did
+     * not close the stream itself does not lose it silently.
+     */
+    suspend fun closeMintedConnections() = view.closeMintedConnections()
+
     /**
      * Source-compatible constructor for callers written against the pre-#382 signature — see
      * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters.

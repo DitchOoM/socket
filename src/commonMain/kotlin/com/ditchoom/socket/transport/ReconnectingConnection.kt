@@ -69,8 +69,9 @@ import kotlin.time.TimeSource
  * ```kotlin
  * val conn = ReconnectingConnection(
  *     connect = {
+ *         // `scope` owns the connection's writer, so it must outlive the connection (#382).
  *         val codec = CodecConnection.connect("broker.example.com", 1883,
- *             MyCodec)
+ *             MyCodec, scope = appScope)
  *         codec.send(ConnectPacket(clientId = "my-client"))
  *         codec.receive().first() // await handshake response
  *         codec

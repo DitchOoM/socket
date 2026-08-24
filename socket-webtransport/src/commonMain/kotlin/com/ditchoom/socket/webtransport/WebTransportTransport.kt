@@ -127,9 +127,14 @@ class WebTransportTransport(
         session.use(hostname, port, config) { wt ->
             // A child scope for the lazy incoming-stream collectors; cancelled before the session closes.
             val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+            val mux = WebTransportStreamMux(wt, codec, config, muxScope, outboundCapacity, overflowPolicy)
             try {
-                WebTransportStreamMux(wt, codec, config, muxScope, outboundCapacity, overflowPolicy).block()
+                mux.block()
             } finally {
+                // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
+                // let this block return would otherwise lose it silently — and before #382, send()
+                // returning meant written, so that was a correct program (#382, review finding M3).
+                mux.closeMintedConnections()
                 muxScope.cancel()
             }
         }

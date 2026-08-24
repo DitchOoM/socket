@@ -24,27 +24,41 @@ import kotlinx.coroutines.CoroutineScope
  * Heterogeneous protocols that must classify each accepted stream before choosing a decoder use
  * [WebTransportByteStreamMux] directly instead.
  */
-class WebTransportStreamMux<T>(
-    session: WebTransportSession,
-    codec: Codec<T>,
-    config: TransportConfig,
-    scope: CoroutineScope,
-    /** Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382). */
-    outboundCapacity: Int,
-    overflowPolicy: OverflowPolicy<T>,
-    decodeContext: DecodeContext = DecodeContext.Empty,
-    encodeContext: EncodeContext = EncodeContext.Empty,
-) : StreamMux<T> by TypedMuxView(
-        raw = WebTransportByteStreamMux(session, scope),
-        codec = codec,
-        // The mux's own scope owns the stream writers: they are exactly as long-lived as the mux.
-        scope = scope,
-        outboundCapacity = outboundCapacity,
-        overflowPolicy = overflowPolicy,
-        config = config,
-        decodeContext = decodeContext,
-        encodeContext = encodeContext,
-    ) {
+class WebTransportStreamMux<T> private constructor(
+    private val view: TypedMuxView<T>,
+) : StreamMux<T> by view {
+    /**
+     * @param outboundCapacity and [overflowPolicy] the outbound queue policy for every stream this mux
+     *   mints — see [OverflowPolicy] (#382). The mux's own [scope] owns the stream writers, so they are
+     *   exactly as long-lived as the mux.
+     */
+    constructor(
+        session: WebTransportSession,
+        codec: Codec<T>,
+        config: TransportConfig,
+        scope: CoroutineScope,
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+    ) : this(
+        TypedMuxView(
+            raw = WebTransportByteStreamMux(session, scope),
+            codec = codec,
+            scope = scope,
+            outboundCapacity = outboundCapacity,
+            overflowPolicy = overflowPolicy,
+            config = config,
+            decodeContext = decodeContext,
+            encodeContext = encodeContext,
+        ),
+    )
+
+    /**
+     * Closes every stream this mux minted, draining each one's outbound queue first (#382).
+     */
+    suspend fun closeMintedConnections() = view.closeMintedConnections()
+
     /**
      * Source-compatible constructor for callers written against the pre-#382 signature — see
      * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters. This one
