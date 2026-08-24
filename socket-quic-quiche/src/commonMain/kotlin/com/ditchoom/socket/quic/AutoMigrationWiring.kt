@@ -101,8 +101,8 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * neither frame crosses, so the pool is finite: [QuicOptions.activeConnectionIdLimit] minus the one
  * in use. Past it quiche answers `NoSpareConnectionId` *before* opening a socket, which is a real
  * answer but not a probe — it reaches no network. That default is therefore sized so the pool
- * exceeds [MAX_MIGRATION_ATTEMPTS] and every attempt in the budget is a probe that actually goes out;
- * its KDoc carries the measurement.
+ * exceeds what [migrationAttemptBudget] allows, so every attempt in the budget is a probe that
+ * actually goes out; its KDoc carries the measurement.
  *
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
@@ -131,6 +131,7 @@ internal fun wireAutoMigration(
     // AlwaysAvailable never changes network identity (Android without an installed Context, Wasm) —
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
+    val attemptBudget = migrationAttemptBudget(quicOptions)
     connection.launch {
         // `null` here means "the baseline emission has not arrived yet" — and it stays a nullable on
         // purpose, against this campaign's usual rule. It is a local in one function that nothing outside
@@ -167,7 +168,7 @@ internal fun wireAutoMigration(
                         // this time" is worth saying again is the leaf's own answer, never a default.
                         is MigrationResult.Unmoved.Failed -> {
                             if (!result.retryableWithoutNewInformation()) return@collect
-                            if (attempt >= MAX_MIGRATION_ATTEMPTS) return@collect
+                            if (attempt >= attemptBudget) return@collect
                             if (!awaitRetrySlot(monitor, id, backoffBeforeAttempt(attempt))) return@collect
                             attempt++
                         }
@@ -178,19 +179,60 @@ internal fun wireAutoMigration(
 }
 
 /**
- * How many times one handoff may ask [QuicScope.migrate], the first attempt included.
+ * How many times one handoff may ask [QuicScope.migrate], the first attempt included — **derived from
+ * the deadline that actually ends the connection**, not chosen.
  *
- * Sized against the deadline that actually ends the connection, not against the connection id pool.
- * A handoff away from a dead path has [QuicOptions.idleTimeout] to succeed in — 30s by default, and
- * measured at exactly that in the field (#453) — and each attempt costs its own RFC 9000 §8.2.4
- * abandon budget (~3s floor) plus [backoffBeforeAttempt]. Six attempts spend 25.75s of that window
- * and a seventh would complete past it, so this is the largest budget that fits.
+ * A handoff away from a dead path is racing [QuicOptions.idleTimeout]: nothing arrives on the old
+ * path, so the idle timer runs to the end and kills the connection (measured in the field at exactly
+ * that, #453). Every attempt inside that window is worth making and every attempt outside it is
+ * addressed to a connection that no longer exists, so the honest budget is "as many as fit", and this
+ * walks the schedule to find it: each attempt costs one RFC 9000 §8.2.4 abandon budget
+ * ([QuicheDriver.PATH_VALIDATION_FLOOR]) and every attempt after the first also costs its
+ * [backoffBeforeAttempt].
  *
- * The connection id pool is the *other* bound, and [QuicOptions.activeConnectionIdLimit]'s default is
- * chosen so it is the looser one: a budget spent on attempts quiche refuses for want of a spare id is
- * a budget that never reached the network.
+ * At the defaults that lands on 6 attempts spending 25.75s of a 30s window — the same number the
+ * constant here used to be, and the same completion times the deterministic sim measures, which is
+ * the check that the arithmetic below describes the real loop. A caller who shortens `idleTimeout`
+ * now gets a reactor that stops when their connection does, and one who lengthens it gets the extra
+ * attempts their window pays for; neither used to happen.
+ *
+ * ⚠️ **The floor, not the actual cost.** [QuicheDriver.pathValidationBudget] widens with the current
+ * path's RTT and the reactor cannot see any individual path's PTO, so on a slow path each attempt
+ * costs more than assumed here and the budget overshoots. That direction is the safe one: the extra
+ * attempts land on an already-closed connection, answer
+ * [MigrationResult.Unmoved.Impossible.ConnectionClosed], and cancel the observer — which is the
+ * correct end state anyway.
+ *
+ * [ceiling] is the second bound, and the one that applies when `idleTimeout` is zero (its documented
+ * "no timeout"): there is no point asking more times than the spare connection id pool can turn into
+ * probes, plus a little slack for the leaves that consume no id at all
+ * ([MigrationResult.Unmoved.Failed.HandshakeNotConfirmed], [MigrationResult.Unmoved.Failed.AlreadyInProgress]).
  */
-private const val MAX_MIGRATION_ATTEMPTS = 6
+internal fun migrationAttemptBudget(quicOptions: QuicOptions): Int {
+    val sparePool = (quicOptions.activeConnectionIdLimit - 1).coerceAtLeast(1)
+    val ceiling = (sparePool + CHEAP_FAILURE_SLACK).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val deadline = quicOptions.idleTimeout
+    if (deadline <= Duration.ZERO) return ceiling
+    var attempts = 0
+    var spent = Duration.ZERO
+    while (attempts < ceiling) {
+        val backoff = if (attempts == 0) Duration.ZERO else backoffBeforeAttempt(attempts)
+        val next = spent + backoff + QuicheDriver.PATH_VALIDATION_FLOOR
+        if (next > deadline) break
+        spent = next
+        attempts++
+    }
+    // A handoff always gets one try, however short the caller's idle timeout: refusing to attempt at
+    // all would make a small `idleTimeout` silently disable automatic migration.
+    return attempts.coerceAtLeast(1)
+}
+
+/**
+ * Attempts allowed above the spare connection id pool, for the [MigrationResult.Unmoved.Failed] leaves
+ * that resolve on their own and consume no id (`HandshakeNotConfirmed`, `AlreadyInProgress`), so a run
+ * of those cannot eat the budget the probes need.
+ */
+private const val CHEAP_FAILURE_SLACK = 2L
 
 /**
  * How long to wait before attempt number `attempt + 1`, given [attempt] has just failed.
@@ -199,9 +241,10 @@ private const val MAX_MIGRATION_ATTEMPTS = 6
  * *immediately* (`AlreadyInProgress` resolves as the in-flight move completes; `HandshakeNotConfirmed`
  * as the handshake confirms) — for the leaf that matters most, `PathNotValidated`, the attempt has
  * already spent ~3s inside quiche's abandon timer and the wait here is a rounding error on top. The
- * ceiling keeps the whole budget inside the window the field actually gave us: 7.75s of waiting across
- * all [MAX_MIGRATION_ATTEMPTS] attempts, against the 30s the measured connection survived after its
- * probe was lost.
+ * ceiling stops the waits from crowding out the probes: at the default idle timeout they account for
+ * 7.75s of the handoff's 25.75s, and the rest is spent inside quiche waiting for an answer. The
+ * schedule is walked by [migrationAttemptBudget], so changing it changes how many attempts fit rather
+ * than pushing them past the deadline.
  */
 private fun backoffBeforeAttempt(attempt: Int): Duration = minOf(250.milliseconds * (1 shl (attempt - 1)), 4.seconds)
 

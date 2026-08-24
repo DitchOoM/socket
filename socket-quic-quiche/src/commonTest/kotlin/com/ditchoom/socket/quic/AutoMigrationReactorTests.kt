@@ -25,6 +25,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -110,10 +111,16 @@ class AutoMigrationReactorTests {
     private fun options(
         monitor: NetworkMonitor,
         policy: MigrationPolicy = MigrationPolicy.Automatic,
+        // Both left at their QuicOptions defaults on purpose: the budget tests below are about what
+        // the library actually ships, so they must not restate it.
+        idleTimeout: Duration = QuicOptions(alpnProtocols = listOf("test")).idleTimeout,
+        cidLimit: Long = QuicOptions(alpnProtocols = listOf("test")).activeConnectionIdLimit,
     ) = QuicOptions(
         alpnProtocols = listOf("test"),
         migration = policy,
         networkMonitor = NetworkMonitorSource.Supplied(monitor),
+        idleTimeout = idleTimeout,
+        activeConnectionIdLimit = cidLimit,
     )
 
     private fun runReactor(
@@ -452,6 +459,104 @@ class AutoMigrationReactorTests {
             supplied.setNetworkId(cellular)
             assertEquals(1, conn.migrateCount)
         }
+    }
+
+    /**
+     * **The retry budget is derived from the deadline that ends the connection, not chosen.**
+     *
+     * A handoff away from a dead path is racing [QuicOptions.idleTimeout] — nothing arrives on the old
+     * path, so the idle timer runs to the end. [migrationAttemptBudget] walks the schedule the reactor
+     * actually follows (one RFC 9000 §8.2.4 abandon budget per attempt, plus each attempt's backoff)
+     * and answers how many fit.
+     *
+     * The expected value here is not a restatement of the formula: the deterministic sim **measures**
+     * the reactor completing its six attempts at 3.00s, 6.25s, 9.75s, 13.75s, 18.75s and 25.75s
+     * against a dead path, so 25.75s in, 32.75s out, and six is the count. If the arithmetic and the
+     * loop ever disagree, one of these two goes red.
+     */
+    @Test
+    fun theAttemptBudgetIsDerivedFromTheIdleTimeout() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        assertEquals(
+            6,
+            migrationAttemptBudget(options(monitor)),
+            "at the default 30s idle timeout the schedule fits six attempts (the sixth completes at " +
+                "25.75s, a seventh would complete at 32.75s)",
+        )
+    }
+
+    /**
+     * A caller who shortens [QuicOptions.idleTimeout] gets a reactor that stops when their connection
+     * does. Before the budget was derived this was a fixed 6 whatever the deadline, so a connection
+     * configured to die at 10s went on being probed for another 15s after it was gone.
+     *
+     * The floor matters as much as the ceiling: however short the timeout, a handoff always gets **one**
+     * attempt. A budget of zero would make a small `idleTimeout` silently disable automatic migration,
+     * which is a configuration surprise rather than a policy.
+     */
+    @Test
+    fun aShorterIdleTimeoutBuysFewerAttemptsButNeverNone() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val budgets = listOf(1, 5, 10, 30, 60).map { it.seconds }.map { migrationAttemptBudget(options(monitor, idleTimeout = it)) }
+        assertEquals(
+            budgets.sorted(),
+            budgets,
+            "the budget must not shrink as the idle window grows: $budgets",
+        )
+        assertEquals(
+            1,
+            migrationAttemptBudget(options(monitor, idleTimeout = 1.seconds)),
+            "an idle window shorter than a single abandon budget still gets one attempt",
+        )
+        assertTrue(
+            migrationAttemptBudget(options(monitor, idleTimeout = 10.seconds)) < 6,
+            "a 10s idle window must not buy the same budget as the 30s default",
+        )
+    }
+
+    /**
+     * [QuicOptions.idleTimeout] of zero is documented as "no timeout", so there is no deadline to
+     * derive from and the connection id pool becomes the bound instead — there is no point asking more
+     * times than the pool can turn into probes, plus a little slack for the failure leaves that consume
+     * no id at all.
+     */
+    @Test
+    fun noIdleTimeoutFallsBackToTheConnectionIdPool() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val budget = migrationAttemptBudget(options(monitor, idleTimeout = Duration.ZERO, cidLimit = 8))
+        assertTrue(
+            budget in 7..9,
+            "with no idle deadline the budget must fall back to the spare pool (7) plus a little " +
+                "slack, not run unbounded — got $budget",
+        )
+    }
+
+    /**
+     * **The coupling, asserted.** Two independent ceilings govern one loop: how many attempts the idle
+     * window pays for, and how many of them the spare connection id pool can turn into probes. Past the
+     * pool `QuicheDriver.handleMigrate` answers [MigrationResult.Unmoved.Failed.NoSpareConnectionId]
+     * *before* opening a socket — a truthful answer that reaches no network — so a pool below the
+     * budget does not shorten the loop, it hollows it out, invisibly, because the attempt count is
+     * unchanged.
+     *
+     * At the shipped defaults the pool must be the looser bound. It was not: the limit was 4 (pool 3)
+     * against a budget of 6, so half of every dead-path handoff's retries were refused before they
+     * reached the wire. Measured in the sim at the time: six attempts, three probes, the reactor giving
+     * up at 16.75s with a third of the idle window unspent.
+     */
+    @Test
+    fun theSpareConnectionIdPoolIsNotTheBindingConstraintAtTheDefaults() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val defaults = options(monitor)
+        val sparePool = defaults.activeConnectionIdLimit - 1
+        assertTrue(
+            migrationAttemptBudget(defaults) <= sparePool,
+            "the default idle window pays for ${migrationAttemptBudget(defaults)} attempts but the " +
+                "spare connection id pool only holds $sparePool " +
+                "(activeConnectionIdLimit=${defaults.activeConnectionIdLimit}), so " +
+                "${migrationAttemptBudget(defaults) - sparePool} of every dead-path handoff's retries " +
+                "would be refused before a socket was opened and reach no network at all",
+        )
     }
 
     /**

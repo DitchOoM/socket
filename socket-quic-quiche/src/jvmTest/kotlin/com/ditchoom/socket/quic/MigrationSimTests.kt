@@ -528,17 +528,7 @@ class MigrationSimTests {
                 withMigrationSim(
                     testScope = this,
                     seed = 45_302L,
-                    quicOptions =
-                        migrationSimOptions(
-                            // The two quiet windows below add up to longer than any real idle timeout,
-                            // and a blackholed probe brings back nothing to restart the timer — so the
-                            // idle deadline is moved out of the way deliberately. Surviving a *field*
-                            // deadline is [aLostProbeIsRetriedUntilTheConnectionRehomes]'s assertion;
-                            // this test is about where the asking stops.
-                            idleTimeout = 5.minutes,
-                            migration = MigrationPolicy.Automatic,
-                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
-                        ),
+                    quicOptions = quietHandoffOptions(monitor),
                     probeImpairment = { PathImpairment(blackhole = true) },
                 ) {
                     val serverJob =
@@ -577,12 +567,21 @@ class MigrationSimTests {
                         delay(GIVE_UP_WINDOW)
                         val settled = client.attempts.size
 
-                        assertTrue(
-                            settled in 2..MAX_ATTEMPTS_PER_HANDOFF,
+                        // Exactly the budget, not merely within it. The link never answers and never
+                        // will, no other link appears, and no leaf here is the one that stops early
+                        // (EndpointNotSelectable) — so a reactor honouring its derivation spends the
+                        // budget to the last attempt and then stops. Asserting a *range* would pass
+                        // against a reactor that ignored the derivation entirely and used some smaller
+                        // constant, which is precisely the regression worth catching.
+                        val budget = migrationAttemptBudget(quietHandoffOptions(monitor))
+                        assertEquals(
+                            budget,
+                            settled,
                             "one handoff onto a dead link made $settled migration attempt(s) in " +
-                                "$GIVE_UP_WINDOW. Fewer than 2 is #453 (a lost probe was never retried); " +
-                                "more than $MAX_ATTEMPTS_PER_HANDOFF is an unbounded reactor probing a " +
-                                "link that will never answer. Attempts: ${client.attempts}",
+                                "$GIVE_UP_WINDOW against a derived budget of $budget. Fewer is a reactor " +
+                                "giving up while its own deadline still had room (one attempt is #453 " +
+                                "itself); more is one that outran the budget and kept probing a link " +
+                                "that will never answer. Attempts: ${client.attempts}",
                         )
                         assertTrue(
                             client.attempts.none { it is MigrationResult.Succeeded },
@@ -644,6 +643,10 @@ class MigrationSimTests {
                     seed = 45_303L,
                     quicOptions =
                         migrationSimOptions(
+                            // The field's own deadline, deliberately: the invariant below only holds
+                            // where the idle window allows fewer attempts than the pool can supply, and
+                            // 30s is both QuicOptions' default and what the #453 connection actually had.
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
                             migration = MigrationPolicy.Automatic,
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
@@ -669,7 +672,77 @@ class MigrationSimTests {
                         client.attempts.size >= 2,
                         "no retry happened at all, so this test is measuring nothing: ${client.attempts}",
                     )
+                    assertTrue(
+                        client.attempts.size.toLong() <= SPARE_POOL,
+                        "the ${IDLE_TIMEOUT_IN_THE_FIELD} idle window allowed ${client.attempts.size} " +
+                            "attempts but the pool only holds $SPARE_POOL spare connection ids, so the " +
+                            "two ceilings have crossed and the surplus can never reach the network",
+                    )
                 }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(MigrationSimTests::class, e)
+            }
+        }
+
+    /**
+     * **The retry budget really is the idle window's, measured end to end rather than by asking the
+     * function that computes it.**
+     *
+     * [aHandoffOntoALinkThatNeverAnswersStopsAsking] asserts the reactor spends exactly
+     * [migrationAttemptBudget]'s answer — which pins them together but cannot tell whether that answer
+     * is derived from anything, since the test calls the same function. This one never mentions the
+     * budget: it runs the identical dead-link handoff under two [QuicOptions.idleTimeout]s and requires
+     * the shorter window to buy strictly fewer attempts. A reactor back on a fixed constant makes the
+     * same number of attempts in both arms and goes red here.
+     *
+     * Both arms carry a keepalive well inside their own idle timeout, so the connection survives the
+     * whole scenario and the only thing that can stop the loop is the budget. Without it the short arm
+     * would idle out mid-loop and "fewer attempts" would be measuring the connection's death instead of
+     * the policy — the same number, for the wrong reason.
+     */
+    @Test
+    fun aShorterIdleWindowBuysFewerRetries() =
+        runTest {
+            suspend fun attemptsUnder(idleTimeout: kotlin.time.Duration): Int {
+                val monitor = SimNetworkMonitor.on(WIFI)
+                var attempts = -1
+                withMigrationSim(
+                    testScope = this,
+                    seed = 45_304L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = idleTimeout,
+                            keepAliveInterval = KEEPALIVE,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { PathImpairment(blackhole = true) },
+                ) {
+                    awaitSpareDcids()
+                    monitor.setNetworkId(CELLULAR)
+                    delay(GIVE_UP_WINDOW)
+                    assertIs<QuicConnectionState.Established>(
+                        clientDriver.state.value,
+                        "the connection died under a $idleTimeout idle timeout despite a $KEEPALIVE " +
+                            "keepalive, so the attempt count below would be measuring its death",
+                    )
+                    attempts = client.attempts.size
+                }
+                return attempts
+            }
+
+            try {
+                val short = attemptsUnder(SHORT_IDLE_WINDOW)
+                val long = attemptsUnder(LONG_IDLE_WINDOW)
+                assertTrue(
+                    short < long,
+                    "a $SHORT_IDLE_WINDOW idle window bought $short migration attempt(s) and a " +
+                        "$LONG_IDLE_WINDOW window bought $long — the same or more, so the reactor's " +
+                        "retry budget is not derived from the deadline that ends the connection. A " +
+                        "caller who shortens idleTimeout is then probing a connection that is already " +
+                        "gone, and one who lengthens it is paying for a window the reactor never uses",
+                )
+                assertTrue(short >= 2, "even the short window must allow a retry, or this is #453 again")
             } catch (e: UnsatisfiedLinkError) {
                 recordMissingNativeLib(MigrationSimTests::class, e)
             }
@@ -703,13 +776,33 @@ class MigrationSimTests {
         /** Long enough that a bounded backoff has certainly finished; virtual, so it is free. */
         val GIVE_UP_WINDOW = 60.seconds
 
+        /** The two idle windows [aShorterIdleWindowBuysFewerRetries] compares. */
+        val SHORT_IDLE_WINDOW = 10.seconds
+        val LONG_IDLE_WINDOW = 60.seconds
+
         /**
-         * Upper bound on attempts for one handoff. [wireAutoMigration] budgets a little above the spare
-         * CID pool on purpose (the attempts past it are refused before a socket is opened, so they cost
-         * nothing); this asserts the budget exists at all rather than pinning its exact value, which is
-         * the reactor's to tune.
+         * Comfortably inside [SHORT_IDLE_WINDOW], so both arms of that test keep their connection alive
+         * across a scenario in which the application sends nothing at all.
          */
-        const val MAX_ATTEMPTS_PER_HANDOFF = 8
+        val KEEPALIVE = 3.seconds
+
+        /**
+         * Options for [aHandoffOntoALinkThatNeverAnswersStopsAsking].
+         *
+         * The two quiet windows in that test add up to longer than any real idle timeout, and a
+         * blackholed probe brings back nothing to restart the timer, so the idle deadline is moved out
+         * of the way deliberately — surviving a *field* deadline is
+         * [aLostProbeIsRetriedUntilTheConnectionRehomes]'s assertion, and that test is about where the
+         * asking stops. A factory rather than a value so the test can hand the identical options to
+         * [migrationAttemptBudget] and assert against the reactor's own derivation instead of a literal
+         * that would silently drift from it.
+         */
+        fun quietHandoffOptions(monitor: SimNetworkMonitor) =
+            migrationSimOptions(
+                idleTimeout = 5.minutes,
+                migration = MigrationPolicy.Automatic,
+                networkMonitor = NetworkMonitorSource.Supplied(monitor),
+            )
 
         /**
          * Spare destination CIDs a connection can hold at once: [QuicOptions.activeConnectionIdLimit]
