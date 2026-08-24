@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import com.ditchoom.socket.testkit.testTimeScale as testkitTimeScale
 
 /**
  * QUIC test runner with a 15-second wall-clock timeout.
@@ -53,13 +54,6 @@ fun runQuicTest(
 }
 
 /**
- * Raw value of the `QUIC_TEST_TIME_SCALE` env var (or null if unset/unreadable on
- * this target). Platform actual: `System.getenv` on JVM, `getenv` on K/N, `process.env`
- * on Node; WasmJs has no env access and returns null.
- */
-internal expect fun timeScaleEnv(): String?
-
-/**
  * Multiplier applied to test **deadlines and backstops** — `runQuicTest`'s wall-clock
  * cap, per-op `withTimeout` budgets, and idle-timeout values. It lets a loaded CI runner
  * (set e.g. `QUIC_TEST_TIME_SCALE=3`) get proportionally more wall-clock without changing
@@ -74,8 +68,12 @@ internal expect fun timeScaleEnv(): String?
  *
  * Public so platform test modules layered on this suite can scale their own native recv backstops
  * by the same factor.
+ *
+ * The implementation moved to :socket-testkit so :socket-http3 can reach it too — this module `api`s
+ * :socket-http3, so that module cannot depend back on this one. Kept here as a delegating alias so
+ * the suite's existing call sites and their KDoc references keep working.
  */
-fun testTimeScale(): Double = timeScaleEnv()?.trim()?.toDoubleOrNull()?.coerceIn(1.0, 10.0) ?: 1.0
+fun testTimeScale(): Double = testkitTimeScale()
 
 /**
  * Scale a deadline/backstop [Duration] by [testTimeScale]. Apply to `withTimeout` budgets,

@@ -24,5 +24,3 @@ actual fun quicHarnessSkipReason(): SkipReason? {
             "and runs with standalone=false (no such lane exists yet — issue #81)",
     )
 }
-
-internal actual fun timeScaleEnv(): String? = getenv("QUIC_TEST_TIME_SCALE")?.toKString()
