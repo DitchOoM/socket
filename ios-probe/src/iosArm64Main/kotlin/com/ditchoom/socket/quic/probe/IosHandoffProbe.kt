@@ -390,6 +390,7 @@ private class MigrationLedger(
         into.attempts += attempts
         into.succeeded += succeeded
         into.unanswered += unanswered
+        into.probedAfterUnanswered += probedAfterUnanswered
         into.noSpareAfterUnanswered += noSpareAfterUnanswered
         leaves.forEach { (k, v) -> into.leaves[k] = (into.leaves[k] ?: 0) + v }
     }
@@ -401,6 +402,7 @@ private class MigrationTotals {
     var attempts = 0
     var succeeded = 0
     var unanswered = 0
+    var probedAfterUnanswered = 0
     var noSpareAfterUnanswered = 0
     val leaves = mutableMapOf<String, Int>()
 
@@ -410,7 +412,8 @@ private class MigrationTotals {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit(
             "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
-                "unansweredProbes=$unanswered noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
+                "unansweredProbes=$unanswered probedAfterUnanswered=$probedAfterUnanswered " +
+                "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
         )
         emit(
             "447-VERDICT walk " +
@@ -421,9 +424,18 @@ private class MigrationTotals {
                     noSpareAfterUnanswered > 0 ->
                         "REGRESSION — NoSpareConnectionId answered $noSpareAfterUnanswered time(s) after " +
                             "an unanswered probe (#447 alive in the field)"
+                    // A run-wide PASS requires that some connection which LOST a probe went on to
+                    // arm another one — see the Android probe's ledger for the walk that proved the
+                    // absence of NoSpareConnectionId is not enough: a reconnect negotiates a fresh
+                    // CID pool, so its successes say nothing about the connection that lost one.
+                    probedAfterUnanswered > 0 ->
+                        "PASS — $unanswered unanswered probe(s), and a connection that lost one still " +
+                            "armed $probedAfterUnanswered later probe(s) with no NoSpareConnectionId: " +
+                            "the pool came back in the field"
                     else ->
-                        "PASS — $unanswered unanswered probe(s) and no NoSpareConnectionId afterwards; " +
-                            "the pool came back every time"
+                        "INCONCLUSIVE — $unanswered unanswered probe(s), but no connection that lost one " +
+                            "ever attempted another migration, so pool recovery was never put to the " +
+                            "question (a later connection's successes prove nothing: fresh pool)"
                 },
         )
     }
