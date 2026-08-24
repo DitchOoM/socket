@@ -196,14 +196,14 @@ internal fun wireAutoMigration(
  * now gets a reactor that stops when their connection does, and one who lengthens it gets the extra
  * attempts their window pays for; neither used to happen.
  *
- * ⚠️ **The floor, not the actual cost.** [QuicheDriver.pathValidationBudget] widens with the current
+ * ⚠️ **The floor, not the actual cost.** `QuicheDriver.pathValidationBudget` widens with the current
  * path's RTT and the reactor cannot see any individual path's PTO, so on a slow path each attempt
  * costs more than assumed here and the budget overshoots. That direction is the safe one: the extra
  * attempts land on an already-closed connection, answer
  * [MigrationResult.Unmoved.Impossible.ConnectionClosed], and cancel the observer — which is the
  * correct end state anyway.
  *
- * [ceiling] is the second bound, and the one that applies when `idleTimeout` is zero (its documented
+ * The **ceiling** below is the second bound, and the only one when `idleTimeout` is zero (its documented
  * "no timeout"): there is no point asking more times than the spare connection id pool can turn into
  * probes, plus a little slack for the leaves that consume no id at all
  * ([MigrationResult.Unmoved.Failed.HandshakeNotConfirmed], [MigrationResult.Unmoved.Failed.AlreadyInProgress]).
