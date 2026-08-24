@@ -800,43 +800,56 @@ class MigrationSimTests {
     fun anAbandonedProbeGivesItsConnectionIdBackToThePool() =
         runTest {
             try {
-                withMigrationSim(
-                    testScope = this,
-                    seed = 45_900L,
-                    quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
-                    probeImpairment = { PathImpairment(blackhole = true) },
-                ) {
-                    awaitSpareDcids(count = SPARE_POOL)
-                    val trajectory = mutableListOf<String>()
-                    val outcomes = mutableListOf<MigrationResult>()
+                // ⚠️ SWEPT OVER RTT, and that is the point. The first cut of this test ran only on the
+                // sim's default zero-latency path and passed against a fix that was purely timing —
+                // quiche re-arms `request_validation()` from the abandoned path's own loss timer
+                // (`Path::on_loss_detection_timeout`), ~75ms after our §8.2.4 abandon, so whether the
+                // exclusion held came down to whether an ACK beat that PTO. Measured with only the
+                // refill predicate patched: RTT 0/20/60ms all kept 7 spares, RTT 120ms burned
+                // 6→5→4→3, i.e. green on loopback and in this simulator, broken on exactly the real
+                // cellular path #459 is about. A CID-lifecycle test at RTT≈0 is not a test — the same
+                // lesson #445 learned when a loopback burst survived patched and unpatched alike.
+                for (latency in POOL_RECOVERY_LATENCIES) {
+                    withMigrationSim(
+                        testScope = this,
+                        seed = 45_900L,
+                        quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
+                        primaryImpairment = PathImpairment(latency = latency),
+                        probeImpairment = { PathImpairment(blackhole = true) },
+                    ) {
+                        awaitSpareDcids(count = SPARE_POOL)
+                        val trajectory = mutableListOf<String>()
+                        val outcomes = mutableListOf<MigrationResult>()
 
-                    repeat((SPARE_POOL + 2).toInt()) {
-                        val result = withTimeout(200.seconds) { migrate().await() }
-                        outcomes += result
-                        // The RETIRE_CONNECTION_ID -> NEW_CONNECTION_ID round trip is real and the
-                        // original path is healthy, so it completes. Measured at well under this.
-                        delay(REPLENISH_SETTLE)
-                        trajectory += "${result::class.simpleName}->spares=${clientAvailableDcids()}"
+                        repeat((SPARE_POOL + 2).toInt()) {
+                            val result = withTimeout(200.seconds) { migrate().await() }
+                            outcomes += result
+                            // The RETIRE_CONNECTION_ID -> NEW_CONNECTION_ID round trip is real and the
+                            // original path is healthy, so it completes. Measured at well under this.
+                            delay(REPLENISH_SETTLE)
+                            trajectory += "${result::class.simpleName}->spares=${clientAvailableDcids()}"
+                        }
+
+                        val refused = outcomes.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
+                        assertTrue(
+                            refused.isEmpty(),
+                            "at a one-way path latency of $latency: " +
+                                "${refused.size} of ${outcomes.size} probes were refused for want of a spare " +
+                                "connection id, on a connection whose original path never stopped working " +
+                                "and whose peer replaced every id we retired " +
+                                "(retires=${clientAudit.retireCalls.size}, server active scids=" +
+                                "${serverActiveScids()}). Each abandoned probe is keeping the replacement " +
+                                "linked to its own dead path, so the pool drains once and never refills " +
+                                "(#459). Trajectory: $trajectory. Path table: ${clientPathTable()}",
+                        )
+                        assertEquals(
+                            SPARE_POOL,
+                            clientAvailableDcids(),
+                            "at a one-way path latency of $latency: after ${outcomes.size} abandoned probes " +
+                                "and $REPLENISH_SETTLE of settle each, the spare pool is " +
+                                "${clientAvailableDcids()} instead of $SPARE_POOL. Trajectory: $trajectory",
+                        )
                     }
-
-                    val refused = outcomes.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
-                    assertTrue(
-                        refused.isEmpty(),
-                        "${refused.size} of ${outcomes.size} probes were refused for want of a spare " +
-                            "connection id, on a connection whose original path never stopped working " +
-                            "and whose peer replaced every id we retired " +
-                            "(retires=${clientAudit.retireCalls.size}, server active scids=" +
-                            "${serverActiveScids()}). Each abandoned probe is keeping the replacement " +
-                            "linked to its own dead path, so the pool drains once and never refills " +
-                            "(#459). Trajectory: $trajectory. Path table: ${clientPathTable()}",
-                    )
-                    assertEquals(
-                        SPARE_POOL,
-                        clientAvailableDcids(),
-                        "after ${outcomes.size} abandoned probes and $REPLENISH_SETTLE of settle each, " +
-                            "the spare pool is ${clientAvailableDcids()} instead of $SPARE_POOL. " +
-                            "Trajectory: $trajectory",
-                    )
                 }
             } catch (e: UnsatisfiedLinkError) {
                 recordMissingNativeLib(MigrationSimTests::class, e)
@@ -877,6 +890,14 @@ class MigrationSimTests {
          * let #459 read as a race rather than the permanent loss it is.
          */
         val REPLENISH_SETTLE = 10.seconds
+
+        /**
+         * One-way path latencies [anAbandonedProbeGivesItsConnectionIdBackToThePool] sweeps. Zero is
+         * the loopback/simulator case that a timing-only fix passes; 60ms and up is where quiche's
+         * probe-loss PTO beats the disarming ACK and the leak reappears. 125ms one-way is an ordinary
+         * mobile round trip. Virtual time, so the whole sweep is free.
+         */
+        val POOL_RECOVERY_LATENCIES = listOf(0, 30, 60, 125).map { it.milliseconds }
 
         /**
          * How much past its own idle timeout each arm of
