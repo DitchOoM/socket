@@ -67,6 +67,11 @@ abstract class QuicActiveMigrationTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             idleTimeout = 10.seconds,
+            // PINNED below the shipped default, so [theConnectionCanKeepMigratingPastTheConnectionIdLimit]
+            // keeps meaning what its name says whatever that default becomes — and so the number of real
+            // migrations it has to perform on real sockets stays bounded. The defect it guards (#395) is
+            // "a migrated-from path is never released", which is a mechanism, not a pool size.
+            activeConnectionIdLimit = PINNED_CID_LIMIT,
         )
 
     /**
@@ -234,7 +239,7 @@ abstract class QuicActiveMigrationTestSuite {
      * counts to five (past the limit of 4) instead of stopping at one:
      *
      *  1. The driver never retired the path it migrated from, and quiche's path table caps at
-     *     `active_conn_id_limit` (= [QuicOptions.activeConnectionIdLimit] = 4) with eviction only
+     *     `active_conn_id_limit` (= [PINNED_CID_LIMIT]) with eviction only
      *     possible for paths holding no DCID — so the **4th** probe was refused outright
      *     ([MigrationResult.Unmoved.Failed.ProbeRejected]).
      *  2. Spare source CIDs were issued exactly once per connection, so the client's RFC 9000 §9.5
@@ -714,6 +719,13 @@ abstract class QuicActiveMigrationTestSuite {
     private fun chunkPayload(index: Int): String = "chunk-${index.toString().padStart(4, '0')}-".padEnd(CHUNK_BYTES, 'a' + index % 26)
 
     private companion object {
+        /**
+         * The `active_connection_id_limit` this suite pins — see [testQuicOptions]. quiche sizes both
+         * the CID table and `max_concurrent_paths` from it, so at most `PINNED_CID_LIMIT - 1` spare
+         * destination CIDs can be outstanding, and the five migrations below are past that.
+         */
+        private const val PINNED_CID_LIMIT = 4L
+
         /** Bytes per chunk. Small enough that a chunk never fragments, big enough to be legible in a dump. */
         private const val CHUNK_BYTES = 64
 

@@ -191,7 +191,10 @@ class MigrationSimTests {
                         }
 
                         assertEquals("before", echo("before"), "the connection must be healthy before any probe")
-                        awaitSpareDcids()
+                        // The whole pool, not just one: the loop below is "spend every spare and one
+                        // more", so starting before the peer has issued them all would leave attempts
+                        // answering NoSpareConnectionId for a reason the scenario is not about.
+                        awaitSpareDcids(count = SPARE_POOL)
 
                         repeat(FAILED_ATTEMPTS) { attempt ->
                             val result = withTimeout(120.seconds) { migrate().await() }
@@ -394,9 +397,9 @@ class MigrationSimTests {
      *
      * ⚠️ [LOST_PROBES] is bounded by the spare CID pool, not chosen for effect: the old path is dead,
      * so each abandoned probe's RETIRE_CONNECTION_ID never reaches the peer and no replacement ever
-     * comes back. The pool is [QuicOptions.activeConnectionIdLimit] (4) minus the one in use, and the
-     * scenario states that precondition out loud by waiting for it below. Every §8.2.4 abandon budget
-     * here is virtual, so the whole thing costs 0ms of wall clock.
+     * comes back. The pool is [SPARE_POOL], and the scenario states that precondition out loud by
+     * waiting for it below. Every §8.2.4 abandon budget here is virtual, so the whole thing costs 0ms
+     * of wall clock.
      */
     @Test
     fun aLostProbeIsRetriedUntilTheConnectionRehomes() =
@@ -612,6 +615,66 @@ class MigrationSimTests {
             }
         }
 
+    /**
+     * **Every attempt in one handoff's budget must reach the network** — the property
+     * [QuicOptions.activeConnectionIdLimit]'s default exists to hold.
+     *
+     * The reactor's retry budget and the spare connection id pool are two different ceilings on the
+     * same loop, and only one of them is about the network. Past the pool, `QuicheDriver.handleMigrate`
+     * answers [MigrationResult.Unmoved.Failed.NoSpareConnectionId] *before* `openPath` — a truthful
+     * answer that opens no socket, sends no PATH_CHALLENGE and gives the handoff no new chance. So a
+     * pool smaller than the budget does not shorten the loop; it **hollows it out**, and the shortfall
+     * is invisible from the outside because the attempt count is unchanged.
+     *
+     * Measured on this rig with the old default of 4: six attempts, three probes, the reactor giving
+     * up at 16.75s with a third of the 30s idle window unspent. At the shipped default the two lines
+     * below are the same number.
+     *
+     * The old path must be dead for this to mean anything. On a live path each abandoned probe's
+     * `RETIRE_CONNECTION_ID` reaches the peer and is replaced, so the pool never empties and this
+     * would pass at any limit down to the RFC minimum of two.
+     */
+    @Test
+    fun everyRetryInTheBudgetReachesTheNetwork() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            try {
+                withMigrationSim(
+                    testScope = this,
+                    seed = 45_303L,
+                    quicOptions =
+                        migrationSimOptions(
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { PathImpairment(blackhole = true) },
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    pipe.impair(pipe.paths().first().local, PathImpairment(blackhole = true))
+                    monitor.setNetworkId(CELLULAR)
+                    delay(GIVE_UP_WINDOW)
+
+                    val refused = client.attempts.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
+                    assertEquals(
+                        client.attempts.size,
+                        clientPaths().size,
+                        "the handoff made ${client.attempts.size} attempt(s) but opened only " +
+                            "${clientPaths().size} probe path(s): ${refused.size} were refused for want of " +
+                            "a spare connection id before a socket was opened, so that much of the retry " +
+                            "budget never reached the network. The spare pool is $SPARE_POOL " +
+                            "(activeConnectionIdLimit - 1) and it must exceed the reactor's attempt " +
+                            "budget. Attempts: ${client.attempts}",
+                    )
+                    assertTrue(
+                        client.attempts.size >= 2,
+                        "no retry happened at all, so this test is measuring nothing: ${client.attempts}",
+                    )
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(MigrationSimTests::class, e)
+            }
+        }
+
     private companion object {
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
@@ -649,11 +712,15 @@ class MigrationSimTests {
         const val MAX_ATTEMPTS_PER_HANDOFF = 8
 
         /**
-         * One past exhaustion. [QuicOptions.activeConnectionIdLimit] defaults to 4 and quiche sizes both
-         * the CID table and `max_concurrent_paths` from it, so at most 3 spare destination CIDs can be
-         * outstanding — the same reasoning as the real suite's constant of the same name.
+         * Spare destination CIDs a connection can hold at once: [QuicOptions.activeConnectionIdLimit]
+         * minus the one in use. Read from the **shipped default** rather than pinned, unlike the
+         * per-platform suites — this sim runs on virtual time, so exercising whatever the library
+         * actually ships costs nothing and one fewer constant can drift.
          */
-        const val FAILED_ATTEMPTS = 4
+        val SPARE_POOL: Long = QuicOptions(alpnProtocols = listOf("migsim")).activeConnectionIdLimit - 1
+
+        /** One past exhaustion — the same reasoning as the real suite's constant of the same name. */
+        val FAILED_ATTEMPTS = (SPARE_POOL + 1).toInt()
 
         /** Bounded retries for the RETIRE -> NEW_CONNECTION_ID round trip, as the real suite does. */
         const val REPLENISH_RETRIES = 40

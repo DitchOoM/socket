@@ -92,15 +92,17 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per handoff is not
  * a policy, it is an outage.
  *
- * **The backoff is bounded by the connection ids it spends.** Every probe that reaches quiche links a
- * spare destination connection id to the new path, and every exit from that path — validated, failed,
- * abandoned — retires it (`PathSlot`, #447). On a path that is already dead the `RETIRE_CONNECTION_ID`
- * never reaches the peer and the replacing `NEW_CONNECTION_ID` never comes back, so the pool is
- * finite: [QuicOptions.activeConnectionIdLimit] (4 by default) minus the one in use. Past that quiche
- * answers `NoSpareConnectionId` *before* opening a socket, so the remaining attempts cost nothing.
- * [MAX_MIGRATION_ATTEMPTS] is set a little above the pool on purpose, so that the cheap
- * self-resolving failures (`HandshakeNotConfirmed`, `AlreadyInProgress`) cannot eat the budget the
- * expensive ones need.
+ * **What the probes cost, and why the pool is not what bounds them.** Every probe that reaches quiche
+ * links a spare destination connection id to the new path, and every exit from that path — validated,
+ * failed, abandoned — retires it (`PathSlot`, #447). On a *live* path that is self-replacing: the
+ * `RETIRE_CONNECTION_ID` reaches the peer and a `NEW_CONNECTION_ID` comes back, which is why a
+ * connection on a working link migrates indefinitely even at the RFC 9000 minimum of two — measured
+ * at 40 consecutive migrations for every limit from 2 to 32. On a path that is already **dead**
+ * neither frame crosses, so the pool is finite: [QuicOptions.activeConnectionIdLimit] minus the one
+ * in use. Past it quiche answers `NoSpareConnectionId` *before* opening a socket, which is a real
+ * answer but not a probe — it reaches no network. That default is therefore sized so the pool
+ * exceeds [MAX_MIGRATION_ATTEMPTS] and every attempt in the budget is a probe that actually goes out;
+ * its KDoc carries the measurement.
  *
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
@@ -178,11 +180,15 @@ internal fun wireAutoMigration(
 /**
  * How many times one handoff may ask [QuicScope.migrate], the first attempt included.
  *
- * Deliberately a little above the spare connection id pool ([QuicOptions.activeConnectionIdLimit],
- * 4 by default, minus the one in use): the probes that can actually reach the wire are bounded by that
- * pool whatever this number says, and the slack exists so a run of cheap self-resolving failures
- * cannot consume the budget the expensive ones need. It is not a duration — the wall-clock cost of a
- * handoff is dominated by each unanswered probe's own §8.2.4 abandon timer, not by the waits here.
+ * Sized against the deadline that actually ends the connection, not against the connection id pool.
+ * A handoff away from a dead path has [QuicOptions.idleTimeout] to succeed in — 30s by default, and
+ * measured at exactly that in the field (#453) — and each attempt costs its own RFC 9000 §8.2.4
+ * abandon budget (~3s floor) plus [backoffBeforeAttempt]. Six attempts spend 25.75s of that window
+ * and a seventh would complete past it, so this is the largest budget that fits.
+ *
+ * The connection id pool is the *other* bound, and [QuicOptions.activeConnectionIdLimit]'s default is
+ * chosen so it is the looser one: a budget spent on attempts quiche refuses for want of a spare id is
+ * a budget that never reached the network.
  */
 private const val MAX_MIGRATION_ATTEMPTS = 6
 
