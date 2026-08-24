@@ -8,12 +8,14 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -28,6 +30,30 @@ import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+
+/**
+ * One-way latency every simulated path carries unless a scenario says otherwise — so the DEFAULT is a
+ * realistic network and RTT≈0 is something a test has to ask for.
+ *
+ * ⚠️ **This default is a bug fix, not a detail.** It used to be zero, and that hid an incomplete fix
+ * for #459: quiche re-arms `request_validation()` from an abandoned path's own loss timer ~75ms after
+ * the driver's RFC 9000 §8.2.4 abandon, so whether a CID-lifecycle patch held came down to whether an
+ * ACK beat that PTO — which it always does on loopback. The whole migration suite was green while the
+ * shipped behaviour was broken on any real mobile path. 60ms one-way (120ms round trip) is both an
+ * ordinary cellular RTT and comfortably past that ~75ms threshold, so the default now exercises the
+ * class of defect rather than hiding it.
+ *
+ * The same trap in a different place cost #445 a day: "a loopback burst of 12 migrations survives BOTH
+ * patched and unpatched (RTT≈0 = no overtake window), while a real ~40ms path reproduced it
+ * immediately". Virtual time makes latency free — there is no reason for a scenario to be unrealistic
+ * by accident.
+ *
+ * Note the deliberate asymmetry with the probe-path default ([PathImpairment] with no latency): a new
+ * path faster than the one being left IS the #445 overtake window, so the default scenario exercises
+ * that too. A test that needs a specific relationship states both, as
+ * [MigrationSimTests.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
+ */
+internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
@@ -74,7 +100,7 @@ private const val SERVER_PORT = 42002
  * a discovery channel; it does not retire a per-platform guard.
  */
 internal class MigrationSimScope(
-    val client: DriverQuicConnection,
+    val client: SimClientQuicConnection,
     val server: DriverQuicConnection,
     val clientDriver: QuicheDriver,
     val serverDriver: QuicheDriver,
@@ -90,7 +116,20 @@ internal class MigrationSimScope(
     /** Local endpoints the client has bound, in open order. Index 0 is the primary. */
     fun clientPaths(): List<InetSocketAddress> = factory.opened()
 
-    /** Ask the client to migrate to a fresh local endpoint, as `QuicScope.migrate()` does. */
+    /**
+     * Ask the client to migrate to a fresh local endpoint, as an application calling
+     * `QuicScope.migrate()` does — the **manual** entry point, used by the [MigrationPolicy.Manual]
+     * scenarios that drive every handoff themselves.
+     *
+     * Returns the deferred rather than the result so the caller can send the command and *then* keep
+     * running: `aMigrationStrandsInFlightPacketsBearingTheRetiredCid` depends on the command being
+     * queued synchronously, before the traffic it races is scheduled.
+     *
+     * Under [MigrationPolicy.Automatic] the attempts come from [wireAutoMigration] instead, and are
+     * recorded on [client] — see [SimClientQuicConnection.attempts]. Both funnel into the same
+     * [QuicheCmd.Migrate]; only the caller differs, which is precisely what the automatic scenarios
+     * are testing.
+     */
     suspend fun migrate(): CompletableDeferred<MigrationResult> {
         val deferred = CompletableDeferred<MigrationResult>()
         clientDriver.commands.send(QuicheCmd.Migrate(MigrationTarget.FreshLocalEndpoint, deferred))
@@ -180,6 +219,46 @@ internal class MigrationSimScope(
             while (clientAvailableDcids() < count) delay(10.milliseconds)
         }
     }
+}
+
+/**
+ * The sim's **client** connection: a [DriverQuicConnection] (which is the server-side wrapper, and
+ * answers [MigrationResult.Unmoved.Impossible.ServerConnection] to every `migrate`) with the one
+ * member a client owns re-implemented — byte for byte as `JvmQuicConnection.migrate` does it.
+ *
+ * ## Why this type has to exist
+ * Before it, the sim could only reach migration through [MigrationSimScope.migrate], which posts
+ * [QuicheCmd.Migrate] to the driver directly. That is the right seam for the scenarios that script
+ * every handoff themselves, and it is the wrong one for #453: the defect there was not in the driver
+ * at all but in **who decides to call migrate, and when** ([wireAutoMigration]). A harness that can
+ * only call the driver cannot test a reactor that calls the driver — so the sim now hands the real
+ * reactor a real [QuicConnection] and lets it drive, exactly as the three platform `connect()` paths do.
+ *
+ * [attempts] is the record of what the reactor asked for and what it got. It is the honest observable
+ * for a retry policy: counting opened probe paths would miss every attempt that answered
+ * [MigrationResult.Unmoved.Failed.NoSpareConnectionId], because that one is decided *before*
+ * `openPath` (`QuicheDriver.handleMigrate`) — and those are exactly the attempts a bounded backoff is
+ * supposed to spend cheaply.
+ */
+internal class SimClientQuicConnection(
+    private val driver: QuicheDriver,
+    private val delegate: DriverQuicConnection,
+) : QuicConnection by delegate {
+    private val _attempts = mutableListOf<MigrationResult>()
+
+    /** Every [migrate] outcome so far, in order — whoever asked, reactor or test body. */
+    val attempts: List<MigrationResult> get() = _attempts.toList()
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult =
+        try {
+            val deferred = CompletableDeferred<MigrationResult>()
+            driver.commands.send(QuicheCmd.Migrate(target, deferred))
+            // Suspends until the path has validated and the active path has switched, or the attempt
+            // has failed — the property the automatic reactor relies on instead of a quiet period.
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            MigrationResult.Unmoved.Impossible.ConnectionClosed
+        }.also { _attempts += it }
 }
 
 /**
@@ -309,17 +388,34 @@ private fun migrationSimCertPath(name: String): String {
     return File(url.toURI()).absolutePath
 }
 
-/** Sim options: TLS verification off (self-signed fixture cert), idle long enough not to race the scenario. */
+/**
+ * Sim options: TLS verification off (self-signed fixture cert), idle long enough not to race the
+ * scenario.
+ *
+ * [migration] defaults to [MigrationPolicy.Manual] — the scenarios that script every handoff through
+ * [MigrationSimScope.migrate]. Pass [MigrationPolicy.Automatic] together with a
+ * [NetworkMonitorSource.Supplied] scriptable monitor to put the real [wireAutoMigration] reactor in
+ * charge instead.
+ *
+ * [networkMonitor] defaults to a supplied [NetworkMonitor.AlwaysAvailable] rather than
+ * [NetworkMonitorSource.ProcessDefault]: the sim has no OS sockets anywhere by design, and the
+ * process default would resolve a real platform monitor with a real background thread the moment the
+ * harness touched it. `AlwaysAvailable` never changes identity, so it is also the honest "nothing is
+ * observing this connection" for the manual scenarios.
+ */
 internal fun migrationSimOptions(
     idleTimeout: Duration = 120.seconds,
     keepAliveInterval: Duration? = null,
+    migration: MigrationPolicy = MigrationPolicy.Manual,
+    networkMonitor: NetworkMonitorSource = NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable),
 ): QuicOptions =
     QuicOptions(
         alpnProtocols = listOf("migsim"),
         verifyPeer = false,
         idleTimeout = idleTimeout,
         keepAliveInterval = keepAliveInterval,
-        migration = MigrationPolicy.Manual,
+        migration = migration,
+        networkMonitor = networkMonitor,
     )
 
 /**
@@ -332,7 +428,7 @@ internal fun migrationSimOptions(
 internal suspend fun <R> withMigrationSim(
     testScope: TestScope,
     seed: Long,
-    primaryImpairment: PathImpairment = PathImpairment(),
+    primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
@@ -500,13 +596,22 @@ internal suspend fun <R> withMigrationSim(
         serverDriver.start(simScope)
         clientDriver.start(simScope)
 
-        val client = DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope)
+        val client =
+            SimClientQuicConnection(
+                clientDriver,
+                DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
+            )
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
         try {
             withTimeout(establishTimeout) {
                 clientDriver.state.first { it !is QuicConnectionState.Handshaking }
                 serverDriver.state.first { it !is QuicConnectionState.Handshaking }
             }
+            // The production entry point, called exactly where the three `QuicheEngine.connect()`
+            // actuals call it: after the handshake, on the resolved monitor, once per connection. A
+            // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so the
+            // manual scenarios below are unaffected and the branch under test is the shipped one.
+            wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
             MigrationSimScope(
                 client,
                 server,

@@ -38,10 +38,12 @@ import kotlin.time.Duration.Companion.seconds
  *   not some other buffer that happens to hold plausible bytes. [QuicheDriver.wireConnectionId] comes
  *   from a different quiche call (`quiche_conn_source_id`), so agreement between the two is genuine
  *   corroboration rather than one value restated.
- * - **count agrees with the read** — `connActiveScids` sizes the buffer `connReadSourceIds` fills.
- *   Both run on the driver coroutine, the only thread allowed to touch the connection, so a
- *   disagreement means that confinement has broken and every count-then-read pair in the driver
- *   (including [QuicheDriver.drainRetiredScids]) is unsound.
+ * - **a second read still contains the first** — `quiche_conn_source_ids` is a *read*, unlike
+ *   `quiche_conn_retired_scid_iter`, which drains. A draining implementation reports a healthy set
+ *   once and nothing ever after, so every reconciliation built on it silently compares against an
+ *   empty world from its second use onward. Containment rather than equality on purpose: a live
+ *   connection is still issuing spares between the two reads (`issueSpareCids`, capped per wake), so
+ *   the set may legitimately grow — it just must never lose anything.
  * - **more than one** — the driver issues spare CIDs while established (`issueSpareCids`), so a live
  *   connection holds its active id plus spares. Exactly one would mean the spares are missing from
  *   quiche's view, which is what a peer needs in order to migrate at all (#448).
@@ -98,11 +100,31 @@ abstract class SourceIdReadbackTestSuite {
                                     "read through a different call (quiche_conn_source_id), so this is the check " +
                                     "that the readback describes THIS connection's table.",
                             )
-                            assertEquals(
-                                ids.size,
-                                driver.sourceIds().size,
-                                "two consecutive reads disagreed — quiche_conn_source_ids must be a pure read " +
-                                    "(unlike quiche_conn_retired_scid_iter, which drains)",
+                            // A DRAIN is what this must catch, and a drain empties the set — so the
+                            // property is that a second read still CONTAINS the first, not that it
+                            // matches it exactly. The set legitimately grows between two reads on a
+                            // live connection: `issueSpareCids` runs on every established wake and
+                            // issues at most MAX_SPARE_SCIDS at a time, so with a deep
+                            // QuicOptions.activeConnectionIdLimit it is still ramping up while this
+                            // test runs, and an equality here fails on a healthy connection at whatever
+                            // count the ramp happened to be passing through. Shrinking, by contrast,
+                            // needs the peer to retire one of ours, which nothing in this scenario does.
+
+                            fun List<ByteArray>.hex() =
+                                map { id -> id.joinToString("") { b -> (b.toInt() and 0xFF).toString(16).padStart(2, '0') } }
+                            val second = driver.sourceIds().hex()
+                            assertTrue(
+                                second.isNotEmpty(),
+                                "the second read of quiche_conn_source_ids came back empty — it drained, " +
+                                    "the way quiche_conn_retired_scid_iter legitimately does. Every " +
+                                    "reconciliation built on this call would then be comparing against " +
+                                    "nothing after its first use.",
+                            )
+                            assertTrue(
+                                second.containsAll(ids.hex()),
+                                "a source CID present in the first read is missing from the second, and " +
+                                    "nothing in this scenario retires one — so the call is consuming what " +
+                                    "it reports rather than reading it. First $ids, second $second.",
                             )
                             assertTrue(
                                 ids.size > 1,

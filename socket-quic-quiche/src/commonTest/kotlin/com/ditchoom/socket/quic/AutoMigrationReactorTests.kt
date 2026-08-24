@@ -25,6 +25,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -48,6 +49,15 @@ class AutoMigrationReactorTests {
      * is the honest deadline for the assertion rather than a number chosen to make a test pass.
      */
     private val idleTimeoutInTheField = 30.seconds
+
+    /**
+     * The window the two cadence tests compare. Long enough that the backoff has reached its ceiling
+     * inside the *second* one, so "fewer attempts later" is the schedule and not sampling noise.
+     */
+    private val observationWindow = 60.seconds
+
+    /** How many further windows [retryingIsNotBoundedByACount] runs for. Virtual time, so it is free. */
+    private val longRunWindows = 30
 
     private val wifi = NetworkId.Link(NetworkKind.Wifi, 1L)
     private val cellular = NetworkId.Link(NetworkKind.Cellular, 2L)
@@ -110,10 +120,16 @@ class AutoMigrationReactorTests {
     private fun options(
         monitor: NetworkMonitor,
         policy: MigrationPolicy = MigrationPolicy.Automatic,
+        // Both left at their QuicOptions defaults on purpose: the budget tests below are about what
+        // the library actually ships, so they must not restate it.
+        idleTimeout: Duration = QuicOptions(alpnProtocols = listOf("test")).idleTimeout,
+        cidLimit: Long = QuicOptions(alpnProtocols = listOf("test")).activeConnectionIdLimit,
     ) = QuicOptions(
         alpnProtocols = listOf("test"),
         migration = policy,
         networkMonitor = NetworkMonitorSource.Supplied(monitor),
+        idleTimeout = idleTimeout,
+        activeConnectionIdLimit = cidLimit,
     )
 
     private fun runReactor(
@@ -451,6 +467,140 @@ class AutoMigrationReactorTests {
         runReactor(supplied) { conn ->
             supplied.setNetworkId(cellular)
             assertEquals(1, conn.migrateCount)
+        }
+    }
+
+    /**
+     * **Every leaf that claims to be retryable is actually retried — with no further network event.**
+     *
+     * [retryableWithoutNewInformation] is exhaustive at *compile* time: a new
+     * [MigrationResult.Unmoved.Failed] leaf must state its own answer or the `when` fails to build. But
+     * exhaustive is not the same as *tested*, and until this test only `PathNotValidated` was ever
+     * driven through the retry path. The rest were covered by `failedResultKeepsObserving`, which
+     * drives recovery with a second `setNetworkId` — the exact blind spot #453 lived in, because a
+     * fresh link change short-circuits the wait and proves nothing about the backoff.
+     *
+     * So this walks the whole family against the field condition: one handoff, then **nothing**. Each
+     * retryable leaf must produce a second attempt on time alone, and
+     * [MigrationResult.Unmoved.Failed.EndpointNotSelectable] — the one leaf that answers `false`,
+     * because this reactor only ever asks for [MigrationTarget.FreshLocalEndpoint] and repeating an
+     * identical unserviceable request cannot change the answer — must not.
+     *
+     * `NoSpareConnectionId` is the case worth naming: it is #448, the peer's first NEW_CONNECTION_ID
+     * still being in flight at connection start. Its fix is this retry, and until now nothing asserted
+     * that the retry actually reaches it.
+     */
+    @Test
+    fun everyRetryableLeafIsRetriedWithNoFurtherNetworkEvent() {
+        val retryable: List<MigrationResult.Unmoved.Failed> =
+            listOf(
+                MigrationResult.Unmoved.Failed.HandshakeNotConfirmed,
+                MigrationResult.Unmoved.Failed.AlreadyInProgress,
+                MigrationResult.Unmoved.Failed.NoSpareConnectionId,
+                MigrationResult.Unmoved.Failed.PathNotValidated,
+                MigrationResult.Unmoved.Failed.LocalPathUnavailable(IllegalStateException("no route")),
+                MigrationResult.Unmoved.Failed.ProbeRejected(-7),
+                MigrationResult.Unmoved.Failed.SwitchRejected(-3),
+            )
+        for (leaf in retryable) {
+            val monitor = SimNetworkMonitor.on(wifi)
+            runReactor(monitor, migrateResult = leaf) { conn ->
+                monitor.setNetworkId(cellular)
+                assertEquals(1, conn.migrateCount, "$leaf: the handoff itself must attempt a migration")
+                // The field condition: the device has finished handing off and is standing still, so
+                // there is no further link change — only time.
+                advanceTimeBy(idleTimeoutInTheField)
+                assertTrue(
+                    conn.migrateCount > 1,
+                    "$leaf says it is retryable without new information, but after " +
+                        "$idleTimeoutInTheField with no further network event the reactor made " +
+                        "${conn.migrateCount} attempt(s). The leaf and the loop disagree, so the " +
+                        "exhaustive `when` is documenting an intention the reactor does not carry out",
+                )
+            }
+        }
+
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, migrateResult = MigrationResult.Unmoved.Failed.EndpointNotSelectable) { conn ->
+            monitor.setNetworkId(cellular)
+            advanceTimeBy(idleTimeoutInTheField)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "EndpointNotSelectable answers `false` to retryableWithoutNewInformation because this " +
+                    "reactor only ever asks for FreshLocalEndpoint, so an identical repeat cannot be " +
+                    "answered differently. Retrying it burns the loop on a question already settled.",
+            )
+        }
+    }
+
+    /**
+     * **There is no attempt count, and there must not be one.**
+     *
+     * A count is a guess at when to stop, and there is nothing to guess: the loop already ends on four
+     * facts it can *observe* — it succeeded, a different link arrived, the leaf says asking again cannot
+     * help, or the connection is gone and answers
+     * [MigrationResult.Unmoved.Impossible.ConnectionClosed], which cancels the observer. The case a
+     * count was supposed to cover — a link that never answers while the old path keeps working — is
+     * precisely the case where giving up is wrong: the platform's position is that we have left the
+     * link we are sitting on, and a link unreachable now may not be in five minutes.
+     *
+     * The connection here never closes and every attempt fails, so nothing can stop the reactor. It must
+     * still be asking at the end of a long window. Bounding the *cost* is the backoff's job, asserted
+     * by [theRetryCadenceDecaysSoNeverGivingUpIsAffordable].
+     */
+    @Test
+    fun retryingIsNotBoundedByACount() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated) { conn ->
+            monitor.setNetworkId(cellular)
+            advanceTimeBy(observationWindow)
+            val early = conn.migrateCount
+            advanceTimeBy(observationWindow * longRunWindows)
+            assertTrue(
+                conn.migrateCount > early,
+                "the reactor made $early attempt(s) in the first $observationWindow and then stopped: " +
+                    "after a further ${observationWindow * longRunWindows} it is still at " +
+                    "${conn.migrateCount}. Nothing observable told it to stop — the connection is open, " +
+                    "the link has not changed, and the leaf is retryable — so this is a count, and a " +
+                    "count is the thing that leaves a connection sitting on a link the platform says " +
+                    "it has left",
+            )
+        }
+    }
+
+    /**
+     * **What bounds the retry is its cadence, not a count.**
+     *
+     * Never giving up is only affordable if asking gets cheaper. The backoff doubles to a ceiling, so a
+     * later window of the same length must contain strictly fewer attempts than an earlier one — and at
+     * least one, or "does not give up" would be false in the only way that matters.
+     *
+     * Asserted as a comparison between two equal windows rather than against the schedule's constants,
+     * so retuning the backoff cannot silently turn into retuning this test.
+     */
+    @Test
+    fun theRetryCadenceDecaysSoNeverGivingUpIsAffordable() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated) { conn ->
+            monitor.setNetworkId(cellular)
+            advanceTimeBy(observationWindow)
+            val firstWindow = conn.migrateCount
+            advanceTimeBy(observationWindow)
+            val secondWindow = conn.migrateCount - firstWindow
+
+            assertTrue(
+                secondWindow < firstWindow,
+                "the reactor asked $firstWindow time(s) in the first $observationWindow and " +
+                    "$secondWindow time(s) in the second — the cadence is not decaying, so a link that " +
+                    "never answers costs a probe, a socket and a spare connection id at that rate for " +
+                    "the life of the connection",
+            )
+            assertTrue(
+                secondWindow >= 1,
+                "the reactor asked $secondWindow time(s) in the second $observationWindow — it has " +
+                    "effectively given up, so a link that becomes reachable later is never taken",
+            )
         }
     }
 

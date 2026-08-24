@@ -54,7 +54,7 @@ import kotlin.time.Duration.Companion.seconds
  * The decisive assertion is deliberately **not** "attempt N reports PathNotValidated". Retiring a CID
  * and receiving its replacement is a round trip, so which failure a given attempt reports is timing —
  * whereas whether the connection can *ever* migrate again is not. So: exhaust the pool with
- * [FAILED_ATTEMPTS] unanswerable probes (one more than `activeConnectionIdLimit` allows to be
+ * [FAILED_ATTEMPTS] unanswerable probes (one more than [PINNED_CID_LIMIT] allows to be
  * outstanding), lift the block, and require a migration to succeed and the stream to keep running.
  * Unpatched, that last migration finds an empty pool that nothing will ever refill.
  *
@@ -84,7 +84,20 @@ abstract class FailedProbeConnectionIdTestSuite {
     fun aRunOfUnansweredProbesLeavesTheConnectionAbleToMigrate() =
         runQuicTest(timeout = 180.seconds) {
             wrapTestBody {
-                val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 60.seconds)
+                // activeConnectionIdLimit is PINNED at the RFC-minimum-plus-two rather than inherited
+                // from QuicOptions' default. This suite is the standing per-platform guard for #447 and
+                // it runs on real sockets and real time: every unanswered probe costs its full RFC 9000
+                // §8.2.4 abandon budget (~3s), on every target. Pinning the smallest limit that still
+                // exhausts the pool keeps [FAILED_ATTEMPTS] meaning "one past exhaustion" and keeps each
+                // target's run bounded, whatever the shipped default becomes. The defect this guards is
+                // in the mechanism, not in the size of the pool.
+                val opts =
+                    QuicOptions(
+                        alpnProtocols = listOf("test"),
+                        verifyPeer = false,
+                        idleTimeout = 60.seconds,
+                        activeConnectionIdLimit = PINNED_CID_LIMIT,
+                    )
                 val socket =
                     UdpSocket.bind(
                         "127.0.0.1",
@@ -210,14 +223,18 @@ abstract class FailedProbeConnectionIdTestSuite {
 
     private companion object {
         /**
-         * Unanswerable probes to run before lifting the block.
-         *
-         * [QuicOptions.activeConnectionIdLimit] defaults to 4, and quiche sizes both the CID table and
-         * `max_concurrent_paths` from it, so at most 3 spare destination CIDs can be outstanding at
-         * once. Four attempts is therefore one past exhaustion: unpatched, the pool is empty and the
-         * path table is full of un-evictable `Failed` paths before the block is lifted.
+         * The `active_connection_id_limit` this suite pins, deliberately below the shipped default —
+         * see the comment at its use. quiche sizes both the CID table and `max_concurrent_paths` from
+         * it, so at most `PINNED_CID_LIMIT - 1` spare destination CIDs can be outstanding at once.
          */
-        const val FAILED_ATTEMPTS = 4
+        const val PINNED_CID_LIMIT = 4L
+
+        /**
+         * Unanswerable probes to run before lifting the block: one past exhaustion of the pinned pool.
+         * Unpatched, the pool is empty and the path table is full of un-evictable `Failed` paths before
+         * the block is lifted.
+         */
+        const val FAILED_ATTEMPTS = PINNED_CID_LIMIT.toInt()
 
         /** Bounded retries for the RETIRE → NEW_CONNECTION_ID round trip. 2s total, on loopback. */
         const val REPLENISH_RETRIES = 40

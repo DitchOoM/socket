@@ -71,7 +71,7 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * below possible: a flap that returns to the link we are already on is free, and a link we failed to
  * migrate onto is not mistaken for the one we live on.
  *
- * **`Impossible` cancels; `Failed` is retried on a bounded backoff** —
+ * **`Impossible` cancels; `Failed` is retried on a decaying backoff** —
  * [MigrationResult.Unmoved.Impossible] is by definition the family where every later call answers the
  * same, whatever the network does, so the observer stops. A [MigrationResult.Unmoved.Failed] attempt
  * leaves `attachedTo` alone and is re-attempted in place, because the emission that would otherwise be
@@ -92,15 +92,19 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per handoff is not
  * a policy, it is an outage.
  *
- * **The backoff is bounded by the connection ids it spends.** Every probe that reaches quiche links a
- * spare destination connection id to the new path, and every exit from that path — validated, failed,
- * abandoned — retires it (`PathSlot`, #447). On a path that is already dead the `RETIRE_CONNECTION_ID`
- * never reaches the peer and the replacing `NEW_CONNECTION_ID` never comes back, so the pool is
- * finite: [QuicOptions.activeConnectionIdLimit] (4 by default) minus the one in use. Past that quiche
- * answers `NoSpareConnectionId` *before* opening a socket, so the remaining attempts cost nothing.
- * [MAX_MIGRATION_ATTEMPTS] is set a little above the pool on purpose, so that the cheap
- * self-resolving failures (`HandshakeNotConfirmed`, `AlreadyInProgress`) cannot eat the budget the
- * expensive ones need.
+ * **What the probes cost, and why the pool is not what bounds them.** Every probe that reaches quiche
+ * links a spare destination connection id to the new path, and every exit from that path — validated,
+ * failed, abandoned — retires it (`PathSlot`, #447). On a *live* path that is self-replacing: the
+ * `RETIRE_CONNECTION_ID` reaches the peer and a `NEW_CONNECTION_ID` comes back, which is why a
+ * connection on a working link migrates indefinitely even at the RFC 9000 minimum of two — measured
+ * at 40 consecutive migrations for every limit from 2 to 32. On a path that is already **dead**
+ * neither frame crosses, so the pool is finite: [QuicOptions.activeConnectionIdLimit] minus the one
+ * in use. Past it quiche answers `NoSpareConnectionId` *before* opening a socket, which is a real
+ * answer but not a probe — it reaches no network. That default is therefore sized so the pool
+ * is deep enough that a run of failed handoffs still has ids to spend; its KDoc carries the
+ * measurement. ⚠️ An abandoned probe only gets its id *back* because of #459 — before that fix quiche
+ * re-linked the peer's replacement into the dead probe path, so the pool drained once and never
+ * refilled, and this retry loop would have been asking a question that could never be answered.
  *
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
@@ -165,7 +169,6 @@ internal fun wireAutoMigration(
                         // this time" is worth saying again is the leaf's own answer, never a default.
                         is MigrationResult.Unmoved.Failed -> {
                             if (!result.retryableWithoutNewInformation()) return@collect
-                            if (attempt >= MAX_MIGRATION_ATTEMPTS) return@collect
                             if (!awaitRetrySlot(monitor, id, backoffBeforeAttempt(attempt))) return@collect
                             attempt++
                         }
@@ -176,28 +179,50 @@ internal fun wireAutoMigration(
 }
 
 /**
- * How many times one handoff may ask [QuicScope.migrate], the first attempt included.
- *
- * Deliberately a little above the spare connection id pool ([QuicOptions.activeConnectionIdLimit],
- * 4 by default, minus the one in use): the probes that can actually reach the wire are bounded by that
- * pool whatever this number says, and the slack exists so a run of cheap self-resolving failures
- * cannot consume the budget the expensive ones need. It is not a duration — the wall-clock cost of a
- * handoff is dominated by each unanswered probe's own §8.2.4 abandon timer, not by the waits here.
- */
-private const val MAX_MIGRATION_ATTEMPTS = 6
-
-/**
  * How long to wait before attempt number `attempt + 1`, given [attempt] has just failed.
  *
- * 250ms doubling to a 4s ceiling. The floor is a spin guard, sized for the leaves that return
- * *immediately* (`AlreadyInProgress` resolves as the in-flight move completes; `HandshakeNotConfirmed`
- * as the handshake confirms) — for the leaf that matters most, `PathNotValidated`, the attempt has
- * already spent ~3s inside quiche's abandon timer and the wait here is a rounding error on top. The
- * ceiling keeps the whole budget inside the window the field actually gave us: 7.75s of waiting across
- * all [MAX_MIGRATION_ATTEMPTS] attempts, against the 30s the measured connection survived after its
- * probe was lost.
+ * **This is the whole of the retry policy.** There is no attempt count, because a count would be a
+ * guess at when to stop and there is nothing to guess: the loop already ends on four *observed*
+ * facts — it succeeded, a different link arrived ([awaitRetrySlot]), the leaf says asking again cannot
+ * help ([retryableWithoutNewInformation]), or the connection is gone and answers
+ * [MigrationResult.Unmoved.Impossible.ConnectionClosed], which cancels the observer. A handoff away
+ * from a **dead** path is bounded by the last of those, and measured to be: with the retry loop
+ * unbounded, a connection on a dead path made 7 attempts and died of `IdleTimeout` at 30.1s — the
+ * same instant a bounded one died. RFC 9000 §10.1 restarts the idle timer only on the *first*
+ * ack-eliciting packet sent since the last one received, so repeated PATH_CHALLENGEs cannot postpone
+ * it and there is no zombie to protect against.
+ *
+ * What remains for this function to decide is not *whether* to keep asking but *how often*, and the
+ * shape is set by the case the deadline does not bound: the old path is **healthy**, so the connection
+ * lives indefinitely, while the link the platform says we moved to never answers. Giving up there is
+ * wrong — the platform's position is that we have left the link we are sitting on, and a link that is
+ * unreachable now may not be in five minutes — but asking at a fixed cadence forever is a probe, a
+ * socket and a spare connection id every few seconds for the life of the connection.
+ *
+ * So the cadence decays instead: 250ms doubling to a [RETRY_BACKOFF_CEILING] ceiling. The early
+ * doublings are the ones that matter and are unchanged — five attempts inside the first 19 seconds,
+ * six inside 26 — which is the whole of a dead-path handoff's window. Past that it stretches out to
+ * roughly one attempt a minute, so *never giving up* costs about as much per hour as the old fixed
+ * budget cost per minute.
+ *
+ * The 250ms floor is a spin guard for the leaves that return *immediately* — `AlreadyInProgress`
+ * resolves as the in-flight move completes, `HandshakeNotConfirmed` as the handshake confirms. For the
+ * leaf that matters most, `PathNotValidated`, the attempt has already spent its RFC 9000 §8.2.4
+ * abandon budget (~3s) inside quiche and the wait here is a rounding error on top.
  */
-private fun backoffBeforeAttempt(attempt: Int): Duration = minOf(250.milliseconds * (1 shl (attempt - 1)), 4.seconds)
+private fun backoffBeforeAttempt(attempt: Int): Duration =
+    minOf(250.milliseconds * (1 shl (attempt - 1).coerceAtMost(BACKOFF_SHIFT_CAP)), RETRY_BACKOFF_CEILING)
+
+/**
+ * Ceiling on [backoffBeforeAttempt]. Reached at attempt 9, after which the reactor asks about once a
+ * minute for as long as the connection lives — the steady state for a link the platform says we are on
+ * and that we cannot reach. Small enough that a link coming good is picked up promptly; large enough
+ * that doing so forever is not a cost worth counting.
+ */
+private val RETRY_BACKOFF_CEILING = 60.seconds
+
+/** Guards the shift in [backoffBeforeAttempt] from overflowing once the ceiling has been reached anyway. */
+private const val BACKOFF_SHIFT_CAP = 20
 
 /**
  * Wait out [backoff] before re-attempting a migration onto [attempting], and report whether the retry
@@ -251,7 +276,7 @@ private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boo
         is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> true
         // quiche refused this probe, or refused to switch onto a path that did validate. Both carry a
         // code rather than a promise, and both have transient sources (a path table at its limit, a
-        // move already under way), so they are worth one more bounded ask.
+        // move already under way), so they are worth asking again.
         is MigrationResult.Unmoved.Failed.ProbeRejected -> true
         is MigrationResult.Unmoved.Failed.SwitchRejected -> true
         // The only leaf that is deterministic *for this reactor*. It reports that the platform assigns
