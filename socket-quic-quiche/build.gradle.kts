@@ -130,6 +130,26 @@ fun downloadQuicheSource(
         }
     }
 
+    // ⚠️ RESET THE CLONE BEFORE PATCHING. Every patch below anchors on PRISTINE upstream text, so it
+    // can only be applied to an unpatched tree — and this tree is very often NOT one. CI caches
+    // `socket-quic-quiche/build/quiche` (the cargo target dir AND the clone inside it) with a
+    // `restore-keys:` prefix fallback, so a change to this file misses the exact key and then restores
+    // the PREVIOUS commit's already-patched source; a dev machine keeps the same clone across
+    // branches for the same reason. Both then present a tree carrying the old version of a patch.
+    //
+    // Every edit is marker-guarded, and that guard used to be the whole story: same marker, skip,
+    // "idempotent". But a marker only says "some version of this patch is present", which silently
+    // built the OLD predicate under a NEW quichePatchDigest when #459's patch changed — permanently
+    // wrong and self-certified fresh. Making the marker version-specific turned that into a loud
+    // failure instead (`missingAnchor`: the pristine anchor is gone, because the old patch replaced
+    // it), which is better and still a broken build.
+    //
+    // Resetting removes the whole class. The clone is a git checkout, so this is cheap and exact, and
+    // it leaves `target/` alone — that is untracked, so the cargo cache this directory exists to hold
+    // survives. After this, patching always starts from the same state whatever the cache held, and
+    // "idempotent" means what it says. See #392.
+    resetQuicheSourceToPristine(sourceDir)
+
     // Applied to every consumer of this clone (idempotent). Only affects the boringssl-boring-crate
     // code path; external `ffi,qlog` builds are untouched.
     patchQuicheBuildRsForBoringCrate(sourceDir)
@@ -173,6 +193,33 @@ fun downloadQuicheSource(
  * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
  * or the external `ffi,qlog` path where the feature is off).
  */
+/**
+ * Discard any patches a previous build left in the quiche clone, so the marker-guarded edits below
+ * always run against pristine upstream text.
+ *
+ * `git reset --hard` on the shallow clone: tracked files go back to the tag, untracked ones (notably
+ * `target/`, the cargo build cache this directory is cached for) are left alone. A non-git tree, or a
+ * git that fails for any reason, is left as-is — the patches' own `missingAnchor` guards still catch a
+ * tree they cannot apply to, which is the behaviour this replaces rather than removes.
+ */
+fun resetQuicheSourceToPristine(sourceDir: File) {
+    if (!sourceDir.resolve(".git").exists()) return
+    val rc =
+        ProcessBuilder("git", "reset", "--hard", "HEAD")
+            .directory(sourceDir)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+            .waitFor()
+    if (rc != 0) {
+        logger.warn(
+            "quiche: could not reset ${sourceDir.name} to pristine (git exit $rc). The marker-guarded " +
+                "patches will still refuse to apply to a tree they do not fit, so this is not silently " +
+                "unsafe — but a stale clone may fail the build until it is removed.",
+        )
+    }
+}
+
 fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
     val buildRs = sourceDir.resolve("quiche/src/build.rs")
     if (!buildRs.exists()) return
