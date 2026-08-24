@@ -900,6 +900,19 @@ class QuicheDriver(
                     }
                 val slot = StreamSlot(id)
                 streams[id.id] = slot
+                // Make the stream real to quiche now, so that openStream() means what its name says
+                // (#423). A QUIC stream becomes known to quiche on its first stream_send; reserving the
+                // id here and nowhere else meant a read before the first write asked quiche about a
+                // stream it had never heard of, which answered INVALID_STREAM_STATE — reported to the
+                // caller first as a clean end-of-stream and then, after #421 stopped that laundering, as
+                // a transport failure. Both are wrong for the same reason: the stream has not finished
+                // and it has not failed, it has not started. Starting a reader before writing the
+                // request is an ordinary shape and simply did not work.
+                //
+                // A zero-length, non-fin send is the whole materialisation: quiche creates the stream
+                // and, with no data and no FIN, the stream is not flushable, so nothing is put on the
+                // wire. Measured on loopback — see OpenStreamReadBeforeWriteTests.
+                api.connStreamSend(conn, id, sendAddr, 0, false)
                 cmd.result.complete(slot)
             }
 
