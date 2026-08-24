@@ -10,6 +10,8 @@ import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * The single-codec typed view over a raw [ByteStreamMux] — [StreamMux] as a *view*, mirroring how
@@ -40,6 +42,38 @@ class TypedMuxView<T>(
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
+    /**
+     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * [CodecConnection]'s deprecated constructor for what the defaults are and why migrating matters.
+     */
+    @Deprecated(
+        message =
+            "State the outbound queue policy for the connections this view mints. This overload picks " +
+                "Suspend with a default capacity and a writer scope outside your structured " +
+                "concurrency (only closing each connection stops its writer). See #382.",
+        replaceWith =
+            ReplaceWith(
+                "TypedMuxView(raw, codec, scope, outboundCapacity, OverflowPolicy.Suspend, " +
+                    "config, decodeContext, encodeContext)",
+            ),
+    )
+    constructor(
+        raw: ByteStreamMux,
+        codec: Codec<T>,
+        config: TransportConfig = TransportConfig(),
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+    ) : this(
+        raw = raw,
+        codec = codec,
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        outboundCapacity = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
+        overflowPolicy = OverflowPolicy.Suspend,
+        config = config,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+    )
+
     override suspend fun openBidirectional(): Connection<T> {
         val stream = raw.openBidirectional()
         return CodecConnection(

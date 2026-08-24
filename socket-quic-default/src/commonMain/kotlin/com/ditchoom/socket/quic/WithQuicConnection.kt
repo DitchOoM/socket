@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.OverflowPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -55,9 +56,13 @@ suspend fun <T, R> withQuicMux(
     port: Int,
     quicOptions: QuicOptions,
     codec: Codec<T>,
-    /** Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382). */
-    outboundCapacity: Int,
-    overflowPolicy: OverflowPolicy<T>,
+    /**
+     * Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382).
+     * Defaulted to the conservative pair so existing callers keep compiling and get the fix; state
+     * them when a lagging peer should shed rather than apply back-pressure.
+     */
+    outboundCapacity: Int = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
+    overflowPolicy: OverflowPolicy<T> = OverflowPolicy.Suspend,
     connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     block: suspend StreamMux<T>.() -> R,

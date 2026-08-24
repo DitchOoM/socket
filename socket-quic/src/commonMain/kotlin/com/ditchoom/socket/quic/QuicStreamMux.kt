@@ -5,9 +5,12 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.TypedMuxView
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Adapts a raw [QuicScope] to a typed [StreamMux] using a [Codec] — a [TypedMuxView] over
@@ -47,4 +50,36 @@ class QuicStreamMux<T>(
         config = options,
         decodeContext = decodeContext,
         encodeContext = encodeContext,
+    ) {
+    /**
+     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters.
+     */
+    @Deprecated(
+        message =
+            "State the outbound queue policy for the streams this mux mints. This overload picks " +
+                "Suspend with a default capacity and a writer scope outside your structured " +
+                "concurrency (only closing each stream stops its writer). See #382.",
+        replaceWith =
+            ReplaceWith(
+                "QuicStreamMux(connection, codec, options, scope, outboundCapacity, " +
+                    "OverflowPolicy.Suspend, decodeContext, encodeContext)",
+            ),
     )
+    constructor(
+        connection: QuicScope,
+        codec: Codec<T>,
+        options: TransportConfig,
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+    ) : this(
+        connection = connection,
+        codec = codec,
+        options = options,
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        outboundCapacity = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
+        overflowPolicy = OverflowPolicy.Suspend,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+    )
+}

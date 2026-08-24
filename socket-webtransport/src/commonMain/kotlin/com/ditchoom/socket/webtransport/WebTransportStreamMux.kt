@@ -5,6 +5,7 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.TypedMuxView
 import kotlinx.coroutines.CoroutineScope
@@ -43,4 +44,37 @@ class WebTransportStreamMux<T>(
         config = config,
         decodeContext = decodeContext,
         encodeContext = encodeContext,
+    ) {
+    /**
+     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters. This one
+     * keeps the caller-supplied [scope] for the writers, so only the queue policy is being defaulted.
+     */
+    @Deprecated(
+        message =
+            "State the outbound queue policy for the streams this mux mints; this overload picks " +
+                "Suspend with a default capacity. See #382.",
+        replaceWith =
+            ReplaceWith(
+                "WebTransportStreamMux(session, codec, config, scope, outboundCapacity, " +
+                    "OverflowPolicy.Suspend, decodeContext, encodeContext)",
+            ),
     )
+    constructor(
+        session: WebTransportSession,
+        codec: Codec<T>,
+        config: TransportConfig,
+        scope: CoroutineScope,
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+    ) : this(
+        session = session,
+        codec = codec,
+        config = config,
+        scope = scope,
+        outboundCapacity = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
+        overflowPolicy = OverflowPolicy.Suspend,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+    )
+}

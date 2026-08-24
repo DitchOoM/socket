@@ -20,7 +20,9 @@ import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ChannelResult
@@ -88,6 +90,59 @@ class CodecConnection<T>(
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
+    /**
+     * Source-compatible constructor for callers written against the pre-#382 signature.
+     *
+     * Deprecated rather than removed so that the fix reaches existing consumers without a migration:
+     * code that compiled before this change still compiles, and immediately stops being able to
+     * interleave or truncate frames. What it does **not** get is a say in the two decisions the primary
+     * constructor exists to force.
+     *
+     * The defaults it fills in are the conservative ones:
+     * - [OverflowPolicy.Suspend], the only policy that never discards a message, and the closest
+     *   analogue to the old behaviour where a caller waited rather than shedding.
+     * - [DEFAULT_OUTBOUND_CAPACITY] messages of queue depth.
+     * - A writer scope this connection creates and owns, cancelled by [close].
+     *
+     * That last one is the reason to migrate. A self-owned scope is outside the caller's structured
+     * concurrency, so cancelling the scope that created this connection does **not** stop its writer —
+     * only [close] does. Passing a scope to the primary constructor ties the writer's lifetime to
+     * something the caller controls, which is what "the connection owns its writer" is supposed to mean.
+     *
+     * Note what is *not* offered here: a way to keep writing on the caller's own coroutine. That
+     * behaviour is the defect (#382), not a compatibility mode.
+     */
+    @Deprecated(
+        message =
+            "State the outbound queue policy explicitly: send() is now a hand-off to a writer this " +
+                "connection owns, so a full queue is a decision only the caller can make. This " +
+                "overload picks Suspend with a default capacity and a writer scope outside your " +
+                "structured concurrency (only close() stops it). See #382.",
+        replaceWith =
+            ReplaceWith(
+                "CodecConnection(stream, codec, scope, outboundCapacity, OverflowPolicy.Suspend, " +
+                    "config, decodeContext, encodeContext, id)",
+            ),
+    )
+    constructor(
+        stream: ByteStream,
+        codec: Codec<T>,
+        config: TransportConfig = TransportConfig(),
+        decodeContext: DecodeContext = DecodeContext.Empty,
+        encodeContext: EncodeContext = EncodeContext.Empty,
+        id: Long = 0L,
+    ) : this(
+        stream = stream,
+        codec = codec,
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        outboundCapacity = DEFAULT_OUTBOUND_CAPACITY,
+        overflowPolicy = OverflowPolicy.Suspend,
+        config = config,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+        id = id,
+    )
+
     init {
         require(outboundCapacity > 0) {
             "outboundCapacity must be positive, was $outboundCapacity — a zero-capacity queue would " +
@@ -348,6 +403,16 @@ class CodecConnection<T>(
     }
 
     companion object {
+        /**
+         * Queue depth the deprecated pre-#382 constructor fills in.
+         *
+         * Deep enough that an ordinary sender never reaches it, so the deprecated overload behaves like
+         * the unbounded-feeling old API in practice, and shallow enough that a peer which has genuinely
+         * stopped draining applies back-pressure rather than growing without limit. Callers who care
+         * should state their own — which is what the primary constructor is for.
+         */
+        const val DEFAULT_OUTBOUND_CAPACITY = 64
+
         private const val MAX_SEND_RESIZE_ATTEMPTS = 20
 
         /**
@@ -362,8 +427,8 @@ class CodecConnection<T>(
             port: Int,
             codec: Codec<T>,
             scope: CoroutineScope,
-            outboundCapacity: Int,
-            overflowPolicy: OverflowPolicy<T>,
+            outboundCapacity: Int = DEFAULT_OUTBOUND_CAPACITY,
+            overflowPolicy: OverflowPolicy<T> = OverflowPolicy.Suspend,
             transport: Transport = TcpTransport(),
             config: TransportConfig = TransportConfig(),
             decodeContext: DecodeContext = DecodeContext.Empty,
