@@ -35,6 +35,8 @@ include(":socket-http3")
 include(":socket-webtransport")
 include(":socket-udp")
 include(":socket-quic-trace-tools")
+// Hand-driven iOS handoff probe (not published, not in CI). See ios-probe/build.gradle.kts.
+include(":ios-probe")
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"

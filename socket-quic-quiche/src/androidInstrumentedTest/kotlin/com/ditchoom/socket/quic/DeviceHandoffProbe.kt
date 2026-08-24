@@ -592,9 +592,21 @@ private class MigrationTotals {
                     noSpareAfterUnanswered > 0 ->
                         "REGRESSION — NoSpareConnectionId answered $noSpareAfterUnanswered time(s) after " +
                             "an unanswered probe (#447 alive in the field)"
+                    // A run-wide PASS requires that some connection which LOST a probe went on to arm
+                    // another one. The absence of NoSpareConnectionId is not enough on its own: the
+                    // first real walk (2026-08-23) lost a probe on connection 1, died of idle timeout
+                    // 30s later, and reconnected — and this verdict read the FRESH connection's five
+                    // clean migrations as proof the old connection's pool recovered. A reconnect
+                    // negotiates a brand-new CID pool, so it is evidence of nothing at all. That is
+                    // the very over-read this ledger exists to prevent, one level up.
+                    probedAfterUnanswered > 0 ->
+                        "PASS — $unanswered unanswered probe(s), and a connection that lost one still " +
+                            "armed $probedAfterUnanswered later probe(s) with no NoSpareConnectionId: " +
+                            "the pool came back in the field"
                     else ->
-                        "PASS — $unanswered unanswered probe(s) and no NoSpareConnectionId afterwards; " +
-                            "the pool came back every time"
+                        "INCONCLUSIVE — $unanswered unanswered probe(s), but no connection that lost one " +
+                            "ever attempted another migration, so pool recovery was never put to the " +
+                            "question (a later connection's successes prove nothing: fresh pool)"
                 },
         )
     }
