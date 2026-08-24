@@ -910,11 +910,25 @@ fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
     // re-links a spare DCID into ANY path whose active_dcid_seq is None, which resurrects the
     // migrated-from path the driver just retired per §9.5 (measured: `link_dcid seq=2 pid=0` on the
     // packet after RETIRE_CONNECTION_ID(0)) — pinning it and burning one spare CID per migration, so
-    // edit 2 is a no-op without this one. The refill stays for every path upstream legitimately serves:
-    // the designated-active path stranded by a peer-forced retirement, and paths not yet validated
-    // (fresh server-side paths created by an incoming probe NEED this refill to send PATH_RESPONSE —
-    // scoping it tighter breaks path validation outright). The only newly-excluded class is
-    // validated-and-not-active: exactly a path the connection has finished with.
+    // edit 2 is a no-op without this one.
+    //
+    // The refill stays for every path that genuinely needs a DCID to put a probing packet on the wire:
+    // the designated-active path (a peer-forced retirement can legitimately strand it) and any path
+    // `probing_required()` is true for — `!received_challenges.is_empty() || validation_requested()`.
+    // The first half is the case that must not break: a fresh server-side path created by an incoming
+    // probe needs a DCID here to answer with PATH_RESPONSE. The second is a validation that still wants
+    // to send a challenge, including a retransmit, since `request_validation()` re-arms the flag.
+    //
+    // This predicate used to be `!p.validated()`, which was too wide by exactly one class and cost a
+    // spare CID per failed handoff, permanently, on a HEALTHY connection (#459). An ABANDONED client
+    // probe sits in PathState::Validating — the driver gives up on its own RFC 9000 §8.2.4 timer while
+    // quiche's path goes on waiting — so `!validated()` matched it, and the peer's replacement for the
+    // id we had just retired was linked straight back into the dead path. `unused()` is
+    // `!active() && active_dcid_seq.is_none()`, so that path was un-evictable again and holding a spare
+    // for the rest of the connection. Measured before the fix: spares 7→6→5→4→3→2→1→0 across seven
+    // abandoned probes, then NoSpareConnectionId forever, with every retirement acknowledged and
+    // replaced by the peer. `probing_required()` excludes it because its challenge was already sent
+    // (`on_challenge_sent` clears the flag) and it has no inbound challenge to answer.
     if (!libText.contains("socket-retire-dcid-no-relink: refill only")) {
         val anchor =
             """
@@ -926,18 +940,23 @@ fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
         if (!libText.contains(anchor)) missingAnchor("the no-DCID path refill loop in recv() in quiche/src/lib.rs")
         val replacement =
             """
-            |        // socket-retire-dcid-no-relink: refill only paths the connection still wants — the
-            |        // designated-active path (a peer-forced retirement can legitimately strand it) and
-            |        // paths not yet validated (a fresh server-side path created by an incoming probe needs
-            |        // a DCID here to answer with PATH_RESPONSE). A validated non-active path is one the
-            |        // connection migrated away from: refilling it pins it in the path table and burns a
-            |        // spare CID per migration (#395).
+            |        // socket-retire-dcid-no-relink: refill only paths that still need a DCID to put a
+            |        // probing packet on the wire — the designated-active path (a peer-forced retirement
+            |        // can legitimately strand it) and any path `probing_required()` holds for: one with
+            |        // an inbound PATH_CHALLENGE to answer (a fresh server-side path created by an
+            |        // incoming probe) or one that still wants to send a challenge of its own.
+            |        //
+            |        // A validated non-active path is one the connection migrated away from, and an
+            |        // ABANDONED probe path is one it gave up on while quiche still has it in
+            |        // PathState::Validating. Refilling either pins it in the path table — `unused()` is
+            |        // `!active() && active_dcid_seq.is_none()` — and burns a spare CID that never comes
+            |        // back (#395 for the first, #459 for the second).
             |        let no_dcid = self
             |            .paths
             |            .iter_mut()
             |            .filter(|(_, p)| {
             |                p.active_dcid_seq.is_none() &&
-            |                    (p.socket_designated_active() || !p.validated())
+            |                    (p.socket_designated_active() || p.probing_required())
             |            });
             """.trimMargin()
         libText = libText.replaceFirst(anchor, replacement)
