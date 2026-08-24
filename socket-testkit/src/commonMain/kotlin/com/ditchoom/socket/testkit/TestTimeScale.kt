@@ -49,5 +49,14 @@ internal fun parseTimeScale(raw: String?): Double = raw?.trim()?.toDoubleOrNull(
  * Do **not** apply it to a value an assertion reads back as data — a measured elapsed time, or a
  * constant the assertion itself recomputes. The point of the uniform factor is that it moves
  * deadlines without moving the facts they are waiting on.
+ *
+ * ## It is not free on a passing run
+ *
+ * A `withTimeout` budget costs nothing extra when the operation completes inside it, but a **fixed
+ * settle** is paid in full every time. Measured on the 32-test HTTP/3 loopback suite: median 2s at
+ * scale 1 against 4s at scale 3, entirely from settles. That is the intended trade on a loaded lane —
+ * a runner that needs three times the deadline needs a longer settle too — but a suite that scales a
+ * settle it did not need has simply made itself slower, so prefer waiting on the evidence (a
+ * `CompletableDeferred` the assertion already reads) over scaling a guess.
  */
 val Duration.scaled: Duration get() = this * testTimeScale()
