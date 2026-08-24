@@ -710,7 +710,10 @@ class MigrationSimTests {
     @Test
     fun aDeadPathHandoffIsEndedByTheConnectionsOwnDeadline() =
         runTest {
-            class Arm(val attempts: Int, val closed: Boolean)
+            class Arm(
+                val attempts: Int,
+                val closed: Boolean,
+            )
 
             suspend fun runArm(idleTimeout: kotlin.time.Duration): Arm {
                 val monitor = SimNetworkMonitor.on(WIFI)
