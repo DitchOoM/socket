@@ -95,4 +95,17 @@ data class IoTuning(
      * codec send path when [com.ditchoom.buffer.codec.WireSize.BackPatch] is reported (variable-length).
      */
     val defaultBufferSize: Int = 8192,
+    /**
+     * How long `CodecConnection.close()` lets its writer flush already-queued messages before closing
+     * the stream underneath it (#382).
+     *
+     * Exists because `send` is a hand-off: without a drain, `close()` races ahead of a just-queued
+     * goodbye frame and the common send-DISCONNECT-then-close shape silently loses it. Bounded rather
+     * than unlimited because a peer that has stopped reading must not make `close()` hang — that would
+     * move the stall from `send` to `close`, which is what the hand-off exists to prevent.
+     *
+     * Two seconds is generous for draining a bounded queue onto a healthy peer and short enough that a
+     * dead one does not visibly delay teardown. Set it to `Duration.ZERO` to close without draining.
+     */
+    val outboundDrainOnClose: Duration = 2.seconds,
 )

@@ -11,6 +11,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.OverflowPolicy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -100,7 +101,15 @@ class QuicStreamMuxTests {
                             launch(Dispatchers.IO) {
                                 serverDispatched.complete(Unit)
                                 connections {
-                                    val mux = QuicStreamMux(this, TestCodec, opts)
+                                    val mux =
+                                        QuicStreamMux(
+                                            this,
+                                            TestCodec,
+                                            opts,
+                                            this@launch,
+                                            outboundCapacity = 16,
+                                            overflowPolicy = OverflowPolicy.Suspend,
+                                        )
                                     val conn = mux.acceptBidirectional()
                                     val msg = conn.receive().first()
                                     conn.send("echo: $msg")
@@ -116,7 +125,15 @@ class QuicStreamMuxTests {
                             // silently, leaving the await to time out opaquely and masking the real
                             // cause. Inline, any failure propagates straight to the test.
                             val response =
-                                withQuicMux("localhost", port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                                withQuicMux(
+                                    "localhost",
+                                    port,
+                                    testQuicOptions,
+                                    TestCodec,
+                                    outboundCapacity = 16,
+                                    overflowPolicy = OverflowPolicy.Suspend,
+                                    connectionOptions = opts,
+                                ) {
                                     val conn = openBidirectional()
                                     assertTrue(conn.id >= 0)
                                     conn.send("hello")
@@ -148,7 +165,15 @@ class QuicStreamMuxTests {
                             launch(Dispatchers.IO) {
                                 serverDispatched.complete(Unit)
                                 connections {
-                                    val mux = QuicStreamMux(this, TestCodec, opts)
+                                    val mux =
+                                        QuicStreamMux(
+                                            this,
+                                            TestCodec,
+                                            opts,
+                                            this@launch,
+                                            outboundCapacity = 16,
+                                            overflowPolicy = OverflowPolicy.Suspend,
+                                        )
                                     val receiver = mux.acceptUnidirectional()
                                     serverReceived.complete(receiver.receive().toList())
                                 }
@@ -159,7 +184,15 @@ class QuicStreamMuxTests {
                             // Client opens a real uni stream (QuicScope.openUniStream), sends two framed
                             // messages, then FINs via Sender.close(). The server's receive() flow yields
                             // both and completes on the FIN.
-                            withQuicMux("localhost", port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                            withQuicMux(
+                                "localhost",
+                                port,
+                                testQuicOptions,
+                                TestCodec,
+                                outboundCapacity = 16,
+                                overflowPolicy = OverflowPolicy.Suspend,
+                                connectionOptions = opts,
+                            ) {
                                 val sender = openUnidirectional()
                                 assertTrue(sender.id >= 0)
                                 sender.send("uni-1")

@@ -123,12 +123,16 @@ class CodecConnectionPartialWriteTests {
             val message = "x".repeat(20_000)
             val sink = PartialAcceptSink(acceptPerWrite = 1_500)
 
-            CodecConnection(sink, TestStringCodec).send(message)
+            // send() is a hand-off to the connection's writer (#382), so close() is what drains it.
+            testCodecConnection(sink, TestStringCodec).apply {
+                send(message)
+                close()
+            }
 
             assertEquals(
                 encodedSize(message),
                 sink.wire.size,
-                "send() must put the WHOLE encoded frame on the wire, not just the first accepted slice",
+                "the writer must put the WHOLE encoded frame on the wire, not just the first accepted slice",
             )
             assertTrue(sink.writeCalls > 1, "the sink was never asked to resume (test would not prove anything)")
         }
@@ -145,11 +149,14 @@ class CodecConnectionPartialWriteTests {
             val message = (0 until 8_000).joinToString("") { ('a' + (it % 26)).toString() }
             val sink = PartialAcceptSink(acceptPerWrite = 900, advanceCursor = false)
 
-            CodecConnection(sink, TestStringCodec).send(message)
+            testCodecConnection(sink, TestStringCodec).apply {
+                send(message)
+                close()
+            }
 
             assertEquals(encodedSize(message), sink.wire.size, "frame size must survive a non-advancing sink")
 
-            val received = CodecConnection(ReplaySource(sink.wire.toByteArray()), TestStringCodec).receive().toList()
+            val received = testCodecConnection(ReplaySource(sink.wire.toByteArray()), TestStringCodec).receive().toList()
             assertEquals(listOf(message), received, "the frame must be byte-exact, not merely the right length")
         }
 
@@ -164,8 +171,9 @@ class CodecConnectionPartialWriteTests {
             val messages = listOf("A".repeat(9_000), "B".repeat(120), "C".repeat(4_500))
             val sink = PartialAcceptSink(acceptPerWrite = 2_048)
 
-            val out = CodecConnection(sink, TestStringCodec)
+            val out = testCodecConnection(sink, TestStringCodec)
             messages.forEach { out.send(it) }
+            out.close() // drains the queue; send() only hands off (#382)
 
             assertEquals(
                 messages.sumOf { encodedSize(it) },
@@ -173,21 +181,33 @@ class CodecConnectionPartialWriteTests {
                 "every frame must reach the wire in full",
             )
 
-            val received = CodecConnection(ReplaySource(sink.wire.toByteArray()), TestStringCodec).receive().toList()
+            val received = testCodecConnection(ReplaySource(sink.wire.toByteArray()), TestStringCodec).receive().toList()
             assertEquals(messages, received, "frames must stay aligned — a short write splices the next frame in")
         }
 
     /**
      * Back-pressure blocks inside `write`; a sink that instead reports zero forever is broken. Fail
      * loudly rather than spin, and rather than return early — returning early IS the truncation.
+     *
+     * Where that failure is *observed* moved with #382. The write now runs on the connection's writer,
+     * not on the caller, so the first `send` only queues and cannot report anything. The writer fails,
+     * closes the outbound queue with the stall as its cause, and the next `send` throws it — which is
+     * the contract for every write failure now: a queued-but-unwritten message is equivalent to one the
+     * network lost, and the caller finds out at its next interaction with the connection.
+     *
+     * What must not change is that the failure is *loud and typed*: it is still a
+     * [SocketWriteStalledException] carrying the same accepted/pending counts, never a silent
+     * truncation.
      */
     @Test
-    fun sendFailsLoudlyWhenTheSinkNeverMakesProgress() =
+    fun aStalledSinkFailsTheWriterLoudlyAndSurfacesAtTheNextSend() =
         runTest {
-            val failure =
-                assertFailsWith<SocketWriteStalledException> {
-                    CodecConnection(StalledSink(), TestStringCodec).send("hello")
-                }
+            val connection = testCodecConnection(StalledSink(), TestStringCodec)
+
+            connection.send("hello") // queued; the writer has not run yet
+            testScheduler.runCurrent() // writer picks it up, stalls, and fails the connection
+
+            val failure = assertFailsWith<SocketWriteStalledException> { connection.send("world") }
             assertEquals(0, failure.accepted)
             assertEquals(encodedSize("hello"), failure.pending)
         }

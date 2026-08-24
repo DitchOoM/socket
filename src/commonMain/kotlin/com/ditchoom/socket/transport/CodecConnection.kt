@@ -14,26 +14,137 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.OutboundQueueFullException
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.time.TimeSource
 
+/**
+ * A typed message connection over a [ByteStream], framed by a [Codec].
+ *
+ * ## The connection owns its writer (#382)
+ *
+ * [send] does not touch the socket. It hands the message to a bounded outbound queue drained by a
+ * single writer coroutine that this connection owns, which buys three properties that used to depend
+ * on callers being careful and were silently absent:
+ *
+ * > A frame reaches the wire whole or not at all; concurrent sends to one connection cannot
+ * > interleave; and no caller ever waits on the peer's socket.
+ *
+ * Previously `send` encoded and then called `stream.write` **on the caller's own coroutine**. That
+ * gave the API three failure modes, none visible in its signature: two concurrent sends interleaved
+ * their bytes under a length-prefix header (measured: `0x00 0x3c AAAA 0x00 0x3c BBBB AAAAAA BBBBBB…`);
+ * cancelling a caller mid-write left a truncated frame whose header still promised the full length, so
+ * the peer read on into the *next* frame and went quietly deaf; and one slow peer blocked the sending
+ * coroutine and anything joined to it.
+ *
+ * The fan-out case is where all three land at once. `coroutineScope { for (c in conns) launch { c.send(f) } }`
+ * cancels its siblings the instant one recipient fails — for any sibling inside `write`, mid-packet —
+ * leaving every *healthy* peer holding a truncated frame, all going deaf at the same moment and
+ * redialing in lockstep when their silence watchdogs fire.
+ *
+ * With the writer owned here, the only thing that can cancel a write is this connection's own
+ * teardown, and a truncated frame on a stream being torn down harms nobody: truncation only matters if
+ * the connection survives it.
+ *
+ * This is strictly stronger than [com.ditchoom.buffer.flow.Connection]'s documented contract, which
+ * says implementations are not assumed to be thread-safe and concurrent sends need external
+ * synchronisation. Callers of *this* implementation need none, and per-send time bounds added
+ * defensively against the old behaviour can be deleted — with a hand-off, slowness becomes queue
+ * depth, which can be generous precisely because nobody is waiting on it.
+ *
+ * @param scope the writer's lifetime. Required, and deliberately not defaulted: the writer lives as
+ *   long as the connection, so its parent must be a scope the caller controls rather than whichever
+ *   coroutine happened to call [send] first.
+ * @param outboundCapacity how many messages may be queued before [overflowPolicy] applies. Required,
+ *   and deliberately not defaulted — an inherited capacity is an inherited decision.
+ * @param overflowPolicy what happens when the queue is full. Required for the same reason; see
+ *   [OverflowPolicy].
+ */
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
+    scope: CoroutineScope,
+    private val outboundCapacity: Int,
+    private val overflowPolicy: OverflowPolicy<T>,
     private val config: TransportConfig = TransportConfig(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
+    init {
+        require(outboundCapacity > 0) {
+            "outboundCapacity must be positive, was $outboundCapacity — a zero-capacity queue would " +
+                "make every send an overflow"
+        }
+    }
+
+    /**
+     * The hand-off. Its overflow behaviour is half of [overflowPolicy]; [send] implements the other
+     * half, because the two drop policies cannot both be expressed by the channel.
+     *
+     * [OverflowPolicy.DropOldest] maps onto `BufferOverflow.DROP_OLDEST`, whose `onUndeliveredElement`
+     * **does** receive the evicted message — verified, because the symmetric-looking `DROP_LATEST`
+     * does **not**: a channel built that way silently drops the newest element and never calls the
+     * handler, so a `DropNewest` implemented the obvious way would have had a callback that could
+     * never fire. [OverflowPolicy.DropNewest] is therefore implemented in [send] with `trySend`.
+     *
+     * `onUndeliveredElement` also fires for anything still queued when the connection is closed
+     * (see [close]), which is the same statement to the caller: this message will not reach the wire.
+     */
+    private val outbound: Channel<T> =
+        when (overflowPolicy) {
+            is OverflowPolicy.DropOldest ->
+                Channel(
+                    capacity = outboundCapacity,
+                    onBufferOverflow = BufferOverflow.DROP_OLDEST,
+                    onUndeliveredElement = overflowPolicy.onOverflow,
+                )
+            is OverflowPolicy.DropNewest ->
+                Channel(
+                    capacity = outboundCapacity,
+                    onUndeliveredElement = overflowPolicy.onOverflow,
+                )
+            OverflowPolicy.Suspend, OverflowPolicy.Fail -> Channel(capacity = outboundCapacity)
+        }
+
+    /**
+     * The single writer. Encoding happens here rather than at the send site so buffer lifetime and pool
+     * discipline stay entirely inside this connection.
+     *
+     * A write failure is not rethrown. This is a plain `launch` in the caller's [scope], so throwing
+     * would cancel that scope — a peer's broken pipe must not take down whatever else the caller is
+     * running. The failure closes [outbound] with itself as the cause instead, so it surfaces at the
+     * next [send] (and at [close]) as the original exception, which is where a caller can act on it.
+     */
+    private val writerJob: Job =
+        scope.launch {
+            try {
+                for (message in outbound) {
+                    encodeAndWriteFully(message)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                outbound.close(t)
+            }
+        }
     private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
@@ -87,8 +198,56 @@ class CodecConnection<T>(
         generateSequence { drainFrame() }.forEach { emit(it) }
     }
 
+    /**
+     * Hands [message] to this connection's writer. Does not touch the socket.
+     *
+     * Atomic and serialized by construction: the message is queued whole, and one writer drains the
+     * queue, so nothing this caller does — including being cancelled the instant after this returns —
+     * can truncate a frame or interleave it with another sender's.
+     *
+     * Cancellation is now honest. Before the hand-off, cancelling a caller mid-`write` corrupted the
+     * stream for *every* subsequent frame; now it can only mean the message was or was not queued.
+     *
+     * Throws whatever the writer failed with if a previous write failed, since [outbound] is closed
+     * with that cause — a queued-but-unwritten message is equivalent to one lost by the network, which
+     * at-least-once layers already handle.
+     */
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
+        when (val policy = overflowPolicy) {
+            // DROP_OLDEST never rejects and never suspends: the channel evicts to make room and hands
+            // the evicted message to onOverflow itself.
+            is OverflowPolicy.DropOldest -> outbound.send(message)
+            OverflowPolicy.Suspend -> outbound.send(message)
+            is OverflowPolicy.DropNewest -> {
+                val result = outbound.trySend(message)
+                if (!result.isSuccess) {
+                    throwIfClosed(result)
+                    policy.onOverflow(message)
+                }
+            }
+            OverflowPolicy.Fail -> {
+                val result = outbound.trySend(message)
+                if (!result.isSuccess) {
+                    throwIfClosed(result)
+                    throw OutboundQueueFullException(outboundCapacity)
+                }
+            }
+        }
+    }
+
+    /**
+     * Distinguishes the two reasons a `trySend` can fail: the queue is full (the policy's business) or
+     * the writer already failed and closed the channel (the caller's). Only the latter throws here.
+     */
+    private fun throwIfClosed(result: ChannelResult<Unit>) {
+        if (!result.isClosed) return
+        throw result.exceptionOrNull()
+            ?: SocketClosedException.General("CodecConnection's writer has stopped; the connection is closed")
+    }
+
+    /** Encode on the writer, then write the frame in full. Runs only on [writerJob]. */
+    private suspend fun encodeAndWriteFully(message: T) {
         // Initial capacity: codec's per-call wireSize. Exact lets us allocate-exact
         // first try; BackPatch falls back to defaultBufferSize and may still overflow
         // for variable-length encodes (e.g. MQTT PUBLISH with a large payload). On
@@ -161,9 +320,28 @@ class CodecConnection<T>(
                 throw SocketClosedException.ConnectionReset("Stream reset by peer")
         }
 
+    /**
+     * Stops accepting sends, gives the writer a bounded chance to flush what is already queued, then
+     * closes the stream.
+     *
+     * Drain-before-close, because once [send] is a hand-off `close()` would otherwise race ahead of a
+     * just-queued goodbye frame — the common send-DISCONNECT-then-close shape would start silently
+     * dropping it, with nothing at the call site to show for it.
+     *
+     * Bounded, because a peer that has stopped reading must not make `close()` hang. Waiting forever
+     * would just move the stall from `send` to `close`, which is the failure mode the whole hand-off
+     * exists to remove. Anything still queued when the budget expires is handed to the overflow
+     * handler under the drop policies — the same statement as an overflow: this message will not
+     * reach the wire.
+     */
     override suspend fun close() {
         if (closed) return
         closed = true
+        outbound.close()
+        withTimeoutOrNull(config.io.outboundDrainOnClose) { writerJob.join() }
+        writerJob.cancel()
+        // Hands anything still queued to onUndeliveredElement; a no-op once the drain completed.
+        outbound.cancel()
         stream.close()
         streamProcessor.release()
         bufferPool.clear()
@@ -172,17 +350,36 @@ class CodecConnection<T>(
     companion object {
         private const val MAX_SEND_RESIZE_ATTEMPTS = 20
 
+        /**
+         * Connects and wraps the stream in a [CodecConnection].
+         *
+         * [scope], [outboundCapacity] and [overflowPolicy] are threaded through rather than defaulted
+         * for the reason the constructor states: the writer's lifetime has to be tied to a scope the
+         * caller controls, not to whichever coroutine happens to call [send] first.
+         */
         suspend fun <T> connect(
             hostname: String,
             port: Int,
             codec: Codec<T>,
+            scope: CoroutineScope,
+            outboundCapacity: Int,
+            overflowPolicy: OverflowPolicy<T>,
             transport: Transport = TcpTransport(),
             config: TransportConfig = TransportConfig(),
             decodeContext: DecodeContext = DecodeContext.Empty,
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
             val stream = transport.connect(hostname, port, config)
-            return CodecConnection(stream, codec, config, decodeContext, encodeContext)
+            return CodecConnection(
+                stream = stream,
+                codec = codec,
+                scope = scope,
+                outboundCapacity = outboundCapacity,
+                overflowPolicy = overflowPolicy,
+                config = config,
+                decodeContext = decodeContext,
+                encodeContext = encodeContext,
+            )
         }
     }
 }

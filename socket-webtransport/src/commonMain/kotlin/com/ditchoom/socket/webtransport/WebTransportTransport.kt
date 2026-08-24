@@ -10,6 +10,7 @@ import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MultiplexingTransport
+import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.SessionOwningByteStream
 import com.ditchoom.socket.transport.SessionTransport
 import com.ditchoom.socket.transport.Transport
@@ -117,6 +118,8 @@ class WebTransportTransport(
         hostname: String,
         port: Int,
         codec: Codec<T>,
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
         config: TransportConfig,
         block: suspend StreamMux<T>.() -> R,
     ): R =
@@ -125,7 +128,7 @@ class WebTransportTransport(
             // A child scope for the lazy incoming-stream collectors; cancelled before the session closes.
             val muxScope = CoroutineScope(currentCoroutineContext() + Job())
             try {
-                WebTransportStreamMux(wt, codec, config, muxScope).block()
+                WebTransportStreamMux(wt, codec, config, muxScope, outboundCapacity, overflowPolicy).block()
             } finally {
                 muxScope.cancel()
             }

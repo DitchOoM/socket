@@ -305,6 +305,24 @@ class SocketWriteStalledException(
     val pending: Int get() = stall.pending
 }
 
+/**
+ * A `CodecConnection` configured with `OverflowPolicy.Fail` was asked to send while its outbound queue
+ * was full (#382).
+ *
+ * Not a transport failure: the connection is healthy and the peer may be perfectly fine — this reports
+ * that *this* sender is producing faster than the peer is draining, at a connection whose caller asked
+ * to be told rather than to shed or to wait. The message was not queued and did not reach the wire, so
+ * the caller still owns it.
+ */
+class OutboundQueueFullException(
+    /** The configured `outboundCapacity` that was reached. Carried so a caller can log or resize. */
+    val capacity: Int,
+) : SocketException(
+        "outbound queue is full at capacity $capacity; the message was not queued. The peer is " +
+            "draining slower than this sender is producing, and this connection's OverflowPolicy is " +
+            "Fail — choose DropOldest/DropNewest to shed, or Suspend to apply back-pressure.",
+    )
+
 // ──────────────────────────────────────────────────────────────────────
 // TLS / SSL
 // ──────────────────────────────────────────────────────────────────────

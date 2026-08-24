@@ -65,7 +65,7 @@ class WebTransportPolicyPrototypeTests {
     fun untilClosedPolicyPropagatesInfiniteDeadlineThroughCodecConnection() =
         runTest {
             val stream = PolicyProbeStream(ReadPolicy.UntilClosed, ArrayDeque(listOf(frame("live"))))
-            val conn = CodecConnection(stream, TestStringCodec, TransportConfig())
+            val conn = testCodecConnection(stream, TestStringCodec, TransportConfig())
 
             val message = conn.receive().first()
             assertEquals("live", message)
@@ -79,7 +79,7 @@ class WebTransportPolicyPrototypeTests {
     fun boundedPolicyPropagatesItsOwnDeadline() =
         runTest {
             val stream = PolicyProbeStream(ReadPolicy.Bounded(7.seconds), ArrayDeque(listOf(frame("req"))))
-            val conn = CodecConnection(stream, TestStringCodec, TransportConfig())
+            val conn = testCodecConnection(stream, TestStringCodec, TransportConfig())
 
             val message = conn.receive().first()
             assertEquals("req", message)

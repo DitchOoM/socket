@@ -8,6 +8,7 @@ import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -24,8 +25,8 @@ class ReconnectingConnectionTests {
             writePolicy = WritePolicy.Bounded(5.seconds),
         )
 
-    private fun createCodecConnection(clientStream: ByteStream): CodecConnection<String> =
-        CodecConnection(
+    private fun CoroutineScope.createCodecConnection(clientStream: ByteStream): CodecConnection<String> =
+        testCodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
             config = testOptions,

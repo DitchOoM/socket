@@ -5,7 +5,9 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.TypedMuxView
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * Adapts a raw [QuicScope] to a typed [StreamMux] using a [Codec] — a [TypedMuxView] over
@@ -25,6 +27,24 @@ class QuicStreamMux<T>(
     connection: QuicScope,
     codec: Codec<T>,
     options: TransportConfig,
+    /**
+     * Writer lifetime and outbound queue policy for every stream this mux mints — see
+     * [com.ditchoom.socket.transport.CodecConnection] and [OverflowPolicy] (#382). Required rather
+     * than defaulted: each QUIC stream gets its own writer, and only the caller knows what a full
+     * queue should mean for the traffic it puts on them.
+     */
+    scope: CoroutineScope,
+    outboundCapacity: Int,
+    overflowPolicy: OverflowPolicy<T>,
     decodeContext: DecodeContext = DecodeContext.Empty,
     encodeContext: EncodeContext = EncodeContext.Empty,
-) : StreamMux<T> by TypedMuxView(QuicByteStreamMux(connection), codec, options, decodeContext, encodeContext)
+) : StreamMux<T> by TypedMuxView(
+        raw = QuicByteStreamMux(connection),
+        codec = codec,
+        scope = scope,
+        outboundCapacity = outboundCapacity,
+        overflowPolicy = overflowPolicy,
+        config = options,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+    )

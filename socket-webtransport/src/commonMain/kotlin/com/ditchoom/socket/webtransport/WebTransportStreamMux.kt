@@ -5,6 +5,7 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.TypedMuxView
 import kotlinx.coroutines.CoroutineScope
 
@@ -27,6 +28,19 @@ class WebTransportStreamMux<T>(
     codec: Codec<T>,
     config: TransportConfig,
     scope: CoroutineScope,
+    /** Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382). */
+    outboundCapacity: Int,
+    overflowPolicy: OverflowPolicy<T>,
     decodeContext: DecodeContext = DecodeContext.Empty,
     encodeContext: EncodeContext = EncodeContext.Empty,
-) : StreamMux<T> by TypedMuxView(WebTransportByteStreamMux(session, scope), codec, config, decodeContext, encodeContext)
+) : StreamMux<T> by TypedMuxView(
+        raw = WebTransportByteStreamMux(session, scope),
+        codec = codec,
+        // The mux's own scope owns the stream writers: they are exactly as long-lived as the mux.
+        scope = scope,
+        outboundCapacity = outboundCapacity,
+        overflowPolicy = overflowPolicy,
+        config = config,
+        decodeContext = decodeContext,
+        encodeContext = encodeContext,
+    )

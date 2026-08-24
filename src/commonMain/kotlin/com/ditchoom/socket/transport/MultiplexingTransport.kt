@@ -49,6 +49,17 @@ interface MultiplexingTransport {
         hostname: String,
         port: Int,
         codec: Codec<T>,
+        /**
+         * Outbound queue depth and full-queue policy for every stream the mux mints — see
+         * [CodecConnection] and [OverflowPolicy] (#382). Required rather than defaulted, because only
+         * the caller knows whether its traffic is recoverable at a higher layer.
+         *
+         * There is deliberately no `scope` parameter here, unlike [CodecConnection]'s constructor:
+         * [withMux] already owns the mux's whole lifetime, so it owns the writers' scope too and
+         * cancels it when [block] returns. A caller supplies a scope only where it owns the object.
+         */
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
         config: TransportConfig = TransportConfig(),
         block: suspend StreamMux<T>.() -> R,
     ): R

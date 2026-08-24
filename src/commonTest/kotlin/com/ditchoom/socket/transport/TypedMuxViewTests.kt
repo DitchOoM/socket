@@ -56,7 +56,7 @@ class TypedMuxViewTests {
         runTest {
             val (local, peer) = MemoryTransport.createPair()
             val mux =
-                TypedMuxView(FakeByteStreamMux(openBidi = ArrayDeque(listOf(IdentifiedByteStream(local, 8L)))), TestStringCodec, config)
+                testTypedMuxView(FakeByteStreamMux(openBidi = ArrayDeque(listOf(IdentifiedByteStream(local, 8L)))), TestStringCodec, config)
 
             val conn = mux.openBidirectional()
             assertEquals(8L, conn.id, "Connection.id must recover the MuxIdentified stream id")
@@ -72,7 +72,7 @@ class TypedMuxViewTests {
     fun openBidirectional_defaultsIdToZeroWithoutMuxIdentified() =
         runTest {
             val (local, peer) = MemoryTransport.createPair()
-            val mux = TypedMuxView(FakeByteStreamMux(openBidi = ArrayDeque(listOf(local))), TestStringCodec, config)
+            val mux = testTypedMuxView(FakeByteStreamMux(openBidi = ArrayDeque(listOf(local))), TestStringCodec, config)
 
             val conn = mux.openBidirectional()
             assertEquals(0L, conn.id, "a raw stream without MuxIdentified falls back to id 0")
@@ -86,7 +86,7 @@ class TypedMuxViewTests {
         runTest {
             val (local, peer) = MemoryTransport.createPair()
             val mux =
-                TypedMuxView(FakeByteStreamMux(openUni = ArrayDeque(listOf(IdentifiedByteStream(local, 2L)))), TestStringCodec, config)
+                testTypedMuxView(FakeByteStreamMux(openUni = ArrayDeque(listOf(IdentifiedByteStream(local, 2L)))), TestStringCodec, config)
 
             val sender = mux.openUnidirectional()
             assertEquals(2L, sender.id)
@@ -106,7 +106,7 @@ class TypedMuxViewTests {
     fun acceptBidirectional_decodesFromPeer() =
         runTest {
             val (accepted, peer) = MemoryTransport.createPair()
-            val mux = TypedMuxView(FakeByteStreamMux(acceptBidi = ArrayDeque(listOf(accepted))), TestStringCodec, config)
+            val mux = testTypedMuxView(FakeByteStreamMux(acceptBidi = ArrayDeque(listOf(accepted))), TestStringCodec, config)
 
             val conn = mux.acceptBidirectional()
             writeOneFramed(peer, "hi-from-peer")
@@ -120,7 +120,7 @@ class TypedMuxViewTests {
     fun acceptUnidirectional_receivesUntilFin() =
         runTest {
             val (accepted, peer) = MemoryTransport.createPair()
-            val mux = TypedMuxView(FakeByteStreamMux(acceptUni = ArrayDeque(listOf(accepted))), TestStringCodec, config)
+            val mux = testTypedMuxView(FakeByteStreamMux(acceptUni = ArrayDeque(listOf(accepted))), TestStringCodec, config)
 
             val receiver = mux.acceptUnidirectional()
             writeOneFramed(peer, "recv-a")

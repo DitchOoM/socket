@@ -7,12 +7,17 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MultiplexingTransport
+import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.SessionOwningByteStream
 import com.ditchoom.socket.transport.SessionTransport
 import com.ditchoom.socket.transport.Transport
 import com.ditchoom.socket.transport.TransportFamily
 import com.ditchoom.socket.transport.use
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -124,12 +129,23 @@ class QuicTransport(
         hostname: String,
         port: Int,
         codec: Codec<T>,
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
         config: TransportConfig,
         block: suspend StreamMux<T>.() -> R,
     ): R =
         // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
         session.use(hostname, port, config) { connection ->
-            QuicStreamMux(connection, codec, config).block()
+            // The writers of every stream this mux mints live here and are cancelled with the session,
+            // which is what makes withMux's ownership of the mux lifetime complete (#382). Its own Job
+            // rather than a plain coroutineScope: a stream the caller never closed must not make this
+            // function hang waiting for that stream's writer.
+            val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+            try {
+                QuicStreamMux(connection, codec, config, muxScope, outboundCapacity, overflowPolicy).block()
+            } finally {
+                muxScope.cancel()
+            }
         }
 
     private companion object {

@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * The single-codec typed view over a raw [ByteStreamMux] — [StreamMux] as a *view*, mirroring how
@@ -26,13 +27,32 @@ import com.ditchoom.socket.TransportConfig
 class TypedMuxView<T>(
     val raw: ByteStreamMux,
     val codec: Codec<T>,
+    /**
+     * Writer lifetime for every [CodecConnection] this view mints, and the outbound queue policy they
+     * are minted with. Required here for the same reason they are required on [CodecConnection]: a mux
+     * view creates connections on the caller's behalf, so the caller — not the view — has to state the
+     * scope those writers live in and what a full queue means for its traffic (#382).
+     */
+    private val scope: CoroutineScope,
+    private val outboundCapacity: Int,
+    private val overflowPolicy: OverflowPolicy<T>,
     private val config: TransportConfig = TransportConfig(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
     override suspend fun openBidirectional(): Connection<T> {
         val stream = raw.openBidirectional()
-        return CodecConnection(stream, codec, config, decodeContext, encodeContext, id = stream.muxStreamIdOrZero())
+        return CodecConnection(
+            stream = stream,
+            codec = codec,
+            scope = scope,
+            outboundCapacity = outboundCapacity,
+            overflowPolicy = overflowPolicy,
+            config = config,
+            decodeContext = decodeContext,
+            encodeContext = encodeContext,
+            id = stream.muxStreamIdOrZero(),
+        )
     }
 
     override suspend fun openUnidirectional(): Sender<T> {
@@ -42,7 +62,17 @@ class TypedMuxView<T>(
 
     override suspend fun acceptBidirectional(): Connection<T> {
         val stream = raw.acceptBidirectional()
-        return CodecConnection(stream, codec, config, decodeContext, encodeContext, id = stream.muxStreamIdOrZero())
+        return CodecConnection(
+            stream = stream,
+            codec = codec,
+            scope = scope,
+            outboundCapacity = outboundCapacity,
+            overflowPolicy = overflowPolicy,
+            config = config,
+            decodeContext = decodeContext,
+            encodeContext = encodeContext,
+            id = stream.muxStreamIdOrZero(),
+        )
     }
 
     override suspend fun acceptUnidirectional(): Receiver<T> {

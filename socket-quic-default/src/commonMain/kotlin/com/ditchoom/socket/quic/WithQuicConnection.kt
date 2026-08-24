@@ -3,6 +3,11 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.OverflowPolicy
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -50,11 +55,19 @@ suspend fun <T, R> withQuicMux(
     port: Int,
     quicOptions: QuicOptions,
     codec: Codec<T>,
+    /** Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382). */
+    outboundCapacity: Int,
+    overflowPolicy: OverflowPolicy<T>,
     connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     block: suspend StreamMux<T>.() -> R,
 ): R =
     withQuicConnection(hostname, port, quicOptions, connectionOptions, timeout) {
-        val mux = QuicStreamMux(this, codec, connectionOptions)
-        mux.block()
+        // Scoped like the connection it rides: the stream writers are cancelled when this returns.
+        val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+        try {
+            QuicStreamMux(this, codec, connectionOptions, muxScope, outboundCapacity, overflowPolicy).block()
+        } finally {
+            muxScope.cancel()
+        }
     }
