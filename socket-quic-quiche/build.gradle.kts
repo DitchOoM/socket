@@ -179,21 +179,6 @@ fun downloadQuicheSource(
 }
 
 /**
- * Patch quiche 0.29+'s build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
- * BoringSSL.
- *
- * quiche's `build.rs` emits `cargo:rustc-link-lib=static=ssl` + `=crypto` under
- * `boringssl-boring-crate`, and `boring-sys` ALSO emits those directives (it built the archives).
- * For a `staticlib` output rustc bundles each named static lib into libquiche.a — so BoringSSL lands
- * TWICE (every symbol has two definitions). A cdylib/bin link dedups the `-l` flags so it's fine, but
- * our JNI shim (`--whole-archive libquiche.a`) and the Apple K/N link (`-force_load`) force every
- * member in → "duplicate symbol" (ChaCha20_ctr32, TLS_server_method, bssl::CERT::~CERT()…).
- *
- * Neutralize quiche's redundant emission (boring-sys' is sufficient) so libquiche.a carries BoringSSL
- * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
- * or the external `ffi,qlog` path where the feature is off).
- */
-/**
  * Discard any patches a previous build left in the quiche clone, so the marker-guarded edits below
  * always run against pristine upstream text.
  *
@@ -220,6 +205,21 @@ fun resetQuicheSourceToPristine(sourceDir: File) {
     }
 }
 
+/**
+ * Patch quiche 0.29+'s build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
+ * BoringSSL.
+ *
+ * quiche's `build.rs` emits `cargo:rustc-link-lib=static=ssl` + `=crypto` under
+ * `boringssl-boring-crate`, and `boring-sys` ALSO emits those directives (it built the archives).
+ * For a `staticlib` output rustc bundles each named static lib into libquiche.a — so BoringSSL lands
+ * TWICE (every symbol has two definitions). A cdylib/bin link dedups the `-l` flags so it's fine, but
+ * our JNI shim (`--whole-archive libquiche.a`) and the Apple K/N link (`-force_load`) force every
+ * member in → "duplicate symbol" (ChaCha20_ctr32, TLS_server_method, bssl::CERT::~CERT()…).
+ *
+ * Neutralize quiche's redundant emission (boring-sys' is sufficient) so libquiche.a carries BoringSSL
+ * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
+ * or the external `ffi,qlog` path where the feature is off).
+ */
 fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
     val buildRs = sourceDir.resolve("quiche/src/build.rs")
     if (!buildRs.exists()) return
