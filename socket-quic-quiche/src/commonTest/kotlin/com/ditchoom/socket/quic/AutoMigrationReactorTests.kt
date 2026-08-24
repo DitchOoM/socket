@@ -471,6 +471,70 @@ class AutoMigrationReactorTests {
     }
 
     /**
+     * **Every leaf that claims to be retryable is actually retried — with no further network event.**
+     *
+     * [retryableWithoutNewInformation] is exhaustive at *compile* time: a new
+     * [MigrationResult.Unmoved.Failed] leaf must state its own answer or the `when` fails to build. But
+     * exhaustive is not the same as *tested*, and until this test only `PathNotValidated` was ever
+     * driven through the retry path. The rest were covered by `failedResultKeepsObserving`, which
+     * drives recovery with a second `setNetworkId` — the exact blind spot #453 lived in, because a
+     * fresh link change short-circuits the wait and proves nothing about the backoff.
+     *
+     * So this walks the whole family against the field condition: one handoff, then **nothing**. Each
+     * retryable leaf must produce a second attempt on time alone, and
+     * [MigrationResult.Unmoved.Failed.EndpointNotSelectable] — the one leaf that answers `false`,
+     * because this reactor only ever asks for [MigrationTarget.FreshLocalEndpoint] and repeating an
+     * identical unserviceable request cannot change the answer — must not.
+     *
+     * `NoSpareConnectionId` is the case worth naming: it is #448, the peer's first NEW_CONNECTION_ID
+     * still being in flight at connection start. Its fix is this retry, and until now nothing asserted
+     * that the retry actually reaches it.
+     */
+    @Test
+    fun everyRetryableLeafIsRetriedWithNoFurtherNetworkEvent() {
+        val retryable: List<MigrationResult.Unmoved.Failed> =
+            listOf(
+                MigrationResult.Unmoved.Failed.HandshakeNotConfirmed,
+                MigrationResult.Unmoved.Failed.AlreadyInProgress,
+                MigrationResult.Unmoved.Failed.NoSpareConnectionId,
+                MigrationResult.Unmoved.Failed.PathNotValidated,
+                MigrationResult.Unmoved.Failed.LocalPathUnavailable(IllegalStateException("no route")),
+                MigrationResult.Unmoved.Failed.ProbeRejected(-7),
+                MigrationResult.Unmoved.Failed.SwitchRejected(-3),
+            )
+        for (leaf in retryable) {
+            val monitor = SimNetworkMonitor.on(wifi)
+            runReactor(monitor, migrateResult = leaf) { conn ->
+                monitor.setNetworkId(cellular)
+                assertEquals(1, conn.migrateCount, "$leaf: the handoff itself must attempt a migration")
+                // The field condition: the device has finished handing off and is standing still, so
+                // there is no further link change — only time.
+                advanceTimeBy(idleTimeoutInTheField)
+                assertTrue(
+                    conn.migrateCount > 1,
+                    "$leaf says it is retryable without new information, but after " +
+                        "$idleTimeoutInTheField with no further network event the reactor made " +
+                        "${conn.migrateCount} attempt(s). The leaf and the loop disagree, so the " +
+                        "exhaustive `when` is documenting an intention the reactor does not carry out",
+                )
+            }
+        }
+
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, migrateResult = MigrationResult.Unmoved.Failed.EndpointNotSelectable) { conn ->
+            monitor.setNetworkId(cellular)
+            advanceTimeBy(idleTimeoutInTheField)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "EndpointNotSelectable answers `false` to retryableWithoutNewInformation because this " +
+                    "reactor only ever asks for FreshLocalEndpoint, so an identical repeat cannot be " +
+                    "answered differently. Retrying it burns the loop on a question already settled.",
+            )
+        }
+    }
+
+    /**
      * **There is no attempt count, and there must not be one.**
      *
      * A count is a guess at when to stop, and there is nothing to guess: the loop already ends on four
