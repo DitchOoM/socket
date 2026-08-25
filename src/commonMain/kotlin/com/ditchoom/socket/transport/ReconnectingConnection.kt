@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
@@ -111,8 +112,19 @@ class ReconnectingConnection<T>(
     @Volatile
     private var closed = false
 
-    @Volatile
-    private var receiving = false
+    /**
+     * Mutual exclusion over the reconnect loop, which exactly one collector may run.
+     *
+     * This replaces a `@Volatile var receiving` guarded by `check(!receiving); receiving = true` —
+     * check-then-act, measured admitting two collectors in 2/300 attempts. `receiving` was never a
+     * lifecycle state; it was a mutual-exclusion latch written by hand, and it was doing a second job
+     * besides: [send] read it as "is the loop running". A [Mutex] says the first out loud and answers
+     * the second through [Mutex.isLocked], so the two readings cannot drift apart.
+     *
+     * `tryLock` keeps the loud, deterministic rejection: silently letting two collectors each open
+     * their own connection would be a downgrade, not a simplification.
+     */
+    private val collecting = Mutex()
 
     /**
      * Resets the backoff delay so the next reconnect attempt happens immediately.
@@ -127,77 +139,88 @@ class ReconnectingConnection<T>(
     override fun receive(): Flow<T> {
         check(!closed) { "ReconnectingConnection is closed" }
         return flow {
-            check(!receiving) { "receive() is already being collected" }
-            receiving = true
-            var retryDelay = Duration.ZERO
-
-            // Auto-reset backoff when network becomes available. The monitor is created
-            // per-collection and owned here — closed in the finally below.
-            val monitor = monitorFactory()
-            val monitorJob = launchNetworkMonitorJob(monitor)
-
+            // tryLock rather than `check(!receiving); receiving = true`: that pair is check-then-act,
+            // and `@Volatile` publishes the write without making the pair atomic. Measured admitting
+            // two collectors in 2/300 attempts (236/300 contended) — see
+            // ReconnectingConnectionCollectorRaceTests. Two collectors here is worse than the same
+            // defect was in CodecConnection: each runs the whole loop below, so each calls connect()
+            // and each writes currentConnection, and the loser's connection is left with no reference
+            // to close it.
+            check(collecting.tryLock()) { "receive() is already being collected" }
             try {
-                while (currentCoroutineContext().isActive) {
-                    try {
-                        _state.value = ConnectionState.Connecting
-                        if (retryDelay > Duration.ZERO && !backoffReset) {
-                            // Race the backoff against a network-path change: a change of network
-                            // identity is the strongest signal a failing reconnect may now succeed, so
-                            // abandon the remaining delay and re-attempt immediately. A monitor that
-                            // cannot identify links reports a constant, so this waits out the full
-                            // backoff, identical to a plain delay().
-                            withTimeoutOrNull(retryDelay) { monitor.pathChanges().first() }
-                        }
-                        backoffReset = false
-                        val conn = connect()
-                        currentConnection = conn
-                        livenessLost = false
-                        _state.value = ConnectionState.Connected
-                        val livenessJob = launchLivenessJob(monitor, conn)
+                var retryDelay = Duration.ZERO
+
+                // Auto-reset backoff when network becomes available. The monitor is created
+                // per-collection and owned here — closed in the finally below.
+                val monitor = monitorFactory()
+                val monitorJob = launchNetworkMonitorJob(monitor)
+
+                try {
+                    while (currentCoroutineContext().isActive) {
                         try {
-                            conn.receive().collect {
-                                _lastMessageReceived.value = TimeSource.Monotonic.markNow()
-                                emit(it)
+                            _state.value = ConnectionState.Connecting
+                            if (retryDelay > Duration.ZERO && !backoffReset) {
+                                // Race the backoff against a network-path change: a change of network
+                                // identity is the strongest signal a failing reconnect may now succeed, so
+                                // abandon the remaining delay and re-attempt immediately. A monitor that
+                                // cannot identify links reports a constant, so this waits out the full
+                                // backoff, identical to a plain delay().
+                                withTimeoutOrNull(retryDelay) { monitor.pathChanges().first() }
                             }
-                        } finally {
-                            livenessJob?.cancel()
-                        }
-                        if (livenessLost) {
-                            // A liveness probe fired by a network-path change judged the connection
-                            // dead and tore it down. The path just changed, so reconnect now rather
-                            // than waiting out a backoff.
+                            backoffReset = false
+                            val conn = connect()
+                            currentConnection = conn
+                            livenessLost = false
+                            _state.value = ConnectionState.Connected
+                            val livenessJob = launchLivenessJob(monitor, conn)
+                            try {
+                                conn.receive().collect {
+                                    _lastMessageReceived.value = TimeSource.Monotonic.markNow()
+                                    emit(it)
+                                }
+                            } finally {
+                                livenessJob?.cancel()
+                            }
+                            if (livenessLost) {
+                                // A liveness probe fired by a network-path change judged the connection
+                                // dead and tore it down. The path just changed, so reconnect now rather
+                                // than waiting out a backoff.
+                                currentConnection = null
+                                _state.value =
+                                    ConnectionState.Disconnected(
+                                        SocketIOException("connection liveness lost after network change"),
+                                    )
+                                retryDelay = Duration.ZERO
+                                continue
+                            }
+                            // Stream ended cleanly — no retry
+                            _state.value = ConnectionState.Disconnected()
+                            return@flow
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
                             currentConnection = null
-                            _state.value =
-                                ConnectionState.Disconnected(
-                                    SocketIOException("connection liveness lost after network change"),
-                                )
-                            retryDelay = Duration.ZERO
-                            continue
-                        }
-                        // Stream ended cleanly — no retry
-                        _state.value = ConnectionState.Disconnected()
-                        return@flow
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        currentConnection = null
-                        _state.value = ConnectionState.Disconnected(e)
-                        if (livenessLost) {
-                            // Connection was torn down by a liveness probe after a network change;
-                            // its receive() surfaced the teardown as an error. Reconnect now.
-                            retryDelay = Duration.ZERO
-                            continue
-                        }
-                        when (val decision = classifier.classify(e)) {
-                            is ReconnectDecision.GiveUp -> throw e
-                            is ReconnectDecision.RetryAfter -> retryDelay = decision.delay
+                            _state.value = ConnectionState.Disconnected(e)
+                            if (livenessLost) {
+                                // Connection was torn down by a liveness probe after a network change;
+                                // its receive() surfaced the teardown as an error. Reconnect now.
+                                retryDelay = Duration.ZERO
+                                continue
+                            }
+                            when (val decision = classifier.classify(e)) {
+                                is ReconnectDecision.GiveUp -> throw e
+                                is ReconnectDecision.RetryAfter -> retryDelay = decision.delay
+                            }
                         }
                     }
+                } finally {
+                    monitorJob?.cancel()
+                    monitor.close()
                 }
             } finally {
-                receiving = false
-                monitorJob?.cancel()
-                monitor.close()
+                // Unlocked last, after the monitor is closed: the next collector must not be able to
+                // start while this one's monitor is still open.
+                collecting.unlock()
             }
         }
     }
@@ -213,7 +236,7 @@ class ReconnectingConnection<T>(
      */
     override suspend fun send(message: T) {
         check(!closed) { "ReconnectingConnection is closed" }
-        check(receiving) { "send() requires receive() to be collected (it drives reconnection)" }
+        check(collecting.isLocked) { "send() requires receive() to be collected (it drives reconnection)" }
         while (currentCoroutineContext().isActive && !closed) {
             val conn = currentConnection
             if (conn == null) {
