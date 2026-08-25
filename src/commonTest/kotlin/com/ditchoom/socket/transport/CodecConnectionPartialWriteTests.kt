@@ -221,6 +221,9 @@ class CodecConnectionPartialWriteTests {
      *
      * Same failure as [sendCompletesTheFrameAcrossManyPartialWrites]: a sink that accepts a bounded
      * number of bytes per call must still receive every byte, in order, byte-identical.
+     *
+     * Since #469 the write happens on the sender's own writer, so the drain is `close()` rather than
+     * `send()` returning — the same shape this file's bidirectional cases already use.
      */
     @Test
     fun codecSenderCompletesTheFrameAcrossManyPartialWrites() =
@@ -228,20 +231,33 @@ class CodecConnectionPartialWriteTests {
             val message = "the mux leaf must not truncate either"
             val sink = PartialAcceptSink(acceptPerWrite = 4)
 
-            CodecSender(sink, TestStringCodec).send(message)
+            val sender = testCodecSender(sink, TestStringCodec)
+            sender.send(message)
+            sender.close()
 
             assertEquals(encodedSize(message), sink.wire.size, "the frame was truncated")
             assertTrue(sink.writeCalls > 1, "vacuous: the sink accepted everything in one call")
         }
 
-    /** [CodecSender]'s stalled-sink guard, matching `CodecConnection.send`'s. */
+    /**
+     * [CodecSender]'s stalled-sink guard, matching
+     * [aStalledSinkFailsTheWriterLoudlyAndSurfacesAtTheNextSend].
+     *
+     * The failure moved with the writer (#469): a stall can no longer throw out of the `send` that
+     * queued the message, because that call no longer touches the sink. It closes the outbound queue
+     * with itself as the cause instead, so it reaches the caller at the next `send` — still loudly,
+     * still typed, and still carrying how many bytes the sink accepted before it stopped.
+     */
     @Test
-    fun codecSenderFailsLoudlyWhenTheSinkNeverMakesProgress() =
+    fun codecSenderFailsLoudlyAndSurfacesAtTheNextSend() =
         runTest {
-            val failure =
-                assertFailsWith<SocketWriteStalledException> {
-                    CodecSender(StalledSink(), TestStringCodec).send("hello")
-                }
+            val sender = testCodecSender(StalledSink(), TestStringCodec)
+
+            sender.send("hello") // queued; the writer has not run yet
+            testScheduler.runCurrent() // writer picks it up, stalls, and fails the sender
+
+            val failure = assertFailsWith<SocketWriteStalledException> { sender.send("world") }
             assertEquals(0, failure.accepted)
+            assertEquals(encodedSize("hello"), failure.pending)
         }
 }

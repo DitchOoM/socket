@@ -3,6 +3,7 @@ package com.ditchoom.socket.transport
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.flow.ByteSink
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ByteStreamMux
 import com.ditchoom.socket.TransportConfig
@@ -80,3 +81,27 @@ internal fun <T> CoroutineScope.testTypedMuxView(
  * one without saying so.
  */
 internal const val DEFAULT_TEST_OUTBOUND_CAPACITY = 64
+
+/**
+ * [testCodecConnection]'s equivalent for the unidirectional leaf, which gained the same writer in
+ * #469 and therefore the same three required parameters.
+ */
+internal fun <T> CoroutineScope.testCodecSender(
+    sink: ByteSink,
+    codec: Codec<T>,
+    config: TransportConfig = TransportConfig(),
+    encodeContext: EncodeContext = EncodeContext.Empty,
+    id: Long = 0L,
+    outboundCapacity: Int = DEFAULT_TEST_OUTBOUND_CAPACITY,
+    overflowPolicy: OverflowPolicy<T> = OverflowPolicy.Suspend,
+): CodecSender<T> =
+    CodecSender(
+        sink = sink,
+        codec = codec,
+        scope = CoroutineScope(coroutineContext + Job()),
+        outboundCapacity = outboundCapacity,
+        overflowPolicy = overflowPolicy,
+        config = config,
+        encodeContext = encodeContext,
+        id = id,
+    )

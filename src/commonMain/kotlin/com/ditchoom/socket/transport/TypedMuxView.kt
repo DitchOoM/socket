@@ -36,10 +36,8 @@ class TypedMuxView<T>(
      * view creates connections on the caller's behalf, so the caller — not the view — has to state the
      * scope those writers live in and what a full queue means for its traffic (#382).
      *
-     * ⚠️ Bidirectional streams only. [openUnidirectional] returns a [CodecSender], which still encodes
-     * and writes on the **caller's** coroutine and therefore still carries all three #382 defects —
-     * concurrent senders interleave, a cancelled caller truncates, and the caller waits on the peer.
-     * These parameters do not reach it. Tracked separately; do not read the guarantee as mux-wide.
+     * Mux-wide since #469: [openUnidirectional]'s [CodecSender] owns a writer on this same scope and
+     * is minted with this same policy, so the guarantee no longer stops at bidirectional streams.
      */
     private val scope: CoroutineScope,
     private val outboundCapacity: Int,
@@ -81,7 +79,7 @@ class TypedMuxView<T>(
     )
 
     /**
-     * Every [Connection] this view has minted and not yet closed, so [closeMintedConnections] can drain
+     * Every [Sender] this view has minted and not yet closed, so [closeMintedConnections] can drain
      * them (#382).
      *
      * Needed because `send` is now a hand-off: a scoped session like
@@ -92,10 +90,11 @@ class TypedMuxView<T>(
      * An UNLIMITED channel rather than a list plus a lock: minting can happen from any coroutine, and
      * this needs to be safe on Kotlin/Native too, where a shared stdlib collection is not.
      */
-    private val minted = Channel<Connection<T>>(Channel.UNLIMITED)
+    private val minted = Channel<Sender<T>>(Channel.UNLIMITED)
 
     /**
-     * Closes every connection this view minted, which drains each one's outbound queue (bounded by
+     * Closes every stream this view minted — bidirectional connections and unidirectional senders
+     * alike — which drains each one's outbound queue (bounded by
      * `TransportConfig.io.outboundDrainOnClose`). Sequential on purpose: a caller that opened many
      * streams gets a predictable teardown order, and the per-connection bound already caps the total.
      *
@@ -127,7 +126,18 @@ class TypedMuxView<T>(
 
     override suspend fun openUnidirectional(): Sender<T> {
         val sink = raw.openUnidirectional()
-        return CodecSender(sink, codec, config, encodeContext, id = sink.muxStreamIdOrZero())
+        return CodecSender(
+            sink = sink,
+            codec = codec,
+            scope = scope,
+            outboundCapacity = outboundCapacity,
+            overflowPolicy = overflowPolicy,
+            config = config,
+            encodeContext = encodeContext,
+            id = sink.muxStreamIdOrZero(),
+            // Tracked like the bidirectional streams: a CodecSender now owns a writer coroutine and a
+            // buffer pool, so one that is minted and never closed leaks both (#469).
+        ).also { minted.trySend(it) }
     }
 
     override suspend fun acceptBidirectional(): Connection<T> {
