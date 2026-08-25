@@ -124,6 +124,20 @@ internal suspend fun <R> withSemanticSim(
     // the FFI disagree about how much time passed. A virtual clock makes them agree — and makes a
     // deliberate, exact skew expressible instead of something only a loaded machine produces by luck.
     clock: DriverClock = RealDriverClock,
+    // Whether the establishment gate also waits for the SERVER to leave Handshaking.
+    //
+    // Default true, which is what every existing test wants. Pass false for a scenario where the
+    // server may legitimately never move: this sim creates the server conn EAGERLY via `quiche_accept`
+    // before any Initial arrives (see the class KDoc), and a conn that has neither sent nor received
+    // has no timers at all — `connTimeout` returns null and the driver parks on `commands`. That is a
+    // sim-only state; `SharedQuicheServer` only ever creates a conn from a received Initial.
+    //
+    // This is not a convenience. Waiting on it turned a real catch into a miss: under a total
+    // blackhole the CLIENT closes with ByLocal(IdleTimeout) — the #450 signature, deterministically —
+    // and the joint gate then hung on the eager server and reported the whole thing as a
+    // TimeoutCancellationException. The instrument found the thing it was built to find and the gate
+    // threw it away.
+    awaitServer: Boolean = true,
     block: suspend SemanticSimScope.() -> R,
 ): R {
     val api = loadQuicheApi()
@@ -279,7 +293,7 @@ internal suspend fun <R> withSemanticSim(
         try {
             withTimeout(establishTimeout) {
                 clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                if (awaitServer) serverDriver.state.first { it !is QuicConnectionState.Handshaking }
             }
             SemanticSimScope(client, server, clientDriver, serverDriver, pipe).block()
         } finally {

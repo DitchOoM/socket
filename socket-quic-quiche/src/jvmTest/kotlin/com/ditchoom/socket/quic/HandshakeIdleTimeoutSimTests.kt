@@ -88,6 +88,10 @@ class HandshakeIdleTimeoutSimTests {
                 quicOptions = semanticSimOptions(idleTimeout = idleTimeout),
                 establishTimeout = 60.seconds,
                 clock = clock,
+                // Client-only. With the server gate on, a client that closes with
+                // ByLocal(IdleTimeout) — the outcome this sweep exists to count — was converted into
+                // a TimeoutCancellationException by the eagerly-accepted server and classified Threw.
+                awaitServer = false,
             ) {
                 classify(clientDriver.state.value)
             }
@@ -190,28 +194,25 @@ class HandshakeIdleTimeoutSimTests {
         }
 
     /**
-     * **The finding: a handshake that receives nothing never idle-times-out.**
+     * **A stalled handshake DOES terminate, and it terminates the same way an idle connection does.**
      *
-     * Paired with its control in the same test, because separately either half proves nothing — the
-     * control is what rules out "the idle timer does not work in the sim".
+     * This test previously asserted the opposite, and was wrong. It asserted on a
+     * `TimeoutCancellationException` from [withSemanticSim]'s *joint* establishment gate and never
+     * read the client's state, so "the handshake hangs" was inferred rather than measured. What
+     * actually hangs is the sim's eagerly-accepted server, which has no timers because it has never
+     * sent or received — a state `SharedQuicheServer` cannot reach, since it only creates a conn from
+     * a received Initial.
      *
-     * - **After establishment**, a total blackhole closes the connection with
-     *   `ByLocal(IdleTimeout)`. The timer machinery works.
-     * - **During the handshake**, the same blackhole leaves the state in `Handshaking` for the whole
-     *   30-second virtual budget — fifteen times the 2-second idle timeout — and the only thing that
-     *   ever ends it is the caller's own establishment bound.
+     * The control was real but pointed at the wrong thing: it proved the timer machinery worked, while
+     * the broken component was the gate. An instrument's negative space is only believable once the
+     * instrument has been shown to report a known-true positive.
      *
-     * That is #450's CI sighting exactly: `TimeoutCancellationException at JvmHttp3LoopbackTest.kt:34`,
-     * the suite's bound firing because the handshake hung rather than failing. It also explains why
-     * #450 looks load-dependent without load being the cause: contention makes a handshake datagram
-     * late or lost, and *that* stall is what exposes the missing termination. The load does not create
-     * the defect, it reveals it.
-     *
-     * Deliberately not asserted as a defect yet — the assertion here is the *contrast*, so this test
-     * keeps reporting the truth whichever way the handshake path is eventually fixed.
+     * quiche arms the idle timer on the first ack-eliciting **send** (RFC 9000 §10.1's restart clause),
+     * so a client that sent an Initial into a blackhole closes at `max(idleTimeout, 3×PTO)` — which is
+     * exactly the `local: IdleTimeout` in #450's local sighting.
      */
     @Test
-    fun aStalledHandshakeDoesNotIdleOutTheWayAnEstablishedConnectionDoes() =
+    fun aStalledHandshakeTerminatesOnItsIdleTimeoutJustLikeAnIdleConnection() =
         runTest(timeout = 300.seconds) {
             val afterEstablish =
                 withSemanticSim(
@@ -227,33 +228,33 @@ class HandshakeIdleTimeoutSimTests {
                 }
 
             val duringHandshake =
-                runCatching {
-                    withSemanticSim(
-                        // 100% loss from the first datagram: the Initial never lands, nothing returns.
-                        ImpairmentConfig(seed = 99L, loss = 1.0, latency = 5.milliseconds),
-                        quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
-                        establishTimeout = 30.seconds,
-                        clock = SimClock(testScheduler),
-                    ) { clientDriver.state.value }
-                }.getOrElse { it::class.simpleName }
+                withSemanticSim(
+                    // 100% loss from the first datagram: the Initial never lands, nothing returns.
+                    ImpairmentConfig(seed = 99L, loss = 1.0, latency = 5.milliseconds),
+                    quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
+                    establishTimeout = 30.seconds,
+                    clock = SimClock(testScheduler),
+                    // The server never leaves Handshaking here — see the parameter's KDoc. Waiting on
+                    // it is what previously turned this measurement into a fabricated finding.
+                    awaitServer = false,
+                ) { clientDriver.state.value }
 
             println("[#450] blackhole AFTER establishment  -> $afterEstablish")
             println("[#450] blackhole DURING the handshake -> $duringHandshake")
 
+            val expected = QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.IdleTimeout))
             assertEquals(
-                QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.IdleTimeout)),
+                expected,
                 afterEstablish,
-                "control: an established connection under a total blackhole must close on its idle " +
-                    "timeout. If this fails the sim's timer wiring is broken and the contrast below " +
-                    "says nothing about the handshake.",
+                "control: an established connection under a total blackhole closes on its idle timeout",
             )
-            assertTrue(
-                duringHandshake == "TimeoutCancellationException",
-                "a handshake receiving nothing ended as $duringHandshake. It was expected to hang — " +
-                    "the state stays Handshaking through 30s of virtual time against a 2s idle " +
-                    "timeout, and only the caller's establishment bound ends it (#450). If this now " +
-                    "reports Closed(ByLocal(IdleTimeout)) the defect is FIXED and this assertion " +
-                    "should be inverted, not deleted.",
+            assertEquals(
+                expected,
+                duringHandshake,
+                "a handshake receiving nothing must ALSO close on its idle timeout, and by the same " +
+                    "typed reason — that is what #450's local sighting recorded. Measured directly " +
+                    "from the client rather than inferred from an establishment gate, because " +
+                    "inferring it from the gate is how this test previously reported the opposite.",
             )
         }
 }
