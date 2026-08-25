@@ -12,6 +12,10 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 
 /**
@@ -31,8 +35,16 @@ class CodecSender<T>(
 ) : Sender<T> {
     private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
 
+    /**
+     * A fence for [send], not the teardown latch — see [CodecConnection.closed] for why the two must
+     * be different things.
+     */
     @Volatile
     private var closed = false
+
+    /** Teardown's once-only latch and its completion signal; see [CodecConnection.teardownStarted]. */
+    private val teardownStarted = CompletableDeferred<Unit>()
+    private val teardownFinished = CompletableDeferred<Unit>()
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecSender is closed" }
@@ -73,10 +85,30 @@ class CodecSender<T>(
     }
 
     override suspend fun close() {
-        if (closed) return
+        // The winner tears down; everyone else waits for it rather than returning early and reporting
+        // a closed sender whose sink is still open.
+        if (!teardownStarted.complete(Unit)) {
+            teardownFinished.await()
+            return
+        }
         closed = true
-        sink.close()
-        bufferPool.clear()
+        try {
+            // NonCancellable for the same reason as CodecConnection.close: the canonical call site is
+            // `finally { close() }`, and a cancelled caller would otherwise abort at sink.close() —
+            // the first suspension point — leaving the pool uncleared and its native memory held.
+            withContext(NonCancellable) {
+                // Bounded for the same reason as CodecConnection's stream close: unbounded work
+                // inside NonCancellable is UNKILLABLE, and a uni-stream close is a command
+                // round-trip to the QUIC driver loop. A wedged loop must not strand this teardown
+                // with every other closer queued behind it on teardownFinished.
+                withTimeoutOrNull(config.io.outboundDrainOnClose) { sink.close() }
+                // Outside the timeout on purpose: the pool must be cleared even when the sink close
+                // ran out of budget, or a dead peer would leak this sender's encode buffers.
+                bufferPool.clear()
+            }
+        } finally {
+            teardownFinished.complete(Unit)
+        }
     }
 
     private companion object {

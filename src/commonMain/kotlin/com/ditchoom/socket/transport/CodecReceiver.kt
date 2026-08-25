@@ -13,7 +13,7 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import kotlin.concurrent.Volatile
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Adapts a receive-only [ByteSource] to a typed [Receiver] using a [Codec] — the honest counterpart of
@@ -34,8 +34,18 @@ class CodecReceiver<T>(
     private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
-    @Volatile
-    private var receiving = false
+    /**
+     * Mutual exclusion over [streamProcessor] — the same fix, and the same reasoning, as
+     * [CodecConnection.collecting].
+     *
+     * The hand-rolled `@Volatile var receiving` it replaces was check-then-act, so two collectors
+     * could both pass it; on [CodecConnection] that was measured admitting both in 140/300 attempts.
+     * It matters more here than there. This class's [bufferPool] is built with the default
+     * [com.ditchoom.buffer.pool.ThreadingMode.SingleThreaded] — documented "faster but NOT
+     * thread-safe" — and unlike [CodecConnection]'s, the `finally` below **releases the processor and
+     * clears the pool**, so a first collector finishing frees the state a second is still reading.
+     */
+    private val collecting = Mutex()
 
     /**
      * Returns a cold flow of decoded messages. Collecting it drives reads off the [source] until EOF.
@@ -44,17 +54,32 @@ class CodecReceiver<T>(
      */
     override fun receive(): Flow<T> =
         flow {
-            check(!receiving) { "receive() is already being collected concurrently" }
-            receiving = true
+            check(collecting.tryLock()) { "receive() is already being collected concurrently" }
             try {
                 emitDrainedFrames()
                 while (fillFromTransport()) {
                     emitDrainedFrames()
                 }
             } finally {
-                receiving = false
-                streamProcessor.release()
-                bufferPool.clear()
+                // Released on EVERY collection end, as before this change — not once.
+                //
+                // A once-only latch looked safer and was a latent leak: `release()` leaves the
+                // processor reusable, so sequential collection genuinely works, and latching would
+                // mean a second collection's leftovers (the trailing partial frame at EOF) were
+                // never freed at all. The double-release hazard that motivated a latch elsewhere
+                // does not exist here now that [collecting] admits exactly one collector.
+                //
+                // Nested finally so a throwing release cannot strand the lock and poison every later
+                // sequential collection with a misleading "already being collected concurrently".
+                try {
+                    try {
+                        streamProcessor.release()
+                    } finally {
+                        bufferPool.clear()
+                    }
+                } finally {
+                    collecting.unlock()
+                }
             }
         }
 
