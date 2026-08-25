@@ -1239,8 +1239,69 @@ class FfmQuicheApi private constructor(
     //   [272..287] at: timespec           (16 bytes)
     //   Total: 288 bytes
 
-    private val recvInfoArena = Arena.ofAuto()
-    private val sendInfoArena = Arena.ofAuto()
+    // These two structs are owned by the *caller*, not by this object: `recv_info` is handed to
+    // quiche as a raw pointer and stays queued behind in-flight packets, `send_info` is refilled by
+    // quiche on every flush, and the driver releases both explicitly at teardown. So they are
+    // allocated on the C heap and released by [recvInfoFree] / [sendInfoFree] — the same lifetime
+    // every other backend gives them (`quiche_jni.c` uses calloc/free; both cinterop backends use
+    // `nativeHeap`).
+    //
+    // #397: they used to come from two `Arena.ofAuto()` fields, which made both frees no-ops. An
+    // auto arena releases only once the *arena* is unreachable — verified per-arena, not
+    // per-segment: with every segment reference discarded and System.gc() forced, 500 allocations
+    // still produced 500 distinct addresses — and this arena was a field on a singleton that is
+    // process-wide on purpose (#202: dlclosing libquiche crashes BoringSSL's pthread TLS
+    // destructors). Nothing was ever released, so a long-running JDK 21+ server accumulated one
+    // recv_info and one send_info per connection, plus one more recv_info per migration (#395), and
+    // `SharedQuicheServer` caches recv_info per unique *peer source address*, so a public endpoint
+    // leaked per client address.
+    //
+    // Deliberately calloc/free rather than a closeable per-allocation Arena, which is the other
+    // obvious shape: `Arena.ofShared()` is the only closeable kind safe here (recvInfoNew and
+    // recvInfoFree routinely run on different driver threads, and `ofConfined` throws
+    // WrongThreadException across threads), and closing one costs a thread handshake — measured
+    // 89 us/op with 8 busy threads, against 0.125 us/op for calloc+free. That cost sits directly on
+    // the server's per-source-address eviction path, where the insertion rate is set by remote
+    // peers, so it would turn a source-address flood into a global-handshake amplifier. calloc also
+    // keeps the zero-fill `Arena.allocate` guaranteed here, which sendInfoNew relies on.
+    private val hCalloc by lazy { libcDowncall("calloc", FunctionDescriptor.of(ADDRESS, JAVA_LONG, JAVA_LONG)) }
+    private val hFree by lazy { libcDowncall("free", FunctionDescriptor.ofVoid(ADDRESS)) }
+
+    /**
+     * Resolves a libc symbol, unlike [downcall] which resolves against libquiche. `calloc` / `free`
+     * come from the C runtime the JVM is already linked against, so the linker's default lookup
+     * finds them on every supported platform without adding a native dependency.
+     *
+     * `defaultLookup`, `find` and `downcallHandle` are spelled identically on JDK 21's preview FFM
+     * and on JDK 22+, so they are safe in this multi-release tier — see [cString] for the renamed
+     * method that is not.
+     */
+    private fun libcDowncall(
+        name: String,
+        desc: FunctionDescriptor,
+    ): MethodHandle {
+        val symbol =
+            linker
+                .defaultLookup()
+                .find(name)
+                .orElseThrow { UnsatisfiedLinkError("libc: $name") }
+        return linker.downcallHandle(symbol, desc)
+    }
+
+    /**
+     * `calloc(1, size)` as a [size]-byte segment. Zero-filled, matching both what `Arena.allocate`
+     * guaranteed here before #397 and what `quiche_jni.c` gets from its own `calloc`.
+     *
+     * The segment is reinterpreted to global scope on purpose: its lifetime is this class's to
+     * manage through [hFree], and tying it to any arena is what #397 was.
+     */
+    private fun callocOrThrow(size: Long): MemorySegment {
+        val raw = hCalloc.invokeExact(1L, size) as MemorySegment
+        if (raw.address() == 0L) {
+            throw OutOfMemoryError("calloc(1, $size) for a quiche info struct returned NULL")
+        }
+        return raw.reinterpret(size)
+    }
 
     override fun recvInfoNew(
         fromAddr: Long,
@@ -1254,7 +1315,8 @@ class FfmQuicheApi private constructor(
         // DirectByteBuffer-backed sockaddrs, which the GC Cleaner or cache eviction can free while a
         // queued packet still references the recv_info (intermittent SIGSEGV in std_addr_from_c under
         // connection churn). from/to are immutable per recv_info, so a one-time copy is sufficient.
-        val info = recvInfoArena.allocate(RECV_INFO_SIZE.toLong() + fromAddrLen + toAddrLen, 8)
+        // One allocation for the struct AND its inline sockaddrs, so one free releases all of it.
+        val info = callocOrThrow(RECV_INFO_SIZE.toLong() + fromAddrLen + toAddrLen)
         val fromOffset = RECV_INFO_SIZE.toLong() // 32, 8-aligned
         val toOffset = fromOffset + fromAddrLen // 4-aligned (fromAddrLen is 16 or 28)
         MemorySegment.copy(seg(fromAddr).reinterpret(fromAddrLen.toLong()), 0L, info, fromOffset, fromAddrLen.toLong())
@@ -1266,17 +1328,24 @@ class FfmQuicheApi private constructor(
         return QuicheRecvInfo(info.address())
     }
 
+    /**
+     * Releases the struct and the sockaddr copies [recvInfoNew] allocated with it, in one `free`.
+     *
+     * A NULL handle is a no-op, exactly as `free(NULL)` is in C and as the JNI backend's
+     * `nRecvInfoFree` already is. Freeing a handle twice is undefined here in the same way it is on
+     * every other backend; `RecvInfoLifecycleGuard` (`-Dquic.recvInfoGuard=1`) is the designated
+     * detector for that, and duplicating it on this path would put a debug-only map lookup on a
+     * production hot path.
+     */
     override fun recvInfoFree(info: QuicheRecvInfo) {
-        // Arena.ofAuto manages lifecycle — no manual free needed
+        hFree.invokeExact(seg(info.handle))
     }
 
-    override fun sendInfoNew(): QuicheSendInfo {
-        val info = sendInfoArena.allocate(SEND_INFO_SIZE.toLong(), 8)
-        return QuicheSendInfo(info.address())
-    }
+    override fun sendInfoNew(): QuicheSendInfo = QuicheSendInfo(callocOrThrow(SEND_INFO_SIZE.toLong()).address())
 
+    /** Releases the struct [sendInfoNew] allocated. See [recvInfoFree] for the NULL / double-free contract. */
     override fun sendInfoFree(info: QuicheSendInfo) {
-        // Arena.ofAuto manages lifecycle
+        hFree.invokeExact(seg(info.handle))
     }
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
