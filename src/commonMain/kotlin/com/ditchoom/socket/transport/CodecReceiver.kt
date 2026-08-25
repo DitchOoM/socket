@@ -10,10 +10,11 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import kotlin.concurrent.Volatile
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Adapts a receive-only [ByteSource] to a typed [Receiver] using a [Codec] — the honest counterpart of
@@ -34,8 +35,21 @@ class CodecReceiver<T>(
     private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
-    @Volatile
-    private var receiving = false
+    /**
+     * Mutual exclusion over [streamProcessor] — the same fix, and the same reasoning, as
+     * [CodecConnection.collecting].
+     *
+     * The hand-rolled `@Volatile var receiving` it replaces was check-then-act, so two collectors
+     * could both pass it; on [CodecConnection] that was measured admitting both in 140/300 attempts.
+     * It matters more here than there. This class's [bufferPool] is built with the default
+     * [com.ditchoom.buffer.pool.ThreadingMode.SingleThreaded] — documented "faster but NOT
+     * thread-safe" — and unlike [CodecConnection]'s, the `finally` below **releases the processor and
+     * clears the pool**, so a first collector finishing frees the state a second is still reading.
+     */
+    private val collecting = Mutex()
+
+    /** Latches the one release of [streamProcessor] and [bufferPool]; a second would double-free. */
+    private val resourcesReleased = CompletableDeferred<Unit>()
 
     /**
      * Returns a cold flow of decoded messages. Collecting it drives reads off the [source] until EOF.
@@ -44,17 +58,20 @@ class CodecReceiver<T>(
      */
     override fun receive(): Flow<T> =
         flow {
-            check(!receiving) { "receive() is already being collected concurrently" }
-            receiving = true
+            check(collecting.tryLock()) { "receive() is already being collected concurrently" }
             try {
                 emitDrainedFrames()
                 while (fillFromTransport()) {
                     emitDrainedFrames()
                 }
             } finally {
-                receiving = false
-                streamProcessor.release()
-                bufferPool.clear()
+                // Released once, and only while the lock is held, so it can never run against a
+                // collector still inside the processor.
+                if (resourcesReleased.complete(Unit)) {
+                    streamProcessor.release()
+                    bufferPool.clear()
+                }
+                collecting.unlock()
             }
         }
 

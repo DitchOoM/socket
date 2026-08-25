@@ -20,9 +20,11 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -35,6 +37,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.time.TimeSource
@@ -245,11 +249,60 @@ class CodecConnection<T>(
         )
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
+    /**
+     * A **fence**, not a latch.
+     *
+     * Its only job is the fast fail in [send], [preSeed] and [receive] — "this connection is closed,
+     * your call is a mistake" — and `@Volatile` is the right tool for that: publication is all a
+     * fence needs, and the tested contract is an [IllegalStateException] from those entry points.
+     *
+     * What it is deliberately **not** is the thing that decides who runs teardown. It used to be
+     * both, and the conflation was the defect: `if (closed) return; closed = true` is check-then-act,
+     * so concurrent closers all ran the whole teardown — measured at 223/300 attempts, worst case all
+     * eight closers, each calling `streamProcessor.release()` on a deque that is not thread-safe.
+     * Teardown is now latched by [teardownStarted]; this flag only fences.
+     */
     @Volatile
     private var closed = false
 
-    @Volatile
-    private var receiving = false
+    /**
+     * Mutual exclusion over [streamProcessor], which no two coroutines may touch at once.
+     *
+     * This replaces a `@Volatile var receiving` guarded by `check(!receiving); receiving = true` —
+     * check-then-act again, and measured admitting two collectors simultaneously into the flow in
+     * 140/300 attempts. `receiving` was never a lifecycle state; it was a mutual-exclusion latch
+     * written by hand, so it is now a [Mutex] and says so. `tryLock` keeps the loud, deterministic
+     * rejection (silently letting two collectors split a framed stream would be a downgrade, not a
+     * simplification), and unlocking in a `finally` preserves the documented sequential-collection
+     * contract — handshake, then streaming.
+     *
+     * [close] takes the same lock before releasing the processor, which is what fixes the wider bug:
+     * teardown racing a *live collector* threw `ConcurrentModificationException` out of `close()` in
+     * 73/300 attempts with only ONE closer, because the collector's `streamProcessor.append` mutates
+     * the very deque `release()` is iterating.
+     */
+    private val collecting = Mutex()
+
+    /**
+     * Teardown's once-only latch and its completion signal.
+     *
+     * `CompletableDeferred.complete()` returns true for exactly one concurrent caller — measured, not
+     * assumed — so the winner runs teardown and every other caller awaits [teardownFinished] rather
+     * than returning early. Returning early was itself a defect: the loser's `close()` could return
+     * while the stream was still open, for up to the drain budget.
+     *
+     * Deliberately **not** the `outbound` channel's own `close()` return value, tempting though it is
+     * (this class already calls it and discards it). The writer closes `outbound` from its own
+     * `finally` on failure and on scope cancellation, so on exactly the paths where cleanup matters
+     * most a real `close()` caller would be told it lost a race it never entered, and would skip
+     * teardown entirely — trading a survivable double-run for a deterministic FD and native-memory
+     * leak. The latch has to be one only [close] touches.
+     */
+    private val teardownStarted = CompletableDeferred<Unit>()
+    private val teardownFinished = CompletableDeferred<Unit>()
+
+    /** Latches the one release of [streamProcessor] and [bufferPool]; see [releaseResourcesOnce]. */
+    private val resourcesReleased = CompletableDeferred<Unit>()
 
     private val _lastDataReceived = MutableStateFlow<TimeSource.Monotonic.ValueTimeMark?>(null)
 
@@ -265,8 +318,14 @@ class CodecConnection<T>(
      */
     fun preSeed(buffer: ReadBuffer) {
         check(!closed) { "CodecConnection is closed" }
-        check(!receiving) { "preSeed() cannot be called while receive() is being collected" }
-        streamProcessor.append(buffer)
+        // tryLock rather than reading a flag: this both rejects a concurrent collector deterministically
+        // and holds the processor for the duration of the append, so the two cannot mutate it at once.
+        check(collecting.tryLock()) { "preSeed() cannot be called while receive() is being collected" }
+        try {
+            streamProcessor.append(buffer)
+        } finally {
+            collecting.unlock()
+        }
     }
 
     /**
@@ -278,15 +337,22 @@ class CodecConnection<T>(
     override fun receive(): Flow<T> {
         check(!closed) { "CodecConnection is closed" }
         return flow {
-            check(!receiving) { "receive() is already being collected concurrently" }
-            receiving = true
+            // Re-checked at COLLECTION time, not just at flow creation. `receive()` returns a cold
+            // flow, so `val f = receive(); close(); f.collect { }` is a legal ordering that used to
+            // walk straight into a released processor and a cleared pool with no guard at all.
+            check(!closed) { "CodecConnection is closed" }
+            check(collecting.tryLock()) { "receive() is already being collected concurrently" }
             try {
                 emitDrainedFrames()
                 while (fillFromTransport()) {
                     emitDrainedFrames()
                 }
             } finally {
-                receiving = false
+                // Whoever leaves last frees the processor. If close() ran while this collector held
+                // the lock it will have skipped the release rather than corrupt a live deque, so the
+                // obligation lands here — while the lock is still held, so nothing else can be inside.
+                if (closed) releaseResourcesOnce()
+                collecting.unlock()
             }
         }
     }
@@ -449,8 +515,28 @@ class CodecConnection<T>(
      * reach the wire.
      */
     override suspend fun close() {
-        if (closed) return
+        // The winner runs teardown; everyone else waits for it to finish rather than returning early
+        // and reporting a closed connection whose stream is still open.
+        if (!teardownStarted.complete(Unit)) {
+            teardownFinished.await()
+            return
+        }
         closed = true
+        try {
+            // NonCancellable because the canonical call site is `finally { close() }`, and the usual
+            // reason control reached that finally is that the caller was cancelled. Without this the
+            // first suspension point below throws CancellationException and every step after it is
+            // skipped — the transport never closed, the pool never cleared. Measured: the transport
+            // was still open after a cancelled caller's close(). TypedMuxView wraps its close in
+            // runCatching, so that leak is entirely silent. FallbackTransport already closes streams
+            // this way for the same reason.
+            withContext(NonCancellable) { runTeardown() }
+        } finally {
+            teardownFinished.complete(Unit)
+        }
+    }
+
+    private suspend fun runTeardown() {
         outbound.close()
         withTimeoutOrNull(config.io.outboundDrainOnClose) { writerJob.join() }
         writerJob.cancel()
@@ -462,7 +548,28 @@ class CodecConnection<T>(
         writerJob.join()
         // Hands anything still queued to onUndeliveredElement; a no-op once the drain completed.
         outbound.cancel()
+        // Before taking the collector lock: closing the transport is what unblocks a collector parked
+        // in stream.read(), so it can leave the flow and hand the lock over.
         stream.close()
+        // Never release the processor while a collector is inside it. If the lock cannot be taken
+        // within the drain budget the release is deliberately skipped rather than forced — the
+        // collector's own finally performs it on the way out, because `closed` is already true.
+        if (withTimeoutOrNull(config.io.outboundDrainOnClose) { collecting.lock() } != null) {
+            try {
+                releaseResourcesOnce()
+            } finally {
+                collecting.unlock()
+            }
+        }
+    }
+
+    /**
+     * Frees the processor and the encode pool exactly once, whichever of [close] or a departing
+     * collector gets there first. Both call it holding [collecting], so it never runs concurrently
+     * with an `append` or a `readBufferScoped`.
+     */
+    private fun releaseResourcesOnce() {
+        if (!resourcesReleased.complete(Unit)) return
         streamProcessor.release()
         bufferPool.clear()
     }
