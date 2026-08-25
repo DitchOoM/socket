@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -154,6 +155,128 @@ class Http3ConnectionTests {
                     QuicByteStream(QuicStreamId(10), qpackDecoder),
                 ),
             )
+    }
+
+    /**
+     * **A peer QPACK encoder stream that goes quiet must not kill the pump (#472).**
+     *
+     * The peer's encoder stream is idle by design between header-block insertions, but the pump armed
+     * `config.readPolicy.toDeadline()` on every read — [TransportConfig]'s default
+     * `ReadPolicy.Bounded(15.seconds)`. `QuicheDriver` implements that as `withTimeout`, which raises
+     * `TimeoutCancellationException`; that **is** a `CancellationException`, so `readCriticalQpackStream`
+     * took its rethrow arm, and a `launch` child completing with a cancellation is *cancelled, not
+     * failed* — the parent is never told. The pump exited, nothing logged, the connection stayed
+     * "healthy", and every later encoder instruction was silently never applied until a HEADERS block
+     * referencing an un-inserted entry failed to decode, presenting as the peer sending garbage.
+     *
+     * The witness is external and never reads the pump: applying an insert makes [QpackDecoder] report
+     * an Insert Count Increment on **our** decoder stream (§4.4.3), so the bytes the client wrote there
+     * say whether the instruction after the silence was applied. [SilentThenSpeakingStream] enforces the
+     * deadline the way the real QUIC leaf does, rather than ignoring it as [RecordingByteStream] would.
+     *
+     * The peer control stream already read with no deadline; only the two QPACK pumps armed one.
+     */
+    @Test
+    fun aSilentPeerEncoderStreamStillAppliesTheNextInstruction() =
+        runTest {
+            val client = ClientStreams()
+            val insert = QpackEncoderInstruction.InsertWithLiteralName("x-after-silence", "applied")
+            val peerEncoder =
+                QuicByteStream(
+                    QuicStreamId(7),
+                    SilentThenSpeakingStream(
+                        first = listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes(QpackEncoderInstruction.SetCapacity(4096)),
+                        // Longer than the 15s default, so the pre-#472 deadline expires inside the silence.
+                        silence = 20.seconds,
+                        afterSilence = encoderBytes(insert),
+                    ),
+                )
+            val scope =
+                FakeQuicScope(
+                    this,
+                    client.outgoing(),
+                    incoming = listOf(peerEncoder, peerControlStream(clientSettings())),
+                )
+
+            val connection = Http3Connection.bootstrap(scope, TransportConfig())
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(
+                listOf(Http3StreamType.QPACK_DECODER.toInt()),
+                client.qpackDecoder.written.take(1),
+                "sanity: the decoder stream starts with its type prefix",
+            )
+            assertTrue(
+                client.qpackDecoder.written.size > 1,
+                "the peer's encoder stream went quiet for ${20.seconds} — longer than the default " +
+                    "15s read deadline — and then inserted an entry. Applying it must emit an Insert " +
+                    "Count Increment on our decoder stream (RFC 9204 §4.4.3), but the decoder stream " +
+                    "holds only its type prefix, so the instruction was never applied: the pump died " +
+                    "in the silence and took the decoder's dynamic table out of sync with the peer's " +
+                    "(#472). Nothing threw, and connectionError is ${connection.connectionError}.",
+            )
+        }
+
+    /** Encodes one QPACK encoder instruction to the bytes a peer would put on the wire. */
+    private fun encoderBytes(instruction: QpackEncoderInstruction): List<Int> {
+        val buf = BufferFactory.Default.allocate(256)
+        QpackEncoderInstructionCodec.encode(buf, instruction)
+        buf.resetForRead()
+        return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
+    }
+
+    /**
+     * Delivers [first], then stays silent for [silence] before delivering [afterSilence], then ends.
+     *
+     * Unlike [RecordingByteStream] this **honours the deadline**, the way `QuicheDriver`'s read leaf
+     * does (`withTimeout(timeout)`) — a double that ignored it could not reproduce a deadline defect at
+     * all. Under `runTest` the silence is virtual time, so the test is deterministic and instant.
+     */
+    private class SilentThenSpeakingStream(
+        private val first: List<Int>,
+        private val silence: Duration,
+        private val afterSilence: List<Int>,
+    ) : ByteStream {
+        private var stage = 0
+        var closed = false
+            private set
+
+        override val isOpen: Boolean get() = !closed
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+        override suspend fun read(deadline: Duration): ReadResult =
+            withTimeout(deadline) {
+                when (stage++) {
+                    0 -> chunk(first)
+                    1 -> {
+                        delay(silence)
+                        chunk(afterSilence)
+                    }
+                    else -> ReadResult.End
+                }
+            }
+
+        private fun chunk(bytes: List<Int>): ReadResult {
+            val buf = BufferFactory.Default.allocate(bytes.size.coerceAtLeast(1))
+            for (b in bytes) buf.writeByte(b.toByte())
+            buf.resetForRead()
+            return ReadResult.Data(buf)
+        }
+
+        override suspend fun write(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ): BytesWritten {
+            val n = buffer.remaining()
+            repeat(n) { buffer.readByte() }
+            return BytesWritten(n)
+        }
+
+        override suspend fun close() {
+            closed = true
+        }
     }
 
     // --- tests --------------------------------------------------------------

@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -789,10 +790,15 @@ class Http3Connection private constructor(
     private suspend fun readPeerEncoderInstructions(
         stream: QuicByteStream,
         processor: StreamProcessor,
-    ) = readCriticalQpackStream {
+    ) = readCriticalQpackStream(QpackStream.ENCODER) {
         val reader = QpackInstructionReader.encoder(stream, processor, pool)
         while (true) {
-            val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
+            // No deadline, on purpose (#472). config.readPolicy is a *caller-facing* policy — the
+            // request/response reads want its 15s default — but this stream is idle by design between
+            // the peer's header-block insertions, so arming it here made ordinary silence look like a
+            // failure. Liveness belongs to the connection's idle timeout, which is what the peer
+            // control stream a few lines down has always relied on by reading with no deadline.
+            val instruction = reader.next() ?: break
             decoder.applyEncoderInstruction(instruction)
         }
     }
@@ -805,10 +811,11 @@ class Http3Connection private constructor(
     private suspend fun readPeerDecoderInstructions(
         stream: QuicByteStream,
         processor: StreamProcessor,
-    ) = readCriticalQpackStream {
+    ) = readCriticalQpackStream(QpackStream.DECODER) {
         val reader = QpackInstructionReader.decoder(stream, processor)
         while (true) {
-            val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
+            // No deadline, for the same reason as the encoder pump above (#472).
+            val instruction = reader.next() ?: break
             // The peer only acks entries our encoder inserted, so the encoder exists by now; guard anyway.
             encoder?.processDecoderInstruction(instruction)
         }
@@ -819,9 +826,23 @@ class Http3Connection private constructor(
      * stream error its [QpackInstructionReader] / [QpackDecoder] raises) into a connection abort. A clean
      * end-of-stream returns normally; cancellation propagates.
      */
-    private suspend inline fun readCriticalQpackStream(body: () -> Unit) {
+    private suspend inline fun readCriticalQpackStream(
+        qpackStream: QpackStream,
+        body: () -> Unit,
+    ) {
         try {
             body()
+        } catch (e: TimeoutCancellationException) {
+            // BEFORE the CancellationException arm, which would otherwise claim it — TimeoutCancellation
+            // IS a CancellationException, and a `launch` child completing with one is cancelled rather
+            // than failed, so the parent is never told. That is the whole silent-death mechanism in
+            // #472: the pump vanished, nothing logged, and the decoder's table desynced from the peer's.
+            // Note a generic `catch (t: Throwable)` would not help — the cancellation arm claims it first.
+            //
+            // Unreachable now that the pumps read with no deadline, and deliberately kept anyway: if a
+            // deadline ever reaches this loop again, a critical QPACK stream dying must be a typed
+            // connection abort (RFC 9204 §4.2) rather than something the connection survives blind.
+            abortConnection(Http3StreamException(Http3Violation.QpackPumpDeadlineExpired(qpackStream, e)))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Http3StreamException) {
