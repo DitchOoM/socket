@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.testkit.echo.EchoCorruption
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -95,9 +96,23 @@ class StaleConnectionDiagnosticTests {
         }
     }
 
+    /**
+     * One echo round trip, accumulating the raw bytes and decoding **last** (#462).
+     *
+     * This method decoded as it read, straight inside the assertion path. When it caught the echo
+     * corruption on the v4.10.0 release run it died in the decoder with a bare
+     * `MalformedInputException: Input length = 1` and the artifact carried a stack trace and zero
+     * characters of evidence — nothing to tell a cross-connection leak from pool reuse from freed
+     * allocator bytes, which is the whole open question in #401/#366/#415.
+     *
+     * [alsoInFlight] is what makes the capture able to *name* the source rather than only describe it:
+     * if the bytes that come back are another payload this test had live, that is a leak and not
+     * allocator noise, and the report says so.
+     */
     private suspend fun echoRoundTrip(
         server: QuicServer,
         payload: String,
+        alsoInFlight: Collection<String> = emptyList(),
     ): String {
         val result = CompletableDeferred<String>()
         withQuicConnection("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
@@ -106,12 +121,23 @@ class StaleConnectionDiagnosticTests {
             buf.writeString(payload, Charset.UTF8)
             buf.resetForRead()
             stream.write(buf, 5.seconds)
-            val response = stream.read(5.seconds)
-            if (response is ReadResult.Data) {
-                result.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
-            } else {
-                result.complete("no_data")
+
+            // Accumulate raw, decode once at the end — never per chunk.
+            val received = ArrayList<Byte>(payload.length)
+            var chunks = 0
+            while (received.size < payload.length) {
+                val response = stream.read(5.seconds)
+                if (response !is ReadResult.Data) break
+                chunks++
+                repeat(response.buffer.remaining()) { received.add(response.buffer.readByte()) }
             }
+            result.complete(
+                if (chunks == 0) {
+                    "no_data"
+                } else {
+                    EchoCorruption.decodeOrFail(payload, received.toByteArray(), chunks, alsoInFlight)
+                },
+            )
             stream.close()
         }
         return result.await()
