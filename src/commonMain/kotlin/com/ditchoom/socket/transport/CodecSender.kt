@@ -15,6 +15,7 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 
 /**
@@ -96,7 +97,13 @@ class CodecSender<T>(
             // `finally { close() }`, and a cancelled caller would otherwise abort at sink.close() —
             // the first suspension point — leaving the pool uncleared and its native memory held.
             withContext(NonCancellable) {
-                sink.close()
+                // Bounded for the same reason as CodecConnection's stream close: unbounded work
+                // inside NonCancellable is UNKILLABLE, and a uni-stream close is a command
+                // round-trip to the QUIC driver loop. A wedged loop must not strand this teardown
+                // with every other closer queued behind it on teardownFinished.
+                withTimeoutOrNull(config.io.outboundDrainOnClose) { sink.close() }
+                // Outside the timeout on purpose: the pool must be cleared even when the sink close
+                // ran out of budget, or a dead peer would leak this sender's encode buffers.
                 bufferPool.clear()
             }
         } finally {

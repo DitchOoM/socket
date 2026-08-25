@@ -8,15 +8,12 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.IoTuning
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -26,7 +23,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -91,11 +87,12 @@ class CodecLifecycleAssumptionTests {
         const val RACERS = 8
 
         /**
-         * Race attempts per prober. Each attempt builds a fresh connection, so this is also the number
-         * of `BufferPool`s allocated — high enough to make a narrow window likely, low enough that the
-         * suite stays under a few seconds.
+         * Attempts per Part A primitive race. Each attempt spawns [RACERS] real platform threads
+         * (see `raceOnThreads` for why coroutines are not usable here), so this is deliberately far
+         * lower than a coroutine-based loop would need. The properties under test are exact — "exactly
+         * one winner" — so contention, not iteration count, is what makes them meaningful.
          */
-        const val ATTEMPTS = 2_000
+        const val ATTEMPTS = 200
 
         /**
          * Attempts for the Part B race probers. Lower than [ATTEMPTS] because each attempt spawns real
@@ -106,10 +103,29 @@ class CodecLifecycleAssumptionTests {
         /** How long a prober waits to see both racers inside the guarded region before giving up. */
         val RACE_OBSERVATION_WINDOW = 20.milliseconds
 
+        /**
+         * Budget for establishing a race window that MUST exist before the attempt means anything.
+         * Generous on purpose: this is not the thing being measured, and a machine under load must
+         * not be able to turn a real prober into a vacuous one.
+         */
+        val WINDOW_SETUP_BUDGET = 5.seconds
+
         const val THREAD_JOIN_MILLIS = 10_000L
 
         /** Chunks queued in the stream processor before teardown, so its iteration has a window. */
         const val SEEDED_CHUNKS = 64
+
+        /**
+         * Chunks the dripping collector queues before teardown races it — far more than
+         * [SEEDED_CHUNKS], and that is the point.
+         *
+         * `release()` walks the deque, so the length of that walk IS the width of the window an
+         * append can land in. At 64 chunks the walk is short enough that on a loaded machine the
+         * collector is usually parked for the whole of it, and the prober stopped discriminating
+         * in-suite while still catching the defect 116/300 when run alone. Making the walk long
+         * removes the dependence on how much CPU the collector happens to get.
+         */
+        const val DRIP_CHUNKS = 3_000
 
         /** Reads the dripping collector still serves after close(), holding the window open. */
         const val READS_AFTER_CLOSE = 400
@@ -133,16 +149,7 @@ class CodecLifecycleAssumptionTests {
                 var totalWinners = 0
                 repeat(ATTEMPTS) {
                     val channel = Channel<Int>(capacity = 8)
-                    val barrier = CyclicBarrier(RACERS)
-                    val winners =
-                        (1..RACERS)
-                            .map {
-                                async(Dispatchers.Default) {
-                                    barrier.await()
-                                    channel.close()
-                                }
-                            }.awaitAll()
-                            .count { it }
+                    val winners = raceOnThreads(RACERS) { channel.close() }.count { it }
                     assertEquals(
                         1,
                         winners,
@@ -170,18 +177,12 @@ class CodecLifecycleAssumptionTests {
                     val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
                     val bodyRuns = AtomicInteger(0)
                     val teardown = scope.launch(start = CoroutineStart.LAZY) { bodyRuns.incrementAndGet() }
-                    val barrier = CyclicBarrier(RACERS)
                     val starters =
-                        (1..RACERS)
-                            .map {
-                                async(Dispatchers.Default) {
-                                    barrier.await()
-                                    val started = teardown.start()
-                                    teardown.join()
-                                    started
-                                }
-                            }.awaitAll()
-                            .count { it }
+                        raceOnThreads(RACERS) {
+                            val started = teardown.start()
+                            teardown.join()
+                            started
+                        }.count { it }
                     assertEquals(1, starters, "exactly one caller may be told it started the teardown job")
                     assertEquals(1, bodyRuns.get(), "the teardown body must run exactly once")
                     scope.cancel()
@@ -210,19 +211,14 @@ class CodecLifecycleAssumptionTests {
                             Thread.sleep(2)
                             teardownFinished.set(1)
                         }
-                    val barrier = CyclicBarrier(RACERS)
                     val observations =
-                        (1..RACERS)
-                            .map {
-                                async(Dispatchers.Default) {
-                                    barrier.await()
-                                    teardown.start()
-                                    teardown.join()
-                                    // Read AFTER join returns. Every caller — winner and losers alike —
-                                    // must see the completed teardown.
-                                    teardownFinished.get()
-                                }
-                            }.awaitAll()
+                        raceOnThreads(RACERS) {
+                            teardown.start()
+                            teardown.join()
+                            // Read AFTER join returns. Every caller — winner and losers alike —
+                            // must see the completed teardown.
+                            teardownFinished.get()
+                        }
                     assertTrue(
                         observations.all { it == 1 },
                         "every close() caller must observe teardown as finished once join() returns; " +
@@ -287,16 +283,7 @@ class CodecLifecycleAssumptionTests {
             withTimeout(TEST_TIMEOUT) {
                 repeat(ATTEMPTS) {
                     val latch = CompletableDeferred<Unit>()
-                    val barrier = CyclicBarrier(RACERS)
-                    val winners =
-                        (1..RACERS)
-                            .map {
-                                async(Dispatchers.Default) {
-                                    barrier.await()
-                                    latch.complete(Unit)
-                                }
-                            }.awaitAll()
-                            .count { it }
+                    val winners = raceOnThreads(RACERS) { latch.complete(Unit) }.count { it }
                     assertEquals(
                         1,
                         winners,
@@ -322,16 +309,7 @@ class CodecLifecycleAssumptionTests {
             withTimeout(TEST_TIMEOUT) {
                 repeat(ATTEMPTS) {
                     val mutex = Mutex()
-                    val barrier = CyclicBarrier(RACERS)
-                    val admitted =
-                        (1..RACERS)
-                            .map {
-                                async(Dispatchers.Default) {
-                                    barrier.await()
-                                    mutex.tryLock()
-                                }
-                            }.awaitAll()
-                            .count { it }
+                    val admitted = raceOnThreads(RACERS) { mutex.tryLock() }.count { it }
                     assertEquals(1, admitted, "exactly one concurrent collector may hold the lock")
                     mutex.unlock()
                     assertTrue(mutex.tryLock(), "unlocking in a finally must re-admit a later collector")
@@ -442,6 +420,7 @@ class CodecLifecycleAssumptionTests {
             withTimeout(TEST_TIMEOUT) {
                 var attemptsWithDoubleTeardown = 0
                 var worstObserved = 0
+                var fewestObserved = Int.MAX_VALUE
                 repeat(RACE_ATTEMPTS) {
                     val stream = GatedStream()
                     val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -462,12 +441,17 @@ class CodecLifecycleAssumptionTests {
                     val closes = stream.closeCount.get()
                     if (closes > 1) attemptsWithDoubleTeardown++
                     if (closes > worstObserved) worstObserved = closes
+                    // Tracked as well as the max: asserting only the worst case would let an attempt
+                    // that ran teardown ZERO times pass, so a latch that made every caller skip
+                    // teardown would look identical to one that ran it exactly once.
+                    if (closes < fewestObserved) fewestObserved = closes
                     stream.release()
                     scope.cancel()
                 }
                 println(
                     "[assumption] concurrent close(): $attemptsWithDoubleTeardown/$RACE_ATTEMPTS " +
-                        "attempts ran teardown more than once (worst observed: $worstObserved passes)",
+                        "attempts ran teardown more than once (teardown passes per attempt: " +
+                        "min=$fewestObserved max=$worstObserved)",
                 )
                 assertEquals(
                     0,
@@ -476,11 +460,12 @@ class CodecLifecycleAssumptionTests {
                         "the fix this harness saw a double run in 223/300 attempts, worst case all " +
                         "$RACERS closers running the whole teardown",
                 )
+                assertEquals(1, worstObserved, "teardown must never run more than once")
                 assertEquals(
                     1,
-                    worstObserved,
-                    "teardown must run exactly once — never twice, and never zero times (a latch that " +
-                        "let every caller skip teardown would also report no double runs)",
+                    fewestObserved,
+                    "teardown must never run ZERO times either — a latch that let every caller skip " +
+                        "teardown would report no double runs and would pass a max-only assertion",
                 )
             }
         }
@@ -562,11 +547,12 @@ class CodecLifecycleAssumptionTests {
                     val stream = GatedStream()
                     val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
                     val connection = connectionOver(stream, scope)
-                    // Each seed is a lone 0x00 byte: TestStringCodec needs two bytes for a length
-                    // prefix, so no frame is ever complete and every chunk is still queued at close.
+                    // Each seed is a lone 0xFF byte, so the first two declare a 65535-byte frame that
+                    // never completes and every chunk is still queued at close. (0x00 would declare a
+                    // zero-length frame — completable, and drainable by anyone collecting.)
                     repeat(SEEDED_CHUNKS) {
                         val buffer = BufferFactory.Default.allocate(1)
-                        buffer.writeByte(0)
+                        buffer.writeByte(0xFF.toByte())
                         buffer.resetForRead()
                         connection.preSeed(buffer)
                     }
@@ -611,6 +597,32 @@ class CodecLifecycleAssumptionTests {
         }
 
     /**
+     * **A SINGLE `close()` racing a live collector must not throw** — and read the caveat below
+     * before trusting a green run of this one.
+     *
+     * ## ⚠️ This prober discriminates ONLY when run in isolation
+     *
+     * Measured against unfixed code, same machine, same commit:
+     *
+     * | How it was run | Attempts that caught the defect |
+     * |---|---|
+     * | alone (`--tests "*aSingleCloseRacingALiveCollectorNeverThrows"`) | **300/300** |
+     * | as part of this class | **0/300** |
+     *
+     * The window is the microseconds `release()` spends walking the deque, and it only opens if the
+     * collector thread is actually scheduled during that walk. Alone, the machine is idle and it
+     * always is. In-suite it never was — so **a green run of this test inside the full class is not
+     * evidence of anything**, and a regression here would be caught by
+     * [concurrentCloseNeverThrowsFromTeardown] (85/300 in-suite against unfixed code), which exercises
+     * the same `release()`-racing-another-walker path without depending on scheduling luck.
+     *
+     * Kept anyway, because it is the only coverage of the *single-closer* shape — the finding that a
+     * fix to the close latch alone would not have been enough — and because whoever next changes this
+     * area should run it alone and watch it fail before the fix.
+     *
+     * The same discipline as [CodecConnectionThreadedPoolTests], which likewise records that its
+     * harness does not reproduce the defect it was written for rather than implying that it does.
+     *
      * **Defect 4 — a SINGLE `close()` is enough, if anyone is still collecting.**
      *
      * `close()` never stops a live `receive()` collector. The collector's `fillFromTransport()` calls
@@ -635,7 +647,20 @@ class CodecLifecycleAssumptionTests {
                         }
                     // Let the collector get into the read loop and start appending chunks, so the
                     // deque is non-empty and actively mutating when teardown iterates it.
-                    stream.awaitReadsOrTimeout(minimum = SEEDED_CHUNKS, timeout = RACE_OBSERVATION_WINDOW)
+                    // Wait until the collector has PROVABLY queued chunks, with a budget generous
+                    // enough that a loaded machine cannot skip the wait. A 20ms window worked when
+                    // this test ran alone (116/300 caught the defect) and silently stopped
+                    // discriminating in-suite, where earlier tests leave runnable coroutines
+                    // competing for cores: close() then reached the processor before the collector
+                    // had appended anything, so there was no deque to corrupt and the prober passed
+                    // against broken code. The precondition below turns that into a failure.
+                    stream.awaitReadsOrTimeout(minimum = DRIP_CHUNKS, timeout = WINDOW_SETUP_BUDGET)
+                    check(stream.reads.get() >= DRIP_CHUNKS) {
+                        "harness precondition failed: the collector queued only ${stream.reads.get()} " +
+                            "of $DRIP_CHUNKS chunks within $WINDOW_SETUP_BUDGET, so teardown would " +
+                            "not have raced a populated processor and this attempt would measure " +
+                            "nothing. Failing loudly rather than passing vacuously."
+                    }
                     // [DrippingStream] keeps the collector alive for a bounded number of reads AFTER
                     // its close() is observed, which is what holds the window open deterministically.
                     // Two timing-based attempts failed here and both failed SILENTLY, by passing
@@ -815,10 +840,83 @@ class CodecLifecycleAssumptionTests {
             }
         }
 
+    /**
+     * Records the parallelism this run actually had, because that number is what made the harness's
+     * worst bug invisible.
+     *
+     * The Part A races originally blocked eight coroutines on a `CyclicBarrier` over
+     * `Dispatchers.Default`. That passes on a developer laptop and **hangs forever** on a 4-vCPU CI
+     * runner, where the pool has fewer workers than the barrier needs — and the enclosing
+     * `withTimeout` cannot fire to rescue it, because its own resumption needs the same starved pool.
+     * The evidence for "green" was gathered entirely on an 18-core Mac; CI wedged for 15 minutes and
+     * died on a silence watchdog. Printing the core count means the next reader can tell at a glance
+     * whether a green run was a meaningful one.
+     *
+     * `raceOnThreads` no longer depends on this number at all — each racer owns a dedicated platform
+     * thread — so this is a record, not a guard. Verified by pinning a local run to
+     * `-XX:ActiveProcessorCount=2`, below the racer count, where the whole suite still passes.
+     */
+    @Test
+    fun recordsTheParallelismThisRunActuallyHad() {
+        val cores = Runtime.getRuntime().availableProcessors()
+        println("[assumption] availableProcessors=$cores, racers per contended test=$RACERS")
+        assertTrue(
+            cores >= 1,
+            "a run with no reported processors would make every concurrency measurement here suspect",
+        )
+    }
+
+    /**
+     * Runs [block] on [count] **dedicated platform threads**, released together by a spin gate.
+     *
+     * ## Why not `async(Dispatchers.Default)` with a `CyclicBarrier`
+     *
+     * That is what these tests used to do, and it **wedged this PR's own CI**. `CyclicBarrier.await()`
+     * blocks its carrier thread, and `Dispatchers.Default` caps CPU workers at `availableProcessors`
+     * with no compensation for blocked ones. On a 4-vCPU runner, eight racers cannot all get a worker,
+     * so the barrier never trips — and the enclosing `withTimeout` **cannot fire either**, because its
+     * own cancellation resumption has to be dispatched onto the same starved pool. The result is an
+     * unkillable hang, not a failure; the lane only died 15 minutes later on a silence watchdog.
+     *
+     * Measured both ways: a standalone repro passes at 8 and 18 cores and hangs permanently at
+     * `-XX:ActiveProcessorCount=4`. A local reproduction of it here never terminated at all.
+     *
+     * Dedicated threads cannot starve — each racer owns its carrier — and the spin gate releases them
+     * within nanoseconds of each other, which is tighter than park/unpark anyway. The join is checked
+     * rather than best-effort, so a wedged racer fails loudly instead of costing a silent timeout.
+     */
+
+    private fun <T> raceOnThreads(
+        count: Int,
+        block: suspend () -> T,
+    ): List<T> {
+        val gate = AtomicBoolean(false)
+        val results = MutableList<Any?>(count) { null }
+        val threads =
+            (0 until count).map { i ->
+                thread(name = "racer-$i") {
+                    runBlocking {
+                        while (!gate.get()) Thread.onSpinWait()
+                        results[i] = block()
+                    }
+                }
+            }
+        Thread.sleep(1)
+        gate.set(true)
+        threads.forEach { t ->
+            t.join(THREAD_JOIN_MILLIS)
+            check(!t.isAlive) {
+                "racer ${t.name} did not finish within ${THREAD_JOIN_MILLIS}ms — the harness wedged, " +
+                    "which must fail rather than pass quietly"
+            }
+        }
+        @Suppress("UNCHECKED_CAST")
+        return results as List<T>
+    }
+
     private fun connectionOver(
         stream: ByteStream,
         scope: CoroutineScope,
-        drainOnClose: Duration? = null,
     ): CodecConnection<String> =
         CodecConnection(
             stream = stream,
@@ -826,10 +924,7 @@ class CodecLifecycleAssumptionTests {
             scope = scope,
             outboundCapacity = 8,
             overflowPolicy = OverflowPolicy.Suspend,
-            config =
-                drainOnClose
-                    ?.let { TransportConfig(io = IoTuning(outboundDrainOnClose = it)) }
-                    ?: TransportConfig(),
+            config = TransportConfig(),
         )
 
     /**
@@ -921,7 +1016,14 @@ class CodecLifecycleAssumptionTests {
             }
             reads.incrementAndGet()
             val buffer = BufferFactory.Default.allocate(1)
-            buffer.writeByte(0)
+            // 0xFF, not 0x00, and this is the difference between a real prober and a decorative one.
+            // TestStringCodec reads a 2-byte length prefix: a drip of 0x00 declares a ZERO-length
+            // frame, so the collector completed and CONSUMED a frame every two bytes and the deque
+            // never grew past a chunk or two — there was almost nothing for release() to walk. With
+            // 0xFF the declared length is 65535, `peekFrameSize` never reports Complete, and the
+            // chunks genuinely accumulate. Measured: with 0x00 this prober caught the defect 0/300
+            // in-suite; the window it was supposed to open did not exist.
+            buffer.writeByte(0xFF.toByte())
             buffer.resetForRead()
             return ReadResult.Data(buffer)
         }

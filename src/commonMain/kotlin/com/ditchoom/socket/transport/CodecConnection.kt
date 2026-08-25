@@ -288,7 +288,9 @@ class CodecConnection<T>(
      *
      * `CompletableDeferred.complete()` returns true for exactly one concurrent caller — measured, not
      * assumed — so the winner runs teardown and every other caller awaits [teardownFinished] rather
-     * than returning early. Returning early was itself a defect: the loser's `close()` could return
+     * than returning early. A loser whose *own* coroutine is already cancelled is resumed from that
+     * await immediately, which is correct rather than a hole: the winner finishes teardown under
+     * [NonCancellable] regardless of what any loser does. Returning early was itself a defect: the loser's `close()` could return
      * while the stream was still open, for up to the drain budget.
      *
      * Deliberately **not** the `outbound` channel's own `close()` return value, tempting though it is
@@ -322,6 +324,10 @@ class CodecConnection<T>(
         // and holds the processor for the duration of the append, so the two cannot mutate it at once.
         check(collecting.tryLock()) { "preSeed() cannot be called while receive() is being collected" }
         try {
+            // Re-checked under the lock for the same reason as in receive(): the fence above is
+            // outside the mutex, so a close() can complete between the two and this append would
+            // land in a processor that has already been released.
+            check(!closed) { "CodecConnection is closed" }
             streamProcessor.append(buffer)
         } finally {
             collecting.unlock()
@@ -343,6 +349,13 @@ class CodecConnection<T>(
             check(!closed) { "CodecConnection is closed" }
             check(collecting.tryLock()) { "receive() is already being collected concurrently" }
             try {
+                // Re-checked UNDER the lock, and this is not belt-and-braces. The check above is a
+                // fence outside the mutex, so on its own it is the same check-then-act this class
+                // exists to remove: a collector can pass it while open, be preempted, and resume
+                // after a full close() has completed — then take the lock and collect a torn-down
+                // connection, appending chunks into a processor whose release latch has already been
+                // burned, so they are never freed. Holding the lock makes this read final.
+                check(!closed) { "CodecConnection is closed" }
                 emitDrainedFrames()
                 while (fillFromTransport()) {
                     emitDrainedFrames()
@@ -351,8 +364,14 @@ class CodecConnection<T>(
                 // Whoever leaves last frees the processor. If close() ran while this collector held
                 // the lock it will have skipped the release rather than corrupt a live deque, so the
                 // obligation lands here — while the lock is still held, so nothing else can be inside.
-                if (closed) releaseResourcesOnce()
-                collecting.unlock()
+                // Nested finally so a throwing release can never strand the lock: an un-released mutex
+                // would make every later sequential collection fail with a misleading "already being
+                // collected concurrently".
+                try {
+                    if (closed) releaseResourcesOnce()
+                } finally {
+                    collecting.unlock()
+                }
             }
         }
     }
@@ -548,13 +567,27 @@ class CodecConnection<T>(
         writerJob.join()
         // Hands anything still queued to onUndeliveredElement; a no-op once the drain completed.
         outbound.cancel()
-        // Before taking the collector lock: closing the transport is what unblocks a collector parked
-        // in stream.read(), so it can leave the flow and hand the lock over.
-        stream.close()
-        // Never release the processor while a collector is inside it. If the lock cannot be taken
-        // within the drain budget the release is deliberately skipped rather than forced — the
-        // collector's own finally performs it on the way out, because `closed` is already true.
-        if (withTimeoutOrNull(config.io.outboundDrainOnClose) { collecting.lock() } != null) {
+        // Bounded, and inside NonCancellable: an unbounded close here would be UNKILLABLE. A QUIC
+        // stream close is a command round-trip to the driver loop, and a wedged loop would hang this
+        // teardown forever with every other closer queued behind it.
+        //
+        // Note what this does NOT do, despite the obvious assumption: it does not reliably wake a
+        // collector parked in `stream.read()`. MemoryTransport's close cancels the read channel, but
+        // QuicheStreamByteStream.close() is a send-side FIN plus a buffered-chunk release and leaves
+        // a parked read parked. That is why the release below hands off to the collector rather than
+        // waiting for one.
+        withTimeoutOrNull(config.io.outboundDrainOnClose) { stream.close() }
+        // Never release the processor while a collector is inside it — and never WAIT for one either.
+        //
+        // `tryLock`, not a bounded `lock()`. kotlinx's Mutex is not reentrant, and `close()` from
+        // inside this connection's own `receive().collect { }` lambda — the ordinary protocol idiom
+        // `collect { if (it is Disconnect) close() }`, and what ReconnectingConnection does — runs on
+        // the coroutine that already holds this lock. A bounded wait there could never succeed and
+        // burned the whole drain budget inside the message handler on every such close.
+        //
+        // Failing to take it is not a leak: `closed` is already true, so the collector's own finally
+        // performs the release on its way out. This is a hand-off, not a skip.
+        if (collecting.tryLock()) {
             try {
                 releaseResourcesOnce()
             } finally {
@@ -570,8 +603,14 @@ class CodecConnection<T>(
      */
     private fun releaseResourcesOnce() {
         if (!resourcesReleased.complete(Unit)) return
-        streamProcessor.release()
-        bufferPool.clear()
+        // try/finally, because the latch is burned before the work runs: if `release()` threw, the
+        // pool would otherwise never be cleared and no later caller could retry — which is exactly
+        // the "a throw skips the clear and leaks the pool" failure this whole change removes.
+        try {
+            streamProcessor.release()
+        } finally {
+            bufferPool.clear()
+        }
     }
 
     companion object {

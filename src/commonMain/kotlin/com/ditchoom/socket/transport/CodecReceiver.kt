@@ -10,7 +10,6 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
@@ -48,9 +47,6 @@ class CodecReceiver<T>(
      */
     private val collecting = Mutex()
 
-    /** Latches the one release of [streamProcessor] and [bufferPool]; a second would double-free. */
-    private val resourcesReleased = CompletableDeferred<Unit>()
-
     /**
      * Returns a cold flow of decoded messages. Collecting it drives reads off the [source] until EOF.
      * Sequential collection is allowed; concurrent collection throws — two collectors would corrupt
@@ -65,13 +61,25 @@ class CodecReceiver<T>(
                     emitDrainedFrames()
                 }
             } finally {
-                // Released once, and only while the lock is held, so it can never run against a
-                // collector still inside the processor.
-                if (resourcesReleased.complete(Unit)) {
-                    streamProcessor.release()
-                    bufferPool.clear()
+                // Released on EVERY collection end, as before this change — not once.
+                //
+                // A once-only latch looked safer and was a latent leak: `release()` leaves the
+                // processor reusable, so sequential collection genuinely works, and latching would
+                // mean a second collection's leftovers (the trailing partial frame at EOF) were
+                // never freed at all. The double-release hazard that motivated a latch elsewhere
+                // does not exist here now that [collecting] admits exactly one collector.
+                //
+                // Nested finally so a throwing release cannot strand the lock and poison every later
+                // sequential collection with a misleading "already being collected concurrently".
+                try {
+                    try {
+                        streamProcessor.release()
+                    } finally {
+                        bufferPool.clear()
+                    }
+                } finally {
+                    collecting.unlock()
                 }
-                collecting.unlock()
             }
         }
 
