@@ -26,6 +26,23 @@ inputs:
       so a lane proven not to need it can opt out without touching every other consumer.
     required: false
     default: "true"
+  natives-run-id:
+    description: >-
+      Workflow run to pull the `quiche-linux-natives-full` artifact from. Empty (the default) means
+      THIS run, which is what every build-linux consumer job wants: it must test the natives its own
+      run built, and an artifact from another run would be the wrong input.
+
+      Set it only from a standalone workflow that has no `natives` job of its own — the flake hunt is
+      the one caller. Such a workflow otherwise fails here with "Artifact not found", because the
+      artifact is per-run and it never produced one. Requires `github-token`.
+    required: false
+    default: ""
+  github-token:
+    description: >-
+      Token for a cross-run artifact download. Only read when `natives-run-id` is set; the same-run
+      download needs no token.
+    required: false
+    default: ""
   jdk17:
     description: >-
       Also install JDK 17 alongside 21, for the `JDK 17 / JNI` quiche lane. Off by default because
@@ -216,6 +233,9 @@ runs:
       with:
         name: quiche-linux-natives-full
         path: socket-quic-quiche/libs/quiche
+        # Both empty in the default same-run case, which is exactly what the action does without them.
+        run-id: ${{ inputs.natives-run-id }}
+        github-token: ${{ inputs.github-token }}
 
     # ⚠️ Load-bearing, and the reason this whole fan-out works at all.
     #

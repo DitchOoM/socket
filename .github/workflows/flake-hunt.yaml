@@ -79,7 +79,34 @@ jobs:
           git checkout FETCH_HEAD -- .github/actions .github/workflows
           echo "actions restored from ${GITHUB_REF_NAME}; source tree stays at ${{ inputs.ref }}"
 
+      # The natives are a PER-RUN artifact from build-linux's `natives` job, and this workflow has no
+      # such job — the first dispatch died on "Artifact not found: quiche-linux-natives-full". Borrow
+      # the newest unexpired one instead.
+      #
+      # Borrowing is not a compromise here, it is better: #472 changes only Kotlin in socket-http3, so
+      # both arms want a byte-identical libquiche, and pinning one artifact for both removes a variable
+      # rather than introducing one. A hunt for a defect in the NATIVE layer would need its own build.
+      - name: Find a quiche natives artifact to borrow
+        id: natives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=quiche-linux-natives-full&per_page=100" \
+                  --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
+          if [ -z "$RID" ]; then
+            echo "::error::No unexpired quiche-linux-natives-full artifact exists. Run build-linux once, then retry."
+            exit 1
+          fi
+          echo "run-id=$RID" >> "$GITHUB_OUTPUT"
+          echo "borrowing natives from run $RID"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$RID" \
+            --jq '"  built on \(.head_branch) @ \(.head_sha[0:8]), \(.created_at)"'
+
       - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ steps.natives.outputs.run-id }}
+          github-token: ${{ github.token }}
 
       - name: Report the environment being measured
         run: |
@@ -159,6 +186,7 @@ jobs:
             echo "| Tests per iteration | ${TESTS_PER_ITER:-?} |"
             echo "| **Failure rate** | **${F}/${N}** |"
             echo "| Runner | ubuntu-24.04, $(nproc) vCPU |"
+            echo "| quiche natives | borrowed from run ${{ steps.natives.outputs.run-id }} |"
             echo
             if [ "$F" -eq 0 ]; then
               echo "Zero failures. For a **control** arm that means the hunt did not reproduce, and any"
