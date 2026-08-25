@@ -1,0 +1,179 @@
+name: Flake hunt
+
+# Runs one suite N times on a CI runner and reports how often it failed.
+#
+# Why this exists as CI rather than a local loop: #450 is documented load-dependent (1/25 under load,
+# 0/40 twice on a quiet machine), and a developer machine cannot reproduce the condition by being made
+# busy. Measured 2026-08-25: 40 iterations of JvmHttp3LoopbackTest on an 18-core Mac driven to load
+# average 30-56 produced 0/40 on `main` — the arm that MUST reproduce for a comparison to mean
+# anything. A 4-vCPU runner is not a slower version of that machine, it is a different shape: few
+# cores plus slow I/O moves the timing windows rather than widening them uniformly. That is the
+# environment the flake was first seen in, so that is where it has to be hunted.
+#
+# This never fails on a flake — finding one is the point. It reports a rate. Read the summary.
+#
+# Typical use, two arms so the number means something:
+#   gh workflow run flake-hunt.yaml -f ref=main                          -f iterations=25
+#   gh workflow run flake-hunt.yaml -f ref=fix/472-qpack-pump-silent-death -f iterations=25
+# A treatment arm at 0/25 proves nothing unless the control arm reproduced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to test (branch, tag or SHA). The arm under test."
+        required: true
+        default: "main"
+      iterations:
+        description: "How many times to run the suite"
+        required: true
+        default: "25"
+      gradle_task:
+        description: "Gradle task to repeat"
+        required: true
+        default: ":socket-http3:jvmTest"
+      test_filter:
+        description: "--tests pattern. MUST match something; a pattern matching zero tests is treated as an error, not a pass."
+        required: true
+        default: "com.ditchoom.socket.http3.JvmHttp3LoopbackTest"
+      extra_load:
+        description: "Extra CPU burner processes to run alongside (0 = runner's own load only)"
+        required: false
+        default: "0"
+
+concurrency:
+  # Keyed on the ref so a control and a treatment arm can run at the same time, but a second
+  # launch against the same arm replaces the first rather than competing with it for the runner.
+  group: flake-hunt-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hunt:
+    name: "${{ inputs.iterations }}x ${{ inputs.test_filter }} @ ${{ inputs.ref }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      # linux-quiche-env fails loudly on an empty version rather than letting build.gradle.kts fall
+      # back to a live Central query (#329). Nothing here is published, so any pinned value will do.
+      ORG_GRADLE_PROJECT_version: "0.0.0-flakehunt"
+      # Match what build-linux.yaml gives its test lanes, so a timing budget here is the same budget
+      # the real lane runs under. Hunting a timing flake against a different budget measures a
+      # different thing.
+      QUIC_TEST_TIME_SCALE: "3"
+      SOCKET_REQUIRE_ALL_TESTS: "1"
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+
+    steps:
+      - name: Check out the arm under test
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The workflow file may only exist on the branch that added it, so a control arm on `main`
+      # would check out a tree without the composite action this job needs. Take the actions from
+      # the launching ref and the SOURCE from the arm.
+      - name: Restore workflow actions from the launching ref
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "${GITHUB_REF_NAME}"
+          git checkout FETCH_HEAD -- .github/actions .github/workflows
+          echo "actions restored from ${GITHUB_REF_NAME}; source tree stays at ${{ inputs.ref }}"
+
+      - uses: ./.github/actions/linux-quiche-env
+
+      - name: Report the environment being measured
+        run: |
+          set -euo pipefail
+          echo "arm            : ${{ inputs.ref }} ($(git rev-parse --short HEAD))"
+          echo "nproc          : $(nproc)"
+          echo "load           : $(uptime | sed 's/.*average[s]*://')"
+          echo "mem            : $(free -h | awk '/^Mem:/{print $2" total, "$7" available"}')"
+
+      # Compile once, outside the measured loop, so an iteration times the TEST and not javac.
+      # Also the vacuity check: if the filter matches nothing, Gradle reports "No tests found" and
+      # this fails here — before N iterations of nothing get reported as N green runs.
+      - name: Warm the build and prove the filter matches something
+        run: |
+          set -euo pipefail
+          ./gradlew ${{ inputs.gradle_task }} --tests "${{ inputs.test_filter }}" --rerun
+          XML=$(find . -path '*/build/test-results/*' -name '*.xml' -newermt '-10 minutes' | head -1)
+          if [ -z "$XML" ]; then
+            echo "::error::No test XML was produced. The filter '${{ inputs.test_filter }}' ran nothing."
+            exit 1
+          fi
+          COUNT=$(grep -ho 'tests="[0-9]*"' "$XML" | head -1 | tr -dc 0-9)
+          echo "warm run executed ${COUNT} tests"
+          if [ "${COUNT:-0}" -eq 0 ]; then
+            echo "::error::The filter matched a suite that executed 0 tests. That is a vacuous green."
+            exit 1
+          fi
+          echo "TESTS_PER_ITER=${COUNT}" >> "$GITHUB_ENV"
+
+      - name: Run ${{ inputs.iterations }} iterations
+        id: hunt
+        run: |
+          set -uo pipefail
+          N=${{ inputs.iterations }}
+          BURNERS=${{ inputs.extra_load }}
+          mkdir -p /tmp/flake-failures
+
+          if [ "$BURNERS" -gt 0 ]; then
+            for i in $(seq 1 "$BURNERS"); do (while :; do :; done) & done
+            echo "started $BURNERS burner(s); load is now $(uptime | sed 's/.*average[s]*://')"
+          fi
+
+          FAILS=0
+          for i in $(seq 1 "$N"); do
+            if ./gradlew ${{ inputs.gradle_task }} --tests "${{ inputs.test_filter }}" --rerun -q > /tmp/iter.log 2>&1; then
+              echo "iter $i/$N ok (fails=$FAILS)"
+            else
+              FAILS=$((FAILS+1))
+              echo "::warning::iteration $i FAILED (cumulative $FAILS/$i)"
+              # Keep the evidence. A flake hunt whose failures are not capturable just relocates the
+              # problem — the repo's convention is that a sighting arrives with enough to convict.
+              D=/tmp/flake-failures/iter-$i
+              mkdir -p "$D"
+              find . -path '*/build/test-results/*' -name '*.xml' -exec cp {} "$D/" \; 2>/dev/null || true
+              cp /tmp/iter.log "$D/gradle.log" 2>/dev/null || true
+              grep -h -A4 '<failure' "$D"/*.xml 2>/dev/null | head -30 || true
+            fi
+          done
+
+          jobs -p | xargs -r kill 2>/dev/null || true
+          echo "fails=$FAILS" >> "$GITHUB_OUTPUT"
+          echo "total=$N" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          F=${{ steps.hunt.outputs.fails }}
+          N=${{ steps.hunt.outputs.total }}
+          {
+            echo "## Flake hunt"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Arm | \`${{ inputs.ref }}\` |"
+            echo "| Suite | \`${{ inputs.test_filter }}\` |"
+            echo "| Tests per iteration | ${TESTS_PER_ITER:-?} |"
+            echo "| **Failure rate** | **${F}/${N}** |"
+            echo "| Runner | ubuntu-24.04, $(nproc) vCPU |"
+            echo
+            if [ "$F" -eq 0 ]; then
+              echo "Zero failures. For a **control** arm that means the hunt did not reproduce, and any"
+              echo "treatment arm compared against it proves nothing. For a **treatment** arm it is"
+              echo "evidence only if the control arm reproduced."
+            else
+              echo "Reproduced. Per-iteration test XML and Gradle logs are in the \`flake-failures\` artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::${{ inputs.ref }} — ${F}/${N} iterations failed"
+
+      - name: Upload failure evidence
+        if: ${{ !cancelled() && steps.hunt.outputs.fails != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-failures-${{ github.run_id }}
+          path: /tmp/flake-failures
+          if-no-files-found: warn
