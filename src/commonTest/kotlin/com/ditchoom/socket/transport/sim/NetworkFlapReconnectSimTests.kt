@@ -9,13 +9,13 @@ import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
-import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.MemoryTransport
 import com.ditchoom.socket.transport.MockNetworkMonitor
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.ReconnectingConnection
 import com.ditchoom.socket.transport.TestStringCodec
 import com.ditchoom.socket.transport.sim.fixtures.networkFlapReconnect
+import com.ditchoom.socket.transport.testCodecConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -55,6 +55,9 @@ class NetworkFlapReconnectSimTests {
         // never fires and only the identity change can cut the 60s backoff short (same setup as the
         // classic test).
         val monitor = MockNetworkMonitor(NetworkState.LinkLocal(NetworkId.Unidentified))
+        // The connect lambda has no CoroutineScope receiver, so the enclosing test scope is captured
+        // for the connections it builds — same scheduler, so virtual time still governs the writer.
+        val testScope = this
         var connectCount = 0
         val conn =
             ReconnectingConnection(
@@ -65,8 +68,9 @@ class NetworkFlapReconnectSimTests {
                         throw SocketIOException("transient network flap")
                     }
                     val (client, server) = MemoryTransport.createPair()
-                    val codec = CodecConnection(stream = client, codec = TestStringCodec, config = testOptions)
-                    val serverCodec = CodecConnection(stream = server, codec = TestStringCodec, config = testOptions)
+                    val codec = testScope.testCodecConnection(stream = client, codec = TestStringCodec, config = testOptions)
+                    val serverCodec =
+                        testScope.testCodecConnection(stream = server, codec = TestStringCodec, config = testOptions)
                     serverCodec.send("recovered")
                     serverCodec.close()
                     codec

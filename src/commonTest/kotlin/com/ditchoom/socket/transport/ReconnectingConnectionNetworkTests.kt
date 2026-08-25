@@ -15,6 +15,7 @@ import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.canRouteOffLink
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,8 +78,8 @@ class ReconnectingConnectionNetworkTests {
             writePolicy = WritePolicy.Bounded(5.seconds),
         )
 
-    private fun createCodecConnection(clientStream: ByteStream): CodecConnection<String> =
-        CodecConnection(
+    private fun CoroutineScope.createCodecConnection(clientStream: ByteStream): CodecConnection<String> =
+        testCodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
             config = testOptions,
@@ -93,8 +94,8 @@ class ReconnectingConnectionNetworkTests {
             writePolicy = WritePolicy.Bounded(5.seconds),
         )
 
-    private fun createParkingConnection(stream: ByteStream): CodecConnection<String> =
-        CodecConnection(stream = stream, codec = TestStringCodec, config = parkingOptions)
+    private fun CoroutineScope.createParkingConnection(stream: ByteStream): CodecConnection<String> =
+        testCodecConnection(stream = stream, codec = TestStringCodec, config = parkingOptions)
 
     // ── NetworkMonitor integration ──
 

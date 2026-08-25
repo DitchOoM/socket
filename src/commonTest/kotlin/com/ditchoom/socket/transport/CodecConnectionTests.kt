@@ -16,6 +16,7 @@ import com.ditchoom.socket.MockClientToServerSocket
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -74,16 +75,16 @@ class CodecConnectionTests {
             writePolicy = WritePolicy.Bounded(5.seconds),
         )
 
-    private fun createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
+    private fun CoroutineScope.createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
         val (aStream, bStream) = MemoryTransport.createPair(testConfig)
         val a =
-            CodecConnection(
+            testCodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
                 config = testConfig,
             )
         val b =
-            CodecConnection(
+            testCodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
                 config = testConfig,
@@ -207,7 +208,7 @@ class CodecConnectionTests {
 
             // ClientSocket IS a ByteStream — pass the socket straight in, no TcpByteStream adapter.
             val codec =
-                CodecConnection(
+                testCodecConnection(
                     stream = mock,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -230,7 +231,7 @@ class CodecConnectionTests {
             mock.enqueueReadError(SocketTimeoutException("timed out"))
 
             val codec =
-                CodecConnection(
+                testCodecConnection(
                     stream = mock,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -256,7 +257,7 @@ class CodecConnectionTests {
             preSeeded.resetForRead()
 
             val server =
-                CodecConnection(
+                testCodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -265,7 +266,7 @@ class CodecConnectionTests {
 
             // Also send a normal message through the stream
             val client =
-                CodecConnection(
+                testCodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -291,6 +292,9 @@ class CodecConnectionTests {
                     hostname = "localhost",
                     port = 8080,
                     codec = TestStringCodec,
+                    scope = this,
+                    outboundCapacity = DEFAULT_TEST_OUTBOUND_CAPACITY,
+                    overflowPolicy = OverflowPolicy.Suspend,
                     transport = transport,
                     config = testConfig,
                 )
@@ -306,13 +310,13 @@ class CodecConnectionTests {
         runTest {
             val (clientStream, serverStream) = MemoryTransport.createPair()
             val client =
-                CodecConnection(
+                testCodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
                     config = testConfig,
                 )
             val server =
-                CodecConnection(
+                testCodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -337,7 +341,7 @@ class CodecConnectionTests {
         runTest {
             val (clientStream, serverStream) = MemoryTransport.createPair()
             val server =
-                CodecConnection(
+                testCodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -359,7 +363,7 @@ class CodecConnectionTests {
             server.preSeed(buf2)
 
             val client =
-                CodecConnection(
+                testCodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -377,7 +381,7 @@ class CodecConnectionTests {
         runTest {
             val (stream, _) = MemoryTransport.createPair()
             val conn =
-                CodecConnection(
+                testCodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -394,7 +398,7 @@ class CodecConnectionTests {
         runTest {
             val (stream, _) = MemoryTransport.createPair()
             val conn =
-                CodecConnection(
+                testCodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -411,7 +415,7 @@ class CodecConnectionTests {
         runTest {
             val (stream, _) = MemoryTransport.createPair()
             val conn =
-                CodecConnection(
+                testCodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
                     config = testConfig,
@@ -428,7 +432,7 @@ class CodecConnectionTests {
         runTest {
             val (stream, _) = MemoryTransport.createPair()
             val conn =
-                CodecConnection(
+                testCodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
                     config = testConfig,

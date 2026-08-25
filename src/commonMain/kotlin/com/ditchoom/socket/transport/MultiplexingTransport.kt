@@ -49,6 +49,21 @@ interface MultiplexingTransport {
         hostname: String,
         port: Int,
         codec: Codec<T>,
+        /**
+         * Outbound queue depth and full-queue policy for every stream the mux mints — see
+         * [CodecConnection] and [OverflowPolicy] (#382).
+         *
+         * Defaulted to the conservative pair ([OverflowPolicy.Suspend], which never discards a message)
+         * so that existing callers keep compiling and get the fix without a migration. State them
+         * explicitly when the traffic on these streams is recoverable at a higher layer and a lagging
+         * peer should shed rather than apply back-pressure.
+         *
+         * There is deliberately no `scope` parameter here, unlike [CodecConnection]'s constructor:
+         * [withMux] already owns the mux's whole lifetime, so it owns the writers' scope too and
+         * cancels it when [block] returns. A caller supplies a scope only where it owns the object.
+         */
+        outboundCapacity: Int = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
+        overflowPolicy: OverflowPolicy<T> = OverflowPolicy.Suspend,
         config: TransportConfig = TransportConfig(),
         block: suspend StreamMux<T>.() -> R,
     ): R

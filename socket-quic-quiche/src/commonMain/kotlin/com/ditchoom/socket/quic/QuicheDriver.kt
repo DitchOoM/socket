@@ -900,7 +900,51 @@ class QuicheDriver(
                     }
                 val slot = StreamSlot(id)
                 streams[id.id] = slot
-                cmd.result.complete(slot)
+                // Make the stream real to quiche now, so that openStream() means what its name says
+                // (#423). A QUIC stream becomes known to quiche on its first stream_send; reserving the
+                // id here and nowhere else meant a read before the first write asked quiche about a
+                // stream it had never heard of, which answered INVALID_STREAM_STATE — reported to the
+                // caller first as a clean end-of-stream and then, after #421 stopped that laundering, as
+                // a transport failure. Both are wrong for the same reason: the stream has not finished
+                // and it has not failed, it has not started. Starting a reader before writing the
+                // request is an ordinary shape and simply did not work.
+                //
+                // A zero-length, non-fin send is the whole materialisation: quiche creates the stream
+                // and, with no data and no FIN, the stream is not flushable, so nothing is put on the
+                // wire. (Verified separately against quiche's `stream_do_send`, and by the connection
+                // byte counters being unchanged across an openStream that is never written to.)
+                //
+                // The result is CHECKED, not discarded. At the peer's initial_max_streams this send is
+                // the call that fails, with QUICHE_ERR_STREAM_LIMIT — and swallowing it put the #423
+                // bug straight back at the boundary: openStream() returned a slot quiche had refused to
+                // create, and the next read on it answered INVALID_STREAM_STATE, which is exactly the
+                // answer this change exists to remove. The typed error is in hand here, so it is
+                // reported here.
+                val materialised = api.connStreamSend(conn, id, sendAddr, 0, false)
+                // Only STREAM_LIMIT. That is the one code which means "this stream cannot be created",
+                // which is the only thing this call is here to find out. Every other negative code
+                // describes the state of an *existing* stream — STREAM_STOPPED, STREAM_RESET, DONE —
+                // and cannot truthfully apply to an id quiche has never seen; treating them as fatal
+                // here would move error reporting for cases #423 was never about, off the first real
+                // write where it has always belonged.
+                if (materialised.result == QUICHE_ERR_STREAM_LIMIT) {
+                    // Give the id back: nothing was put on the wire and quiche holds no state for it,
+                    // so burning it would leak stream ids on a connection that is merely at its limit.
+                    streams.remove(id.id)
+                    if (cmd.unidirectional) nextUniStreamId -= 4 else nextStreamId -= 4
+                    cmd.result.completeExceptionally(
+                        QuicStreamOpenException(
+                            streamId = id.id,
+                            quicheErrorCode = materialised.result,
+                            message =
+                                "cannot open QUIC stream ${id.id}: the peer's stream limit is reached " +
+                                    "(quiche code ${materialised.result}). Retire or close a stream, " +
+                                    "or raise initial_max_streams.",
+                        ),
+                    )
+                } else {
+                    cmd.result.complete(slot)
+                }
             }
 
             is QuicheCmd.StreamRecv -> {
@@ -2229,6 +2273,13 @@ class QuicheDriver(
          * reachable on a live connection; previously had no Kotlin name anywhere.
          */
         const val QUICHE_ERR_INVALID_STREAM_STATE = -7
+
+        /**
+         * `QUICHE_ERR_STREAM_LIMIT` (quiche.h): the peer's `initial_max_streams` is reached, so quiche
+         * will not create another stream of this kind. Surfaced by the materialising send in
+         * [QuicheCmd.OpenStream] (#423) rather than being discovered later by the first real write.
+         */
+        const val QUICHE_ERR_STREAM_LIMIT = -12
     }
 }
 

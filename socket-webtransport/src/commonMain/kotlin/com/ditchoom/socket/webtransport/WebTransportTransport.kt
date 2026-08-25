@@ -10,6 +10,7 @@ import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MultiplexingTransport
+import com.ditchoom.socket.transport.OverflowPolicy
 import com.ditchoom.socket.transport.SessionOwningByteStream
 import com.ditchoom.socket.transport.SessionTransport
 import com.ditchoom.socket.transport.Transport
@@ -117,6 +118,8 @@ class WebTransportTransport(
         hostname: String,
         port: Int,
         codec: Codec<T>,
+        outboundCapacity: Int,
+        overflowPolicy: OverflowPolicy<T>,
         config: TransportConfig,
         block: suspend StreamMux<T>.() -> R,
     ): R =
@@ -124,9 +127,14 @@ class WebTransportTransport(
         session.use(hostname, port, config) { wt ->
             // A child scope for the lazy incoming-stream collectors; cancelled before the session closes.
             val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+            val mux = WebTransportStreamMux(wt, codec, config, muxScope, outboundCapacity, overflowPolicy)
             try {
-                WebTransportStreamMux(wt, codec, config, muxScope).block()
+                mux.block()
             } finally {
+                // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
+                // let this block return would otherwise lose it silently — and before #382, send()
+                // returning meant written, so that was a correct program (#382, review finding M3).
+                mux.closeMintedConnections()
                 muxScope.cancel()
             }
         }
