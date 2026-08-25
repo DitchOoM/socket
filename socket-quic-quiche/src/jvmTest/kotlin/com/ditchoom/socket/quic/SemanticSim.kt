@@ -111,6 +111,19 @@ internal suspend fun <R> withSemanticSim(
     // W3 trace tap: attached to the CLIENT driver (channel decorator + state mirror + stats poll),
     // mirroring how a consumer records its client-side connection in the field (RFC §5).
     clientRecorder: com.ditchoom.socket.quic.trace.QuicTraceRecorder? = null,
+    // The clock BOTH drivers run on. Defaults to [RealDriverClock], which is what every existing sim
+    // test was written against, so this parameter changes nothing until a caller opts in.
+    //
+    // Pass a [SimClock] to make quiche's OWN timers virtual (via [CallerClockQuicheApi], which
+    // [QuicheDriver] installs only when the clock reports [DriverTime.Virtual]). The KDoc above calls
+    // the RealDriverClock default "a wiring choice, not a limitation" — this is the wire.
+    //
+    // Why it matters beyond speed: under `runTest` with a REAL driver clock the sim's timing is
+    // incoherent rather than merely slow. Our own delay()s fast-forward on the test scheduler while
+    // quiche's internal PTO/idle timers read a wall clock that has barely moved, so the two sides of
+    // the FFI disagree about how much time passed. A virtual clock makes them agree — and makes a
+    // deliberate, exact skew expressible instead of something only a loaded machine produces by luck.
+    clock: DriverClock = RealDriverClock,
     block: suspend SemanticSimScope.() -> R,
 ): R {
     val api = loadQuicheApi()
@@ -224,7 +237,7 @@ internal suspend fun <R> withSemanticSim(
                 clientMode = true,
                 isServer = false,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = RealDriverClock,
+                clock = clock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
                 recorder = clientRecorder,
@@ -248,7 +261,7 @@ internal suspend fun <R> withSemanticSim(
                 clientMode = true,
                 isServer = true,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = RealDriverClock,
+                clock = clock,
                 driverContext = EmptyCoroutineContext,
                 random = serverRandom,
                 onCleanup = {
