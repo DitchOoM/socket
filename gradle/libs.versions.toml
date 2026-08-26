@@ -25,6 +25,10 @@ ktlint = "14.2.0"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
+# Lincheck — model checks concurrent code by enumerating interleavings under a deterministic
+# scheduler and reporting a minimal failing schedule, instead of sampling them the way a thread
+# prober does. JVM-only. Group id is `org.jetbrains.lincheck` as of 3.x.
+lincheck = "3.7"
 kotlinWrappers = "2026.6.0"
 # 6.1.0 adds the raw ByteStreamMux primitive + BufferedByteSource.peek (buffer PR #239).
 # 6.5.0→6.7.2: buffer-pool use-after-release fail-fast (#261), okio interop, codec-framed
@@ -148,6 +152,7 @@ buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" 
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinxCoroutines" }
+lincheck = { module = "org.jetbrains.lincheck:lincheck", version.ref = "lincheck" }
 kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref = "kotlinWrappers" }
 kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }

@@ -498,6 +498,7 @@ kotlin {
         jvmTest.get().dependsOn(commonJvmTest)
         jvmTest.dependencies {
             implementation(libs.kotlinx.coroutines.debug)
+            implementation(libs.lincheck)
         }
         androidUnitTest.dependsOn(commonJvmTest)
         androidUnitTest.dependencies {
@@ -648,6 +649,36 @@ ktlint {
     android.set(true)
     filter {
         exclude("**/generated/**")
+    }
+}
+
+// Lincheck model checking runs in its own task, isolated from the rest of the JVM suite.
+//
+// Lincheck fails *open*: when its bytecode instrumentation cannot hook a class it logs
+// "Unable to transform <class>, proceeding without instrumentation", explores nothing, and reports
+// the run as PASSING. Any other JVM agent on the same test JVM can cause that — it was measured in
+// the sibling `buffer` repo, where Kover's coverage agent silently reduced a 22-class model check to
+// a no-op that went green in 1.5s. `socket` attaches no coverage agent today, so this task is
+// insurance rather than a workaround: it keeps the model-checking JVM free of agents by
+// construction, and [LincheckHarnessProbe] fails loudly if anything ever changes that.
+tasks.register<Test>("lincheckTest") {
+    description = "Model checks concurrent code with Lincheck (runs on a JVM with no other agents)"
+    group = "verification"
+    dependsOn("compileTestKotlinJvm")
+}
+
+afterEvaluate {
+    val jvmTestTask = tasks.named<Test>("jvmTest").get()
+    tasks.named<Test>("lincheckTest") {
+        testClassesDirs = jvmTestTask.testClassesDirs
+        classpath = jvmTestTask.classpath
+        filter { includeTestsMatching("*Lincheck*") }
+    }
+    tasks.named<Test>("jvmTest") {
+        filter {
+            excludeTestsMatching("*Lincheck*")
+            isFailOnNoMatchingTests = false
+        }
     }
 }
 
