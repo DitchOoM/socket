@@ -305,6 +305,30 @@ sealed interface Http3Violation {
         override fun describe() = "malformed QPACK ${stream.label} instruction" + (cause?.message?.let { ": $it" } ?: "")
     }
 
+    /**
+     * A QPACK [stream]'s pump stopped on a read deadline instead of on end-of-stream (#472).
+     *
+     * A peer's QPACK encoder stream is idle *by design* between header-block insertions, so a
+     * caller-facing read deadline armed on it expires during ordinary silence. The pumps no longer arm
+     * one — they read with `Duration.INFINITE`, delegating liveness to the connection's idle timeout,
+     * exactly as the control stream already did — so this should be unreachable.
+     *
+     * It exists because the failure it names was **silent**: `QuicheDriver` implements a deadline as
+     * `withTimeout`, whose `TimeoutCancellationException` is a `CancellationException`, and a `launch`
+     * child completing with one is treated as *cancelled, not failed*. The pump exited, the connection
+     * stayed "healthy", and the decoder's dynamic table silently desynced from the peer's until some
+     * later HEADERS block referencing an un-inserted entry failed to decode — presenting as the peer
+     * sending garbage. Naming the timeout makes a recurrence a typed connection abort instead.
+     */
+    data class QpackPumpDeadlineExpired(
+        val stream: QpackStream,
+        val cause: Throwable? = null,
+    ) : Http3Violation {
+        override val errorCode get() = stream.streamErrorCode
+
+        override fun describe() = "QPACK ${stream.label} stream read hit its deadline while the pump was waiting for the peer"
+    }
+
     /** A QPACK [stream] ended in the middle of an instruction. */
     data class QpackInstructionTruncated(
         val stream: QpackStream,
@@ -442,6 +466,7 @@ private fun Http3Violation.causeOrNull(): Throwable? =
         is Http3Violation.MalformedFrame -> cause
         is Http3Violation.QpackDecompressionFailed -> cause
         is Http3Violation.MalformedQpackInstruction -> cause
+        is Http3Violation.QpackPumpDeadlineExpired -> cause
         is Http3Violation.WebTransportCloseReasonNotUtf8 -> cause
         is Http3Violation.ControlStreamError -> cause
         is Http3Violation.PushStreamError -> cause
