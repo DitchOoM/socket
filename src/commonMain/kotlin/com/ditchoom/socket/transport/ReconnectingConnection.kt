@@ -12,10 +12,8 @@ import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.default
 import com.ditchoom.socket.pathChanges
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -30,7 +28,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
@@ -113,29 +110,21 @@ class ReconnectingConnection<T>(
     private var livenessLost = false
 
     /**
-     * Teardown's once-only latch and its completion signal.
+     * Teardown's once-only latch — see [TeardownOnce] for why a flag cannot do this job.
      *
-     * This replaces a `@Volatile var closed` guarded by `if (closed) return; closed = true` — the
-     * same check-then-act the `receiving` flag carried until #473, one field over, and the same
-     * shape #471 removed from [CodecConnection] twenty minutes earlier. `@Volatile` publishes the
-     * write; it does not make the read-then-write pair atomic, so two callers can both read `false`
-     * and both run teardown — closing [currentConnection] twice. Model checked in
-     * `TeardownOnceLincheckTest`: Lincheck reports the interleaving directly.
+     * This class is where that type's reasoning was found to have failed to travel: `close()` kept
+     * `if (closed) return; closed = true` for 21 minutes after #471 removed exactly that shape from
+     * [CodecConnection], and through #473's edit to the collector guard one field above.
+     * `ReconnectingConnectionCloseRaceTests` measured it closing the same inner connection twice in
+     * 20/300 contended attempts.
      *
-     * `CompletableDeferred.complete()` returns true for exactly one concurrent caller, so the latch
-     * and the "did I win" answer are the same read and cannot drift apart the way a flag and its
-     * guard can.
-     *
-     * The flag was also doing a second job: [send] and [receive] read it as "is this connection
-     * closed". [closed] below answers that *through* the latch for the same reason #473 answers
-     * "is a collector running" through [Mutex.isLocked] — two readings of one fact must not be two
-     * fields.
+     * [closed] below is the fence [send] and [receive] fast-fail on. It reads through the latch for
+     * the same reason #473 answers "is a collector running" through [Mutex.isLocked] — two readings
+     * of one fact must not be two fields.
      */
-    private val teardownStarted = CompletableDeferred<Unit>()
-    private val teardownFinished = CompletableDeferred<Unit>()
+    private val teardown = TeardownOnce()
 
-    /** Whether [close] has begun. Derived from [teardownStarted] so it cannot disagree with it. */
-    private val closed: Boolean get() = teardownStarted.isCompleted
+    private val closed: Boolean get() = teardown.begun
 
     /**
      * Mutual exclusion over the reconnect loop, which exactly one collector may run.
@@ -282,27 +271,12 @@ class ReconnectingConnection<T>(
         throw IllegalStateException("ReconnectingConnection is closed")
     }
 
-    override suspend fun close() {
-        if (!teardownStarted.complete(Unit)) {
-            // Losers await the winner rather than returning early. Returning early is itself a
-            // defect (#471): the loser's close() would return while the connection was still being
-            // torn down, telling its caller the connection is closed when it is not.
-            teardownFinished.await()
-            return
+    override suspend fun close() =
+        teardown.runOnce {
+            currentConnection?.close()
+            currentConnection = null
+            _state.value = ConnectionState.Disconnected()
         }
-        try {
-            // NonCancellable because the canonical call site is `finally { close() }`, where the
-            // surrounding scope is usually already cancelling: without it the teardown below is
-            // skipped and currentConnection is leaked.
-            withContext(NonCancellable) {
-                currentConnection?.close()
-                currentConnection = null
-                _state.value = ConnectionState.Disconnected()
-            }
-        } finally {
-            teardownFinished.complete(Unit)
-        }
-    }
 
     /**
      * Launches a coroutine that resets backoff whenever the network becomes worth attempting.

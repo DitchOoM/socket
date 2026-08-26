@@ -1,8 +1,5 @@
 package com.ditchoom.socket.transport
 
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import org.jetbrains.lincheck.LincheckAssertionError
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
@@ -90,29 +87,17 @@ class BareBooleanTeardownLincheckTest {
 }
 
 /**
- * The shape #471 established: `CompletableDeferred.complete()` returns true for exactly one
- * concurrent caller, so the latch and the "did I win" answer cannot drift apart the way a flag and
- * its guard can. Losers await the winner rather than returning early — returning early was itself
- * the defect #471 names, because a caller's `close()` could return while teardown was still in
- * flight. Teardown runs [NonCancellable] because the canonical call site is `finally { close() }`.
+ * [TeardownOnce], the extracted primitive — the shape #471 established, now a type rather than
+ * seven lines each of [CodecConnection], [CodecSender] and [ReconnectingConnection] rewrote by hand.
+ * This is its conformance test, and the arm above is the control proving the test can tell the two
+ * apart.
  */
 class LatchedTeardownLincheckTest {
     private val resource = CountingResource()
-    private val teardownStarted = CompletableDeferred<Unit>()
-    private val teardownFinished = CompletableDeferred<Unit>()
+    private val teardown = TeardownOnce()
 
     @Operation
-    suspend fun close() {
-        if (!teardownStarted.complete(Unit)) {
-            teardownFinished.await()
-            return
-        }
-        try {
-            withContext(NonCancellable) { resource.close() }
-        } finally {
-            teardownFinished.complete(Unit)
-        }
-    }
+    suspend fun close() = teardown.runOnce { resource.close() }
 
     @Validate
     fun releasedAtMostOnce() {
