@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       items: [
         'guides/building-a-protocol',
+        'guides/shrinking-and-multi-release-jars',
       ],
     },
     {
