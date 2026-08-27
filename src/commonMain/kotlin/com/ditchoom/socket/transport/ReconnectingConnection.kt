@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
@@ -103,14 +104,43 @@ class ReconnectingConnection<T>(
     @Volatile
     private var currentConnection: Connection<T>? = null
 
+    /**
+     * Guards the handoff of [currentConnection] between the reconnect loop and [close].
+     *
+     * `@Volatile` publishes the field; it does not make "connect, then adopt" and "read, then close"
+     * two atomic steps. Without this lock `close()` can read [currentConnection] while the loop is
+     * still inside `connect()`, close nothing, and leave the loop to adopt and collect a connection
+     * nobody will ever close — the loop parks inside `receive()` and never reaches the `!closed`
+     * check that would have stopped it. Found by ReconnectingConnectionTeardownProbeTests under the
+     * full suite's load, having passed when run alone.
+     *
+     * Distinct from [collecting], which excludes two collectors from each other; this one orders a
+     * collector against a closer.
+     */
+    private val connectionHandoff = Mutex()
+
     @Volatile
     private var backoffReset = false
 
     @Volatile
     private var livenessLost = false
 
-    @Volatile
-    private var closed = false
+    /**
+     * Teardown's once-only latch — see [TeardownOnce] for why a flag cannot do this job.
+     *
+     * This class is where that type's reasoning was found to have failed to travel: `close()` kept
+     * `if (closed) return; closed = true` for 21 minutes after #471 removed exactly that shape from
+     * [CodecConnection], and through #473's edit to the collector guard one field above.
+     * `ReconnectingConnectionCloseRaceTests` measured it closing the same inner connection twice in
+     * 20/300 contended attempts.
+     *
+     * [closed] below is the fence [send] and [receive] fast-fail on. It reads through the latch for
+     * the same reason #473 answers "is a collector running" through [Mutex.isLocked] — two readings
+     * of one fact must not be two fields.
+     */
+    private val teardown = TeardownOnce()
+
+    private val closed: Boolean get() = teardown.begun
 
     /**
      * Mutual exclusion over the reconnect loop, which exactly one collector may run.
@@ -156,7 +186,13 @@ class ReconnectingConnection<T>(
                 val monitorJob = launchNetworkMonitorJob(monitor)
 
                 try {
-                    while (currentCoroutineContext().isActive) {
+                    // `!closed` as well as `isActive`: close() does not cancel the collector's
+                    // context, so cancellation alone never ends this loop. Without it a close()
+                    // races its own teardown — the inner receive() fails *because* close() shut the
+                    // transport, the classifier reads that as a retryable network fault, and the
+                    // loop opens a replacement connection that nothing is left holding a reference
+                    // to close. Found by ReconnectingConnectionTeardownProbeTests.
+                    while (currentCoroutineContext().isActive && !closed) {
                         try {
                             _state.value = ConnectionState.Connecting
                             if (retryDelay > Duration.ZERO && !backoffReset) {
@@ -169,7 +205,21 @@ class ReconnectingConnection<T>(
                             }
                             backoffReset = false
                             val conn = connect()
-                            currentConnection = conn
+                            val adopted =
+                                connectionHandoff.withLock {
+                                    if (closed) {
+                                        false
+                                    } else {
+                                        currentConnection = conn
+                                        true
+                                    }
+                                }
+                            if (!adopted) {
+                                // close() ran while connect() was in flight, so it read a null
+                                // currentConnection and closed nothing. This connection is ours.
+                                conn.close()
+                                return@flow
+                            }
                             livenessLost = false
                             _state.value = ConnectionState.Connected
                             val livenessJob = launchLivenessJob(monitor, conn)
@@ -185,7 +235,7 @@ class ReconnectingConnection<T>(
                                 // A liveness probe fired by a network-path change judged the connection
                                 // dead and tore it down. The path just changed, so reconnect now rather
                                 // than waiting out a backoff.
-                                currentConnection = null
+                                connectionHandoff.withLock { currentConnection = null }
                                 _state.value =
                                     ConnectionState.Disconnected(
                                         SocketIOException("connection liveness lost after network change"),
@@ -199,7 +249,14 @@ class ReconnectingConnection<T>(
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            currentConnection = null
+                            connectionHandoff.withLock { currentConnection = null }
+                            if (closed) {
+                                // This exception is our own teardown surfacing through the reader,
+                                // not a fault to classify: close() shut the transport underneath it
+                                // and has already published Disconnected(). Retrying here is how a
+                                // closed connection reopens itself.
+                                return@flow
+                            }
                             _state.value = ConnectionState.Disconnected(e)
                             if (livenessLost) {
                                 // Connection was torn down by a liveness probe after a network change;
@@ -257,13 +314,15 @@ class ReconnectingConnection<T>(
         throw IllegalStateException("ReconnectingConnection is closed")
     }
 
-    override suspend fun close() {
-        if (closed) return
-        closed = true
-        currentConnection?.close()
-        currentConnection = null
-        _state.value = ConnectionState.Disconnected()
-    }
+    override suspend fun close() =
+        teardown.runOnce {
+            // Under the lock so a connect() in flight cannot slip a connection in behind this read.
+            // `closed` is already true here (runOnce completes the latch before invoking this), so a
+            // loop that takes the lock after this sees it and closes its own connection instead.
+            val conn = connectionHandoff.withLock { currentConnection.also { currentConnection = null } }
+            conn?.close()
+            _state.value = ConnectionState.Disconnected()
+        }
 
     /**
      * Launches a coroutine that resets backoff whenever the network becomes worth attempting.

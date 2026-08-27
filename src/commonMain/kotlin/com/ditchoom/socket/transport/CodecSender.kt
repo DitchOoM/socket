@@ -16,20 +16,16 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.concurrent.Volatile
 
 /**
  * Adapts a send-only [ByteSink] to a typed [Sender] using a [Codec] — the honest counterpart of
@@ -179,16 +175,11 @@ class CodecSender<T>(
             }
         }
 
-    /**
-     * A fence for [send], not the teardown latch — see [CodecConnection.closed] for why the two must
-     * be different things.
-     */
-    @Volatile
-    private var closed = false
+    /** Teardown's once-only latch; see [TeardownOnce]. */
+    private val teardown = TeardownOnce()
 
-    /** Teardown's once-only latch and its completion signal; see [CodecConnection.teardownStarted]. */
-    private val teardownStarted = CompletableDeferred<Unit>()
-    private val teardownFinished = CompletableDeferred<Unit>()
+    /** The fence [send] fast-fails on, read through the latch so the two cannot drift. */
+    private val closed: Boolean get() = teardown.begun
 
     /**
      * Hands [message] to this sender's writer. Does not touch the sink.
@@ -245,23 +236,7 @@ class CodecSender<T>(
             ?: SocketClosedException.General("CodecSender is closed; the message was not queued")
     }
 
-    override suspend fun close() {
-        // The winner tears down; everyone else waits for it rather than returning early and reporting
-        // a closed sender whose sink is still open.
-        if (!teardownStarted.complete(Unit)) {
-            teardownFinished.await()
-            return
-        }
-        closed = true
-        try {
-            // NonCancellable for the same reason as CodecConnection.close: the canonical call site is
-            // `finally { close() }`, and a cancelled caller would otherwise abort at the first
-            // suspension point, leaving the sink open and the pool uncleared.
-            withContext(NonCancellable) { runTeardown() }
-        } finally {
-            teardownFinished.complete(Unit)
-        }
-    }
+    override suspend fun close() = teardown.runOnce { runTeardown() }
 
     private suspend fun runTeardown() {
         outbound.close()

@@ -24,7 +24,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -38,9 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.concurrent.Volatile
 import kotlin.time.TimeSource
 
 /**
@@ -250,20 +247,16 @@ class CodecConnection<T>(
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
     /**
-     * A **fence**, not a latch.
+     * The fence [send], [preSeed] and [receive] fast-fail on — "this connection is closed, your call
+     * is a mistake" — read through [teardown] so it cannot disagree with it.
      *
-     * Its only job is the fast fail in [send], [preSeed] and [receive] — "this connection is closed,
-     * your call is a mistake" — and `@Volatile` is the right tool for that: publication is all a
-     * fence needs, and the tested contract is an [IllegalStateException] from those entry points.
-     *
-     * What it is deliberately **not** is the thing that decides who runs teardown. It used to be
-     * both, and the conflation was the defect: `if (closed) return; closed = true` is check-then-act,
-     * so concurrent closers all ran the whole teardown — measured at 223/300 attempts, worst case all
-     * eight closers, each calling `streamProcessor.release()` on a deque that is not thread-safe.
-     * Teardown is now latched by [teardownStarted]; this flag only fences.
+     * It used to be both fence and latch, and that conflation was the defect:
+     * `if (closed) return; closed = true` is check-then-act, so concurrent closers all ran the whole
+     * teardown — measured at 223/300 attempts, worst case all eight closers, each calling
+     * `streamProcessor.release()` on a deque that is not thread-safe. The roles are still distinct;
+     * see [TeardownOnce.begun] for why one field can serve both once the latch is real.
      */
-    @Volatile
-    private var closed = false
+    private val closed: Boolean get() = teardown.begun
 
     /**
      * Mutual exclusion over [streamProcessor], which no two coroutines may touch at once.
@@ -283,25 +276,8 @@ class CodecConnection<T>(
      */
     private val collecting = Mutex()
 
-    /**
-     * Teardown's once-only latch and its completion signal.
-     *
-     * `CompletableDeferred.complete()` returns true for exactly one concurrent caller — measured, not
-     * assumed — so the winner runs teardown and every other caller awaits [teardownFinished] rather
-     * than returning early. A loser whose *own* coroutine is already cancelled is resumed from that
-     * await immediately, which is correct rather than a hole: the winner finishes teardown under
-     * [NonCancellable] regardless of what any loser does. Returning early was itself a defect: the loser's `close()` could return
-     * while the stream was still open, for up to the drain budget.
-     *
-     * Deliberately **not** the `outbound` channel's own `close()` return value, tempting though it is
-     * (this class already calls it and discards it). The writer closes `outbound` from its own
-     * `finally` on failure and on scope cancellation, so on exactly the paths where cleanup matters
-     * most a real `close()` caller would be told it lost a race it never entered, and would skip
-     * teardown entirely — trading a survivable double-run for a deterministic FD and native-memory
-     * leak. The latch has to be one only [close] touches.
-     */
-    private val teardownStarted = CompletableDeferred<Unit>()
-    private val teardownFinished = CompletableDeferred<Unit>()
+    /** Teardown's once-only latch; [TeardownOnce] carries the reasoning this class established. */
+    private val teardown = TeardownOnce()
 
     /** Latches the one release of [streamProcessor] and [bufferPool]; see [releaseResourcesOnce]. */
     private val resourcesReleased = CompletableDeferred<Unit>()
@@ -533,27 +509,7 @@ class CodecConnection<T>(
      * handler under the drop policies — the same statement as an overflow: this message will not
      * reach the wire.
      */
-    override suspend fun close() {
-        // The winner runs teardown; everyone else waits for it to finish rather than returning early
-        // and reporting a closed connection whose stream is still open.
-        if (!teardownStarted.complete(Unit)) {
-            teardownFinished.await()
-            return
-        }
-        closed = true
-        try {
-            // NonCancellable because the canonical call site is `finally { close() }`, and the usual
-            // reason control reached that finally is that the caller was cancelled. Without this the
-            // first suspension point below throws CancellationException and every step after it is
-            // skipped — the transport never closed, the pool never cleared. Measured: the transport
-            // was still open after a cancelled caller's close(). TypedMuxView wraps its close in
-            // runCatching, so that leak is entirely silent. FallbackTransport already closes streams
-            // this way for the same reason.
-            withContext(NonCancellable) { runTeardown() }
-        } finally {
-            teardownFinished.complete(Unit)
-        }
-    }
+    override suspend fun close() = teardown.runOnce { runTeardown() }
 
     private suspend fun runTeardown() {
         outbound.close()
