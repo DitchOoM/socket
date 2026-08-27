@@ -842,7 +842,10 @@ jobs:
             done
           ) &
           WD=$!
-          ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
+          # :lincheckTest is a SEPARATE task from :jvmTest — Lincheck fails open under another
+          # JVM agent, so it runs on a clean JVM and jvmTest excludes it. `check` does not
+          # depend on it, so omitting it here means the model checks never run at all.
+          ./gradlew :jvmTest :lincheckTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
             :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
             :network-monitor:netnsJvmProbeClasspath \
             :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest \
