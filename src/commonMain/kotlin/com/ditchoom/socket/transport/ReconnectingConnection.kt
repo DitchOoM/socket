@@ -285,12 +285,18 @@ class ReconnectingConnection<T>(
                             }
                             // Stream ended cleanly — no retry.
                             //
-                            // Deliberately publishes Disconnected WITHOUT vacating, which is what
-                            // this path did before the slot existed and is preserved verbatim: the
-                            // read side ending says nothing about the write side, so send() may
-                            // still be usable, and keeping the slot is also what leaves close()
-                            // something to close. It is the one place the slot and the published
-                            // state disagree on purpose. See RECONNECTING-CLEAN-END below.
+                            // Publishes Disconnected but deliberately does NOT vacate, and is the
+                            // only path that does so. `conn.receive()` completing does not close
+                            // `conn` — a finished Flow is not a closed transport — and the slot is
+                            // the last reference to it. Vacating here would drop that reference and
+                            // leave the connection open with nobody able to close it; keeping it is
+                            // what lets a later close() still release it.
+                            //
+                            // NOT kept so send() can keep writing: send() requires
+                            // `collecting.isLocked`, and returning from this flow runs the finally
+                            // that unlocks it, so send() is refused from this moment whatever the
+                            // slot holds. Both halves are pinned by
+                            // ReconnectingConnectionCleanEndTests, and vacating here fails it.
                             _state.value = ConnectionState.Disconnected()
                             return@flow
                         } catch (e: CancellationException) {
