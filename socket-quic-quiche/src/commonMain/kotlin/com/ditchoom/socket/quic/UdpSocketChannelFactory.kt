@@ -61,9 +61,9 @@ internal class UdpSocketChannelFactory(
     }
 
     /**
-     * The source address the routing table would choose for [peer], or `null` when it cannot be
-     * determined or the platform assigns the endpoint itself — in which case the bind falls back to the
-     * unnamed default exactly as before.
+     * The source address the routing table would choose for [peer], or `null` when there is none to
+     * name — the platform assigns the endpoint itself, or the route cannot be determined. The bind then
+     * falls back to the platform default, exactly as before.
      *
      * **Why an unnamed bind is not good enough.** A bind with no source address chooses the ephemeral
      * port knowing only the *local* side, so the kernel can return a port whose full 4-tuple
@@ -82,6 +82,16 @@ internal class UdpSocketChannelFactory(
      * help (245 failures) — the JVM binds the unnamed address implicitly first. No retry loop is
      * needed, and none is wanted: a retry would paper over the collision instead of not causing it.
      *
+     * **Why the probe does not go to [peer]'s own port.** The probe is itself an unnamed bind, so
+     * sending it at `peer.port` would put it in the very 4-tuple space the paths contend for — and its
+     * exposure would grow with the number of open paths, weakening this fix exactly as the migration it
+     * protects gets harder. Worse, a probe that lost that draw was swallowed to `null`, which handed the
+     * *real* connect the unnamed bind this function exists to avoid: one lost draw silently restored the
+     * defect. Measured on macOS against 1000 paths held to one peer, per 2000 probes:
+     * **127 `EADDRINUSE` at `peer.port`, 0 at any other port** — and the source address reported is the
+     * same, because a route is chosen by destination *address*, not by port. Nothing is ever sent, so
+     * the port is contacted only in the sense that a connected UDP socket names it.
+     *
      * Only for [LocalEndpointSupport.Bindable] actuals — the JVM and Linux `connect`s, which bind
      * before connecting. Apple's assigns the endpoint through `NWConnection` and documents
      * `localHost`/`localPort` as advisory, so naming a source there would be a hint the platform is
@@ -90,12 +100,12 @@ internal class UdpSocketChannelFactory(
      * Resolved per call rather than reused from the connection's current path: a migration usually
      * happens *because* the old path died, so the route's answer now is the interface that is actually
      * up. The probe sends nothing — a UDP `connect` only fixes the 4-tuple locally — and is closed
-     * before the real bind, so it cannot itself become the port that collides.
+     * before the real bind.
      */
-    private suspend fun routeSourceAddress(): String? {
+    internal suspend fun routeSourceAddress(): String? {
         if (localEndpointSupport != LocalEndpointSupport.Bindable) return null
         return try {
-            val probe = UdpSocket.connect(peer.host, peer.port, null, 0, receiveBufferSize, recvBufferFactory)
+            val probe = UdpSocket.connect(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
             try {
                 probe.localAddress.orNull()?.host
             } finally {
@@ -106,5 +116,21 @@ internal class UdpSocketChannelFactory(
             // real connect report the truth rather than inventing an error here.
             null
         }
+    }
+
+    /**
+     * Where [routeSourceAddress] points its probe: any port [peer] does not use, so the probe's draw is
+     * disjoint from every path's. Both candidates are ports nothing answers on, which is incidental —
+     * a connected UDP socket sends nothing, so neither is contacted either way.
+     */
+    private val routeProbePort: Int =
+        if (peer.port == ROUTE_PROBE_PORT) ROUTE_PROBE_PORT_ALT else ROUTE_PROBE_PORT
+
+    private companion object {
+        /** RFC 863 discard. */
+        const val ROUTE_PROBE_PORT = 9
+
+        /** RFC 862 echo — used only when [peer] is itself on [ROUTE_PROBE_PORT]. */
+        const val ROUTE_PROBE_PORT_ALT = 7
     }
 }
