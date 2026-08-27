@@ -121,7 +121,16 @@ kotlinWrappers = "2026.6.0"
 # The count is now atomic exactly when threadingMode == MultiThreaded; SingleThreaded keeps the plain
 # counter (atomic RMW measured ~33% slower on x86_64, free on ARM64). Drop-in, no source changes here.
 # This pin is the #401 fix; the JDK17/JNI soak lane going green-in-a-streak is its acceptance test.
-buffer = "6.30.5"
+# 6.30.6 (buffer #381): the same defect by another route — #374 made the refcount atomic but left the
+# resurrection CHECK non-atomic. addRef() incremented, then undid the increment if it had resurrected a
+# released chunk, and that undo published a transient count a concurrent addRef() read as a live
+# reference and accepted. So the guard that existed to refuse a reference handed one out, leaving the
+# count at 1 and the next releaseRef() to double-release — #401's failure again, reached differently.
+# Found by Lincheck, not by soak: the shape needs the chunk already at zero, which the churn-based
+# stress test never reaches, so no iteration count would have found it. Now increment-if-nonzero (CAS),
+# which never makes a rejected reference visible; cost unchanged (the atomic RMW is the expense, and a
+# retry loop measured the same as fetch-and-add). Drop-in, no source changes here.
+buffer = "6.30.6"
 ksp = "2.3.9"
 # 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
 # no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
