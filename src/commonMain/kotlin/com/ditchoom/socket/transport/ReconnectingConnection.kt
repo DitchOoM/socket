@@ -9,6 +9,7 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.default
 import com.ditchoom.socket.pathChanges
@@ -90,6 +91,7 @@ class ReconnectingConnection<T>(
     private val classifier: ReconnectionClassifier = DefaultReconnectionClassifier(),
     private val monitorFactory: () -> NetworkMonitor = { NetworkMonitor.default() },
     private val liveness: Liveness? = null,
+    private val config: TransportConfig = TransportConfig(),
 ) : Connection<T> {
     override val id: Long = 0L
 
@@ -376,7 +378,15 @@ class ReconnectingConnection<T>(
             // loop that takes the lock after this sees it and closes its own connection instead.
             when (val held = vacate(ConnectionState.Disconnected())) {
                 Slot.Vacant -> Unit
-                is Slot.Held -> held.connection.close()
+                is Slot.Held ->
+                    // Bounded, and inside NonCancellable: an unbounded close here would be
+                    // UNKILLABLE — the same rule CodecConnection.runTeardown and
+                    // CodecSender.runTeardown state and follow. This one closes whatever the
+                    // caller's `connect` lambda returned, so the work is arbitrary user code and
+                    // the bound matters more here than there, not less. Without it a connection
+                    // whose close() never returns hangs close() forever with no way to interrupt
+                    // it, because #485 made this teardown NonCancellable.
+                    withTimeoutOrNull(config.io.outboundDrainOnClose) { held.connection.close() }
             }
         }
 
