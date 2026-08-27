@@ -81,6 +81,10 @@ class BareBooleanTeardownLincheckTest {
             ModelCheckingOptions()
                 .threads(2)
                 .actorsPerThread(1)
+                // Same budget as the candidate arm, so "one fails and one passes" compares
+                // like with like rather than comparing two different search efforts.
+                .iterations(20)
+                .invocationsPerIteration(200)
                 .check(this::class)
         }
     }
@@ -110,6 +114,19 @@ class LatchedTeardownLincheckTest {
         ModelCheckingOptions()
             .threads(3)
             .actorsPerThread(1)
+            // Bounded explicitly. Lincheck's defaults (100 iterations x 10,000 invocations) took
+            // 538s for THIS test alone on an unloaded 18-core machine — model checking suspend
+            // functions costs far more per invocation than the plain counter in
+            // LincheckHarnessProbe, which finishes in 0.15s on the same defaults. On a 4-vCPU CI
+            // runner sharing the lane with ~35 other test tasks it ran past 18 minutes and the
+            // hang watchdog killed the Gradle daemon.
+            //
+            // The scenario is three callers and one actor each, over a latch with two states. Its
+            // reachable interleaving space is small; the default budget re-explores it thousands of
+            // times over. These bounds still cover it — verified by the control arm above, which
+            // must fail, and does, under the same budget.
+            .iterations(20)
+            .invocationsPerIteration(200)
             .check(this::class)
     }
 }
