@@ -20,24 +20,24 @@ import kotlin.test.assertTrue
 class StrippedReactiveTierTest {
     @Test
     fun aJdk21RuntimeWithNoReactiveClassesIsAStrippedArtifact() {
-        assertTrue(reactiveTierWasStripped(specVersion = "21", reactiveTierPresent = false))
-        assertTrue(reactiveTierWasStripped(specVersion = "21.0.2", reactiveTierPresent = false))
-        assertTrue(reactiveTierWasStripped(specVersion = "25", reactiveTierPresent = false))
+        assertTrue(reactiveTierWasStripped(specVersion = "21", reactiveTierPresent = { false }))
+        assertTrue(reactiveTierWasStripped(specVersion = "21.0.2", reactiveTierPresent = { false }))
+        assertTrue(reactiveTierWasStripped(specVersion = "25", reactiveTierPresent = { false }))
     }
 
     @Test
     fun anIntactArtifactIsSilentEvenWhenTheBaseTierRuns() {
         // Exploded class directories let the base tier win on classpath order with the reactive
         // classes still right there — a local arrangement, not a damaged artifact.
-        assertFalse(reactiveTierWasStripped(specVersion = "21", reactiveTierPresent = true))
+        assertFalse(reactiveTierWasStripped(specVersion = "21", reactiveTierPresent = { true }))
     }
 
     @Test
     fun anOlderJdkIsTheBaseTierWorkingAsDesigned() {
         // Nothing to strip: the tier was never selected on these, so polling is the correct answer.
-        assertFalse(reactiveTierWasStripped(specVersion = "1.8", reactiveTierPresent = false))
-        assertFalse(reactiveTierWasStripped(specVersion = "11", reactiveTierPresent = false))
-        assertFalse(reactiveTierWasStripped(specVersion = "17", reactiveTierPresent = false))
+        assertFalse(reactiveTierWasStripped(specVersion = "1.8", reactiveTierPresent = { false }))
+        assertFalse(reactiveTierWasStripped(specVersion = "11", reactiveTierPresent = { false }))
+        assertFalse(reactiveTierWasStripped(specVersion = "17", reactiveTierPresent = { false }))
     }
 
     @Test
@@ -45,7 +45,7 @@ class StrippedReactiveTierTest {
         // A warning that fires on a guess is worse than none.
         for (unknown in listOf(null, "", "   ", "unknown", "sapmachine")) {
             assertFalse(
-                reactiveTierWasStripped(specVersion = unknown, reactiveTierPresent = false),
+                reactiveTierWasStripped(specVersion = unknown, reactiveTierPresent = { false }),
                 "spec version <$unknown> is not evidence of a stripped tier",
             )
         }
@@ -59,6 +59,18 @@ class StrippedReactiveTierTest {
         assertTrue(jdkIsAtLeast("21", 21))
         assertFalse(jdkIsAtLeast("20", 21))
         assertTrue(jdkIsAtLeast("21.0.9", 21))
+    }
+
+    @Test
+    fun anOlderJdkIsAnsweredWithoutEverProbingTheArtifact() {
+        // Every JDK 8-20 startup reaches the base selector legitimately. Probing there would charge
+        // all of them a thrown ClassNotFoundException to reach a conclusion the version already gave.
+        var probed = false
+        reactiveTierWasStripped(specVersion = "17") {
+            probed = true
+            false
+        }
+        assertFalse(probed, "the version check must short-circuit the class probe")
     }
 
     @Test

@@ -45,8 +45,8 @@ fun defaultJvmNetworkMonitor(): NetworkMonitor {
  */
 private fun warnIfReactiveTierWasStripped() {
     if (!warnedAboutStrippedTier.compareAndSet(false, true)) return
-    val present = classPresent(REACTIVE_TIER_CLASS)
-    if (!reactiveTierWasStripped(System.getProperty("java.specification.version"), present)) return
+    val specVersion = System.getProperty("java.specification.version")
+    if (!reactiveTierWasStripped(specVersion) { classPresent(REACTIVE_TIER_CLASS) }) return
     System.err.println(STRIPPED_TIER_WARNING)
     System.err.flush()
 }
@@ -76,11 +76,15 @@ internal fun classPresent(name: String): Boolean =
  * Split from its call site so it can be tested on both answers without a classloader that lies:
  * the interesting case is a JDK 21+ runtime whose artifact has no reactive classes, which no test
  * JVM running this suite can be in.
+ *
+ * [reactiveTierPresent] is by-name because the version check has to short-circuit it. Every JDK 8
+ * through 20 startup reaches here and is answered by the version alone, and probing first would
+ * charge all of them a thrown ClassNotFoundException to reach a conclusion already known.
  */
 internal fun reactiveTierWasStripped(
     specVersion: String?,
-    reactiveTierPresent: Boolean,
-): Boolean = !reactiveTierPresent && jdkIsAtLeast(specVersion, REACTIVE_TIER_JDK)
+    reactiveTierPresent: () -> Boolean,
+): Boolean = jdkIsAtLeast(specVersion, REACTIVE_TIER_JDK) && !reactiveTierPresent()
 
 /**
  * `java.specification.version` is `"1.8"` through JDK 8 and `"9"`, `"21"`, occasionally `"21.0.2"`
