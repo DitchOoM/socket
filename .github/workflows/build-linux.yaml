@@ -118,7 +118,7 @@ jobs:
       # points at ~/.gradle/caches, byte-for-byte the same directory the explicit step already
       # saves, so enabling both stored that tree TWICE per run under two different keys.
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -1627,7 +1627,7 @@ jobs:
       # after every Gradle step in the job, so repointing JAVA_HOME here affects nothing.
       - name: Set up JDK 25 for the linkage check
         id: jdk25
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
           java-version: '25'
