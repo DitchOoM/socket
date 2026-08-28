@@ -60,6 +60,7 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           # Manual dispatch has no PR to inspect — take flow and version
           # bump straight from the workflow inputs. Lets us recover from a
@@ -75,8 +76,15 @@ jobs:
             exit 0
           fi
 
+          # Dependabot stamps its own semver labels (`major`/`minor`/`patch` — the size of the
+          # DEPENDENCY's bump; nothing in .github/dependabot.yml asks for them) on every PR it opens,
+          # and they collide with the release-bump labels read here: #484/#486 carried `major`, and
+          # #117's `minor` actually published socket 3.5.0 (run 27028250316). A dependabot PR is
+          # therefore patch or nothing — its labels never choose this library's bump.
           gradle_args=""
-          if ${{ contains(github.event.pull_request.labels.*.name, 'major') }}; then
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            echo "PR authored by ${PR_AUTHOR}: version-bump labels are inert (patch unless skip-release)"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'major') }}; then
             gradle_args="-PincrementMajor=true"
           elif ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}; then
             gradle_args="-PincrementMinor=true"
