@@ -22,6 +22,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -533,6 +535,26 @@ class Http3Connection private constructor(
         }
     }
 
+    /**
+     * Abandon a peer-initiated [stream] whose read expired [config]'s deadline before the router could
+     * tell what it was (#477), returning the named failure for whoever was waiting on the stream. The
+     * peer is told: RFC 9114 §4.6 has a client abort reading a push stream it gives up on with
+     * `H3_REQUEST_CANCELLED`, and §4.1.1 makes that the client's "data no longer needed" code generally —
+     * a plain `close()` would FIN only our send side and leave the peer's half open until the connection
+     * ends. Quietly, because the connection may already be gone; the abandonment is per-stream either way.
+     */
+    private suspend fun abandonStalledStream(
+        stream: QuicByteStream,
+        cause: TimeoutCancellationException,
+    ): Http3StreamException {
+        val failure =
+            Http3StreamException(
+                Http3Violation.PeerStreamDeadlineExpired(stream.streamId, config.readPolicy.toDeadline(), cause),
+            )
+        resetStreamQuietly(stream, failure.errorCode)
+        return failure
+    }
+
     /** Reset [stream] with [errorCode], ignoring a failure if the connection/stream is already gone. */
     private suspend fun resetStreamQuietly(
         stream: QuicByteStream,
@@ -695,7 +717,8 @@ class Http3Connection private constructor(
      * Reads a peer-initiated stream's unidirectional type prefix and dispatches it. Only the
      * control stream is parsed; QPACK/push/reserved streams are drained so the peer isn't
      * flow-control stalled. A single stream's failure is swallowed — it must not cancel the
-     * connection scope — and the control handler resolves [peerSettings] on its own error path.
+     * connection scope — and the control handler resolves [peerSettings] on its own error path. A
+     * read deadline expiring is one such failure, named and told to the peer (#477), not a cancellation.
      */
     private suspend fun route(stream: QuicByteStream) {
         // One processor, shared so bytes buffered while reading the type prefix carry into the
@@ -749,6 +772,22 @@ class Http3Connection private constructor(
                 // Reserved/GREASE streams carry data we ignore; drain to keep flow control flowing.
                 else -> drain(stream)
             }
+        } catch (e: TimeoutCancellationException) {
+            // BEFORE any CancellationException handling (#477): TimeoutCancellation IS a
+            // CancellationException, and a `launch` child completing with one is cancelled rather than
+            // failed — so the bidi peek above (or a WebTransport handler's Session ID read) expiring made
+            // this child vanish with a bare close, indistinguishable from a cancelled router, and nothing
+            // told the peer. The deadline itself is right — a peer that opens a stream and says nothing
+            // must not be waited on forever (unlike #472's idle-by-design QPACK pumps) — so it stays;
+            // this arm gives its expiry a name and tells the peer. One stream's stall is not the
+            // connection's: swallow, exactly as the arm below does.
+            //
+            // But not by type alone: a parent's withTimeout cancels this child WITH its own
+            // TimeoutCancellationException, so the exception cannot say whose deadline expired. The job
+            // can — a read deadline leaves this coroutine active, a cancellation does not, and that one
+            // must stay the cancellation it is.
+            currentCoroutineContext().ensureActive()
+            abandonStalledStream(stream, e)
         } catch (e: Http3StreamException) {
             // One stream erroring must not take down the connection. The control handler has
             // already recorded any SETTINGS failure into peerSettingsDeferred.
@@ -1063,6 +1102,14 @@ class Http3Connection private constructor(
             responseOwnsProcessor = true
             entry.responseDeferred.complete(response)
             response.awaitClosed()
+        } catch (e: TimeoutCancellationException) {
+            // BEFORE the CancellationException arm, which would otherwise claim it (#477): the Push ID,
+            // or the response HEADERS after it, never came. Name the stall, tell the peer (RFC 9114 §4.6),
+            // and fail the push that was waiting on it — once the Push ID has arrived there is one; before
+            // that there is nothing to fail, and the reset is the only report the stall can get.
+            currentCoroutineContext().ensureActive() // a parent's timeout cancelling us is not a stall — see route()
+            val failure = abandonStalledStream(stream, e)
+            entry?.let { if (!it.responseDeferred.isCompleted) it.responseDeferred.completeExceptionally(failure) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {

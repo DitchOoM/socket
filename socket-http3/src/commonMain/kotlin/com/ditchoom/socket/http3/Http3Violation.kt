@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicStreamId
+import kotlin.time.Duration
 
 /**
  * A typed HTTP/3 (RFC 9114 §8.1) / QPACK (RFC 9204 §8.3) protocol violation. This is the reason an
@@ -221,6 +222,36 @@ sealed interface Http3Violation {
         override val errorCode get() = Http3ErrorCode.REQUEST_CANCELLED
 
         override fun describe() = "server cancelled push $pushId"
+    }
+
+    // --- Peer-stream router (#477) — H3_REQUEST_CANCELLED -----------------------------------------
+
+    /**
+     * A peer-initiated [streamId] said nothing for [deadline] before the router could tell what it was
+     * (#477): a bidirectional stream's WebTransport signal, or a push stream's Push ID / response HEADERS,
+     * never arrived. Unlike the QPACK pumps of #472 these streams are *not* idle by design — a peer that
+     * opens a stream and says nothing must not be waited on forever — so the deadline is right and stays;
+     * what was wrong was that expiring it looked like cancellation.
+     *
+     * `QuicheDriver` implements a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
+     * `CancellationException`; a `launch` child completing with one is *cancelled, not failed*, so
+     * `route()`'s per-stream catch arms never saw it and the child vanished with a bare `close()` —
+     * indistinguishable from a genuinely cancelled router, and on QUIC a send-side FIN only, leaving the
+     * peer's half of the stream open. Naming it lets the router abandon the stream out loud: [errorCode]
+     * is `H3_REQUEST_CANCELLED`, the code RFC 9114 §4.1.1 / §4.6 gives a client for "data no longer
+     * needed", sent as RESET_STREAM + STOP_SENDING; a push whose Push ID had already arrived fails its
+     * awaiting [Http3ServerPush.response] with this. The connection survives.
+     */
+    data class PeerStreamDeadlineExpired(
+        val streamId: QuicStreamId,
+        val deadline: Duration,
+        val cause: Throwable? = null,
+    ) : Http3Violation {
+        override val errorCode get() = Http3ErrorCode.REQUEST_CANCELLED
+
+        override fun describe() =
+            "peer ${if (streamId.isUnidirectional) "unidirectional" else "bidirectional"} stream ${streamId.id} " +
+                "sent nothing for $deadline before it could be routed; abandoned with H3_REQUEST_CANCELLED"
     }
 
     // --- QPACK field section (RFC 9204 §2.2) — QPACK_DECOMPRESSION_FAILED --------------------------
@@ -467,6 +498,7 @@ private fun Http3Violation.causeOrNull(): Throwable? =
         is Http3Violation.QpackDecompressionFailed -> cause
         is Http3Violation.MalformedQpackInstruction -> cause
         is Http3Violation.QpackPumpDeadlineExpired -> cause
+        is Http3Violation.PeerStreamDeadlineExpired -> cause
         is Http3Violation.WebTransportCloseReasonNotUtf8 -> cause
         is Http3Violation.ControlStreamError -> cause
         is Http3Violation.PushStreamError -> cause

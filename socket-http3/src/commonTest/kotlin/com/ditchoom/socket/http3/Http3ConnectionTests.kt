@@ -11,6 +11,7 @@ import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
@@ -19,19 +20,25 @@ import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -276,6 +283,310 @@ class Http3ConnectionTests {
 
         override suspend fun close() {
             closed = true
+        }
+    }
+
+    // --- #477: a router child's read deadline is a per-stream failure, not a cancellation ----------
+
+    /** A 200 response with no body: HEADERS(:status 200) then end-of-stream. */
+    private fun okResponseBytes(): List<Int> =
+        frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "200")))))
+
+    /**
+     * **A peer bidirectional stream that stalls past the read deadline is abandoned by name, not mistaken
+     * for a cancelled router (#477).**
+     *
+     * With WebTransport enabled, `route()` peeks a peer-initiated bidi stream's first varint for the
+     * `0x41` signal under `config.readPolicy.toDeadline()`. Unlike the QPACK pumps of #472 that deadline
+     * is right — a peer that opens a stream and says nothing must not be waited on forever — but the QUIC
+     * leaf raises `TimeoutCancellationException`, which neither of `route()`'s catch arms matched, and as
+     * a `CancellationException` it made the `launch` child read as *cancelled rather than failed*: the
+     * finally gave the stream a bare `close()` — exactly what a genuinely cancelled router does — and
+     * nothing else happened. On QUIC `close()` is a send-side FIN only, so the peer's half stayed open.
+     *
+     * The witness is the peer's view of the stream, [StalledStream.disposition]: a stream abandoned on
+     * its deadline is **reset carrying `H3_REQUEST_CANCELLED`** — the code RFC 9114 §4.1.1 gives a client
+     * for "data no longer needed" — where a cancelled router leaves a bare close (see
+     * [aCancelledRouterClosesAStalledStreamWithoutNamingIt]). The connection is then shown intact by a
+     * request that still round-trips.
+     */
+    @Test
+    fun aStalledPeerBidiStreamIsAbandonedByName_andTheConnectionSurvives() =
+        runTest {
+            val peerBidi = StalledStream(prefix = emptyList()) // opened, then silent
+            val response = RecordingByteStream(listOf(dataChunk(okResponseBytes()), ReadResult.End))
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi), peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), response))),
+                )
+
+            val connection = Http3Connection.bootstrap(scope, TransportConfig(), webTransport = WebTransportOptions())
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle() // runs the stalled peek out past its 15s deadline
+
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                peerBidi.disposition,
+                "peer bidi stream 1 sent nothing for longer than the default 15s read deadline. Abandoning " +
+                    "it must reach the peer as STOP_SENDING/RESET_STREAM carrying H3_REQUEST_CANCELLED " +
+                    "(RFC 9114 §4.1.1). A bare close is what a *cancelled* router leaves, so it says the " +
+                    "deadline was mistaken for cancellation (#477) and the peer's half of the stream is " +
+                    "still open. connectionError=${connection.connectionError}",
+            )
+            assertNull(connection.connectionError, "one stalled peer stream must not become a connection error")
+            val ok = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+            assertEquals(200, ok.status, "the connection must still serve a request after abandoning the stalled stream")
+            ok.close()
+        }
+
+    /**
+     * **A push stream that stalls before its Push ID is abandoned by name (#477).**
+     *
+     * `handlePushStream` reads the Push ID under the deadline. Its own `catch (e: CancellationException)
+     * { throw e }` arm claimed the `TimeoutCancellationException` ahead of the `Throwable` arm that names
+     * push failures, `route()` had no arm for it either, and so the child died as "cancelled": a bare
+     * close, and — the Push ID never having arrived — no push to fail. RFC 9114 §4.6 has the client abort
+     * reading a push stream it gives up on with `H3_REQUEST_CANCELLED`, so the server stops committing
+     * data to it; that reset is the witness here.
+     */
+    @Test
+    fun aStalledPushStreamIsAbandonedByName_andTheConnectionSurvives() =
+        runTest {
+            val peerPush = StalledStream(prefix = listOf(Http3StreamType.PUSH.toInt())) // the type, then silence
+            val response = RecordingByteStream(listOf(dataChunk(okResponseBytes()), ReadResult.End))
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(11), peerPush), peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), response))),
+                )
+
+            val connection = Http3Connection.bootstrap(scope, TransportConfig(), maxPushId = 8)
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle() // runs the stalled Push ID read out past its 15s deadline
+
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                peerPush.disposition,
+                "push stream 11 sent its type byte and then nothing for longer than the default 15s read " +
+                    "deadline. RFC 9114 §4.6: abort reading it with H3_REQUEST_CANCELLED so the server " +
+                    "stops committing data. A bare close is what a *cancelled* router leaves — the " +
+                    "deadline was mistaken for cancellation (#477), the peer's half is still open, and no " +
+                    "error went anywhere. connectionError=${connection.connectionError}",
+            )
+            assertNull(connection.connectionError, "one stalled push stream must not become a connection error")
+            val ok = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+            assertEquals(200, ok.status, "the connection must still serve a request after abandoning the stalled push stream")
+            ok.close()
+        }
+
+    /**
+     * **A push stream that stalls after its Push ID fails the promised response by name (#477).**
+     *
+     * One read further along the same path: the Push ID arrived, so a push entry exists and the server's
+     * PUSH_PROMISE has handed the caller an [Http3ServerPush] — then the response HEADERS never come. This
+     * is the acceptance criterion's "the pushed response never arrives with no error anywhere": before
+     * the fix [Http3ServerPush.response] waited forever. It must instead fail with a typed
+     * [Http3Violation.PeerStreamDeadlineExpired] naming the stream, and the stream is reset like the others.
+     */
+    @Test
+    fun aPushStreamStallingAfterItsPushIdFailsThePromisedResponseByName() =
+        runTest {
+            val pushId = 2L
+            val peerPush = StalledStream(prefix = listOf(Http3StreamType.PUSH.toInt(), pushId.toInt())) // type + Push ID, then silence
+            val promise =
+                Http3Frame.PushPromise(
+                    pushId,
+                    encodedFieldSection(
+                        listOf(
+                            QpackHeaderField(":method", "GET"),
+                            QpackHeaderField(":scheme", "https"),
+                            QpackHeaderField(":authority", "h.test"),
+                            QpackHeaderField(":path", "/pushed"),
+                        ),
+                    ),
+                )
+            val response = RecordingByteStream(listOf(dataChunk(frameBytes(promise) + okResponseBytes()), ReadResult.End))
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(11), peerPush), peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), response))),
+                )
+
+            val connection = Http3Connection.bootstrap(scope, TransportConfig(), maxPushId = 8)
+            connection.request(Http3Request(method = "GET", authority = "h.test", path = "/")).close()
+            val push = connection.pushes.first()
+            assertEquals(pushId, push.pushId, "sanity: the PUSH_PROMISE on the request stream was surfaced")
+
+            val failure =
+                try {
+                    val unexpected = withTimeout(60.seconds) { push.response() }
+                    fail("push $pushId completed with a response (status ${unexpected.status}) though its stream never sent HEADERS")
+                } catch (e: TimeoutCancellationException) {
+                    fail(
+                        "push $pushId's stream sent its Push ID and then nothing for 60s of virtual time — four times " +
+                            "the 15s read deadline — yet response() is still waiting. The deadline killed the router " +
+                            "child as a cancellation instead of failing this push (#477); the stream's disposition " +
+                            "is ${peerPush.disposition}, connectionError=${connection.connectionError}",
+                    )
+                } catch (e: Http3StreamException) {
+                    e
+                }
+            val violation =
+                assertIs<Http3Violation.PeerStreamDeadlineExpired>(
+                    failure.violation,
+                    "the push must fail by the deadline's name, not ${failure.violation}",
+                )
+            assertEquals(QuicStreamId(11), violation.streamId, "the violation must name the stalled push stream")
+            assertEquals(15.seconds, violation.deadline, "the violation must carry the deadline that expired")
+            assertEquals(Http3ErrorCode.REQUEST_CANCELLED, failure.errorCode)
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                peerPush.disposition,
+                "the stalled push stream must also be reset for the peer (RFC 9114 §4.6), not merely closed",
+            )
+            assertNull(connection.connectionError, "one stalled push stream must not become a connection error")
+        }
+
+    /**
+     * The control for the three above: a **genuinely** cancelled router leaves a stalled stream with a bare
+     * close and no name. That is what makes the reset the deadline's alone — a fix that caught
+     * `CancellationException` wholesale (the ordering trap #472 documents, from the other side) would
+     * report cancellation as a deadline and fail here.
+     */
+    @Test
+    fun aCancelledRouterClosesAStalledStreamWithoutNamingIt() =
+        runTest {
+            val peerBidi = StalledStream(prefix = emptyList())
+            val connectionJob =
+                launch {
+                    coroutineScope {
+                        val scope =
+                            FakeQuicScope(
+                                this,
+                                ClientStreams().outgoing(),
+                                incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi)),
+                            )
+                        Http3Connection.bootstrap(scope, TransportConfig(), webTransport = WebTransportOptions())
+                        // coroutineScope now waits on the router, which waits on the stalled peek.
+                    }
+                }
+            testScheduler.advanceTimeBy(1.seconds) // the peek is parked on the stall, well inside its 15s deadline
+            assertEquals(Disposition.Open, peerBidi.disposition, "sanity: nothing has happened to the stream yet")
+
+            connectionJob.cancelAndJoin()
+
+            assertEquals(
+                Disposition.Closed,
+                peerBidi.disposition,
+                "a cancelled router must leave the stalled stream with a bare close: cancellation is not a " +
+                    "deadline, and resetting it with H3_REQUEST_CANCELLED would be the #477 confusion in reverse",
+            )
+        }
+
+    /**
+     * The harder control: a **parent** `withTimeout` cancels every child *with its own*
+     * `TimeoutCancellationException` (`JobSupport.getChildJobCancellationCause` passes a
+     * `CancellationException` root cause through unchanged), so inside the router child the exception
+     * that surfaces from the parked read is indistinguishable **by type** from a read deadline. Only the
+     * job tells them apart — a read deadline leaves the child active, a cancellation does not — and a fix
+     * keyed on the type alone would reset this stream and report a teardown as a stall.
+     */
+    @Test
+    fun aParentDeadlineCancellingTheRouterIsNotAStreamDeadline() =
+        runTest {
+            val peerBidi = StalledStream(prefix = emptyList())
+            try {
+                withTimeout(1.seconds) {
+                    val scope =
+                        FakeQuicScope(
+                            this,
+                            ClientStreams().outgoing(),
+                            incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi)),
+                        )
+                    Http3Connection.bootstrap(scope, TransportConfig(), webTransport = WebTransportOptions())
+                    // withTimeout's scope waits on its children: the router, parked on the stalled peek.
+                }
+                fail("withTimeout(1s) around a router parked on a stalled peer stream must expire, not return")
+            } catch (e: TimeoutCancellationException) {
+                // The parent's deadline — the one that is supposed to fire here.
+            }
+
+            assertEquals(
+                Disposition.Closed,
+                peerBidi.disposition,
+                "the router was cancelled by a parent withTimeout(1s), well inside the stream's own 15s read " +
+                    "deadline, and its child received that parent's TimeoutCancellationException. A reset with " +
+                    "H3_REQUEST_CANCELLED here means the fix keyed on the exception's type and reported a " +
+                    "cancellation as a stream stall — the #477 confusion in reverse",
+            )
+        }
+
+    /** The peer's view of a stream the client was handed: what, if anything, the client did to it. */
+    private sealed interface Disposition {
+        /** Still open at both ends. */
+        data object Open : Disposition
+
+        /** [ByteStream.close] — on QUIC a send-side FIN only; the peer's half stays open. */
+        data object Closed : Disposition
+
+        /** [Resettable.reset] — RESET_STREAM + STOP_SENDING carrying [errorCode]; the peer learns it was abandoned. */
+        data class Reset(
+            val errorCode: Long,
+        ) : Disposition
+    }
+
+    /**
+     * Delivers [prefix] on the first read (when non-empty), then stalls: every later read parks until its
+     * deadline and expires with `TimeoutCancellationException`, exactly as `QuicheDriver`'s read leaf does
+     * (`withTimeout(timeout)`). [RecordingByteStream] ignores the deadline and could not stall at all;
+     * [SilentThenSpeakingStream] eventually speaks. Under `runTest` the stall is virtual time. The first
+     * of [close]/[reset] wins — it is the one the peer sees.
+     */
+    private class StalledStream(
+        private val prefix: List<Int>,
+    ) : ByteStream,
+        Resettable {
+        private var prefixDelivered = prefix.isEmpty()
+        var disposition: Disposition = Disposition.Open
+            private set
+
+        override val isOpen: Boolean get() = disposition is Disposition.Open
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+        override suspend fun read(deadline: Duration): ReadResult {
+            if (!prefixDelivered) {
+                prefixDelivered = true
+                val buf = BufferFactory.Default.allocate(prefix.size)
+                for (b in prefix) buf.writeByte(b.toByte())
+                buf.resetForRead()
+                return ReadResult.Data(buf)
+            }
+            return withTimeout(deadline) { awaitCancellation() }
+        }
+
+        override suspend fun write(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ): BytesWritten {
+            val n = buffer.remaining()
+            repeat(n) { buffer.readByte() }
+            return BytesWritten(n)
+        }
+
+        override suspend fun close() {
+            if (disposition is Disposition.Open) disposition = Disposition.Closed
+        }
+
+        override suspend fun reset(errorCode: Long) {
+            if (disposition is Disposition.Open) disposition = Disposition.Reset(errorCode)
         }
     }
 
