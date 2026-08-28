@@ -142,6 +142,17 @@ internal class SharedQuicheServer(
                         if (conn.state.value is QuicConnectionState.Established) {
                             conn.handler()
                         }
+                    } catch (_: QuicCloseException) {
+                        // The handler was still working when this connection ended — parked in
+                        // acceptStream(), mid-read, opening a stream. That is one connection's lifetime
+                        // finishing, not a server fault, and it must not take down an accept loop that is
+                        // still serving everyone else. Only this handler stops; why it ended stays
+                        // readable on conn.state, and a handler that cares can catch this itself.
+                        //
+                        // Without this the terminal was merely typed, not usable: #488's flake was a
+                        // parked acceptor resumed by teardown, and it failed the suite just as reliably
+                        // when it arrived as a QuicCloseException as when it arrived as a
+                        // ClosedReceiveChannelException.
                     } finally {
                         try {
                             // Graceful close (#321). Skipped for a connection that never came up or is

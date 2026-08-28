@@ -327,11 +327,11 @@ internal class LinuxQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
+            throw driver.connectionClosed()
         }
     }
 
-    override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
+    override suspend fun acceptStream(): QuicByteStream = driver.acceptIncomingStream()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
