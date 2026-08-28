@@ -27,6 +27,10 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # claude-code-action is given no `github_token`, so it mints one by exchanging the workflow's OIDC
+  # token for a GitHub App token — every scheduled run from 2026-06-07 to 2026-08-23 (12/12) died in
+  # that step with "Could not fetch an OIDC token" because this scope was missing.
+  id-token: write
 
 concurrency:
   group: weekly-dependency-update
