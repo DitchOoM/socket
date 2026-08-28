@@ -2700,10 +2700,10 @@ class DriverStreamAdapter(
                 0
             }
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
+            throw driver.connectionClosed()
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
             // writableSignal was closed by cleanup() — the connection went away while we were parked.
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
+            throw driver.connectionClosed()
         } finally {
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
             // return to the caller who will free `buffer`. The driver always completes the deferred
