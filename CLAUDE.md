@@ -110,4 +110,4 @@ Key test files: `SimpleSocketTests`, `DataIntegrityTests`, `ErrorHandlingTests`,
 ## CI/CD
 
 - PR validation: `review.yaml` runs `./gradlew check` on Ubuntu (JVM/JS/Android) and macOS (Apple)
-- Release: `merged.yaml` publishes to Maven Central on merge to main; version bumps controlled by PR labels (`major`, `minor`, or patch by default)
+- Release: `merged.yaml` publishes to Maven Central on merge to main; version bumps controlled by PR labels (`major`, `minor`, or patch by default); labels on dependabot PRs are ignored for the bump, because dependabot stamps its own `major`/`minor`/`patch` labels
