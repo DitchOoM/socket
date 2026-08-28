@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -36,7 +37,8 @@ import kotlin.time.Duration.Companion.seconds
  * reports it that way; the conversion here exists because this function's own deadline is armed first
  * and therefore always fires first, and what it would report is a `CancellationException` that a
  * `launch` completes *cancelled* on rather than failed. A deadline that fires once the connection is up
- * is the block's, and still propagates as the cancellation it is.
+ * is the block's, and still propagates as the cancellation it is — as does a *parent's* deadline firing
+ * at any point: only this function's own bound becomes the typed close.
  */
 suspend fun <R> withQuicConnection(
     hostname: String,
@@ -61,6 +63,13 @@ suspend fun <R> withQuicConnection(
             }
         }
     } catch (e: TimeoutCancellationException) {
+        // This catch cannot tell its own deadline from a PARENT's by the exception alone: a caller
+        // wrapping this call in a shorter withTimeout delivers the parent's exception here with the
+        // handshake still in flight, and converting it would swallow a cancellation into a failure
+        // naming a bound that never fired. The enclosing coroutine tells them apart — still active
+        // after our own deadline, cancelled after a parent's — so a parent's rethrows untouched here.
+        // Same closure as Http3Connection.route() (#494).
+        currentCoroutineContext().ensureActive()
         if (established) throw e
         throw QuicCloseException(
             QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(timeout)),

@@ -11,6 +11,7 @@ import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -373,6 +374,45 @@ abstract class QuicIdleTimeoutTestSuite {
                         "the reason must name the bound that fired, as a LOCAL decision: it was ours, and it was " +
                             "the establishment deadline — not the idle timer, which is ${STALLED_HANDSHAKE_IDLE} away",
                     )
+                } finally {
+                    silent.close()
+                }
+            }
+        }
+
+    /**
+     * The control for the test above: a **parent's** deadline that fires during establishment must
+     * stay the parent's cancellation, not become this library's typed failure.
+     *
+     * [withQuicConnection] converts an establishment-phase `TimeoutCancellationException` into
+     * `QuicCloseException(ByLocal(HandshakeTimeout(bound)))`. But a `TimeoutCancellationException`
+     * reaching that catch is not necessarily its own: a caller wrapping [withQuicConnection] in a
+     * shorter `withTimeout` delivers the *parent's* exception to the same catch, with the handshake
+     * still in flight. Converting that one would swallow a cancellation into a failure and report a
+     * bound that never fired. The two are told apart by whether the enclosing coroutine is still
+     * active afterwards — it is after our own deadline, it is not after a parent's — the same closure
+     * #494 gave `Http3Connection.route()`.
+     */
+    @OptIn(ExperimentalDatagramApi::class)
+    @Test
+    fun aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation() =
+        runQuicTest {
+            wrapTestBody {
+                val silent = UdpSocket.bind("127.0.0.1", 0)
+                try {
+                    val parentDeadline = 1.seconds.scaled
+                    val bound = 5.seconds.scaled // longer than the parent's, so only the parent's can fire
+                    assertFailsWith<TimeoutCancellationException>(
+                        "a parent withTimeout firing during establishment must surface as the PARENT's " +
+                            "cancellation; a QuicCloseException here means withQuicConnection mistook the " +
+                            "parent's deadline for its own $bound bound and swallowed a cancellation into a failure",
+                    ) {
+                        withTimeout(parentDeadline) {
+                            withQuicConnection("127.0.0.1", silent.localAddress.port, options(STALLED_HANDSHAKE_IDLE), timeout = bound) {
+                                error("unreachable: the peer never answers, so this block can never run")
+                            }
+                        }
+                    }
                 } finally {
                     silent.close()
                 }
