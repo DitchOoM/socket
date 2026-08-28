@@ -13,7 +13,7 @@ See `../TESTING_STRATEGY.md` for the full design. This directory is
 | `http`  | `14080` | nginx. Routes: `/` (HTML), `/get` (plain-text `ok`), `/json`, `/large` (>1 KB). CORS-permissive. |
 | `tls`   | `14443`–`14493` | nginx cert matrix — one vhost per scenario (valid / self-signed / expired / wrong-host / untrusted-root / TLS 1.3-only). |
 | `toxiproxy` | `8474` (API), `15000/15080/15443` (root-test proxies), `15900` (`suite-echo`, withNetworkHarness) | L4 fault injection in front of echo/http/tls. The testsuite's `suite-echo` proxy is name- and port-isolated from the root module's proxies because their test tasks run in parallel. |
-| `netem-blackhole` | `172.30.0.99:14999` (bridge IP, not published) | Accepts SYNs, drops all egress — deterministic connect-timeout. |
+| `netem-blackhole` | `172.30.0.99:14999` (bridge IP, not published) | Answers ARP, accepts SYNs, drops its own SYN-ACKs (egress TCP from 14999) — deterministic connect-timeout. |
 | `rst`   | `14998` | Deterministic peer-close sidecar (SO_LINGER=0 + close after 1 byte). |
 | `quic-echo` | `14433/udp` | JVM QUIC echo server (quiche). |
 | `udp-echo` | `14434/udp` | socat-backed UDP datagram echo (`UDP-RECVFROM,fork`). Datagram analogue of `echo`; the upstream `udp-toxi` forwards to. |

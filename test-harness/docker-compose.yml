@@ -97,12 +97,24 @@ services:
       start_period: 1s
     restart: unless-stopped
 
-  # L3 — netem blackhole. Replaces the magic `10.255.255.1` non-routable IP in
-  # connect-timeout tests with a deterministic, harness-local endpoint. The
-  # container has socat listening on 14999, and `tc qdisc add ... root netem
-  # loss 100%` on eth0 drops *all* outbound packets so the SYN-ACK never
-  # reaches the client. Inbound is untouched by an egress qdisc, which is
-  # exactly the asymmetry we need: SYN arrives, SYN-ACK vanishes.
+  # L3 — blackhole. Replaces the magic `10.255.255.1` non-routable IP in
+  # connect-timeout tests with a deterministic, harness-local endpoint. socat
+  # listens on 14999, and an egress `tc` filter on eth0 drops every IPv4/TCP
+  # packet whose SOURCE port is 14999 — the SYN-ACK (and anything else the
+  # listener would ever send back). Everything else still leaves eth0, ARP
+  # replies included, so the sequence a client actually sees is: ARP answered,
+  # SYN delivered, kernel accepts it, SYN-ACK dropped, client retransmits its
+  # SYN until its own connect deadline fires. That is the topology the tests
+  # assert — "SYN accepted, SYN-ACK lost, deadline fires" — and nothing else.
+  #
+  # It used to be `tc qdisc add dev eth0 root netem loss 100%`, which drops
+  # EVERY egress frame, ARP replies included. The client host then never
+  # resolved .99's MAC, so no SYN ever left it, and on Linux a failed ARP
+  # resolution makes connect() return EHOSTUNREACH ("No route to host") —
+  # immediately, once the neighbour entry is in FAILED state. The "timeout"
+  # that endpoint ever produced was the ~3 s ARP retry window happening to
+  # outlast a 200 ms / 1 s deadline on a fresh entry; the first test with a
+  # longer deadline saw NoRouteToHostException instead (PR #501).
   #
   # ── Host-binding note ────────────────────────────────────────────────────
   # We do *not* publish a 127.0.0.1 port for this service because docker-proxy
@@ -111,10 +123,10 @@ services:
   # then `recv()` times out). Tests must connect to the pinned bridge IP
   # (`172.30.0.99:14999`) instead — the host has a kernel route to the bridge
   # subnet, so SYNs traverse br-* directly, hit the container's eth0 (no
-  # docker-proxy), the netem qdisc drops the SYN-ACK on the way out, and the
+  # docker-proxy), the egress filter drops the SYN-ACK on the way out, and the
   # client's connect-timeout fires.
   #
-  # NET_ADMIN is required for `tc qdisc add`. Alpine 3.20 + iproute2 + socat
+  # NET_ADMIN is required for `tc`. Alpine 3.20 + iproute2 + socat
   # is ~10 MB; busybox `nc` doesn't `fork` reliably, which is why socat is the
   # listener.
   netem-blackhole:
@@ -129,20 +141,28 @@ services:
       - NET_ADMIN
     # `sh -c` so the egress drop is installed *before* socat starts accepting.
     # Without that ordering, a fast-enough client SYN+SYN-ACK could complete
-    # the handshake before the qdisc lands and the test would observe a
+    # the handshake before the filter lands and the test would observe a
     # successful connect instead of a timeout.
+    #
+    # `prio` is a classful scheduler that changes nothing by itself; it is only
+    # there so the filter has a parent. u32 matches IPv4 protocol 6 (TCP, byte 9)
+    # and source port 14999 (bytes 20-21); `gact drop` discards the match.
     command:
       - sh
       - -c
       - |
         set -eu
         apk add --no-cache iproute2 socat >/dev/null
-        tc qdisc add dev eth0 root netem loss 100%
+        tc qdisc add dev eth0 root handle 1: prio
+        tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip protocol 6 0xff match ip sport 14999 0xffff action drop
         exec socat -d TCP-LISTEN:14999,reuseaddr,fork EXEC:/bin/true
     healthcheck:
-      # Egress is dropped, so any TCP/HTTP probe times out — `nc -z` would
-      # hang. Verify the listener process is alive instead.
-      test: ["CMD-SHELL", "pgrep socat >/dev/null"]
+      # Both halves, or it isn't healthy: the listener is alive AND the drop
+      # filter is on eth0 (`tc filter show` prints `gact action drop` for it).
+      # A TCP probe from inside would hang by design, so it cannot be the check
+      # — and `pgrep socat` alone stayed green for the whole time the old qdisc
+      # was breaking ARP.
+      test: ["CMD-SHELL", "pgrep socat >/dev/null && tc filter show dev eth0 | grep -q 'gact action drop'"]
       interval: 2s
       timeout: 3s
       retries: 15

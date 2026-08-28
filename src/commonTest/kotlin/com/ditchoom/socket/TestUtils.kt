@@ -1,10 +1,16 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.harness.HarnessConfig
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlin.reflect.KClass
+import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -122,32 +128,126 @@ internal suspend fun isHarnessAvailable(): Boolean {
 }
 
 /**
- * `true` when the harness `netem-blackhole` endpoint exists and is dropping
- * SYN-ACKs as designed.
+ * What the harness `netem-blackhole` endpoint did with one SYN.
  *
- * Distinct from [isHarnessAvailable] because the L3 netem service is
- * Linux-kernel-bound (NET_ADMIN + `tc qdisc`) and isn't part of the native
- * macOS fixture (homebrew socat+nginx). A separate probe is needed because
- * the netem topology *intentionally* stalls connects — a successful TCP
- * connect to this host:port would be a misconfiguration, not availability.
- *
- * Probe semantics (200 ms budget):
- *  - `TimeoutCancellationException` → SYN sent, SYN-ACK lost: netem is up
- *  - any other throwable             → no route / no listener: netem is down
- *  - probe returns successfully      → not the netem service (refuse this too)
+ * Three outcomes, and none may be folded into another. The `isNetemAvailable(): Boolean` this
+ * replaces mapped every throwable to `false`, so "the harness is down" and "the harness is up but
+ * the blackhole is not blackholing" were the same silent early return — which is how the harness
+ * ran for months with a `netem loss 100%` qdisc that also dropped ARP replies: no SYN ever left the
+ * client host, Linux answered `connect()` with EHOSTUNREACH once the neighbour entry failed, and the
+ * root tests either swallowed that as a `SocketException` or timed out inside the ~3 s ARP retry
+ * window and passed for the wrong reason (PR #501).
  */
-internal suspend fun isNetemAvailable(): Boolean {
-    if (!networkCapabilities().transports.contains(TransportKind.TCP)) return false
-    return try {
+internal sealed interface BlackholeProbe {
+    /** The SYN went out and nothing came back inside the budget: the egress drop is in place. */
+    data object Blackholing : BlackholeProbe
+
+    /** The listener answered — a SYN-ACK arrived, so the drop filter is not installed. */
+    data object Answered : BlackholeProbe
+
+    /** `connect()` failed outright (no route, refused, …): the endpoint is not reachable at L2/L3. */
+    data class Unreachable(
+        val cause: Throwable,
+    ) : BlackholeProbe
+}
+
+/**
+ * Longer than Linux's ARP retry window (`mcast_solicit` × `retrans_time` ≈ 3 s), on purpose: a
+ * budget shorter than that cannot tell "address resolution still pending" from "SYN-ACK dropped",
+ * and would report [BlackholeProbe.Blackholing] for a blackhole that has stopped answering ARP.
+ * Paid once per process — see [requireNetemBlackhole].
+ */
+private val BLACKHOLE_PROBE_BUDGET = 5.seconds
+
+/**
+ * Send one SYN to `HarnessConfig.netemBlackholeHost:netemBlackholePort` and classify what happened.
+ * A deadline expiry is a timeout whichever type the platform reports it as: the JVM surfaces
+ * kotlinx's [TimeoutCancellationException] from its `withTimeout`, the other backends map it to
+ * [SocketTimeoutException] (`TimeoutContext.Connect`).
+ */
+internal suspend fun probeNetemBlackhole(): BlackholeProbe =
+    try {
         ClientSocket.connect(
             port = HarnessConfig.netemBlackholePort,
             hostname = HarnessConfig.netemBlackholeHost,
-            config = TransportConfig(connectTimeout = 200.milliseconds),
-        ) { /* unreachable when netem is working — SYN-ACK is dropped */ }
-        false
+            config = TransportConfig(connectTimeout = BLACKHOLE_PROBE_BUDGET),
+        ) { /* unreachable when the blackhole is working — the SYN-ACK is dropped */ }
+        BlackholeProbe.Answered
     } catch (_: TimeoutCancellationException) {
-        true
-    } catch (_: Throwable) {
-        false
+        BlackholeProbe.Blackholing
+    } catch (_: SocketTimeoutException) {
+        BlackholeProbe.Blackholing
+    } catch (t: Throwable) {
+        BlackholeProbe.Unreachable(t)
+    }
+
+/** The probe runs once per test process; every netem-backed test in it reads the same verdict. */
+private sealed interface BlackholeProbeState {
+    data object Pending : BlackholeProbeState
+
+    data class Done(
+        val probe: BlackholeProbe,
+    ) : BlackholeProbeState
+}
+
+private val blackholeProbeLock = Mutex()
+private var blackholeProbeState: BlackholeProbeState = BlackholeProbeState.Pending
+
+private suspend fun cachedBlackholeProbe(): BlackholeProbe =
+    blackholeProbeLock.withLock {
+        when (val state = blackholeProbeState) {
+            is BlackholeProbeState.Done -> state.probe
+            BlackholeProbeState.Pending -> probeNetemBlackhole().also { blackholeProbeState = BlackholeProbeState.Done(it) }
+        }
+    }
+
+/**
+ * Gate for the netem-backed tests. `true` means run the body. Otherwise the caller returns at once,
+ * because this has already either recorded a loud skip or failed the test:
+ *
+ *  - **Harness absent** (the echo probe answers nothing, or this platform has no TCP at all) →
+ *    `[TEST-SKIPPED]` with [SkipGate.HostCannotProvideIt]: a CI macOS runner has no Docker and no
+ *    lane setting can give it one, so this must not go red under `SOCKET_REQUIRE_ALL_TESTS=1`.
+ *  - **Harness up, blackhole answered the SYN** → `fail()`, everywhere: a completed handshake is a
+ *    definite verdict that the egress drop filter is not installed.
+ *  - **Harness up, blackhole unreachable** (EHOSTUNREACH, ECONNREFUSED, …) → `[TEST-SKIPPED]` with
+ *    [SkipGate.LaneMustRunEveryTest], which is a **failure** on the lane that provisions the bridge
+ *    route (Linux, `SOCKET_REQUIRE_ALL_TESTS=1`) and a loud, counted skip elsewhere. Not an
+ *    unconditional failure because a developer Mac running Docker Desktop has the harness up and no
+ *    route to the bridge subnet at all; whether its LAN gateway turns a private-range SYN into a
+ *    timeout or an ICMP unreachable is not a property of this repository.
+ */
+internal suspend fun requireNetemBlackhole(site: KClass<*>): Boolean {
+    val endpoint = "${HarnessConfig.netemBlackholeHost}:${HarnessConfig.netemBlackholePort}"
+    if (!isHarnessAvailable()) {
+        recordSkip(
+            site,
+            SkipReason.HarnessUnreachableFromDevice(
+                "docker harness echo at ${harnessHost()}:${HarnessConfig.echoPort} answered nothing from this " +
+                    "process, so the netem-blackhole at $endpoint was not probed — stack not up on this host",
+            ),
+            gate = SkipGate.HostCannotProvideIt("docker test harness"),
+        )
+        return false
+    }
+    return when (val probe = cachedBlackholeProbe()) {
+        BlackholeProbe.Blackholing -> true
+        BlackholeProbe.Answered ->
+            fail(
+                "harness is up but netem-blackhole $endpoint completed the TCP handshake — its egress " +
+                    "drop filter is not installed (test-harness/docker-compose.yml, service netem-blackhole)",
+            )
+        is BlackholeProbe.Unreachable -> {
+            recordSkip(
+                site,
+                SkipReason.HarnessUnreachableFromDevice(
+                    "harness is up but netem-blackhole $endpoint failed outright within " +
+                        "$BLACKHOLE_PROBE_BUDGET: ${probe.cause} — on a Linux host that is an ARP/route " +
+                        "failure (the blackhole stopped answering ARP), not a blackhole",
+                ),
+                gate = SkipGate.LaneMustRunEveryTest,
+            )
+            false
+        }
     }
 }

@@ -9,6 +9,7 @@ import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SSLSocketException
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.quic.QuicOptions
@@ -272,12 +273,15 @@ abstract class NetworkHarnessTestSuite {
         }
 
     /**
-     * The [NetworkHarnessScope.blackhole] netem endpoint accepts the SYN at L3 and drops every egress
-     * packet, so a connect attempt times out deterministically ([TimeoutCancellationException]). Mirrors
-     * the root module's `isNetemAvailable` probe, driven through the accessor.
+     * The [NetworkHarnessScope.blackhole] endpoint answers ARP and accepts the SYN, but an egress `tc`
+     * filter drops every TCP packet it sends from its port (the SYN-ACK), so the client retransmits
+     * until its connect deadline fires. A deadline expiry is [TimeoutCancellationException] on the JVM
+     * (kotlinx's own, leaked from `withTimeout`) and [SocketTimeoutException] on the backends that map
+     * it; anything else — a completed connect, or `NoRouteToHostException` from a blackhole that has
+     * stopped answering ARP, which is what the first CI run of this test found (PR #501) — fails.
      *
-     * Skip-safe: netem needs `NET_ADMIN` + `tc qdisc` and is Linux-kernel-bound; absent from the
-     * macOS/native fixture manifest, the block no-ops.
+     * Skip-safe: the filter needs `NET_ADMIN` + `tc`; absent from the fixture manifest, the block
+     * no-ops.
      */
     @Test
     fun blackholeAccessorConnectTimesOut() =
@@ -289,13 +293,25 @@ abstract class NetworkHarnessTestSuite {
                         return@withNetworkHarness
                     }
                     blackhole { ep ->
-                        assertFailsWith<TimeoutCancellationException> {
-                            ClientSocket.connect(
-                                port = ep.port,
-                                hostname = ep.host,
-                                config = TransportConfig(connectTimeout = 2.seconds.scaled),
-                            ) { /* unreachable: netem drops the SYN-ACK, connect times out */ }
-                        }
+                        val deadline = 2.seconds.scaled
+                        val expired =
+                            try {
+                                ClientSocket.connect(
+                                    port = ep.port,
+                                    hostname = ep.host,
+                                    config = TransportConfig(connectTimeout = deadline),
+                                ) { /* unreachable: the SYN-ACK is dropped, connect times out */ }
+                                null
+                            } catch (t: TimeoutCancellationException) {
+                                t
+                            } catch (t: SocketTimeoutException) {
+                                t
+                            }
+                        assertNotNull(
+                            expired,
+                            "connect to the blackhole ${ep.host}:${ep.port} completed inside $deadline — " +
+                                "its SYN-ACK was not dropped",
+                        )
                     }
                 }
             if (!ran) println("[NetworkHarnessTestSuite] harness down — blackholeAccessor test skipped")

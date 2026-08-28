@@ -29,8 +29,11 @@ import kotlin.time.Duration.Companion.seconds
 class SimpleSocketTests {
     /**
      * Connect against the harness `netem-blackhole` endpoint — a listener whose
-     * eth0 has `tc qdisc … netem loss 100%` installed. SYN arrives, SYN-ACK is
-     * dropped, the client's `connect()` blocks until the 1-second budget fires.
+     * eth0 carries a `tc` egress filter dropping every TCP packet it sends from
+     * port 14999. ARP is answered, the SYN arrives and is accepted, the SYN-ACK
+     * is dropped, the client retransmits its SYN until the 1-second budget fires.
+     * (It used to be `netem loss 100%`, which also dropped ARP replies, so the
+     * SYN never left this host and Linux answered EHOSTUNREACH instead — PR #501.)
      *
      * Phase-4 migration off the legacy `10.255.255.1` magic IP: that route
      * worked on raw Linux (the kernel default-routes the address into the
@@ -48,11 +51,9 @@ class SimpleSocketTests {
     @Test
     fun connectTimeoutWorks() =
         runTestNoTimeSkipping {
-            if (!isHarnessAvailable()) return@runTestNoTimeSkipping
-            // Netem is Linux-kernel-bound; the native macOS fixture doesn't
-            // run it. Skip cleanly there so the assertion isn't observing a
-            // different failure mode (ECONNREFUSED instead of SYN-ACK loss).
-            if (!isNetemAvailable()) return@runTestNoTimeSkipping
+            // Loud skip when the harness is absent; a FAILURE when it is up and
+            // the blackhole answers or is unreachable — see requireNetemBlackhole.
+            if (!requireNetemBlackhole(SimpleSocketTests::class)) return@runTestNoTimeSkipping
             try {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,
@@ -61,7 +62,11 @@ class SimpleSocketTests {
                 )
                 fail("should not have reached this")
             } catch (_: TimeoutCancellationException) {
-            } catch (_: SocketException) {
+                // the JVM surfaces its withTimeout expiry as kotlinx's type …
+            } catch (_: SocketTimeoutException) {
+                // … the other backends map it to the uniform TimeoutContext.Connect. Only these two
+                // are a deadline firing; a broad `SocketException` catch here used to accept
+                // EHOSTUNREACH from a blackhole that had stopped answering ARP.
             } catch (e: UnsupportedOperationException) {
                 if (networkCapabilities().transports.contains(TransportKind.TCP)) {
                     // only expected for browsers
@@ -91,10 +96,8 @@ class SimpleSocketTests {
     @Test
     fun closeWorks() =
         runTestNoTimeSkipping {
-            if (!isHarnessAvailable()) return@runTestNoTimeSkipping
-            // Same netem dependency as [connectTimeoutWorks] — skip on the
-            // native macOS fixture where the L3 netem service isn't present.
-            if (!isNetemAvailable()) return@runTestNoTimeSkipping
+            // Same gate as [connectTimeoutWorks]; the probe verdict is cached per process.
+            if (!requireNetemBlackhole(SimpleSocketTests::class)) return@runTestNoTimeSkipping
             try {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,
@@ -102,10 +105,10 @@ class SimpleSocketTests {
                     config = TransportConfig(connectTimeout = 1.seconds),
                 )
                 fail("the connection should timeout, so this line should never hit")
-            } catch (t: TimeoutCancellationException) {
-                // expected
-            } catch (s: SocketException) {
-                // expected
+            } catch (_: TimeoutCancellationException) {
+                // expected (JVM)
+            } catch (_: SocketTimeoutException) {
+                // expected (every other backend) — and nothing broader, see [connectTimeoutWorks]
             } catch (e: UnsupportedOperationException) {
                 if (networkCapabilities().transports.contains(TransportKind.TCP)) {
                     // only expected for browsers
