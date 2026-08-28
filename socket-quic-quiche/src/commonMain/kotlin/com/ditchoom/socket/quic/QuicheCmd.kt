@@ -166,7 +166,11 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<List<ByteArray>>,
     ) : QuicheCmd
 
-    /** Gracefully close the connection. */
+    /**
+     * Close the connection with [error] — a CONNECTION_CLOSE carrying its code, or, for an error that
+     * has no transport code, NO_ERROR on the wire and the error itself recorded as the driver's own
+     * verdict so the connection still reports it (see [wireCloseError]).
+     */
     class Close(
         val error: QuicError,
         val result: CompletableDeferred<Unit>,
@@ -181,3 +185,15 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<MigrationResult>,
     ) : QuicheCmd
 }
+
+/**
+ * What a local close with this error puts on the wire.
+ *
+ * An error with a transport code is sent as itself. One without ([QuicError.code] `< 0` —
+ * [QuicError.HandshakeTimeout], [QuicError.IdleTimeout], [QuicError.PlatformError]) is a *local* fact
+ * with no CONNECTION_CLOSE code that means it; RFC 9000 §20.1's NO_ERROR ("closed abruptly in the absence
+ * of any error") is the one truthful thing to send, and it is what Chromium sends for its own handshake
+ * timeout. Before this, the `-1` went straight into `quiche_conn_close`'s `uint64_t err` and onto the wire
+ * as `u64::MAX`. The driver keeps the original as its `LocalCloseVerdict` so the connection still reports it.
+ */
+internal fun QuicError.wireCloseError(): QuicError = if (code < 0) QuicError.NoError else this

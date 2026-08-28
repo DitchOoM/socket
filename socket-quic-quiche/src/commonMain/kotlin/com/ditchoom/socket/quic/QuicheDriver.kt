@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -218,6 +219,32 @@ class QuicheDriver(
     val state: StateFlow<QuicConnectionState> = _state
 
     /**
+     * A close reason this driver decided on itself and that quiche cannot carry back to it.
+     *
+     * [resolveCloseReason] reads the close reason back out of quiche (`peer_error` / `local_error` /
+     * `is_timed_out`), which works for every reason that has a transport code — quiche stores what we
+     * sent. A [QuicError] with none (`code < 0`: [QuicError.HandshakeTimeout], [QuicError.IdleTimeout],
+     * [QuicError.PlatformError]) has nothing truthful to put on the wire but NO_ERROR, and reading
+     * NO_ERROR back would report a *graceful* close for a handshake we abandoned. So [execute] remembers
+     * the reason here when quiche accepts such a close, and [resolveCloseReason] reports it.
+     *
+     * A sealed pair rather than a nullable error: "this driver decided nothing" is a case to match on,
+     * not an absence. Written and read on the driver loop only — [execute] and [transitionToClosed] —
+     * so it needs no publication.
+     */
+    private sealed interface LocalCloseVerdict {
+        /** Every close quiche can describe itself, and every teardown that was not a close. */
+        data object None : LocalCloseVerdict
+
+        /** quiche accepted a local close whose [error] only this driver can name. */
+        data class Decided(
+            val error: QuicError,
+        ) : LocalCloseVerdict
+    }
+
+    private var localCloseVerdict: LocalCloseVerdict = LocalCloseVerdict.None
+
+    /**
      * Identity latched on the driver loop just before [cleanup] frees the quiche handles.
      *
      * [closeAttribution] is evaluated on CALLER threads — inside every QuicCloseException a
@@ -345,15 +372,61 @@ class QuicheDriver(
      * here instead keeps the typed [QuicError] attached to the operation that owns it — establishment —
      * so callers can tell "never came up" from "came up, then broke", and an establishment-scoped
      * retry can be written without also swallowing genuine mid-session errors.
+     *
+     * ## The bound is a close, not a cancellation (#480)
+     * The handshake can also fail to settle at all: nothing closes it and [timeout] — the caller's
+     * establishment bound — elapses first. With the production shape (a 15s bound against the 30s
+     * default idle timeout) that is the timer that actually fires, and this used to let `withTimeout`
+     * report it as a bare `TimeoutCancellationException`. That is a `CancellationException`: a
+     * `launch` that dies of one is *cancelled*, not failed, so the establishment failure reached no
+     * handler (the #472 silent-death mechanism, here on the connect path); the connection was then torn
+     * down by scope cancellation and read `Closed(Unspecified)` — the "honest unknown" — for a close
+     * whose reason was perfectly well known. The bound now ends the handshake the way every other
+     * establishment failure ends it: [abandonHandshake] closes the connection with
+     * [QuicError.HandshakeTimeout] and this throws the same reason, so the state channel and the thrown
+     * channel agree. The bound is still the caller's — it fires at exactly [timeout], never at the idle
+     * timeout — and when quiche's idle timer is the shorter of the two it still wins, exactly as before.
      */
     suspend fun awaitEstablished(timeout: Duration) {
         val settled =
-            withTimeout(timeout) {
+            withTimeoutOrNull(timeout) {
                 state.first { it !is QuicConnectionState.Handshaking }
             }
+        if (settled == null) {
+            val bound = QuicError.HandshakeTimeout(timeout)
+            abandonHandshake(bound)
+            // The recorded reason wins if the connection settled on its own in the same instant (an idle
+            // timeout, a peer close); otherwise it is the bound, recorded by the close just issued.
+            throw QuicCloseException(
+                closeReasonOr(bound),
+                "QUIC handshake did not complete within $timeout",
+                attribution = closeAttribution(),
+            )
+        }
         if (settled !is QuicConnectionState.Established) {
             throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
+    }
+
+    /**
+     * End a handshake the caller's bound gave up on: close through the protocol with [reason] (which
+     * [execute] records as this driver's [LocalCloseVerdict] and sends as NO_ERROR — see
+     * [QuicheCmd.Close]), then run the driver down so [transitionToClosed] publishes it.
+     *
+     * The close command, not a scope cancellation, because only a close leaves a reason behind:
+     * cancelling the driver is how this case used to end, and it is what produced `Closed(Unspecified)`.
+     * A closed command channel means the connection settled on its own first; that reason is already
+     * recorded and outranks the bound in [closeReasonOr].
+     */
+    private suspend fun abandonHandshake(reason: QuicError.HandshakeTimeout) {
+        try {
+            val closed = CompletableDeferred<Unit>()
+            commands.send(QuicheCmd.Close(reason, closed))
+            closed.await()
+        } catch (_: ClosedSendChannelException) {
+            // Settled on its own in the same instant — its own reason stands.
+        }
+        destroy()
     }
 
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
@@ -995,7 +1068,11 @@ class QuicheDriver(
             }
 
             is QuicheCmd.Close -> {
-                api.connClose(conn, cmd.error)
+                val onTheWire = cmd.error.wireCloseError()
+                val accepted = api.connClose(conn, onTheWire) == 0
+                // Only a close quiche ACCEPTED is this connection's close: a non-zero return means it was
+                // already closing for a reason quiche can describe itself, which must not be overridden.
+                if (accepted && onTheWire != cmd.error) localCloseVerdict = LocalCloseVerdict.Decided(cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
                 // awaiting Close() deterministically observes the resulting connection state
                 // (Closed once quiche reports the conn closed). Without this, run()'s
@@ -1257,6 +1334,14 @@ class QuicheDriver(
         // Precedence is unchanged: a real (non-NoError) reason wins, peer before local.
         peer?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByPeer(it) }
         local?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByLocal(it) }
+        // A local close whose reason has no transport code went out as NO_ERROR and is only known here
+        // (see [LocalCloseVerdict]). Ahead of the NoError → Graceful fold below, which is exactly the
+        // misreading it exists to prevent; behind quiche's own errors, which it can only have been
+        // recorded in the absence of.
+        when (val verdict = localCloseVerdict) {
+            is LocalCloseVerdict.Decided -> return QuicCloseReason.ByLocal(verdict.error)
+            LocalCloseVerdict.None -> Unit
+        }
         // No CONNECTION_CLOSE frame: distinguish an idle/handshake-stall timeout (a local event, no wire
         // code) from a genuinely clean shutdown — otherwise a stalled connection looks like NoError.
         if (api.connIsTimedOut(conn)) return QuicCloseReason.ByLocal(QuicError.IdleTimeout)

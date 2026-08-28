@@ -2,10 +2,12 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.sim.SimClock
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -91,7 +93,7 @@ class HandshakeIdleTimeoutSimTests {
                 // Client-only. With the server gate on, a client that closes with
                 // ByLocal(IdleTimeout) — the outcome this sweep exists to count — was converted into
                 // a TimeoutCancellationException by the eagerly-accepted server and classified Threw.
-                awaitServer = false,
+                gate = EstablishmentGate.ClientOnly,
             ) {
                 classify(clientDriver.state.value)
             }
@@ -234,9 +236,9 @@ class HandshakeIdleTimeoutSimTests {
                     quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
                     establishTimeout = 30.seconds,
                     clock = SimClock(testScheduler),
-                    // The server never leaves Handshaking here — see the parameter's KDoc. Waiting on
+                    // The server never leaves Handshaking here — see [EstablishmentGate]. Waiting on
                     // it is what previously turned this measurement into a fabricated finding.
-                    awaitServer = false,
+                    gate = EstablishmentGate.ClientOnly,
                 ) { clientDriver.state.value }
 
             println("[#450] blackhole AFTER establishment  -> $afterEstablish")
@@ -255,6 +257,104 @@ class HandshakeIdleTimeoutSimTests {
                     "typed reason — that is what #450's local sighting recorded. Measured directly " +
                     "from the client rather than inferred from an establishment gate, because " +
                     "inferring it from the gate is how this test previously reported the opposite.",
+            )
+        }
+
+    /** How [QuicheDriver.awaitEstablished] ended one stalled handshake, with the virtual time it took. */
+    private data class GateOutcome(
+        val thrown: QuicCloseReason,
+        val state: QuicConnectionState,
+        val elapsed: kotlin.time.Duration,
+    )
+
+    /**
+     * Drive [QuicheDriver.awaitEstablished] itself — the production gate every connect facade calls —
+     * against a real quiche client whose Initials fall into a total blackhole, and report how it ended.
+     * Virtual clock, so `elapsed` is exact rather than approximate.
+     */
+    private suspend fun TestScope.stalledHandshakeThrough(
+        bound: kotlin.time.Duration,
+        idleTimeout: kotlin.time.Duration,
+    ): GateOutcome =
+        withSemanticSim(
+            // 100% loss from the first datagram. The path latency is immaterial under a blackhole —
+            // nothing is ever delivered — but it is deliberately not zero: a timing fix measured at
+            // RTT≈0 has been wrong here before, and this keeps the sim's clock model honest.
+            ImpairmentConfig(seed = 99L, loss = 1.0, latency = 30.milliseconds),
+            quicOptions = semanticSimOptions(idleTimeout = idleTimeout),
+            establishTimeout = 60.seconds,
+            clock = SimClock(testScheduler),
+            // The block IS the wait: the gate must not consume the handshake before the driver's own
+            // bound gets to observe it.
+            gate = EstablishmentGate.None,
+        ) {
+            val started = testScheduler.currentTime
+            val failure = assertFailsWith<QuicCloseException> { clientDriver.awaitEstablished(bound) }
+            GateOutcome(
+                thrown = failure.closeReason,
+                state = clientDriver.state.value,
+                elapsed = (testScheduler.currentTime - started).milliseconds,
+            )
+        }
+
+    /**
+     * **The retitled #480: which timer ends a stalled handshake, and what it reports.**
+     *
+     * Two timers race a handshake that receives nothing — quiche's idle timer and the caller's
+     * establishment bound — and whichever is shorter must end it, *typed*, at its own deadline:
+     *
+     * | shorter timer | reason                          | ends at            |
+     * |---|---|---|
+     * | the idle timeout (2s vs a 30s bound) | `ByLocal(IdleTimeout)`     | quiche's idle deadline |
+     * | the caller's bound (5s vs a 30s idle) | `ByLocal(HandshakeTimeout(5s))` | exactly the bound |
+     *
+     * The first row is the control and already held; it is what proves the timer machinery works and
+     * that this fix leaves the idle path alone. The second row is the production shape — the default
+     * idle timeout is 30s and connect bounds are 15s — and it used to end as the caller's bare
+     * `TimeoutCancellationException` with the connection torn down as `Closed(Unspecified)`: no typed
+     * reason on either channel, and a `CancellationException` that a `launch` completes *cancelled* on
+     * rather than failed. The bound is still the caller's; what changes is that it now closes the
+     * connection the way every other establishment failure does.
+     */
+    @Test
+    fun theShorterOfTheIdleTimeoutAndTheCallersBoundEndsAStalledHandshakeTyped() =
+        runTest(timeout = 300.seconds) {
+            val idleShorter = stalledHandshakeThrough(bound = 30.seconds, idleTimeout = 2.seconds)
+            val boundShorter = stalledHandshakeThrough(bound = 5.seconds, idleTimeout = 30.seconds)
+
+            println("[#480] idle 2s  < bound 30s -> $idleShorter")
+            println("[#480] bound 5s < idle 30s  -> $boundShorter")
+
+            // Control: the idle timer still owns the close when it is the shorter one, and it fires
+            // before the bound. (quiche floors the idle timeout at 3×PTO — RFC 9000 §10.1 — so the
+            // exact instant is quiche's, not ours; only its ordering against the bound is asserted.)
+            val idle = QuicCloseReason.ByLocal(QuicError.IdleTimeout)
+            assertEquals(idle, idleShorter.thrown, "control: awaitEstablished reports quiche's idle close typed")
+            assertEquals(QuicConnectionState.Closed(idle), idleShorter.state, "control: the state channel agrees")
+            assertTrue(
+                idleShorter.elapsed >= 2.seconds && idleShorter.elapsed < 30.seconds,
+                "control: the idle timer (not the 30s bound) ended it, at ${idleShorter.elapsed}",
+            )
+
+            // The fix: the bound ends it, typed, at exactly the bound — not at the idle timeout, and
+            // not as the caller's cancellation.
+            val bound = QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(5.seconds))
+            assertEquals(
+                bound,
+                boundShorter.thrown,
+                "a handshake stalled past the caller's bound must fail with the bound as a typed local " +
+                    "reason — this is the retitled #480",
+            )
+            assertEquals(
+                QuicConnectionState.Closed(bound),
+                boundShorter.state,
+                "the connection must be CLOSED with that same reason, not left Handshaking or torn down " +
+                    "as Unspecified: the state channel is the single source of truth for the reason",
+            )
+            assertEquals(
+                5.seconds,
+                boundShorter.elapsed,
+                "the caller's bound is still the caller's: it fires at exactly the bound, not at the idle timeout",
             )
         }
 }
