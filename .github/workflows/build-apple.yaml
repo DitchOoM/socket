@@ -79,7 +79,7 @@ jobs:
       # NO `cache: gradle` — the caches are saved explicitly below, and setup-java's gradle cache
       # points at the same ~/.gradle/caches directory, so enabling both stored that tree twice.
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
           java-version: '21'

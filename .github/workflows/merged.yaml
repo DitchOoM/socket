@@ -329,7 +329,7 @@ jobs:
       # the 10GB Actions cache cap. This job builds two pure-JVM jars; it does not need to be a
       # cache writer at all.
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
           java-version: '21'

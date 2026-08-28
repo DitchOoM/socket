@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload failure evidence
         if: ${{ !cancelled() && steps.hunt.outputs.fails != '0' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flake-failures-${{ github.run_id }}
           path: /tmp/flake-failures
