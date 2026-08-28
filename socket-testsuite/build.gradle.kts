@@ -138,16 +138,38 @@ android {
 // libquiche via FFM as a classloader resource under META-INF/native/<platform>/. :socket-quic-quiche
 // stages those natives onto its OWN jvmTest classpath but doesn't export them to dependents (they're
 // not in the base jvmJar), so reuse the same staged dir here and depend on its staging task — exactly
-// as :socket-http3 and :socket-webtransport do. Without it, this module's jvmTest (never run in CI
-// before #500) failed with "FFM is the required quiche backend on JDK 21+ but no native lib could be
-// loaded" the first time it ran with the harness up.
+// as :socket-http3 and :socket-webtransport do for jvmTest. Without it, this module's jvmTest (never
+// run in CI before #500) failed with "FFM is the required quiche backend on JDK 21+ but no native lib
+// could be loaded" the first time it ran with the harness up.
+//
+// The Android UNIT-test task (testDebugUnitTest / testReleaseUnitTest) needs the same: it is the same
+// commonTest running on the host JVM, and the first CI run that executed it (#501, run 3) died in
+// `ExceptionInInitializerError <- NativeLibLoader` on that exact scenario. AGP's `AndroidUnitTest` is a
+// Gradle `Test`, so one `withType` match covers both; `matching` + `configureEach` is lazy, so AGP's
+// variant tasks are covered whenever they are registered. (:socket-http3's second staging block wires
+// its `h3specServer` JavaExec, not its Android unit tests — there is no earlier precedent for this.)
 afterEvaluate {
     val quicProject = project(":socket-quic-quiche")
     val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
-    tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
-        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
-        classpath += files(stagedNatives)
-    }
+    tasks
+        .withType<org.gradle.api.tasks.testing.Test>()
+        .matching { it.name == "jvmTest" || it.name.matches(Regex("test\\w*UnitTest")) }
+        .configureEach {
+            dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+            classpath += files(stagedNatives)
+        }
+}
+
+// The JVM flags every QUIC module already gives its test JVMs (:socket-quic, :socket-quic-default,
+// :socket-quic-quiche): FFM native access for quiche on JDK 21+, and --add-opens java.base/java.nio
+// for reflective direct-ByteBuffer address access. jvmTest gets by without the latter, but the Android
+// UNIT-test JVM runs the buffer library's *Android* variant on the host JDK, whose
+// `AndroidBufferHelper.getAddressField` reflects on `java.nio.Buffer.address` — the module system
+// blocks that (`InaccessibleObjectException … does not "opens java.nio"`), which is where #501 run 3's
+// follow-up failed once the natives were on the classpath.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
 }
 
 // --- Publishing (W7, RFC_DETERMINISTIC_SIMULATION §8) ---

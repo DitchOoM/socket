@@ -1055,7 +1055,12 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
 // injects it), so a guaranteed-live harness would turn their skip into a guaranteed
 // -9808 trust failure. withNetworkHarness scenarios have no such precondition.
 // On CI macOS runners docker is absent and harnessUp is a documented no-op.
-listOf("macosArm64Test", "macosX64Test").forEach { name ->
+//
+// testDebugUnitTest is here for the same reason: it is the same commonTest on the host
+// JVM, and it is wired into the Linux checks-tests list (#501) — but harnessDown finalizes
+// only the jvmTest-family tasks above, so without its own edge the Android unit run
+// could find the stack already torn down and silently skip every live scenario.
+listOf("macosArm64Test", "macosX64Test", "testDebugUnitTest").forEach { name ->
     project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)
