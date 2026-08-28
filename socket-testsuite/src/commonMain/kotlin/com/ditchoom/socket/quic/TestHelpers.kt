@@ -255,6 +255,16 @@ suspend fun awaitUntil(
 expect fun isAppleKNative(): Boolean
 
 /**
+ * `true` on every Kotlin/Native target (Apple and Linux), `false` on the JVM and Android.
+ *
+ * A platform fact, not a skip decision: a test that must not run on K/N because of a filed defect
+ * names the issue itself, through `recordSkip` with [SkipReason.BlockedByIssue], next to the code
+ * the issue is about. (Contrast [quicHarnessSkipReason], which IS the decision, because the cause
+ * there varies by simulator and environment variable.)
+ */
+expect fun isKotlinNative(): Boolean
+
+/**
  * The reason the QUIC harness suite cannot run here, or `null` when it can.
  *
  * Returns a [SkipReason] rather than a `Boolean` so the caller has to route it through

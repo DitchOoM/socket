@@ -108,6 +108,25 @@ sealed interface SkipReason {
     ) : SkipReason {
         override val label = "harness-unreachable-from-device"
     }
+
+    /**
+     * The test would fail on a filed production defect before it reached what it asserts, so on the
+     * platforms where that defect lives it does not run — and says which issue is holding it.
+     *
+     * The label carries the issue number, so the CI skip inventory lists one row per open issue and
+     * the row disappears when the fix lands and the skip is removed. [detail] must say what the
+     * defect does on this platform and which lane still runs the test — a skip that names an issue
+     * but not the surviving coverage reads as "nobody runs this any more".
+     *
+     * Deliberately not gated on catching the failure: a `try { … } catch (NPE)` skip would pass the
+     * test the moment the defect changed shape. The caller gates on the platform the issue names.
+     */
+    data class BlockedByIssue(
+        val issue: Int,
+        override val detail: String,
+    ) : SkipReason {
+        override val label = "blocked-by-issue-$issue"
+    }
 }
 
 /**

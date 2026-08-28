@@ -13,9 +13,13 @@ import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.isKotlinNative
 import com.ditchoom.socket.quic.runQuicTest
 import com.ditchoom.socket.quic.scaled
 import com.ditchoom.socket.quic.withQuicConnection
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -175,10 +179,32 @@ abstract class NetworkHarnessTestSuite {
      * Skip-safe: no `quic-echo` scenario (e.g. a fixture without the UDP server) → the block no-ops.
      * Where the harness is reachable the native quiche binding is present (the echo server is quiche
      * itself), so no native-missing guard is needed here.
+     *
+     * **Kotlin/Native: loud skip pending #502.** The first Linux-native run (PR #501) got past the
+     * handshake and died on the first `stream.write()` with a `NullPointerException` from
+     * `QuicheDriver.streamWrite`'s `nativeMemoryAccess!!` — the `BufferFactory.Default` buffer below
+     * has no native memory on K/N, and nothing in the write contract says it must. That is the
+     * library's defect, not the test's, so the test keeps the portable buffer (switching to a native
+     * one would hide exactly what it found), runs on the JVM, and on K/N records a skip that names
+     * the issue. Gated on the platform, never on catching the NPE.
      */
     @Test
     fun quicEchoAccessorStreamRoundTrips() =
         runQuicTest(timeout = 30.seconds) {
+            if (isKotlinNative()) {
+                recordSkip(
+                    this@NetworkHarnessTestSuite::class,
+                    SkipReason.BlockedByIssue(
+                        issue = 502,
+                        detail =
+                            "QuicByteStream.write throws NullPointerException on Kotlin/Native for a " +
+                                "BufferFactory.Default buffer (no native memory; QuicheDriver.streamWrite " +
+                                "`nativeMemoryAccess!!`) — the JVM lane runs this round-trip, K/N does not until #502 lands",
+                    ),
+                    gate = SkipGate.HostCannotProvideIt("QuicByteStream.write from a non-native buffer on Kotlin/Native (#502)"),
+                )
+                return@runQuicTest
+            }
             val ran =
                 withNetworkHarness {
                     val ep =
