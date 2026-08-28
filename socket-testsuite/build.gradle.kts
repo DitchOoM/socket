@@ -134,6 +134,22 @@ android {
     namespace = "com.ditchoom.socket.quic.testsuite"
 }
 
+// NetworkHarnessTests' quicEcho scenario stands up a real quiche client, which on JDK 21+ loads
+// libquiche via FFM as a classloader resource under META-INF/native/<platform>/. :socket-quic-quiche
+// stages those natives onto its OWN jvmTest classpath but doesn't export them to dependents (they're
+// not in the base jvmJar), so reuse the same staged dir here and depend on its staging task — exactly
+// as :socket-http3 and :socket-webtransport do. Without it, this module's jvmTest (never run in CI
+// before #500) failed with "FFM is the required quiche backend on JDK 21+ but no native lib could be
+// loaded" the first time it ran with the harness up.
+afterEvaluate {
+    val quicProject = project(":socket-quic-quiche")
+    val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
+        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+        classpath += files(stagedNatives)
+    }
+}
+
 // --- Publishing (W7, RFC_DETERMINISTIC_SIMULATION §8) ---
 // Mirrors :socket-quic-default's block exactly. Publishing this module is what lets a consumer's
 // commonTest depend on com.ditchoom:socket-testsuite from Central and call withNetworkHarness
