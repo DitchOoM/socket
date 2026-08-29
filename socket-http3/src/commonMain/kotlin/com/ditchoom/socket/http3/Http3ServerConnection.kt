@@ -134,7 +134,7 @@ class Http3ServerConnection internal constructor(
         // processor + stream lifetime, so the generic finally must not release the processor.
         var muxOwnsStream = false
         try {
-            when (Http3StreamReader(stream, processor).nextVarInt()) {
+            when (readStreamType(stream, processor)) {
                 Http3StreamType.CONTROL ->
                     claimCriticalStream(CriticalStreamType.CONTROL) {
                         handleControl(Http3StreamReader(stream, processor))
@@ -161,6 +161,26 @@ class Http3ServerConnection internal constructor(
             if (!muxOwnsStream) processor.release()
         }
     }
+
+    /**
+     * Read a client unidirectional stream's type prefix (RFC 9114 §6.2) under [config]'s read deadline —
+     * the one read in [handleUniStream] that deadline governs. A client that opens a stream and never says
+     * what it is must not be waited on forever (#495 — the unidirectional shape #509 found; this read had
+     * no bound at all), and giving up on it is named and told to the client exactly as [handleRequest]
+     * does for a bidirectional stream: the failure is thrown as the per-stream [Http3StreamException]
+     * that [serve] swallows, so the connection survives.
+     */
+    private suspend fun readStreamType(
+        stream: QuicByteStream,
+        processor: StreamProcessor,
+    ): Long =
+        try {
+            Http3StreamReader(stream, processor).nextVarInt(config.readPolicy.toDeadline())
+        } catch (e: TimeoutCancellationException) {
+            // BEFORE any CancellationException handling — see handleRequest. abandonStalledStream checks the
+            // job first, so a parent's withTimeout cancelling us is rethrown as the cancellation it is.
+            throw abandonStalledStream(stream, config.readPolicy.toDeadline(), e)
+        }
 
     /**
      * Feed the client's QPACK encoder-stream instructions into our [decoder] until the stream ends —

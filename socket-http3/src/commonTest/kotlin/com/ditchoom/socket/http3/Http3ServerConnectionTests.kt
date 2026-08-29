@@ -786,6 +786,52 @@ class Http3ServerConnectionTests {
     }
 
     /**
+     * **A client unidirectional stream that never sends its type is abandoned by name (#495 — the
+     * unidirectional shape #509 found).** `handleUniStream` read the type prefix (RFC 9114 §6.2) with no
+     * deadline at all, so a client that opened a unidirectional stream and said nothing was waited on
+     * forever — the one peer-initiated stream on the server that could still tie up a handler
+     * indefinitely — and any bound put on that read would have died as a cancellation like the bidi peek.
+     * The rule is the bidi one: a client that opens a stream and says nothing must not be waited on
+     * forever, and giving up on it must have a name and reach the client.
+     */
+    @Test
+    fun aUniStreamThatNeverSendsItsTypeIsAbandonedByName(): TestResult =
+        runTest {
+            val stalled = StalledStream(prefix = emptyList()) // opened, then silent: not even a type
+            lateinit var scope: FakeQuicScope
+            // Not runServer: with the type read unbounded the handler parks forever and coroutineScope would
+            // wait on it. A separate job lets the clock be run out past the deadline and the assertion fail by name.
+            val serverJob =
+                launch {
+                    coroutineScope {
+                        scope =
+                            FakeQuicScope(
+                                this,
+                                serverOutgoing(),
+                                listOf(clientControl(frameBytes(clientSettings())), QuicByteStream(QuicStreamId(6), stalled)).asFlow(),
+                            )
+                        Http3ServerConnection(scope, TransportConfig(), qpackCapacity = 0, onRequest = { response.send(200) }).serve()
+                    }
+                }
+            try {
+                testScheduler.advanceTimeBy(20.seconds) // past the 15s default read deadline
+                testScheduler.runCurrent()
+
+                assertEquals(
+                    Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                    stalled.disposition,
+                    "client uni stream 6 sent nothing — not even its type — for 20s, past the default 15s read " +
+                        "deadline. It must be abandoned by name with H3_REQUEST_CANCELLED (RFC 9114 §4.1.1); Open " +
+                        "means the server is still waiting on it, or gave up on it silently (#495). " +
+                        "aborted=${scope.closeErrorCode.isCompleted}",
+                )
+                assertFalse(scope.closeErrorCode.isCompleted, "one stalled uni stream must not become a connection error")
+            } finally {
+                serverJob.cancelAndJoin()
+            }
+        }
+
+    /**
      * The control for the two above: a **genuinely** cancelled server leaves a stalled stream untouched and
      * unnamed — the connection's teardown reclaims it. That is what makes the reset the deadline's alone: a
      * fix that caught `CancellationException` wholesale (the ordering trap #472 documents, from the other
