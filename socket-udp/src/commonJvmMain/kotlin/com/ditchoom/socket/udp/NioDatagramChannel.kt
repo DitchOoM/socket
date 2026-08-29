@@ -74,12 +74,17 @@ internal sealed interface WriteReadiness {
  * sleeps, and each wait is handed only the time left in it — so a send still reports
  * [DatagramSendError.WouldBlock] on the same deadline it always did (issue #303 keeps that contract),
  * and the caller's buffer is left unconsumed either way.
+ *
+ * An [IOException] from [write] is classified by [jvmSendErrorOf] — the JDK's exception types and
+ * `strerror` phrases onto the same sealed set every other backend reports — with [limit] (the
+ * channel's advertised ceiling) carried into [DatagramSendError.TooLarge] as `sendErrnoToError` does.
  */
 internal suspend fun writeAbsorbingBackpressure(
     view: ByteBuffer,
     write: (ByteBuffer) -> Int,
     awaitWritable: suspend (Duration) -> WriteReadiness,
     budget: Duration = SEND_BACKPRESSURE_BUDGET,
+    limit: Int = MAX_UDP_PAYLOAD,
 ) {
     val length = view.remaining()
     val started = TimeSource.Monotonic.markNow()
@@ -88,7 +93,11 @@ internal suspend fun writeAbsorbingBackpressure(
             try {
                 write(view)
             } catch (e: IOException) {
-                throw DatagramSendException(DatagramSendError.Transport(e))
+                // The JDK has already reduced the errno to a type or a strerror phrase; classify it
+                // here, at the boundary, so a consumer branches on the member and never on the cause
+                // (#457: this used to be Transport for everything, which made Unreachable
+                // unconstructible on JVM/Android).
+                throw DatagramSendException(jvmSendErrorOf(e, attempted = length, limit = limit))
             }
         if (written > 0) return
         check(view.remaining() == length) { "a zero-length datagram write must not consume the view" }
@@ -320,13 +329,13 @@ internal abstract class NioDatagramChannelCore(
     ) {
         val view = stage(payload, options)
         val length = view.remaining()
-        // Parity guard. NIO reports an oversized datagram as an IOException carrying no errno, so
-        // without this the JVM would report Transport where every other backend reports TooLarge —
-        // and a consumer branching on the reason (ICE failing a candidate pair) could not rely on it.
+        // Parity guard. NIO reports an oversized datagram as an IOException carrying no errno — only
+        // its strerror phrase, which jvmSendErrorOf also recognizes — so this keeps the JVM reporting
+        // TooLarge for the same condition every other backend does without a syscall to find out.
         if (length > maxWritableSize) {
             throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         }
-        writeAbsorbingBackpressure(view, write, ::awaitWritable)
+        writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize)
     }
 
     /**

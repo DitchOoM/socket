@@ -40,6 +40,7 @@ internal suspend fun MulticastDatagramChannel.sendForMulticastE2e(
     } catch (e: DatagramSendException) {
         when (val error = e.error) {
             is DatagramSendError.Unreachable,
+            is DatagramSendError.PortUnreachable,
             is DatagramSendError.NotPermitted,
             is DatagramSendError.OsError,
             is DatagramSendError.PlatformError,
