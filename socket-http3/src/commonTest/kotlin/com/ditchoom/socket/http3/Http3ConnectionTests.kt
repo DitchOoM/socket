@@ -27,7 +27,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -234,59 +233,6 @@ class Http3ConnectionTests {
         QpackEncoderInstructionCodec.encode(buf, instruction)
         buf.resetForRead()
         return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
-    }
-
-    /**
-     * Delivers [first], then stays silent for [silence] before delivering [afterSilence], then ends.
-     *
-     * Unlike [RecordingByteStream] this **honours the deadline**, the way `QuicheDriver`'s read leaf
-     * does (`withTimeout(timeout)`) — a double that ignored it could not reproduce a deadline defect at
-     * all. Under `runTest` the silence is virtual time, so the test is deterministic and instant.
-     */
-    private class SilentThenSpeakingStream(
-        private val first: List<Int>,
-        private val silence: Duration,
-        private val afterSilence: List<Int>,
-    ) : ByteStream {
-        private var stage = 0
-        var closed = false
-            private set
-
-        override val isOpen: Boolean get() = !closed
-        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
-        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
-
-        override suspend fun read(deadline: Duration): ReadResult =
-            withTimeout(deadline) {
-                when (stage++) {
-                    0 -> chunk(first)
-                    1 -> {
-                        delay(silence)
-                        chunk(afterSilence)
-                    }
-                    else -> ReadResult.End
-                }
-            }
-
-        private fun chunk(bytes: List<Int>): ReadResult {
-            val buf = BufferFactory.Default.allocate(bytes.size.coerceAtLeast(1))
-            for (b in bytes) buf.writeByte(b.toByte())
-            buf.resetForRead()
-            return ReadResult.Data(buf)
-        }
-
-        override suspend fun write(
-            buffer: ReadBuffer,
-            deadline: Duration,
-        ): BytesWritten {
-            val n = buffer.remaining()
-            repeat(n) { buffer.readByte() }
-            return BytesWritten(n)
-        }
-
-        override suspend fun close() {
-            closed = true
-        }
     }
 
     // --- #477: a router child's read deadline is a per-stream failure, not a cancellation ----------
@@ -528,6 +474,52 @@ class Http3ConnectionTests {
                     "deadline, and its child received that parent's TimeoutCancellationException. A reset with " +
                     "H3_REQUEST_CANCELLED here means the fix keyed on the exception's type and reported a " +
                     "cancellation as a stream stall — the #477 confusion in reverse",
+            )
+        }
+
+    /**
+     * **The same control for #476's arm (#495, item 3): a parent deadline cancelling the connection is
+     * not the QPACK pump's own expiry.**
+     *
+     * `readCriticalQpackStream` names a `TimeoutCancellationException` out of a pump as
+     * [Http3Violation.QpackPumpDeadlineExpired] and aborts the connection with it — a critical stream
+     * dying must be loud (RFC 9204 §4.2). But a parent `withTimeout` cancels the router child WITH its
+     * own `TimeoutCancellationException` (see [aParentDeadlineCancellingTheRouterIsNotAStreamDeadline]),
+     * so keyed on the type alone that arm reported a teardown as the pump's deadline: `connectionError`
+     * set, and `closeWithError(QPACK_ENCODER_STREAM_ERROR)` sent to a peer that did nothing wrong. Only
+     * the job tells the two apart — the pump reads with no deadline, so a `TimeoutCancellationException`
+     * arriving while this coroutine is still active can only be a read deadline; one arriving cancelled
+     * is somebody else's.
+     */
+    @Test
+    fun aParentDeadlineCancellingTheConnectionIsNotAQpackPumpDeadline() =
+        runTest {
+            // The peer's encoder stream: its type byte, then silence — the pump parks on an unbounded read.
+            val peerEncoder = StalledStream(prefix = listOf(Http3StreamType.QPACK_ENCODER.toInt()))
+            lateinit var connection: Http3Connection
+            try {
+                withTimeout(1.seconds) {
+                    val scope =
+                        FakeQuicScope(
+                            this,
+                            ClientStreams().outgoing(),
+                            incoming = listOf(QuicByteStream(QuicStreamId(7), peerEncoder)),
+                        )
+                    connection = Http3Connection.bootstrap(scope, TransportConfig())
+                    // withTimeout's scope waits on its children: the router, parked in the encoder pump.
+                }
+                fail("withTimeout(1s) around a router parked in a QPACK pump must expire, not return")
+            } catch (e: TimeoutCancellationException) {
+                // The parent's deadline — the one that is supposed to fire here.
+            }
+
+            assertNull(
+                connection.connectionError,
+                "the connection scope was cancelled by a parent withTimeout(1s) while the peer encoder pump " +
+                    "was parked on a read with no deadline of its own. The pump received that parent's " +
+                    "TimeoutCancellationException, and a connection error here means readCriticalQpackStream " +
+                    "keyed on the exception's type alone and reported a teardown as the pump's own deadline " +
+                    "(#495): the QPACK_ENCODER_STREAM_ERROR it sends blames a peer that did nothing wrong",
             )
         }
 

@@ -13,6 +13,7 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.PoolStats
 import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -20,7 +21,8 @@ import kotlin.time.Duration.Companion.seconds
 // Test doubles for a peer-initiated stream that misbehaves after its first bytes, shared by the client
 // (Http3ConnectionTests) and server (Http3ServerConnectionTests) suites: the router hands such a stream
 // on by its prefix, and what the handler then does with it — resets it, closes it, leaks what it was
-// buffering — is the behaviour under test (#477, #496).
+// buffering — is the behaviour under test (#477, #496); or that goes quiet for longer than a read deadline and
+// then speaks again, which is ordinary for a QPACK stream and must not kill its reader (#472, #495).
 
 /** The peer's view of a stream this endpoint was handed: what, if anything, the endpoint did to it. */
 internal sealed interface Disposition {
@@ -115,3 +117,67 @@ internal class StalledStream(
  * `maxPoolSize` is 64; these tests hand out one or two).
  */
 internal fun BufferPool.outstanding(): Int = stats().let { (it.poolMisses - it.currentPoolSize).toInt() }
+
+/**
+ * Delivers [first], then stays silent for [silence] before delivering [afterSilence], then ends.
+ *
+ * Unlike a scripted double this **honours the deadline**, the way `QuicheDriver`'s read leaf does
+ * (`withTimeout(timeout)`) — a double that ignored it could not reproduce a deadline defect at all.
+ * Under `runTest` the silence is virtual time, so the test is deterministic and instant.
+ *
+ * [readToEnd] is the reader's survival witness: it turns true only when a read returns
+ * [ReadResult.End], which lies on the far side of the silence — a reader whose deadline expired
+ * inside the silence never gets there.
+ */
+internal class SilentThenSpeakingStream(
+    private val first: List<Int>,
+    private val silence: Duration,
+    private val afterSilence: List<Int>,
+) : ByteStream {
+    private var stage = 0
+    var closed = false
+        private set
+
+    /** True once end-of-stream was delivered — i.e. the reader was still reading after [silence]. */
+    var readToEnd = false
+        private set
+
+    override val isOpen: Boolean get() = !closed
+    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+    override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+    override suspend fun read(deadline: Duration): ReadResult =
+        withTimeout(deadline) {
+            when (stage++) {
+                0 -> chunk(first)
+                1 -> {
+                    delay(silence)
+                    chunk(afterSilence)
+                }
+                else -> {
+                    readToEnd = true
+                    ReadResult.End
+                }
+            }
+        }
+
+    private fun chunk(bytes: List<Int>): ReadResult {
+        val buf = BufferFactory.Default.allocate(bytes.size.coerceAtLeast(1))
+        for (b in bytes) buf.writeByte(b.toByte())
+        buf.resetForRead()
+        return ReadResult.Data(buf)
+    }
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten {
+        val n = buffer.remaining()
+        repeat(n) { buffer.readByte() }
+        return BytesWritten(n)
+    }
+
+    override suspend fun close() {
+        closed = true
+    }
+}
