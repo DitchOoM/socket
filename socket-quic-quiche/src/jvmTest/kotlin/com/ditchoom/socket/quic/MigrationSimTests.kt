@@ -34,7 +34,6 @@ class MigrationSimTests {
         runTest {
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 917_324L,
                     // The asymmetry that matters for #445: the path being left is slower than the one
                     // being joined, so the new path's packets can overtake the old path's in-flight ones.
@@ -93,7 +92,6 @@ class MigrationSimTests {
         runTest {
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 77_001L,
                     probeImpairment = { PathImpairment(blackhole = true) },
                 ) {
@@ -162,7 +160,6 @@ class MigrationSimTests {
             var blackholeProbes = true
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 88_202L,
                     probeImpairment = { PathImpairment(blackhole = blackholeProbes) },
                 ) {
@@ -280,7 +277,6 @@ class MigrationSimTests {
         runTest {
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 31_337L,
                     primaryImpairment = PathImpairment(latency = 40.milliseconds),
                     probeImpairment = { PathImpairment(latency = 10.milliseconds) },
@@ -407,7 +403,6 @@ class MigrationSimTests {
             val monitor = SimNetworkMonitor.on(WIFI)
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 45_301L,
                     quicOptions =
                         migrationSimOptions(
@@ -529,7 +524,6 @@ class MigrationSimTests {
             val monitor = SimNetworkMonitor.on(WIFI)
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 45_302L,
                     quicOptions = quietHandoffOptions(monitor),
                     probeImpairment = { PathImpairment(blackhole = true) },
@@ -633,7 +627,6 @@ class MigrationSimTests {
             val monitor = SimNetworkMonitor.on(WIFI)
             try {
                 withMigrationSim(
-                    testScope = this,
                     seed = 45_303L,
                     quicOptions =
                         migrationSimOptions(
@@ -719,7 +712,6 @@ class MigrationSimTests {
                 val monitor = SimNetworkMonitor.on(WIFI)
                 var arm = Arm(-1, false)
                 withMigrationSim(
-                    testScope = this,
                     seed = 45_304L,
                     quicOptions =
                         migrationSimOptions(
@@ -811,7 +803,6 @@ class MigrationSimTests {
                 // lesson #445 learned when a loopback burst survived patched and unpatched alike.
                 for (latency in POOL_RECOVERY_LATENCIES) {
                     withMigrationSim(
-                        testScope = this,
                         seed = 45_900L,
                         quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
                         primaryImpairment = PathImpairment(latency = latency),
