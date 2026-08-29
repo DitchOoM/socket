@@ -1259,6 +1259,56 @@ class ReactiveDriverTests {
             )
         }
 
+    /**
+     * The other way a handshake can fail to settle: nothing closes it, and the CALLER's bound elapses
+     * first (#480). With the production shape — a 15s bound against a 30s idle timeout — this is the
+     * timer that actually fires, and it used to surface as the bare `TimeoutCancellationException`
+     * from `withTimeout`. That is a `CancellationException`: a `launch` that dies of one is *cancelled*,
+     * not failed, so the establishment failure reached no handler (the #472 silent-death mechanism,
+     * here on the connect path). The connection was then torn down by scope cancellation and read
+     * `Closed(Unspecified)` — the "honest unknown" — for a close whose reason was perfectly known.
+     *
+     * The bound must instead end the handshake the way every other establishment failure ends it:
+     * a typed close the state channel and the thrown channel agree on, and a NO_ERROR frame to quiche
+     * rather than the reason's `-1` reinterpreted as `u64`.
+     */
+    @Test
+    fun awaitEstablished_boundElapsesMidHandshake_closesWithHandshakeTimeoutNotTheCallersCancellation() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = false // handshake never completes
+            // quiche's own timer is armed and LONGER than the bound — the manual clock never fires it,
+            // which is exactly the production case: the idle timer is not what ends this connection.
+            api.connTimeout = 10.seconds
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = null, clock = clock)
+            driver.start(this)
+            try {
+                val bound = 200.milliseconds
+                val failure = assertFailsWith<QuicCloseException> { driver.awaitEstablished(bound) }
+
+                val expected = QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(bound))
+                assertEquals(
+                    expected,
+                    failure.closeReason,
+                    "the bound must be reported as a typed local close naming the bound, not the caller's cancellation",
+                )
+                assertEquals(
+                    QuicConnectionState.Closed(expected),
+                    driver.state.value,
+                    "the state channel is the single source of truth for the reason; it must agree with the throw",
+                )
+                assertTrue(driver.commands.isClosedForSend, "abandoning the handshake must close the command channel")
+                assertEquals(
+                    listOf<QuicError>(QuicError.NoError),
+                    api.closeErrors,
+                    "a reason with no transport code has nothing truthful to put on the wire but NO_ERROR",
+                )
+            } finally {
+                driver.destroy()
+            }
+        }
+
     @Test
     fun awaitEstablished_returnsOnlyOnEstablished() =
         runQuicTest {

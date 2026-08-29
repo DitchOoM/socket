@@ -3,12 +3,15 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -332,6 +335,90 @@ abstract class QuicIdleTimeoutTestSuite {
             }
         }
 
+    /**
+     * **The retitled #480, through the public entry point.** A handshake that stalls past the caller's
+     * bound — the bound being SHORTER than the idle timeout, which is the production shape (15s against
+     * the 30s default) — must fail [withQuicConnection] with a typed reason, not the bare
+     * `TimeoutCancellationException` of whichever `withTimeout` happened to fire.
+     *
+     * Why that mattered: `TimeoutCancellationException` is a `CancellationException`. A `launch` whose
+     * body dies of one is *cancelled*, not failed — no handler, no parent notified — which is the #472
+     * silent-death mechanism, here on the connect path. The connection was also torn down as
+     * `Closed(Unspecified)`, the "honest unknown", for a close whose reason was perfectly well known.
+     *
+     * The peer is a UDP socket that is bound and never reads: the client's Initials land in a buffer
+     * nobody drains, nothing ever comes back, and the handshake stalls — hermetically, on every
+     * platform, with no ICMP unreachable to turn it into a different failure. The bound is still the
+     * caller's and still fires at the caller's deadline; what changes is what it reports.
+     */
+    @OptIn(ExperimentalDatagramApi::class)
+    @Test
+    fun aHandshakeStalledPastTheCallersBoundFailsTypedNotAsTheCallersCancellation() =
+        runQuicTest {
+            wrapTestBody {
+                val silent = UdpSocket.bind("127.0.0.1", 0)
+                try {
+                    val bound = 2.seconds.scaled
+                    val failure =
+                        assertFailsWith<QuicCloseException>(
+                            "a handshake stalled past the caller's bound must fail with a typed QUIC close, not " +
+                                "with the caller's TimeoutCancellationException",
+                        ) {
+                            withQuicConnection("127.0.0.1", silent.localAddress.port, options(STALLED_HANDSHAKE_IDLE), timeout = bound) {
+                                error("unreachable: the peer never answers, so this block can never run")
+                            }
+                        }
+                    assertEquals(
+                        QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(bound)),
+                        failure.closeReason,
+                        "the reason must name the bound that fired, as a LOCAL decision: it was ours, and it was " +
+                            "the establishment deadline — not the idle timer, which is ${STALLED_HANDSHAKE_IDLE} away",
+                    )
+                } finally {
+                    silent.close()
+                }
+            }
+        }
+
+    /**
+     * The control for the test above: a **parent's** deadline that fires during establishment must
+     * stay the parent's cancellation, not become this library's typed failure.
+     *
+     * [withQuicConnection] converts an establishment-phase `TimeoutCancellationException` into
+     * `QuicCloseException(ByLocal(HandshakeTimeout(bound)))`. But a `TimeoutCancellationException`
+     * reaching that catch is not necessarily its own: a caller wrapping [withQuicConnection] in a
+     * shorter `withTimeout` delivers the *parent's* exception to the same catch, with the handshake
+     * still in flight. Converting that one would swallow a cancellation into a failure and report a
+     * bound that never fired. The two are told apart by whether the enclosing coroutine is still
+     * active afterwards — it is after our own deadline, it is not after a parent's — the same closure
+     * #494 gave `Http3Connection.route()`.
+     */
+    @OptIn(ExperimentalDatagramApi::class)
+    @Test
+    fun aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation() =
+        runQuicTest {
+            wrapTestBody {
+                val silent = UdpSocket.bind("127.0.0.1", 0)
+                try {
+                    val parentDeadline = 1.seconds.scaled
+                    val bound = 5.seconds.scaled // longer than the parent's, so only the parent's can fire
+                    assertFailsWith<TimeoutCancellationException>(
+                        "a parent withTimeout firing during establishment must surface as the PARENT's " +
+                            "cancellation; a QuicCloseException here means withQuicConnection mistook the " +
+                            "parent's deadline for its own $bound bound and swallowed a cancellation into a failure",
+                    ) {
+                        withTimeout(parentDeadline) {
+                            withQuicConnection("127.0.0.1", silent.localAddress.port, options(STALLED_HANDSHAKE_IDLE), timeout = bound) {
+                                error("unreachable: the peer never answers, so this block can never run")
+                            }
+                        }
+                    }
+                } finally {
+                    silent.close()
+                }
+            }
+        }
+
     // ---- helpers -----------------------------------------------------------------------------------
 
     private suspend fun QuicServer.writeOnceThenGoSilent() {
@@ -410,6 +497,10 @@ abstract class QuicIdleTimeoutTestSuite {
         // absolutes, carry the assertions here.
         private val IDLE_TIMEOUT = 2.seconds.scaled
         private val READ_TIMEOUT = 10.seconds.scaled // 5× IDLE_TIMEOUT so a working idle-close returns End first
+
+        // The production default, and the timer that must NOT be the one ending the stalled handshake:
+        // far longer than that test's 2s bound, so only the bound can fire inside runQuicTest's budget.
+        private val STALLED_HANDSHAKE_IDLE = 30.seconds.scaled
 
         // Keepalive: the PING interval is kept a full 6× under the idle window. The previous 4s/1s (4×)
         // was two-sided — a scheduler-starved runner could delay the 1s PING past the 4s window and the

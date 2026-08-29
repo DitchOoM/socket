@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.flow.DatagramCloseReason
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import kotlin.time.Duration
 
 /**
  * All possible QUIC errors modeled as a sealed hierarchy.
@@ -138,6 +139,25 @@ sealed interface QuicError : DatagramCloseReason {
      * QUIC interop failure) reports meaningfully instead of masquerading as a clean [NoError] shutdown.
      */
     data object IdleTimeout : QuicError {
+        override val code: Long = -1
+    }
+
+    /**
+     * The handshake did not complete within the establishment [bound] the caller gave — the `timeout` of
+     * `QuicEngine.connect` / `withQuicConnection` — and this endpoint abandoned it.
+     *
+     * A *local* decision with no transport [code] (-1), exactly like [IdleTimeout], and kept distinct from
+     * it because a different timer fired. [IdleTimeout] is QUIC's own idle timer (RFC 9000 §10.1): quiche
+     * arms it on the first ack-eliciting send, so it governs a stalled handshake too, and when it is the
+     * shorter of the two it is the one that ends the connection. This is the application's deadline, the
+     * one that fires when the caller's bound is shorter than the idle timeout — the production-shaped
+     * case, a 15s bound against the 30s default. Until it was named, that connection surfaced as the
+     * caller's bare `TimeoutCancellationException`: a `CancellationException`, which a `launch` completes
+     * *cancelled* on rather than failed, so the establishment failure reached nobody (#480).
+     */
+    data class HandshakeTimeout(
+        val bound: Duration,
+    ) : QuicError {
         override val code: Long = -1
     }
 

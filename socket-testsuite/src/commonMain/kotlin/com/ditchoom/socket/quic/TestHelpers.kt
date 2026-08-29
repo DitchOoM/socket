@@ -155,6 +155,14 @@ internal suspend fun withLiveQuicConnection(
             // — retry. AFTER confirmLive() it's a genuine failure (e.g. keepalive broke) — propagate.
             if (confirmed[0]) throw e
             lastWedge = e
+        } catch (e: QuicCloseException) {
+            // The per-attempt bound firing DURING establishment is the same wedge, now typed (#480): a
+            // handshake that never completed. Any other close reason — an idle timeout, a peer close, a
+            // TLS failure — is a real establishment failure and propagates exactly as it always did.
+            val reason = e.closeReason
+            val stalledHandshake = reason is QuicCloseReason.ByLocal && reason.error is QuicError.HandshakeTimeout
+            if (confirmed[0] || !stalledHandshake) throw e
+            lastWedge = e
         }
     }
     throw AssertionError("$reason after $attempts attempts", lastWedge)
@@ -166,8 +174,9 @@ internal suspend fun withLiveQuicConnection(
  *
  *  - the establishment/session [timeout] is [scaled] by [testTimeScale], so a loaded CI runner (with
  *    `QUIC_TEST_TIME_SCALE` set) gets proportionally more budget than the local default;
- *  - if [block] throws — most importantly an establishment `TimeoutCancellationException` from
- *    `awaitEstablished` — the captured trace (DGRAM_OUT / DGRAM_IN + STATE lines) is folded into the
+ *  - if [block] throws — most importantly an establishment failure from `awaitEstablished`, a
+ *    `QuicCloseException` carrying `ByLocal(HandshakeTimeout)` when the bound fired (#480) — the
+ *    captured trace (DGRAM_OUT / DGRAM_IN + STATE lines) is folded into the
  *    rethrown exception's **message**. Gradle's `testLogging` surfaces the full exception at LIFECYCLE
  *    level, so the packet-level trace lands durably in the CI job log (surviving the JNI→FFM re-run
  *    that clobbers `test-results/jvmTest`) instead of an opaque "awaitEstablished timed out".

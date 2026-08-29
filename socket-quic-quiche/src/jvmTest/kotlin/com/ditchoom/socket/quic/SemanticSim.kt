@@ -77,6 +77,33 @@ internal class SemanticSimScope(
     val pipe: ImpairedPipe,
 )
 
+/**
+ * Which drivers [withSemanticSim]'s establishment gate waits on before it runs the block — an
+ * exhaustive choice, because the three cases are three different experiments, not one flag and a half.
+ *
+ * The SERVER half is the one that needs explaining. This sim creates the server conn EAGERLY via
+ * `quiche_accept` before any Initial arrives (see the class KDoc), and a conn that has neither sent
+ * nor received has no timers at all — `connTimeout` returns null and its driver parks on `commands`
+ * forever. That is a sim-only state: `SharedQuicheServer` only ever creates a conn from a received
+ * Initial. Waiting on it under a total blackhole turned a real catch into a miss — the CLIENT closed
+ * with `ByLocal(IdleTimeout)` (the #450 signature, deterministically) and the joint gate then hung on
+ * the eager server and reported the whole thing as a `TimeoutCancellationException`. The instrument
+ * found the thing it was built to find and the gate threw it away.
+ */
+internal sealed interface EstablishmentGate {
+    /** Both drivers must leave `Handshaking` first — every pre-existing sim test. */
+    data object ClientAndServer : EstablishmentGate
+
+    /** Only the client must settle; the server may legitimately never move (see above). */
+    data object ClientOnly : EstablishmentGate
+
+    /**
+     * No gate: the block runs with the handshake still in flight and owns waiting for it — for a
+     * scenario whose subject IS the wait, such as `QuicheDriver.awaitEstablished`'s own bound.
+     */
+    data object None : EstablishmentGate
+}
+
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Default sim options: TLS verification off (self-signed test cert), short idle for bounded tests. */
@@ -124,20 +151,9 @@ internal suspend fun <R> withSemanticSim(
     // the FFI disagree about how much time passed. A virtual clock makes them agree — and makes a
     // deliberate, exact skew expressible instead of something only a loaded machine produces by luck.
     clock: DriverClock = RealDriverClock,
-    // Whether the establishment gate also waits for the SERVER to leave Handshaking.
-    //
-    // Default true, which is what every existing test wants. Pass false for a scenario where the
-    // server may legitimately never move: this sim creates the server conn EAGERLY via `quiche_accept`
-    // before any Initial arrives (see the class KDoc), and a conn that has neither sent nor received
-    // has no timers at all — `connTimeout` returns null and the driver parks on `commands`. That is a
-    // sim-only state; `SharedQuicheServer` only ever creates a conn from a received Initial.
-    //
-    // This is not a convenience. Waiting on it turned a real catch into a miss: under a total
-    // blackhole the CLIENT closes with ByLocal(IdleTimeout) — the #450 signature, deterministically —
-    // and the joint gate then hung on the eager server and reported the whole thing as a
-    // TimeoutCancellationException. The instrument found the thing it was built to find and the gate
-    // threw it away.
-    awaitServer: Boolean = true,
+    // Which drivers the establishment gate waits on before running [block] — see [EstablishmentGate].
+    // Defaults to both, which is what every pre-existing test wants.
+    gate: EstablishmentGate = EstablishmentGate.ClientAndServer,
     block: suspend SemanticSimScope.() -> R,
 ): R {
     val api = loadQuicheApi()
@@ -292,8 +308,14 @@ internal suspend fun <R> withSemanticSim(
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 42001), simScope)
         try {
             withTimeout(establishTimeout) {
-                clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                if (awaitServer) serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                when (gate) {
+                    EstablishmentGate.ClientAndServer -> {
+                        clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                        serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                    }
+                    EstablishmentGate.ClientOnly -> clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                    EstablishmentGate.None -> Unit
+                }
             }
             SemanticSimScope(client, server, clientDriver, serverDriver, pipe).block()
         } finally {

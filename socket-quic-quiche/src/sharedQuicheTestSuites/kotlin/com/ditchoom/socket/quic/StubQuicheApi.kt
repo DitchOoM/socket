@@ -383,11 +383,19 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /**
+     * Every [QuicError] the driver handed to [connClose], in order — i.e. what would have gone onto the
+     * wire. A test that closes with a reason quiche cannot carry (no transport code) asserts here that the
+     * frame carried NO_ERROR rather than the code's `-1` reinterpreted as `u64`.
+     */
+    val closeErrors = mutableListOf<QuicError>()
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
     ): Int {
         closeInitiated = true
+        closeErrors += error
         return 0
     }
 

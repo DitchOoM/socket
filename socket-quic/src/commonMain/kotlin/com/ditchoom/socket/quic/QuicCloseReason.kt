@@ -44,11 +44,11 @@ sealed interface QuicCloseReason {
 
     /**
      * **We** closed the connection with [error] — quiche aborted locally (handshake/TLS failure,
-     * protocol violation), or the connection idled out, in which case [error] is
-     * [QuicError.IdleTimeout].
+     * protocol violation), the connection idled out ([QuicError.IdleTimeout]), or the caller's
+     * establishment bound elapsed with the handshake still in flight ([QuicError.HandshakeTimeout]).
      *
-     * An idle timeout is deliberately modelled here rather than as its own top-level case: it is a
-     * local decision with no wire code, and [QuicError.IdleTimeout] already names it, so giving it a
+     * Those two timeouts are deliberately modelled here rather than as their own top-level cases: each
+     * is a local decision with no wire code, and its [QuicError] already names it, so giving it a
      * second name would put the same fact in two places.
      */
     data class ByLocal(

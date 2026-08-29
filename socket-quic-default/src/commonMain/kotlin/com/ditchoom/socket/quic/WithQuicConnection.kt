@@ -7,8 +7,10 @@ import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.OverflowPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -28,6 +30,15 @@ import kotlin.time.Duration.Companion.seconds
  * The scope-only block boundary remains the lifecycle.
  *
  * [timeout] bounds establishment *and* the block, preserving the pre-engine behavior.
+ *
+ * A handshake that stalls past [timeout] fails with a [QuicCloseException] whose reason is
+ * [QuicCloseReason.ByLocal] of [QuicError.HandshakeTimeout] — the same typed close every other
+ * establishment failure throws — never a bare `TimeoutCancellationException` (#480). The engine already
+ * reports it that way; the conversion here exists because this function's own deadline is armed first
+ * and therefore always fires first, and what it would report is a `CancellationException` that a
+ * `launch` completes *cancelled* on rather than failed. A deadline that fires once the connection is up
+ * is the block's, and still propagates as the cancellation it is — as does a *parent's* deadline firing
+ * at any point: only this function's own bound becomes the typed close.
  */
 suspend fun <R> withQuicConnection(
     hostname: String,
@@ -36,16 +47,37 @@ suspend fun <R> withQuicConnection(
     connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     block: suspend QuicScope.() -> R,
-): R =
-    withTimeout(timeout) {
-        val connection =
-            defaultQuicEngine.connect(hostname, port, quicOptions, connectionOptions, timeout)
-        try {
-            connection.block()
-        } finally {
-            connection.close()
+): R {
+    // Set between connect returning and the block starting — the single sequential coroutine below,
+    // no suspension point in between — so the catch can tell which phase the deadline caught.
+    var established = false
+    try {
+        return withTimeout(timeout) {
+            val connection =
+                defaultQuicEngine.connect(hostname, port, quicOptions, connectionOptions, timeout)
+            established = true
+            try {
+                connection.block()
+            } finally {
+                connection.close()
+            }
         }
+    } catch (e: TimeoutCancellationException) {
+        // This catch cannot tell its own deadline from a PARENT's by the exception alone: a caller
+        // wrapping this call in a shorter withTimeout delivers the parent's exception here with the
+        // handshake still in flight, and converting it would swallow a cancellation into a failure
+        // naming a bound that never fired. The enclosing coroutine tells them apart — still active
+        // after our own deadline, cancelled after a parent's — so a parent's rethrows untouched here.
+        // Same closure as Http3Connection.route() (#494).
+        currentCoroutineContext().ensureActive()
+        if (established) throw e
+        throw QuicCloseException(
+            QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(timeout)),
+            "QUIC handshake did not complete within $timeout",
+            cause = e,
+        )
     }
+}
 
 /**
  * Convenience: open a QUIC connection and run a typed [StreamMux] session
