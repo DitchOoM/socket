@@ -118,9 +118,12 @@ services:
       start_period: 1s
     restart: unless-stopped
 
-  # L3 — netem blackhole: SYN accepted, all egress dropped → deterministic
-  # connect-timeout. Reach it at the pinned bridge IP (172.30.0.99:14999), never a
-  # published 127.0.0.1 port (docker-proxy would complete the handshake locally).
+  # L3 — blackhole: ARP answered, SYN accepted, SYN-ACK (egress TCP from port
+  # 14999) dropped → the client retransmits until its connect deadline fires.
+  # Reach it at the pinned bridge IP (172.30.0.99:14999), never a published
+  # 127.0.0.1 port (docker-proxy would complete the handshake locally). Mirrors
+  # docker-compose.yml's service — see the comment there for why this is a
+  # scoped filter and not `netem loss 100%` (that also dropped ARP replies).
   netem-blackhole:
     image: alpine:3.20
     networks:
@@ -134,10 +137,11 @@ services:
       - |
         set -eu
         apk add --no-cache iproute2 socat >/dev/null
-        tc qdisc add dev eth0 root netem loss 100%
+        tc qdisc add dev eth0 root handle 1: prio
+        tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip protocol 6 0xff match ip sport 14999 0xffff action drop
         exec socat -d TCP-LISTEN:14999,reuseaddr,fork EXEC:/bin/true
     healthcheck:
-      test: ["CMD-SHELL", "pgrep socat >/dev/null"]
+      test: ["CMD-SHELL", "pgrep socat >/dev/null && tc filter show dev eth0 | grep -q 'gact action drop'"]
       interval: 2s
       timeout: 3s
       retries: 15

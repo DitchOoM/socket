@@ -193,7 +193,7 @@ class QuicTransportTest {
         override suspend fun write(
             buffer: ReadBuffer,
             deadline: kotlin.time.Duration,
-        ): BytesWritten = throw QuicStreamException(0, QuicStreamAbort.StopSending(42), "peer STOP_SENDING")
+        ): BytesWritten = throw QuicStreamException(0, QuicStreamAbort.StopSending(QuicAppErrorCode(42)), "peer STOP_SENDING")
 
         override suspend fun close() {}
     }

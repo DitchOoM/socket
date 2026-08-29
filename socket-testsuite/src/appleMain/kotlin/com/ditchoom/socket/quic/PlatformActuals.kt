@@ -8,6 +8,8 @@ import platform.posix.getenv
 
 actual fun isAppleKNative(): Boolean = true
 
+actual fun isKotlinNative(): Boolean = true
+
 // macOS K/N is OsFamily.MACOSX (real network stack — always runs the harness). iOS/tvOS/watchOS
 // simulators are not: KGP runs them via `simctl spawn --standalone`, outside launchd_sim's network
 // services. See quicHarnessSkipReason's docstring (issue #81).

@@ -845,15 +845,25 @@ jobs:
           # :lincheckTest is a SEPARATE task from :jvmTest — Lincheck fails open under another
           # JVM agent, so it runs on a clean JVM and jvmTest excludes it. `check` does not
           # depend on it, so omitting it here means the model checks never run at all.
+          #
+          # Every task here is project-qualified, so a module absent from this list has NO
+          # test task run on this runner at all (the Apple lanes use unqualified task names and
+          # cover every module; this one does not). That is how :socket-quic-default:jvmTest
+          # stayed uncompilable on main for weeks (#500), and how :socket-quic, :socket-testkit
+          # and :socket-testsuite never had a JVM / Android-unit / Linux-x64 test run. When a
+          # module gains a test source set, add its tasks here.
           ./gradlew :jvmTest :lincheckTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
-            :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
+            :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:wasmJsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
             :network-monitor:netnsJvmProbeClasspath \
-            :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest \
+            :socket-quic:jvmTest :socket-quic:testDebugUnitTest :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest :socket-quic:linuxX64Test \
             :socket-quic-quiche:jvmProcessResources \
+            :socket-quic-default:jvmTest \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
+            :socket-testkit:jvmTest :socket-testkit:testDebugUnitTest :socket-testkit:jsNodeTest :socket-testkit:wasmJsNodeTest :socket-testkit:linuxX64Test :socket-testkit:ktlintCheck \
+            :socket-testsuite:jvmTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
             :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \
             :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
-            :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
+            :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
             :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
             -PquicEchoAllArches=true \
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"

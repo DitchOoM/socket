@@ -112,9 +112,10 @@ class NetworkHarnessScope internal constructor(
     fun rst(): HarnessEndpoint = manifest.scenario("rst")
 
     /**
-     * The netem blackhole endpoint: SYN accepted at L3, every egress packet dropped,
-     * so connects time out deterministically. No provisioning needed — exposed in
-     * block form for API symmetry with [impaired]/[peerReset].
+     * The blackhole endpoint: ARP answered, SYN accepted, the SYN-ACK (egress TCP from
+     * its port) dropped, so connects retransmit until their deadline fires. No
+     * provisioning needed — exposed in block form for API symmetry with
+     * [impaired]/[peerReset].
      */
     suspend fun blackhole(block: suspend (HarnessEndpoint) -> Unit) {
         block(manifest.scenario("blackhole"))

@@ -21,6 +21,8 @@ class TestSkipTests {
             SkipReason.TransportUnavailable("TCP in a browser"),
             SkipReason.HostBehaviourDiffers("Windows Iocp connect-refused codes"),
             SkipReason.OptInLaneNotRequested("SIM_FUZZ_ITERATIONS unset"),
+            SkipReason.HarnessUnreachableFromDevice("10.0.2.2:14000 from the emulator"),
+            SkipReason.BlockedByIssue(502, "QuicByteStream.write NPEs on K/N for a non-native buffer"),
         )
 
     @Test
