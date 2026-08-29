@@ -37,6 +37,9 @@ internal class DriverQuicConnection(
     override val identity: QuicConnectionIdentity
         get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
+    /** Same driver, same binding, same answer as the client-side connections. */
+    override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
+
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)

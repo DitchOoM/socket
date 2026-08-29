@@ -28,6 +28,9 @@ class MockQuicConnection(
     private val mockScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     override val coroutineContext: CoroutineContext = mockScope.coroutineContext
     override val bufferFactory: BufferFactory = BufferFactory.Default
+
+    /** In-memory streams copy through [MemoryTransport]; any buffer is accepted, and this says so. */
+    override val capabilities: QuicCapabilities = QuicCapabilities.None
     private val _state = MutableStateFlow<QuicConnectionState>(initialState)
     override val state: StateFlow<QuicConnectionState> = _state
 

@@ -60,6 +60,27 @@ class QuicByteStream(
         return delegate.read(deadline)
     }
 
+    /**
+     * Write [buffer]'s remaining bytes to the stream, zero-copy: the backend reads the buffer in place
+     * and takes no ownership — the caller frees it after the call returns (a returned count may be
+     * partial; re-enter for the remainder, or use `writeFully`).
+     *
+     * ### Buffer requirement
+     * Where the connection's [QuicScope.capabilities] declares
+     * [QuicCapabilities.requiresNativeMemoryBuffers], [buffer] must be backed by native memory — every
+     * quiche-backed connection, on every platform, hands the buffer's raw address to the engine.
+     * Allocate from [QuicScope.bufferFactory] (or `BufferFactory.deterministic()`); a
+     * `BufferFactory.Default` buffer satisfies this on the JVM (direct) but **not** on Linux
+     * Kotlin/Native (managed `ByteArray`), which is why the requirement is a capability rather than a
+     * platform fact.
+     *
+     * @throws QuicNativeMemoryRequiredException if the connection requires native memory and [buffer]
+     *   has none — a caller-contract violation, raised before anything is enqueued; the stream is
+     *   unaffected and a correctly allocated write can follow.
+     * @throws IllegalStateException after [close] or [shutdownSend].
+     * @throws QuicStreamException if the peer aborted this stream (STOP_SENDING / RESET_STREAM).
+     * @throws QuicCloseException if the connection closed.
+     */
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
