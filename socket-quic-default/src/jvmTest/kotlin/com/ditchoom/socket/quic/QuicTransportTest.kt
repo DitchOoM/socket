@@ -147,6 +147,7 @@ class QuicTransportTest {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = job + Dispatchers.Default
         override val bufferFactory: BufferFactory = BufferFactory.Default
+        override val capabilities: QuicCapabilities = QuicCapabilities.None
         override val state: StateFlow<QuicConnectionState> = MutableStateFlow(QuicConnectionState.Established("test"))
 
         /** No quiche connection behind this double, so both ids are stand-ins. */
