@@ -1,4 +1,9 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.coroutines.DelicateCoroutinesApi::class)
+@file:OptIn(
+    kotlinx.cinterop.ExperimentalForeignApi::class,
+    kotlinx.coroutines.DelicateCoroutinesApi::class,
+    // CloseableCoroutineDispatcher is experimental, and recvDispatcher is exposed (internal) to the #498 witness.
+    kotlinx.coroutines.ExperimentalCoroutinesApi::class,
+)
 
 package com.ditchoom.socket.udp
 
@@ -27,6 +32,8 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.withContext
 import platform.posix.close
@@ -35,7 +42,6 @@ import platform.posix.recvfrom
 import platform.posix.sendto
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
-import kotlin.concurrent.AtomicInt
 
 /**
  * Apple (K/N) [AddressedDatagramChannel] backed by blocking POSIX `recvfrom`/`sendto` — the lift
@@ -46,15 +52,25 @@ import kotlin.concurrent.AtomicInt
  * `memScoped` scratch, RFC §4). [localAddress] is plainly non-null: `UdpSocket.bind` fails fast on a
  * getsockname failure before constructing this channel.
  *
- * `recvfrom` blocks, so it runs on a dedicated single-thread dispatcher; [close] closes the fd (which
- * unblocks any in-flight `recvfrom`). The recv sockaddr scratch is per-call (`memScoped`), so a
- * concurrent [close] never races a shared write buffer. Not thread-safe: confine [receive]/[send] each
- * to one coroutine (buffer-flow contract).
+ * `recvfrom` blocks, so it runs on a dedicated single-thread dispatcher. [close] closes the fd, which
+ * unblocks an in-flight `recvfrom`; the dispatcher itself is closed by whichever party is last out —
+ * [close] when no receiver is in flight, otherwise the receiver, on its way out. A receiver is "in
+ * flight" from the moment [LastOutHandoff.enter] admits it, which is the same atomic step that used to
+ * be a bare flag read, so there is no longer a window in which a receiver has passed the closed check
+ * and `close()` can take the dispatcher out from under its hop (#498: kotlinx reported that window as
+ * `IllegalStateException: Dispatcher apple-udp-recv-N was closed, attempted to schedule` in place of
+ * [DatagramReadResult.Closed]). The recv sockaddr scratch is per-call (`memScoped`), so a concurrent
+ * [close] never races a shared write buffer. Not thread-safe: confine [receive]/[send] each to one
+ * coroutine (buffer-flow contract).
  *
  * Control plane: the rich Darwin POSIX ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`/`IP_PKTINFO`) is a
  * labeled follow-up (#377); this first landing advertises [DatagramCapabilities.None] (honest — the datapath
  * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is its typed absent
  * state and every advisory send field a no-op.
+ *
+ * @param beforeDispatch Test seam for the #498 window: runs on every receive iteration after this
+ *   receiver has been admitted and before it hops onto [recvDispatcher]. Production leaves the no-op
+ *   default; `PosixUdpReceiveCloseHandoffTests` parks a receiver here and runs `close()` around it.
  */
 @ExperimentalDatagramApi
 internal class PosixUdpDatagramChannel(
@@ -62,11 +78,15 @@ internal class PosixUdpDatagramChannel(
     override val localAddress: SocketAddress,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    private val beforeDispatch: suspend () -> Unit = {},
 ) : AddressedDatagramChannel {
-    private val closedFlag = AtomicInt(0)
-    private val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
+    /** Who closes [recvDispatcher] — the last party out — decided in one CAS; see [LastOutHandoff]. */
+    private val handoff = LastOutHandoff()
 
-    override val isOpen: Boolean get() = closedFlag.value == 0
+    /** `internal` only so the #498 witness can prove it is closed once the channel is; not an API. */
+    internal val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
+
+    override val isOpen: Boolean get() = !handoff.closed
 
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
@@ -80,46 +100,56 @@ internal class PosixUdpDatagramChannel(
         val ptr = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         try {
             while (true) {
-                if (closedFlag.value != 0) {
-                    payload.freeNativeMemory()
-                    return DatagramReadResult.Closed()
+                // Admission, not a flag read: the CAS that observes "open" also counts this receiver
+                // in, so close() sees it and hands the dispatcher's close to it instead of racing it.
+                when (handoff.enter()) {
+                    LastOutHandoff.Admission.Refused -> {
+                        payload.freeNativeMemory()
+                        return DatagramReadResult.Closed()
+                    }
+                    LastOutHandoff.Admission.Admitted -> Unit
                 }
                 val outcome: DatagramReadResult? =
-                    memScoped {
-                        val addr = alloc<sockaddr_storage>()
-                        val addrLen = alloc<UIntVar>() // socklen_t is uint32 on Darwin (no socklen_tVar alias)
-                        memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
-                        addrLen.value = sizeOf<sockaddr_storage>().convert()
-                        val n =
-                            withContext(recvDispatcher) {
-                                recvfrom(fd, ptr, payload.capacity.convert(), 0, addr.ptr.reinterpret(), addrLen.ptr)
-                                    .toInt()
-                            }
-                        when {
-                            closedFlag.value != 0 -> DatagramReadResult.Closed()
-                            n >= 0 -> {
-                                val peer = sockaddrToAppleSocketAddress(addr.ptr.reinterpret<sockaddr>())
-                                if (peer == null) {
-                                    null // unroutable family — skip, keep waiting
-                                } else {
-                                    payload.position(0)
-                                    payload.setLimit(n)
-                                    // All five args explicit: a defaulted localAddress rides the
-                                    // default-args bridge and boxes the value class (LocalAddress KDoc);
-                                    // no ancillary data on this datapath, so all typed absent states.
-                                    DatagramReadResult.Received(
-                                        Datagram(
-                                            payload = payload,
-                                            peer = peer,
-                                            ecn = Ecn.Unknown,
-                                            localAddress = LocalAddress.Unknown,
-                                            hopLimit = HopLimit.Unknown,
-                                        ),
-                                    )
+                    try {
+                        beforeDispatch()
+                        memScoped {
+                            val addr = alloc<sockaddr_storage>()
+                            val addrLen = alloc<UIntVar>() // socklen_t is uint32 on Darwin (no socklen_tVar alias)
+                            memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
+                            addrLen.value = sizeOf<sockaddr_storage>().convert()
+                            val n =
+                                withContext(recvDispatcher) {
+                                    recvfrom(fd, ptr, payload.capacity.convert(), 0, addr.ptr.reinterpret(), addrLen.ptr)
+                                        .toInt()
                                 }
+                            when {
+                                handoff.closed -> DatagramReadResult.Closed()
+                                n >= 0 -> {
+                                    val peer = sockaddrToAppleSocketAddress(addr.ptr.reinterpret<sockaddr>())
+                                    if (peer == null) {
+                                        null // unroutable family — skip, keep waiting
+                                    } else {
+                                        payload.position(0)
+                                        payload.setLimit(n)
+                                        // All five args explicit: a defaulted localAddress rides the
+                                        // default-args bridge and boxes the value class (LocalAddress KDoc);
+                                        // no ancillary data on this datapath, so all typed absent states.
+                                        DatagramReadResult.Received(
+                                            Datagram(
+                                                payload = payload,
+                                                peer = peer,
+                                                ecn = Ecn.Unknown,
+                                                localAddress = LocalAddress.Unknown,
+                                                hopLimit = HopLimit.Unknown,
+                                            ),
+                                        )
+                                    }
+                                }
+                                else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                             }
-                            else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                         }
+                    } finally {
+                        leaveRecvDispatcher()
                     }
                 if (outcome is DatagramReadResult.Received) return outcome
                 if (outcome is DatagramReadResult.Closed) {
@@ -134,12 +164,27 @@ internal class PosixUdpDatagramChannel(
         }
     }
 
+    /**
+     * This receiver's departure. If it was the last party out of a closed channel, it closes the
+     * dispatcher — and does so off the dispatcher's own thread, because `MultiWorkerDispatcher.close()`
+     * joins its worker, and a caller that resumed *on* that worker (only a `Dispatchers.Unconfined`
+     * caller can) would otherwise wait on itself. [NonCancellable] because the usual reason control is
+     * here at all is the caller's cancellation, and a cancelled hop would skip the close and leak the
+     * worker thread. A failing close propagates: it is the caller's end-of-life report, not noise.
+     */
+    private suspend fun leaveRecvDispatcher() {
+        when (handoff.exit()) {
+            LastOutHandoff.Departure.NotLast -> Unit
+            LastOutHandoff.Departure.LastOut -> withContext(NonCancellable + Dispatchers.Default) { recvDispatcher.close() }
+        }
+    }
+
     override suspend fun send(
         payload: ReadBuffer,
         to: SocketAddress,
         options: DatagramSendOptions,
     ) {
-        check(closedFlag.value == 0) { "sink is closed" }
+        check(!handoff.closed) { "sink is closed" }
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()
@@ -157,11 +202,19 @@ internal class PosixUdpDatagramChannel(
     }
 
     override fun close() {
-        if (!closedFlag.compareAndSet(0, 1)) return
-        // Close the fd first — this unblocks any in-flight recvfrom (returns -1) so the receive loop
-        // returns Closed. The recv scratch is per-call memScoped, so nothing shared is freed here.
-        close(fd)
-        runCatching { recvDispatcher.close() }
+        when (handoff.close()) {
+            LastOutHandoff.Closing.AlreadyClosed -> Unit
+            // A receiver is in flight: closing the fd unblocks its recvfrom (returns -1) or fails the
+            // one it is about to make, its loop returns Closed, and it closes the dispatcher on the
+            // way out. The recv scratch is per-call memScoped, so nothing shared is freed here.
+            LastOutHandoff.Closing.HandedOff -> close(fd)
+            // Nobody is in flight and nobody can be admitted now: the dispatcher is idle, and this is
+            // the only party left to close it. Not wrapped — a failing close is reported, not lost.
+            LastOutHandoff.Closing.LastOut -> {
+                close(fd)
+                recvDispatcher.close()
+            }
+        }
     }
 
     companion object {
