@@ -234,6 +234,7 @@ class ResourceCleanupTests {
                 launch(Dispatchers.Default) {
                     try {
                         serverFlow.collect { client ->
+                            delay(150) // HOSTILE SCHEDULE (proof only)
                             collectCount++
                             client.writeString("hello")
                             client.close()
@@ -345,6 +346,7 @@ class ResourceCleanupTests {
                                 withTimeout(2.seconds) {
                                     client.readString(deadline = 2.seconds)
                                 }
+                            delay(1.seconds) // HOSTILE SCHEDULE (proof only)
                             clientsProcessed++
                         } catch (e: Exception) {
                             // Client error - continue accepting
