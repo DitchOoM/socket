@@ -241,6 +241,12 @@ sealed interface Http3Violation {
      * is `H3_REQUEST_CANCELLED`, the code RFC 9114 §4.1.1 / §4.6 gives a client for "data no longer
      * needed", sent as RESET_STREAM + STOP_SENDING; a push whose Push ID had already arrived fails its
      * awaiting [Http3ServerPush.response] with this. The connection survives.
+     *
+     * The server has the same two shapes (#495) — the WebTransport peek on a client bidirectional stream,
+     * and a request stream whose HEADERS never arrive — and abandons them the same way. §4.1.1 gives a
+     * server `H3_REQUEST_CANCELLED` for a request it abandons after partial processing; for one it never
+     * processed at all it prefers `H3_REQUEST_REJECTED`, a refinement this violation does not make: it
+     * names a stall identically on both roles.
      */
     data class PeerStreamDeadlineExpired(
         val streamId: QuicStreamId,
@@ -251,7 +257,7 @@ sealed interface Http3Violation {
 
         override fun describe() =
             "peer ${if (streamId.isUnidirectional) "unidirectional" else "bidirectional"} stream ${streamId.id} " +
-                "sent nothing for $deadline before it could be routed; abandoned with H3_REQUEST_CANCELLED"
+                "sent nothing for $deadline while this endpoint waited on it; abandoned with H3_REQUEST_CANCELLED"
     }
 
     // --- QPACK field section (RFC 9204 §2.2) — QPACK_DECOMPRESSION_FAILED --------------------------
