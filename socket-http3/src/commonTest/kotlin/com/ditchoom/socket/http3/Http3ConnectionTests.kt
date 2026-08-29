@@ -12,11 +12,16 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicStreamAbort
+import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -516,6 +521,109 @@ class Http3ConnectionTests {
                     "keyed on the exception's type alone and reported a teardown as the pump's own deadline " +
                     "(#495): the QPACK_ENCODER_STREAM_ERROR it sends blames a peer that did nothing wrong",
             )
+        }
+
+    // --- #496: the WebTransport mux owns the processor and stream the router handed it ------------
+
+    /**
+     * **A WebTransport bidirectional stream that stalls inside its Session ID leaks nothing (#496).**
+     *
+     * `route()` peeks the `0x41` signal and hands the stream *and its `StreamProcessor`* to
+     * `WebTransportMux.acceptIncomingBidi`, flagging `handlerOwnsStream` first so its own `finally`
+     * releases neither — the mux's contract is "always consumes the processor". But every release in
+     * the mux sat on the success path: the Session ID read expiring its deadline skipped them all, so
+     * whatever the processor was still buffering never went back to the pool. Here that is the first
+     * byte of a two-byte Session ID varint — the stall splits the varint — and on QUIC it is a pool leaf
+     * per stalled stream.
+     *
+     * The witness is the pool's own accounting, taken outside the mux: the peer stream's chunk is
+     * counted out of [BufferPool] before the connection exists, and [outstanding] must be back to zero
+     * once the deadline has expired. The stream is also reset for the peer — on the client the router's
+     * #477 arm already did that, so the reset is not what this test is for — and the connection survives.
+     */
+    @Test
+    fun aWebTransportBidiStreamStallingInsideItsSessionIdReleasesTheProcessor() =
+        runTest {
+            val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded)
+            // Signal 0x41 (varint 0x40 0x41), then 0x40 — the first byte of a two-byte Session ID — then silence.
+            val peerBidi = StalledStream(prefix = listOf(0x40, 0x41, 0x40), chunks = pool)
+            assertEquals(1, pool.outstanding(), "sanity: the peer stream's chunk is the one buffer out of the pool")
+            val response = RecordingByteStream(listOf(dataChunk(okResponseBytes()), ReadResult.End))
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi), peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), response))),
+                )
+
+            // The connection adopts `pool` as its own (BufferPool never nests a pool inside a pool), so the
+            // router's processors draw from — and must give back to — the pool this test can count.
+            val connection =
+                Http3Connection.bootstrap(scope, TransportConfig(bufferFactory = pool), webTransport = WebTransportOptions())
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle() // runs the Session ID read out past its 15s deadline
+
+            assertEquals(
+                0,
+                pool.outstanding(),
+                "peer bidi stream 1 sent 0x41 and half a Session ID, then nothing past the 15s read deadline. " +
+                    "The processor the router handed the WebTransport mux was still holding that half, and " +
+                    "the mux released it on no path but success (#496): a buffer is still out of the pool. " +
+                    "disposition=${peerBidi.disposition}, connectionError=${connection.connectionError}",
+            )
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                peerBidi.disposition,
+                "the stalled stream must be reset for the peer with H3_REQUEST_CANCELLED (RFC 9114 §4.1.1)",
+            )
+            assertNull(connection.connectionError, "one stalled WebTransport stream must not become a connection error")
+            val ok = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+            assertEquals(200, ok.status, "the connection must still serve a request after abandoning the stalled stream")
+            ok.close()
+        }
+
+    /**
+     * **A peer that resets a WebTransport bidirectional stream mid-Session-ID leaks nothing either, and
+     * our half of the stream is disposed of (#496).**
+     *
+     * The other exit from the same read: the QUIC leaf throws [QuicStreamException] when the peer sends
+     * RESET_STREAM. `route()` swallows that as stream-scoped and — the stream being the mux's — touches
+     * nothing, so the processor's buffered byte leaked exactly as on the deadline, and our send half of
+     * the bidirectional stream stayed open: a peer's RESET_STREAM covers only the direction it sends on.
+     */
+    @Test
+    fun aPeerResettingAWebTransportBidiStreamMidSessionIdReleasesTheProcessor() =
+        runTest {
+            val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded)
+            val peerReset = QuicStreamException(1, QuicStreamAbort.ResetStream(QuicAppErrorCode(0)), "peer sent RESET_STREAM")
+            val peerBidi = StalledStream(prefix = listOf(0x40, 0x41, 0x40), chunks = pool, then = ThenPeer.Aborts(peerReset))
+            assertEquals(1, pool.outstanding(), "sanity: the peer stream's chunk is the one buffer out of the pool")
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi), peerControlStream(clientSettings())),
+                )
+
+            val connection =
+                Http3Connection.bootstrap(scope, TransportConfig(bufferFactory = pool), webTransport = WebTransportOptions())
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(
+                0,
+                pool.outstanding(),
+                "the peer reset bidi stream 1 while the WebTransport mux was reading its Session ID; the " +
+                    "processor's buffered byte was never released (#496). disposition=${peerBidi.disposition}",
+            )
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                peerBidi.disposition,
+                "our send half of the stream must be reset too; Open means route() swallowed the peer's " +
+                    "reset and the mux never disposed of the stream it owned",
+            )
+            assertNull(connection.connectionError, "one peer-reset WebTransport stream must not become a connection error")
         }
 
     // --- tests --------------------------------------------------------------

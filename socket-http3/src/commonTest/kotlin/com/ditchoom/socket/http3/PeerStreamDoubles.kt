@@ -9,20 +9,20 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.PoolStats
+import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-/*
- * Stream doubles that HONOUR the read deadline, the way `QuicheDriver`'s read leaf does
- * (`withTimeout(timeout)`). A double that ignored the deadline could not reproduce a deadline defect at
- * all. Shared by the client ([Http3ConnectionTests], #472 / #477) and the server
- * ([Http3ServerConnectionTests], #495): both roles face the same peer behaviour and the same
- * `TimeoutCancellationException`-is-a-`CancellationException` trap. Under `runTest` every silence here is
- * virtual time, so the tests are deterministic and instant.
- */
+// Test doubles for a peer-initiated stream that misbehaves after its first bytes, shared by the client
+// (Http3ConnectionTests) and server (Http3ServerConnectionTests) suites: the router hands such a stream
+// on by its prefix, and what the handler then does with it — resets it, closes it, leaks what it was
+// buffering — is the behaviour under test (#477, #496); or that goes quiet for longer than a read deadline and
+// then speaks again, which is ordinary for a QPACK stream and must not kill its reader (#472, #495).
 
 /** The peer's view of a stream this endpoint was handed: what, if anything, the endpoint did to it. */
 internal sealed interface Disposition {
@@ -38,34 +38,57 @@ internal sealed interface Disposition {
     ) : Disposition
 }
 
+/** What a [StalledStream]'s reads do once its prefix has been delivered. */
+internal sealed interface ThenPeer {
+    /** Says nothing: every read parks until its deadline and expires with `TimeoutCancellationException`. */
+    data object StaysSilent : ThenPeer
+
+    /** Aborts the stream: the read throws [failure], as the QUIC leaf does when the peer sends RESET_STREAM. */
+    data class Aborts(
+        val failure: QuicStreamException,
+    ) : ThenPeer
+}
+
 /**
- * Delivers [prefix] on the first read (when non-empty), then stalls: every later read parks until its
- * deadline and expires with `TimeoutCancellationException`, exactly as `QuicheDriver`'s read leaf does
- * (`withTimeout(timeout)`). A scripted double that ignores the deadline could not stall at all;
- * [SilentThenSpeakingStream] eventually speaks. Under `runTest` the stall is virtual time. The first
- * of [close]/[reset] wins — it is the one the peer sees.
+ * Delivers [prefix] on the first read (when non-empty), then does what [then] says — by default stalls:
+ * every later read parks until its deadline and expires with `TimeoutCancellationException`, exactly as
+ * `QuicheDriver`'s read leaf does (`withTimeout(timeout)`). A scripted double that ignored the deadline
+ * could not reproduce a deadline defect at all. Under `runTest` the stall is virtual time. The first of
+ * [close]/[reset] wins — it is the one the peer sees.
+ *
+ * The prefix travels as one chunk allocated from [chunks] **up front**, so a test can hand the stream a
+ * [BufferPool]'s buffer and count it out of that pool before the endpoint under test even exists: once
+ * the endpoint is done with the stream, [outstanding] says whether the chunk came back (#496).
  */
 internal class StalledStream(
-    private val prefix: List<Int>,
+    prefix: List<Int>,
+    chunks: BufferFactory = BufferFactory.Default,
+    private val then: ThenPeer = ThenPeer.StaysSilent,
 ) : ByteStream,
     Resettable {
-    private var prefixDelivered = prefix.isEmpty()
+    private val script = ArrayDeque<ReadResult>()
     var disposition: Disposition = Disposition.Open
         private set
+
+    init {
+        if (prefix.isNotEmpty()) {
+            val buf = chunks.allocate(prefix.size)
+            for (b in prefix) buf.writeByte(b.toByte())
+            buf.resetForRead()
+            script.addLast(ReadResult.Data(buf))
+        }
+    }
 
     override val isOpen: Boolean get() = disposition is Disposition.Open
     override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
     override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
     override suspend fun read(deadline: Duration): ReadResult {
-        if (!prefixDelivered) {
-            prefixDelivered = true
-            val buf = BufferFactory.Default.allocate(prefix.size)
-            for (b in prefix) buf.writeByte(b.toByte())
-            buf.resetForRead()
-            return ReadResult.Data(buf)
+        script.removeFirstOrNull()?.let { return it }
+        return when (val then = then) {
+            ThenPeer.StaysSilent -> withTimeout(deadline) { awaitCancellation() }
+            is ThenPeer.Aborts -> throw then.failure
         }
-        return withTimeout(deadline) { awaitCancellation() }
     }
 
     override suspend fun write(
@@ -85,6 +108,15 @@ internal class StalledStream(
         if (disposition is Disposition.Open) disposition = Disposition.Reset(errorCode)
     }
 }
+
+/**
+ * Buffers this pool has handed out and not yet been given back — the pool's own accounting, read from
+ * outside whatever borrowed them. Every pool miss is one distinct buffer, and at any moment each of them
+ * is either sitting in the pool ([PoolStats.currentPoolSize]) or out with a borrower, so `misses − pooled`
+ * is the outstanding count. Holds while nothing has been dropped for a full pool (the default
+ * `maxPoolSize` is 64; these tests hand out one or two).
+ */
+internal fun BufferPool.outstanding(): Int = stats().let { (it.poolMisses - it.currentPoolSize).toInt() }
 
 /**
  * Delivers [first], then stays silent for [silence] before delivering [afterSilence], then ends.
