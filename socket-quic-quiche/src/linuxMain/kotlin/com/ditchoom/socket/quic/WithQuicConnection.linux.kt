@@ -298,6 +298,9 @@ internal class LinuxQuicConnection(
     override val identity: QuicConnectionIdentity
         get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
+    /** quiche reads raw addresses through cinterop — the one answer every driver-backed connection gives. */
+    override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
+
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
     fun start() {

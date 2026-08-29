@@ -792,7 +792,10 @@ jobs:
       # test worker (jstack -l, with lock info) AND every native debugTest/test.kexe
       # (gdb thread apply all bt), then kills the build so the step FAILS FAST with the
       # exact deadlocked stacks in the log instead of an opaque timeout. The full dump is
-      # also uploaded as an artifact by the step below.
+      # also uploaded as an artifact by the step below. The dump is a foldable log group and
+      # the step's last words name the hung test(s) — a ::error:: annotation and a step-summary
+      # section — because the kill makes Gradle sign off with "build daemon disappeared
+      # unexpectedly", which reads as runner OOM unless someone scrolls up (#492).
       #
       # -PquicEchoAllArches=true stays on this invocation: harnessUp dependsOn quicEchoJar, so the
       # quic-echo container this job's harness serves is built INSIDE this gradle call with both
@@ -810,6 +813,7 @@ jobs:
           command -v gdb >/dev/null 2>&1 || sudo apt-get install -y gdb >/dev/null 2>&1 || true
           LOG=/tmp/gradle-out.log
           DUMP=/tmp/hang-threaddump.txt
+          VERDICT=/tmp/hang-verdict.txt
           : > "$LOG"
           (
             while sleep 30; do
@@ -819,6 +823,8 @@ jobs:
               # 15 min of TOTAL output silence = deadlocked (the real hang is ~46 min silent);
               # a slow-but-healthy native link/test suite is never quiet this long.
               if [ "$idle" -ge 900 ]; then
+                group="HANG WATCHDOG dump (${idle}s silent)"
+                echo "::group::${group}"
                 {
                   echo "################ HANG WATCHDOG: no gradle output for ${idle}s — dumping stacks ################"
                   date -u
@@ -833,6 +839,43 @@ jobs:
                   done
                   echo "################ END WATCHDOG DUMP ################"
                 } | tee -a "$DUMP" | tee -a "$LOG"
+                echo "::endgroup::"
+                # The step's LAST words must carry the diagnosis (#492). Once the daemon is killed
+                # below, Gradle's closing line is "Gradle build daemon disappeared unexpectedly",
+                # which reads as runner OOM — three real hangs were triaged as infra that way while
+                # the dump ~1,000 lines above named the test. So name it here, where the failure is
+                # read: a ::error:: annotation (surfaces in the PR checks UI and the run summary) plus
+                # a step-summary section carrying the test-thread frames. The names come from the
+                # dump: JVM frames `at com.ditchoom.<pkg>.<Class>Test(s).<method>(` — the test method
+                # sits on the "Test worker" thread, Lincheck operations on its Lincheck-<Class>-N
+                # threads — and K/N frames `kfun:com.ditchoom.<pkg>.<Class>Test(s)#<method>(` from
+                # gdb. Kotlin lambda classes (`…Tests$method$1$1.invokeSuspend`) are excluded on
+                # purpose: `Tests` must be followed by the member separator. First appearance wins
+                # the ordering, so the "Test worker" frame (jstack lists thread #1 first) leads.
+                # Every grep here may legitimately miss — `|| true` keeps a miss from killing this
+                # subshell under -e (a no-match grep inside $(...) has taken a step down before).
+                hung=$( { grep -oE '(at |kfun:)com\.ditchoom\.[A-Za-z0-9_.$]*Tests?[#.][A-Za-z0-9_]+' "$DUMP" || true; } \
+                  | sed -E 's/^(at |kfun:)//; s/#/./' \
+                  | awk '!seen[$0]++ { if (++n > 5) exit; printf "%s%s", (n > 1 ? ", " : ""), $0 }' ) || true
+                if [ -n "$hung" ]; then
+                  msg="HANG WATCHDOG killed the build after ${idle}s of Gradle silence — hung test(s): ${hung} (full dump in the '${group}' group above)"
+                else
+                  workers=$(pgrep -f 'GradleWorkerMain' | wc -l | tr -d ' ') || true
+                  kexes=$(pgrep -f 'test\.kexe' | wc -l | tr -d ' ') || true
+                  msg="HANG WATCHDOG killed the build after ${idle}s of Gradle silence — no com.ditchoom test frame in the dump; processes: ${workers:-0} GradleWorkerMain JVM(s), ${kexes:-0} test.kexe (full dump in the '${group}' group above)"
+                fi
+                echo "::error::${msg}"
+                printf '%s\n' "$msg" > "$VERDICT"
+                {
+                  echo "### ${msg}"
+                  echo
+                  echo '```text'
+                  # Test-thread frames: every "Test worker" / Lincheck-* jstack block (first 60
+                  # lines), then any K/N test frame gdb saw (first 20).
+                  awk '/^"/ { p = ($0 ~ /^"(Test worker|Lincheck-)/) } p && n < 60 { print; n++ }' "$DUMP" || true
+                  awk '/kfun:com\.ditchoom/ && n < 20 { print; n++ }' "$DUMP" || true
+                  echo '```'
+                } >> "${GITHUB_STEP_SUMMARY:-/dev/null}" || true
                 # Kill the build so the step fails fast now that we have the stacks.
                 pkill -f 'GradleWorkerMain' 2>/dev/null || true
                 pkill -f 'test\.kexe' 2>/dev/null || true
@@ -869,6 +912,12 @@ jobs:
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           kill "$WD" 2>/dev/null || true
+          if [ -s "$VERDICT" ]; then
+            # The watchdog fired. Its kill makes Gradle sign off with "build daemon disappeared
+            # unexpectedly" AFTER the watchdog's own ::error::, so repeat the verdict here as the
+            # step's literal last words (plain text — the annotation above is the one that counts).
+            echo "################ $(cat "$VERDICT") ################"
+          fi
           exit "$RC"
 
       - name: Upload hang thread-dump (if any)

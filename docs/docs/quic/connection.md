@@ -160,6 +160,29 @@ To override (JVM only — native always requires `network()`), pass
 is what `bufferFactory` reports inside the block, so `bufferFactory.allocate(n).use { }` always
 matches the connection.
 
+### The requirement is a capability, not a platform fact
+
+The connection **declares** what its writes need, as `capabilities: QuicCapabilities` on the scope:
+
+```kotlin
+withQuicConnection(host, port, quicOptions) {
+    // true on every quiche backend — the engine reads the buffer's raw address
+    val factory = if (capabilities.requiresNativeMemoryBuffers) bufferFactory else BufferFactory.Default
+    factory.allocate(n).use { out -> /* … */ stream.write(out) }
+}
+```
+
+Code that allocates elsewhere — a codec's own pool, a helper written against `BufferFactory.Default`
+— reads this once and branches once. It matters because a heap buffer only *looks* like a platform
+detail: the JVM's `BufferFactory.Default` allocates direct memory, Linux Kotlin/Native's allocates a
+managed `ByteArray`, and `BufferFactory.managed()` is heap everywhere, JVM included. A write that
+violates the declaration fails **by type**, before anything is enqueued, with a
+`QuicNativeMemoryRequiredException` (an `IllegalArgumentException` — a call-site bug, not a peer
+event) whose message names the stream, the buffer, the declared capability, and where to allocate
+from. The stream and connection are unaffected; a correctly allocated write can follow. The same
+holds for `datagramChannel().send`, whose own `DatagramCapabilities.requiresNativeMemoryBuffers`
+restates the connection's answer.
+
 ## Error Handling
 
 QUIC errors mirror the core `socket` sealed hierarchy:
@@ -169,6 +192,11 @@ QUIC errors mirror the core `socket` sealed hierarchy:
 - **`QuicStreamException`** — a single **stream** was aborted by the peer (`STOP_SENDING` or
   `RESET_STREAM`); the connection stays healthy. Inspect `abort: QuicStreamAbort` for the peer's
   application error code.
+- **`QuicNativeMemoryRequiredException`** (an `IllegalArgumentException`) — **your** write handed the
+  connection a buffer without native memory where `capabilities.requiresNativeMemoryBuffers` holds.
+  Not a peer event: nothing was sent, the stream is untouched; fix the allocation (see
+  [Buffers](#the-requirement-is-a-capability-not-a-platform-fact)). `target` says whether it was a
+  stream write or a datagram send.
 
 ```kotlin
 try {
