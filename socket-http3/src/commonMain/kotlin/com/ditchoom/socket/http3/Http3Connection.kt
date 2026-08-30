@@ -333,13 +333,13 @@ class Http3Connection private constructor(
             } catch (t: Throwable) {
                 reader.release()
                 mux.abandon(session)
-                resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
+                stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
                 throw t
             }
         if (status !in 200..299) {
             reader.release()
             mux.abandon(session)
-            resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
+            stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
             throw WebTransportException(
                 WebTransportFailure.ConnectRejected(status = status, authority = authority, path = path),
             )
@@ -531,41 +531,7 @@ class Http3Connection private constructor(
             Http3ErrorCode.FRAME_ERROR,
             Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
             -> abortConnection(error)
-            Http3ErrorCode.MESSAGE_ERROR -> resetStreamQuietly(stream, Http3ErrorCode.MESSAGE_ERROR)
-        }
-    }
-
-    /**
-     * Abandon a peer-initiated [stream] whose read expired [config]'s deadline before the router could
-     * tell what it was (#477), returning the named failure for whoever was waiting on the stream. The
-     * peer is told: RFC 9114 §4.6 has a client abort reading a push stream it gives up on with
-     * `H3_REQUEST_CANCELLED`, and §4.1.1 makes that the client's "data no longer needed" code generally —
-     * a plain `close()` would FIN only our send side and leave the peer's half open until the connection
-     * ends. Quietly, because the connection may already be gone; the abandonment is per-stream either way.
-     */
-    private suspend fun abandonStalledStream(
-        stream: QuicByteStream,
-        cause: TimeoutCancellationException,
-    ): Http3StreamException {
-        val failure =
-            Http3StreamException(
-                Http3Violation.PeerStreamDeadlineExpired(stream.streamId, config.readPolicy.toDeadline(), cause),
-            )
-        resetStreamQuietly(stream, failure.errorCode)
-        return failure
-    }
-
-    /** Reset [stream] with [errorCode], ignoring a failure if the connection/stream is already gone. */
-    private suspend fun resetStreamQuietly(
-        stream: QuicByteStream,
-        errorCode: Long,
-    ) {
-        try {
-            stream.reset(errorCode)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Throwable) {
-            // Already torn down — nothing to reset.
+            Http3ErrorCode.MESSAGE_ERROR -> stream.resetQuietly(Http3ErrorCode.MESSAGE_ERROR)
         }
     }
 
@@ -784,10 +750,9 @@ class Http3Connection private constructor(
             //
             // But not by type alone: a parent's withTimeout cancels this child WITH its own
             // TimeoutCancellationException, so the exception cannot say whose deadline expired. The job
-            // can — a read deadline leaves this coroutine active, a cancellation does not, and that one
-            // must stay the cancellation it is.
-            currentCoroutineContext().ensureActive()
-            abandonStalledStream(stream, e)
+            // can — a read deadline leaves this coroutine active, a cancellation does not — which is the
+            // check abandonStalledStream makes first, rethrowing a cancellation as the cancellation it is.
+            abandonStalledStream(stream, config.readPolicy.toDeadline(), e)
         } catch (e: Http3StreamException) {
             // One stream erroring must not take down the connection. The control handler has
             // already recorded any SETTINGS failure into peerSettingsDeferred.
@@ -881,6 +846,12 @@ class Http3Connection private constructor(
             // Unreachable now that the pumps read with no deadline, and deliberately kept anyway: if a
             // deadline ever reaches this loop again, a critical QPACK stream dying must be a typed
             // connection abort (RFC 9204 §4.2) rather than something the connection survives blind.
+            //
+            // But not on the type alone (#495): a parent's withTimeout cancels this child WITH its own
+            // TimeoutCancellationException, and aborting on that would send QPACK_*_STREAM_ERROR to a
+            // peer that did nothing wrong. The job tells them apart — a read deadline leaves this
+            // coroutine active, a cancellation does not, and that one stays the cancellation it is.
+            currentCoroutineContext().ensureActive()
             abortConnection(Http3StreamException(Http3Violation.QpackPumpDeadlineExpired(qpackStream, e)))
         } catch (e: CancellationException) {
             throw e
@@ -1094,7 +1065,7 @@ class Http3Connection private constructor(
             maybeExtendMaxPushId(pushId)
             entry = pushMutex.withLock { pushEntries.getOrPut(pushId) { PushEntry() }.also { it.pushStream = stream } }
             if (entry.cancelled) {
-                resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
+                stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
                 return
             }
             // A push stream carries a response message but never a PUSH_PROMISE (onPushPromise = null).
@@ -1107,8 +1078,8 @@ class Http3Connection private constructor(
             // or the response HEADERS after it, never came. Name the stall, tell the peer (RFC 9114 §4.6),
             // and fail the push that was waiting on it — once the Push ID has arrived there is one; before
             // that there is nothing to fail, and the reset is the only report the stall can get.
-            currentCoroutineContext().ensureActive() // a parent's timeout cancelling us is not a stall — see route()
-            val failure = abandonStalledStream(stream, e)
+            // A parent's timeout cancelling us is not a stall — abandonStalledStream checks the job first; see route().
+            val failure = abandonStalledStream(stream, config.readPolicy.toDeadline(), e)
             entry?.let { if (!it.responseDeferred.isCompleted) it.responseDeferred.completeExceptionally(failure) }
         } catch (e: CancellationException) {
             throw e
@@ -1138,7 +1109,7 @@ class Http3Connection private constructor(
         } catch (_: Throwable) {
             // Connection already gone — the local cancellation below still applies.
         }
-        entry.pushStream?.let { resetStreamQuietly(it, Http3ErrorCode.REQUEST_CANCELLED) }
+        entry.pushStream?.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
         if (!entry.responseDeferred.isCompleted) {
             entry.responseDeferred.completeExceptionally(
                 Http3StreamException(Http3Violation.PushCancelledByClient(pushId)),
@@ -1155,7 +1126,7 @@ class Http3Connection private constructor(
                 Http3StreamException(Http3Violation.PushCancelledByServer(pushId)),
             )
         }
-        entry.pushStream?.let { resetStreamQuietly(it, Http3ErrorCode.REQUEST_CANCELLED) }
+        entry.pushStream?.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
     }
 
     companion object {

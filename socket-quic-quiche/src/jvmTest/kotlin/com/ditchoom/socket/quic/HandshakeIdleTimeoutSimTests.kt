@@ -1,6 +1,6 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.quic.sim.SimClock
+import com.ditchoom.socket.quic.sim.SimClockChoice
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -31,17 +31,19 @@ import kotlin.time.Duration.Companion.seconds
  *
  * So this replaces the search over *machine load* with a search over *seeds*. [withSemanticSim] runs a
  * real quiche client against a real quiche server through an [ImpairedPipe] whose every decision —
- * drop, duplicate, reorder slot, jitter fraction — is a pure function of one seed. Under
- * [SimClock] quiche's own PTO/idle timers become virtual too, so a scenario is reproducible rather
+ * drop, duplicate, reorder slot, jitter fraction — is a pure function of one seed. Under the
+ * scheduler's clock quiche's own PTO/idle timers are virtual too, so a scenario is reproducible rather
  * than merely repeatable, and a seed that fails, fails every time.
  *
- * ## The specific thing the virtual clock fixes
+ * ## The clock, and why these tests still name it
  *
- * With the default `RealDriverClock` under `runTest`, the sim's timing is not merely fast — it is
- * **incoherent**. Our own `delay()`s fast-forward on the test scheduler while quiche's internal timers
- * read a wall clock that has barely moved, so the two sides of the FFI disagree about how much time
- * has passed. That disagreement is a decent model of what a loaded machine does to a handshake, and it
- * is the reason these tests pin the clock explicitly and say which one they used.
+ * Under `runTest` the sim's clock is the scheduler's by default since #497 — before that it was the
+ * wall clock, and the sim's timing was not merely fast but **incoherent**: our `delay()`s fast-forwarded
+ * on the test scheduler while quiche's timers read a wall clock that had barely moved, and that alone
+ * flipped 4 of 6 handshake outcomes here (see
+ * [theDefaultClockUnderRunTestAgreesWithTheExplicitVirtualClockOnEverySeed]). The tests below pass
+ * [SimClockChoice.Virtual] anyway: their subject is a timer, and pinning the clock at the call site
+ * turns a stray real dispatcher into a construction error instead of a different experiment.
  */
 class HandshakeIdleTimeoutSimTests {
     /** How a single handshake attempt ended, as an exhaustive verdict rather than a boolean. */
@@ -81,7 +83,7 @@ class HandshakeIdleTimeoutSimTests {
     private suspend fun attempt(
         seed: Long,
         loss: Double,
-        clock: DriverClock,
+        clock: SimClockChoice,
         idleTimeout: kotlin.time.Duration = 2.seconds,
     ): Outcome =
         runCatching {
@@ -109,8 +111,8 @@ class HandshakeIdleTimeoutSimTests {
     fun theSameSeedGivesTheSameOutcomeUnderTheVirtualClock() =
         runTest(timeout = 300.seconds) {
             val seed = 1234L
-            val first = attempt(seed, loss = 0.30, clock = SimClock(testScheduler))
-            val second = attempt(seed, loss = 0.30, clock = SimClock(testScheduler))
+            val first = attempt(seed, loss = 0.30, clock = SimClockChoice.Virtual)
+            val second = attempt(seed, loss = 0.30, clock = SimClockChoice.Virtual)
 
             assertEquals(
                 first,
@@ -138,7 +140,7 @@ class HandshakeIdleTimeoutSimTests {
             val seeds = (1L..12L).toList()
             val results =
                 seeds.associateWith { seed ->
-                    attempt(seed, loss = 0.30, clock = SimClock(testScheduler))
+                    attempt(seed, loss = 0.30, clock = SimClockChoice.Virtual)
                 }
 
             val idleTimeouts = results.filterValues { it is Outcome.LocalIdleTimeout }.keys
@@ -168,31 +170,85 @@ class HandshakeIdleTimeoutSimTests {
         }
 
     /**
-     * **Does the clock change the answer?**
+     * **The #497 regression instrument: a sim built the default way under `runTest` runs on the same
+     * clock as one that pins the scheduler's clock — on every seed.**
      *
-     * The same seeds run twice, varying only the clock — the shape `PathValidationVirtualClockTests`
-     * used to prove migration timers were virtualizable. If the two columns disagree, the sim's
-     * real-clock incoherence is itself perturbing handshakes, which is worth knowing before any
-     * conclusion is drawn from a sim result under either clock.
+     * This test used to compare the pinned virtual clock against the wall clock and record, without
+     * asserting, that the two disagreed. The record (2026-08-28, `origin/main` = 91588acf, and again at
+     * a0b70624 the day after):
+     *
+     * ```
+     * seed 1: virtual=Established       real=Threw(kind=TimeoutCancellationException)
+     * seed 2: virtual=Established       real=Threw(kind=TimeoutCancellationException)
+     * seed 3: virtual=Established       real=Established
+     * seed 4: virtual=LocalIdleTimeout  real=Threw(kind=TimeoutCancellationException)
+     * seed 5: virtual=Established       real=Established
+     * seed 6: virtual=Established       real=Threw(kind=TimeoutCancellationException)
+     * disagreements: 4 [1, 2, 4, 6]
+     * ```
+     *
+     * The mechanism, measured on seed 1: under the wall clock the driver armed quiche's timer 61 times
+     * and quiche reported 985–998ms still to go to its first PTO on *every* arm, because only 11ms of
+     * wall time had passed across all of them — while each arm's `onTimeout` advanced the scheduler by
+     * that same ~995ms, so the 60s establishment bound expired without the lost Initial ever being
+     * retransmitted. On the scheduler's clock the PTO fires at virtual 999ms and the handshake completes
+     * at 1009ms. The "real" column was never a wall-clock result; it was the two sides of the FFI
+     * disagreeing about how much time had passed.
+     *
+     * That column can no longer be produced: asking for the wall clock under `runTest` is a
+     * construction error ([SemanticSimClockGuardTests]). What this test asserts instead is the property
+     * the fix establishes — the default is the scheduler's clock — using the same six seeds, so the
+     * flips above are exactly what it catches if the default ever silently reverts.
+     *
+     * **The pinned column is anchored to the recorded table, not just compared with the default.**
+     * A mutation that put *both* drivers back on the wall clock regardless of the resolved choice made
+     * the two columns agree with each other — every seed flipped identically, `disagreements: 0` — and
+     * only the anchor caught it. Two arms that agree because both are broken is a harness trap this
+     * repository has walked into before; the reference column has to be pinned to something outside
+     * the comparison.
      */
     @Test
-    fun realAndVirtualClocksAreComparedRatherThanAssumedEquivalent() =
+    fun theDefaultClockUnderRunTestAgreesWithTheExplicitVirtualClockOnEverySeed() =
         runTest(timeout = 600.seconds) {
             val seeds = (1L..6L).toList()
-            val virtual = seeds.associateWith { attempt(it, loss = 0.30, clock = SimClock(testScheduler)) }
-            val real = seeds.associateWith { attempt(it, loss = 0.30, clock = RealDriverClock) }
+            val pinned = seeds.associateWith { attempt(it, loss = 0.30, clock = SimClockChoice.Virtual) }
+            val default = seeds.associateWith { attempt(it, loss = 0.30, clock = SimClockChoice.OfCallingDispatcher) }
 
-            val disagreements = seeds.filter { virtual[it] != real[it] }
+            val disagreements = seeds.filter { pinned[it] != default[it] }
             println(
                 buildString {
-                    appendLine("[#450 clock comparison] loss=0.30, ${seeds.size} seeds")
-                    seeds.forEach { s -> appendLine("  seed $s: virtual=${virtual[s]}  real=${real[s]}") }
+                    appendLine("[#497 default-clock check] loss=0.30, ${seeds.size} seeds")
+                    seeds.forEach { s -> appendLine("  seed $s: pinned-virtual=${pinned[s]}  default=${default[s]}") }
                     appendLine("  disagreements: ${disagreements.size} $disagreements")
                 },
             )
-            // Deliberately not asserted equal. This test records a measurement; whether the clocks
-            // agree is the finding, not the requirement.
-            assertTrue(seeds.isNotEmpty(), "sanity")
+
+            // The anchor: what these six seeds do on the scheduler's clock, as recorded in the KDoc
+            // table and by searchSeedsForAHandshakeThatIdleTimesOut. Deterministic per seed
+            // (theSameSeedGivesTheSameOutcomeUnderTheVirtualClock), so a change here means quiche or the
+            // pipe changed — a finding to read, not a table to re-record blindly.
+            val recordedUnderTheSchedulersClock =
+                mapOf(
+                    1L to Outcome.Established,
+                    2L to Outcome.Established,
+                    3L to Outcome.Established,
+                    4L to Outcome.LocalIdleTimeout,
+                    5L to Outcome.Established,
+                    6L to Outcome.Established,
+                )
+            assertEquals(
+                recordedUnderTheSchedulersClock,
+                pinned,
+                "the pinned-virtual column is the reference and it moved: either the virtual clock is no " +
+                    "longer reaching quiche (the M1 shape: both columns flip together), or quiche/the pipe " +
+                    "changed behaviour on these seeds",
+            )
+            assertEquals(
+                pinned,
+                default,
+                "a sim built the default way under runTest must drive quiche from the scheduler's clock " +
+                    "(#497); seeds $disagreements flipped outcome against the pinned virtual clock",
+            )
         }
 
     /**
@@ -221,7 +277,7 @@ class HandshakeIdleTimeoutSimTests {
                     ImpairmentConfig(seed = 5L),
                     quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
                     establishTimeout = 30.seconds,
-                    clock = SimClock(testScheduler),
+                    clock = SimClockChoice.Virtual,
                 ) {
                     pipe.blackhole = true
                     withTimeoutOrNull(30.seconds) {
@@ -235,7 +291,7 @@ class HandshakeIdleTimeoutSimTests {
                     ImpairmentConfig(seed = 99L, loss = 1.0, latency = 5.milliseconds),
                     quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
                     establishTimeout = 30.seconds,
-                    clock = SimClock(testScheduler),
+                    clock = SimClockChoice.Virtual,
                     // The server never leaves Handshaking here — see [EstablishmentGate]. Waiting on
                     // it is what previously turned this measurement into a fabricated finding.
                     gate = EstablishmentGate.ClientOnly,
@@ -283,7 +339,7 @@ class HandshakeIdleTimeoutSimTests {
             ImpairmentConfig(seed = 99L, loss = 1.0, latency = 30.milliseconds),
             quicOptions = semanticSimOptions(idleTimeout = idleTimeout),
             establishTimeout = 60.seconds,
-            clock = SimClock(testScheduler),
+            clock = SimClockChoice.Virtual,
             // The block IS the wait: the gate must not consume the handshake before the driver's own
             // bound gets to observe it.
             gate = EstablishmentGate.None,

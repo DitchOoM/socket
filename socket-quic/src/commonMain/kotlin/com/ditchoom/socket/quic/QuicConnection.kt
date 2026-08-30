@@ -30,6 +30,17 @@ interface QuicConnection : QuicScope {
     override val identity: QuicConnectionIdentity
 
     /**
+     * What this connection's data plane requires of caller-supplied buffers — see
+     * [QuicCapabilities.requiresNativeMemoryBuffers].
+     *
+     * Required, with no default, for the same reason as [identity]: a backend hands buffer addresses
+     * to native code or it does not, and one that cannot say which should fail to compile rather than
+     * inherit a claim. A double with no engine behind it answers [QuicCapabilities.None], which for it
+     * is the truth.
+     */
+    override val capabilities: QuicCapabilities
+
+    /**
      * What the network was doing, for correlating this connection against a
      * [com.ditchoom.socket.NetworkMonitor].
      *

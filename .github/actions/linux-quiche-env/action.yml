@@ -126,10 +126,10 @@ runs:
     # The Cargo registry, for the same reason the toolchain below is installed: the marker-guarded
     # skips are the common case, not the guaranteed one. Consumers of this composite (malloc-check,
     # fuzz-jvm) do not normally build quiche — `natives` writes the `.jni-built-<ver>` marker and
-    # the build task skips — but the note further down concedes that "normally" is not "always",
-    # and the step it describes carries continue-on-error precisely because it can run. When it
-    # does run without this, cargo re-downloads the whole crates.io index and every dependency
-    # before it can even start compiling, turning a rare miss into a very expensive one.
+    # the build task skips — but the note further down concedes that "normally" is not "always"
+    # (the mtime guard it describes can still misfire). When the build does run without this, cargo
+    # re-downloads the whole crates.io index and every dependency before it can even start
+    # compiling, turning a rare miss into a very expensive one.
     # Restore-only: build-linux.yaml's `natives` is the single writer of this key. Key copied
     # byte-for-byte from there, so the prefix lineage is shared rather than private.
     - name: Restore Cargo registry
@@ -195,7 +195,8 @@ runs:
     #
     # The concrete consumer-side use: buildJvmJniShimLinuxArm64 links with aarch64-linux-gnu-gcc, and
     # `natives` writes its `.jni-built-<ver>` marker so that task normally skips here. "Normally" is
-    # not "always" (see the continue-on-error on that step), so keep the compiler within reach.
+    # not "always" (the marker guard is an mtime comparison — hazard 2 below — and since #461 `natives`
+    # fails outright rather than uploading without the marker), so keep the compiler within reach.
     # ⚠️ No apt-safe-update step, deliberately: this composite runs in ~10 Linux jobs per run, so an
     # unconditional `apt-get update` here was ten mirror round-trips per run that the warm cache
     # existed to avoid — and ten chances for a stalled mirror or a broken third-party source (the
@@ -275,8 +276,11 @@ runs:
         markers=(socket-quic-quiche/libs/quiche/*/lib/.built-* socket-quic-quiche/libs/quiche/*/lib/.jni-built-*)
         if [ ${#markers[@]} -eq 0 ]; then
           echo "::error::No quiche build markers restored from the quiche-linux-natives-full artifact."
-          echo "::error::Almost certainly 'include-hidden-files: true' was dropped from the upload"
-          echo "::error::in the natives job — without the markers every consumer silently re-runs cargo."
+          echo "::error::Start from the NATIVES job, not this one: it asserts every marker and library file-by-file"
+          echo "::error::before uploading (.github/scripts/assert-linux-natives-complete.sh, #461). If that job is red,"
+          echo "::error::its own annotation names the Gradle task that failed. Only if it is green did the markers get"
+          echo "::error::lost in the artifact round-trip — then check 'include-hidden-files: true' on its upload and this"
+          echo "::error::step's download path. Without the markers every consumer silently re-runs cargo."
           echo "--- what did arrive: ---"
           find socket-quic-quiche/libs/quiche -maxdepth 3 | head -50
           exit 1
@@ -286,8 +290,11 @@ runs:
         printf 'restored + touched %d quiche marker(s)\n' "${#markers[@]}"
         printf '  %s\n' "${markers[@]}"
 
-    # HARD check, and deliberately stricter than the monolith's warn-only `Verify JNI shims exist`.
-    # Three separate silent failures hide behind a missing file here:
+    # HARD check — the consumer-side twin of the natives job's own `Assert the natives artifact is
+    # complete` step (#461), which checks this same set (plus the markers and the Android pair) before
+    # the upload. Both exist on purpose: that one catches a failed build in the job that failed; this
+    # one catches an artifact that did not survive the round-trip. Three separate silent failures hide
+    # behind a missing file here:
     #   - libquiche.a  — the K/N link gates -force_load on it at CONFIGURATION time, so its absence
     #                    surfaces as a confusing unresolved-symbol link error many minutes later.
     #   - libquiche.so — NativeLibLoader extracts it beside the shim; DT_NEEDED resolves via $ORIGIN.
@@ -309,8 +316,9 @@ runs:
           done
         done
         [ "$missing" = 0 ] || {
-          echo "::error::Linux quiche natives missing from the artifact — the natives job's build step"
-          echo "::error::is continue-on-error, so check ITS log (and the quiche-build-logs-linux artifact)"
-          echo "::error::rather than this job."
+          echo "::error::Linux quiche natives missing from the artifact. The natives job asserts these exact files"
+          echo "::error::before it uploads (#461): if it is red, its annotation carries Gradle's own reason and the"
+          echo "::error::quiche-build-logs-linux artifact the transcript; if it is green, the artifact round-trip"
+          echo "::error::dropped them — check its upload path against this step's download path."
           exit 1
         }

@@ -1,14 +1,17 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.harness.HarnessConfig
+import com.ditchoom.socket.testkit.scaled
 import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.reflect.KClass
 import kotlin.test.fail
 import kotlin.time.Duration
@@ -84,6 +87,48 @@ internal suspend fun Mutex.lockWithTimeout(
     withTimeout(timeout) {
         lock(owner)
     }
+}
+
+/**
+ * Await what a handler on another dispatcher completes, or fail naming [what] was being waited for.
+ *
+ * This is the synchronisation a `delay(N)`-then-assert test was missing (#381): the wait ends when
+ * the handler says so, not after a constant that a loaded runner loses the race against, and the
+ * evidence travels *through* the [Deferred] — a thread-safe handoff — so the test coroutine never
+ * reads a plain `var` the handler wrote on `Dispatchers.Default`, which on Kotlin/Native is an
+ * unsynchronised cross-thread read that need not observe the write at all.
+ *
+ * `T : Any` so that a `null` from [withTimeoutOrNull] can only mean the budget expired; and
+ * [withTimeoutOrNull] rather than `withTimeout` + `catch`, because a caught
+ * [TimeoutCancellationException] could just as well be an *enclosing* budget's (the
+ * [runTestNoTimeSkipping] watchdog) and would then be reported as this wait's. The budget is
+ * [scaled] so a slow lane widens it without touching the test.
+ */
+internal suspend fun <T : Any> Deferred<T>.awaitOrFail(
+    what: String,
+    timeout: Duration = 10.seconds.scaled,
+): T = withTimeoutOrNull(timeout) { await() } ?: fail("timed out after $timeout waiting for $what")
+
+/**
+ * Gate for the IPv6 suites. `true` means run the body; otherwise a `[TEST-SKIPPED]` line has been
+ * recorded and the caller returns.
+ *
+ * The bare `if (!supportsIPv6()) return` this replaces was invisible: on Kotlin/Native there is no
+ * `assume`, so the report recorded the early return as a **pass**. [SkipGate.HostCannotProvideIt]
+ * because no lane setting gives a host an IPv6 stack it does not have — the skip is counted by the
+ * CI inventory but is never a failure.
+ */
+internal fun requireIPv6(site: KClass<*>): Boolean {
+    if (supportsIPv6()) return true
+    recordSkip(
+        site,
+        SkipReason.TransportUnavailable(
+            "IPv6: supportsIPv6() is false here — the JVM probe found no non-loopback IPv6 address on " +
+                "any interface, or the target hard-codes it (JS, wasmJs)",
+        ),
+        gate = SkipGate.HostCannotProvideIt("IPv6"),
+    )
+    return false
 }
 
 // ──────────────────────────────────────────────────────────────────────

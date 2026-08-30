@@ -46,6 +46,9 @@ internal class JvmQuicConnection(
     override val identity: QuicConnectionIdentity
         get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
+    /** quiche reads raw addresses through FFM/JNI — the one answer every driver-backed connection gives. */
+    override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
+
     private val closed = AtomicBoolean(false)
 
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
