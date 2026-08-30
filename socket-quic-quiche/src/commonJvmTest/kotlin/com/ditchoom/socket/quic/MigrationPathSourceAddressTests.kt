@@ -27,6 +27,22 @@ import kotlin.test.assertEquals
  *
  * No peer has to exist: a UDP `connect` fixes the 4-tuple locally and sends nothing, so the discard
  * port is a legitimate target and this test opens no network traffic at all.
+ *
+ * **Reading a failure here.** The JDK raises `java.net.BindException("Address already in use")` for
+ * `EADDRINUSE` from `bind0` and `connect0` alike, so the class does not say which syscall was refused —
+ * only the stack frame does, and a log that shows the message without the frame settles nothing. That
+ * is what #463 turns on: it reads a failure of this test as a bind-side collision the #434 model says
+ * cannot happen, from a log with no frame in it. An ephemeral bind is not refused with `EADDRINUSE` at
+ * all (measured on macOS/JDK 21: 0 in 8000 draws against 250 and 1000 holders of the contended peer,
+ * named and unnamed), so a `bind0` frame here would be genuine news. A `connect0` frame is the #434
+ * mechanism, and it reaches this test only through something that handed the real connect an unnamed
+ * bind: the route probe's swallowed failure (#482, fixed in #483), or another process holding paths to
+ * the same peer — the pcb table is system-wide.
+ *
+ * Reproduced outside Gradle, 250 paths per run exactly as below, with the probe pointed at the peer's
+ * own port as #482 left it: **1 run in 12 red**, `BindException @ sun.nio.ch.Net.connect0`, from 25
+ * lost probe draws in 3000. With the probe stepped aside as #483 fixed it: **0 runs in 24 red**, 0 lost
+ * draws in 6000.
  */
 class MigrationPathSourceAddressTests {
     @Test

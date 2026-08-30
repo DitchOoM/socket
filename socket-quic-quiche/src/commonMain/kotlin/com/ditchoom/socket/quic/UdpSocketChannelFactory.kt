@@ -82,6 +82,32 @@ internal class UdpSocketChannelFactory(
      * help (245 failures) — the JVM binds the unnamed address implicitly first. No retry loop is
      * needed, and none is wanted: a retry would paper over the collision instead of not causing it.
      *
+     * **Why the bind is never the one refusing, and why the exception says otherwise.** A bind with
+     * `port = 0` asks the kernel to pick, and it picks from what it can see; it answers `EADDRNOTAVAIL`
+     * when nothing is left, never `EADDRINUSE`. Only an explicitly requested port can be refused that
+     * way. The blindness is in *what* the unnamed bind's lookup matches: for `port = 0` the kernel
+     * compares candidate ports against sockets holding the *same* local address, and a wildcard source
+     * matches none of the specific ones — so it hands out a port whose 4-tuple against [peer] is
+     * already taken, and the refusal arrives one syscall later. A named source is compared against the
+     * sockets that actually hold ports on it. It is the `port = 0` search and not the wildcard address
+     * that skips them: the same wildcard *naming* a held port is refused at the bind, measured 5 of 5.
+     * Measured on macOS/JDK 21, holders wildcard-bound and connected to one peer, 2000 ephemeral draws
+     * to that peer per row:
+     *
+     * | holders | draws | refused at `bind0` | refused at `connect0` |
+     * |---|---|---|---|
+     * | 250, unnamed bind | 2000 | 0 | 159 |
+     * | 250, named bind | 2000 | 0 | 0 |
+     * | 1000, unnamed bind | 2000 | 0 | 230 |
+     * | 1000, named bind | 2000 | 0 | 0 |
+     *
+     * So do not read the exception class as the answer to "which syscall": the JDK raises
+     * `java.net.BindException("Address already in use")` for `EADDRINUSE` from `bind0` and `connect0`
+     * alike, and only the stack frame tells them apart. #463 reads a failure of this fix's own
+     * regression test as bind-side for that reason; on these numbers a bind-side `EADDRINUSE` on an
+     * ephemeral port does not happen, and the two failures of that test whose frame was recorded (#483)
+     * were both `connect0`.
+     *
      * **Why the probe does not go to [peer]'s own port.** The probe is itself an unnamed bind, so
      * sending it at `peer.port` would put it in the very 4-tuple space the paths contend for — and its
      * exposure would grow with the number of open paths, weakening this fix exactly as the migration it
