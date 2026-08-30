@@ -20,6 +20,15 @@ import kotlin.time.Duration.Companion.seconds
  *   [com.ditchoom.buffer.flow.ByteSource] / [com.ditchoom.buffer.flow.ByteSink]. A request/response
  *   transport keeps [ReadPolicy.Bounded]; a persistent stream overrides to [ReadPolicy.UntilClosed].
  *   There is no defaulted `read(timeout)` parameter to silently inherit — the policy lives here.
+ *   **Which reads it governs**, for a protocol that multiplexes many streams over one connection
+ *   (HTTP/3 in `:socket-http3` is the worked case): [readPolicy] bounds a read that is waiting for
+ *   something the *peer already owes* — the head of a peer-opened stream (its type prefix, its first
+ *   frame), a response to a request in flight. It does **not** bound a read on a stream that is idle
+ *   *by design* — a control or QPACK instruction stream, a stream drained only to keep its
+ *   flow-control window open — because there ordinary silence is not failure, and a deadline turns it
+ *   into one. Those reads pass [kotlin.time.Duration.INFINITE] explicitly and delegate liveness to the
+ *   transport's idle timeout. The rule is the same for both roles of a protocol (see #472, #476, #495,
+ *   #512, #513): a client and a server facing the same peer behaviour must not disagree about it.
  * - [connectTimeout] — bound on the connect handshake itself.
  * - [tls] — the unified [TlsConfig]; `null` = plaintext.
  * - [io] — platform I/O + TCP knobs ([IoTuning]), injected rather than read from a process-global.

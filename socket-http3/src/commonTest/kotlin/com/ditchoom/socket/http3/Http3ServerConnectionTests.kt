@@ -939,6 +939,237 @@ class Http3ServerConnectionTests {
             )
         }
 
+    // === #512: a bad client QPACK instruction is a CONNECTION error (RFC 9204 §4.2) ================
+
+    /** A client QPACK [type] instruction stream: its type prefix, then [instruction] bytes, then FIN. */
+    private fun clientQpackStream(
+        id: Long,
+        type: Long,
+        instruction: List<Int>,
+    ): QuicByteStream =
+        QuicByteStream(
+            QuicStreamId(id),
+            RecordingByteStream(listOf(dataChunk(listOf(type.toInt()) + instruction), ReadResult.End)),
+        )
+
+    /** An Insert with Name Reference naming static index 9999 — the static table has 99 entries. */
+    private fun badEncoderInstruction(): List<Int> =
+        encoderBytes(QpackEncoderInstruction.InsertWithNameRef(nameIndex = 9999, isStatic = true, value = "x"))
+
+    /**
+     * **A bad instruction on the client's QPACK encoder stream ends the connection, not just that stream
+     * (#512).**
+     *
+     * RFC 9204 §4.2: an endpoint that detects an error on the peer's QPACK instruction stream MUST treat
+     * it as a *connection* error of type `QPACK_ENCODER_STREAM_ERROR` / `QPACK_DECODER_STREAM_ERROR`
+     * (§8.3). Nothing local recovers from one: that stream is the only thing keeping this decoder's
+     * dynamic table equal to the client's encoder table, so once an instruction is refused the two have
+     * diverged and every later field section referencing the table decodes to the wrong fields or blocks
+     * on a Required Insert Count that never arrives (#472's symptom by another route).
+     *
+     * The server raised exactly that typed violation and then swallowed it: the pump threw
+     * [Http3StreamException], nothing caught it before [Http3ServerConnection.serve]'s per-stream `catch`,
+     * and that arm exists to keep *one request* from taking the connection down. The client has had the
+     * escalating arm since #472 — this is the server growing its half.
+     */
+    @Test
+    fun aBadClientEncoderInstructionAbortsTheConnection(): TestResult =
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientQpackStream(id = 6, type = Http3StreamType.QPACK_ENCODER, instruction = badEncoderInstruction()),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client's QPACK encoder stream carried an instruction naming static index 9999, which does " +
+                    "not exist. RFC 9204 §4.2 makes that a connection error of type QPACK_ENCODER_STREAM_ERROR: " +
+                    "this decoder's dynamic table can no longer be equal to the client's encoder table, so every " +
+                    "later dynamic field section is wrong or blocked. The connection is still open, so the typed " +
+                    "violation reached serve()'s per-stream catch and was swallowed as one stream's failure (#512)",
+            )
+            assertEquals(
+                Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR,
+                scope.awaitCloseCode(),
+                "the CONNECTION_CLOSE must carry the encoder stream's own code (RFC 9204 §8.3), not a generic one",
+            )
+        }
+
+    /**
+     * **The same for the client's QPACK decoder stream (#512).** §4.2 names both instruction streams and
+     * §8.3 gives the decoder stream its own code. The witness instruction is a Section Acknowledgment for
+     * a stream with no outstanding section ([Http3Violation.QpackSectionAckWithoutOutstanding]) — this
+     * encoder cannot release references it never took, so the two tables have diverged exactly as above.
+     *
+     * The server only has an encoder to desync when the client advertised a non-zero
+     * `QPACK_MAX_TABLE_CAPACITY`, so this client's SETTINGS do — and the instruction is delivered a second
+     * later, so those SETTINGS have provably been applied before it arrives.
+     */
+    @Test
+    fun aBadClientDecoderInstructionAbortsTheConnection(): TestResult =
+        runServer(
+            flow {
+                emit(clientControl(frameBytes(settings(Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L)))))
+                delay(1.seconds) // the SETTINGS have been read, so the server's encoder exists
+                emit(
+                    clientQpackStream(
+                        id = 10,
+                        type = Http3StreamType.QPACK_DECODER,
+                        instruction = decoderBytes(QpackDecoderInstruction.SectionAck(QuicStreamId(0))),
+                    ),
+                )
+            },
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client's QPACK decoder stream acknowledged a field section on stream 0 that this server " +
+                    "never sent. RFC 9204 §4.2 makes that a connection error of type QPACK_DECODER_STREAM_ERROR; " +
+                    "the connection is still open, so the typed violation was swallowed per-stream (#512)",
+            )
+            assertEquals(
+                Http3ErrorCode.QPACK_DECODER_STREAM_ERROR,
+                scope.awaitCloseCode(),
+                "the CONNECTION_CLOSE must carry the decoder stream's own code (RFC 9204 §8.3)",
+            )
+        }
+
+    /**
+     * **A request arriving after a QPACK abort is failed with the typed reason, not parked forever
+     * (#512).**
+     *
+     * This is what the escalation is *for*. The client's encoder stream carried one bad instruction, so
+     * this decoder's table stopped tracking the client's — and the request that follows encodes its
+     * `:authority` and `x-dynamic` lines as dynamic references, i.e. with a Required Insert Count above
+     * what the table holds. [QpackDecoder.decodeSection] blocks on exactly that count (RFC 9204 §2.2.1)
+     * and nothing will ever raise it: the handler never runs and the client's stream is never answered.
+     *
+     * So an aborted connection must stop serving. The witness is the client's view of the request stream —
+     * reset carrying the connection's own error code — where a server that kept going leaves it
+     * [Disposition.Open] with a coroutine parked on it for the life of the connection.
+     */
+    @Test
+    fun aRequestArrivingAfterAQpackAbortIsFailedNotParked(): TestResult =
+        runTest {
+            // A client-side encoder produces a field section whose Required Insert Count is above zero: it
+            // references dynamic entries, so decoding it needs inserts the aborted pump can never apply.
+            val clientInstructions = mutableListOf<QpackEncoderInstruction>()
+            val clientEncoder = QpackEncoder(peerMaxCapacity = 4096, peerMaxBlockedStreams = 100) { clientInstructions += it }
+            clientEncoder.setCapacity(4096)
+            val section =
+                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-dynamic", "referenced"), QuicStreamId(0), BufferPool())
+            assertTrue(
+                clientInstructions.drop(1).isNotEmpty(),
+                "sanity: the section must reference dynamic-table inserts, or its decode would not block",
+            )
+            val request = StalledStream(prefix = frameBytes(Http3Frame.Headers(section)))
+            lateinit var scope: FakeQuicScope
+            // Not runServer: an unserved request parks its handler forever and coroutineScope would wait on
+            // it. A separate job lets the clock run out and the assertion fail by name instead of hanging.
+            val serverJob =
+                launch {
+                    coroutineScope {
+                        scope =
+                            FakeQuicScope(
+                                this,
+                                serverOutgoing(),
+                                flow {
+                                    emit(clientControl(frameBytes(clientSettings())))
+                                    emit(
+                                        clientQpackStream(
+                                            id = 6,
+                                            type = Http3StreamType.QPACK_ENCODER,
+                                            instruction = badEncoderInstruction(),
+                                        ),
+                                    )
+                                    delay(1.seconds) // the bad instruction has been read: the connection is aborted
+                                    emit(QuicByteStream(QuicStreamId(0), request))
+                                },
+                            )
+                        Http3ServerConnection(scope, TransportConfig(), qpackCapacity = 4096, onRequest = { response.send(200) }).serve()
+                    }
+                }
+            try {
+                testScheduler.advanceTimeBy(60.seconds) // four times the 15s read deadline
+                testScheduler.runCurrent()
+
+                assertEquals(
+                    Disposition.Reset(Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR),
+                    request.disposition,
+                    "the connection was aborted with QPACK_ENCODER_STREAM_ERROR before this request arrived, and " +
+                        "its HEADERS reference dynamic entries the aborted pump can never insert. Open means the " +
+                        "server took the request anyway and parked in decodeSection waiting for a Required Insert " +
+                        "Count that will never arrive — the client left with no response and no error (#512). " +
+                        "aborted=${scope.closeErrorCode.isCompleted}",
+                )
+            } finally {
+                serverJob.cancelAndJoin()
+            }
+        }
+
+    // === #513: an idle-by-design critical stream is not read under the request deadline ============
+
+    /**
+     * **A static-only server still reads the client's QPACK streams after they have been quiet past the
+     * read deadline (#513).**
+     *
+     * With `qpackCapacity = 0` this server has no dynamic table, so it does not decode the client's QPACK
+     * instruction streams — but RFC 9204 §4.2 has a conformant client open both whatever capacity anyone
+     * advertised, and something must keep reading them or the client's flow-control window for each fills
+     * and stays full. That is what [Http3ServerConnection.drain] is for, and it read under
+     * `config.readPolicy.toDeadline()` — [TransportConfig]'s default `ReadPolicy.Bounded(15.seconds)`.
+     *
+     * A client advertising `QPACK_MAX_TABLE_CAPACITY: 0` sends no instruction at all, so those streams are
+     * silent by design; at 15s the drain's read raised `TimeoutCancellationException`, which — being a
+     * `CancellationException` — completed `serve()`'s `launch` child as *cancelled rather than failed*. The
+     * drain vanished with nothing logged and the stream it was keeping open was never read again. Idle is
+     * not failure here, exactly as for the pumps #472/#495 fixed; liveness is the connection's idle timeout.
+     *
+     * [SilentThenSpeakingStream.readToEnd] is the witness: it turns true only on the read *after* the
+     * silence, which a drain that expired inside the silence never reaches.
+     */
+    @Test
+    fun idleDrainedClientQpackStreamsAreStillReadAfterTheDeadline(): TestResult {
+        val clientQpackEncoder =
+            SilentThenSpeakingStream(
+                first = listOf(Http3StreamType.QPACK_ENCODER.toInt()),
+                // Longer than the 15s default, so a deadline armed on the drain expires inside the silence.
+                silence = 20.seconds,
+                afterSilence = encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+            )
+        val clientQpackDecoder =
+            SilentThenSpeakingStream(
+                first = listOf(Http3StreamType.QPACK_DECODER.toInt()),
+                silence = 20.seconds,
+                afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+            )
+        return runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                QuicByteStream(QuicStreamId(6), clientQpackEncoder),
+                QuicByteStream(QuicStreamId(10), clientQpackDecoder),
+            ),
+            qpackCapacity = 0,
+        ) { scope ->
+            assertTrue(
+                clientQpackEncoder.readToEnd,
+                "the client opened its QPACK encoder stream and — advertising QPACK_MAX_TABLE_CAPACITY: 0, as " +
+                    "RFC 9204 §4.2 permits — said nothing on it for 20s, longer than the default 15s read " +
+                    "deadline, then spoke. The drain that keeps its flow-control window open must still have " +
+                    "been reading: false means it expired in the silence and died as a cancelled child (#513), " +
+                    "and the client's window for the stream fills and stays full. " +
+                    "aborted=${scope.closeErrorCode.isCompleted}",
+            )
+            assertTrue(
+                clientQpackDecoder.readToEnd,
+                "the same for the client's QPACK decoder stream, which §4.2 has it open whatever capacity " +
+                    "either side advertised",
+            )
+            assertFalse(scope.closeErrorCode.isCompleted, "a quiet QPACK stream is not a connection error")
+        }
+    }
+
     // === WebTransport stream demux (draft-ietf-webtrans-http3 §4.1 / §4.2) — #496 ==============
 
     // The server's routers hand a WebTransport-signalled stream and its StreamProcessor to the shared
