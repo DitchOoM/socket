@@ -5,7 +5,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import platform.posix.F_OK
