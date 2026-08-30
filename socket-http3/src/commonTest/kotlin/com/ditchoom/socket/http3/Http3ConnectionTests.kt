@@ -23,21 +23,26 @@ import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -133,12 +138,29 @@ class Http3ConnectionTests {
     private class FakeQuicScope(
         delegate: CoroutineScope,
         private val outgoing: ArrayDeque<QuicByteStream>,
-        private val incoming: List<QuicByteStream>,
+        private val incoming: Flow<QuicByteStream>,
         private val bidi: ArrayDeque<QuicByteStream> = ArrayDeque(),
     ) : QuicScope,
         CoroutineScope by delegate {
+        /**
+         * A finite list of peer streams — the ordinary case, and the one that models a **closed
+         * connection**: [QuicScope.streams] completes when the connection closes (its contract), so a
+         * list flow that runs out is this double saying the connection has ended. A test that needs the
+         * connection to still be live while a stream misbehaves passes a [Flow] that has not completed
+         * yet (see the #530 cases).
+         */
+        constructor(
+            delegate: CoroutineScope,
+            outgoing: ArrayDeque<QuicByteStream>,
+            incoming: List<QuicByteStream>,
+            bidi: ArrayDeque<QuicByteStream> = ArrayDeque(),
+        ) : this(delegate, outgoing, incoming.asFlow(), bidi)
+
         override val bufferFactory: BufferFactory = BufferFactory.Default
         val remainingUniStreams get() = outgoing.size
+
+        /** The application error code of the client's CONNECTION_CLOSE (RFC 9114 §8), once it aborts. */
+        val closeErrorCode = CompletableDeferred<Long>()
 
         override suspend fun openUniStream(): QuicByteStream = outgoing.removeFirst()
 
@@ -147,7 +169,11 @@ class Http3ConnectionTests {
 
         override suspend fun acceptStream(): QuicByteStream = throw UnsupportedOperationException()
 
-        override fun streams(): Flow<QuicByteStream> = incoming.asFlow()
+        override fun streams(): Flow<QuicByteStream> = incoming
+
+        override suspend fun closeWithError(errorCode: Long) {
+            closeErrorCode.complete(errorCode)
+        }
     }
 
     /** The three client uni streams [bootstrap] opens, with recording delegates exposed. */
@@ -622,6 +648,224 @@ class Http3ConnectionTests {
                 connectionJob.cancelAndJoin()
             }
         }
+
+    // --- #530: a peer that closes a critical stream ends the connection ---------------------------
+
+    /**
+     * A peer critical stream that delivers [prefix] and then **FINs** — the RFC 9114 §6.2.1 /
+     * RFC 9204 §4.2 violation itself: "The sender MUST NOT close the control stream […] If either
+     * control stream is closed at any point, this MUST be treated as a connection error of type
+     * H3_CLOSED_CRITICAL_STREAM", and, for the QPACK instruction streams, "Closure of either
+     * unidirectional stream type MUST be treated as a connection error of type
+     * H3_CLOSED_CRITICAL_STREAM".
+     */
+    private fun peerStreamThatFins(
+        id: Long,
+        prefix: List<Int>,
+    ): QuicByteStream = QuicByteStream(QuicStreamId(id), RecordingByteStream(listOf(dataChunk(prefix), ReadResult.End)))
+
+    /**
+     * Peer streams delivered on a connection that is still **live** afterwards — the distinction #530
+     * turns on. [QuicScope.streams] completes when the connection closes, so a list of peer streams is a
+     * connection that has *already ended* by the time its streams are read, and an end-of-stream there is
+     * teardown rather than the peer closing anything. Emitting and then staying open for [liveFor] models
+     * the other case: the peer FINs a critical stream while the connection carries on.
+     */
+    private fun liveStreams(
+        vararg streams: QuicByteStream,
+        liveFor: Duration = 1.seconds,
+    ): Flow<QuicByteStream> =
+        flow {
+            for (stream in streams) emit(stream)
+            delay(liveFor)
+        }
+
+    /**
+     * **A peer that FINs its control stream ends the connection with H3_CLOSED_CRITICAL_STREAM (#530).**
+     *
+     * RFC 9114 §6.2.1 is unconditional: "The sender MUST NOT close the control stream, and the receiver
+     * MUST NOT request that the sender close the control stream. If either control stream is closed at
+     * any point, this MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM." *Either*
+     * — so a client closing its own and a server closing its own are the same violation, and this is the
+     * client observing the server's half of it.
+     *
+     * The control stream here does everything right (type prefix `0x00`, SETTINGS as its first frame) and
+     * then FINs while the connection is live. `readControlFrames` simply `break`ed on that end-of-stream:
+     * the handler returned, the router child completed, nothing was recorded, and the connection carried
+     * on with no way to learn a GOAWAY, a MAX_PUSH_ID, or a CANCEL_PUSH ever again — the machinery §6.2.1
+     * calls critical, gone, with the connection reporting itself healthy.
+     */
+    @Test
+    fun aPeerThatClosesItsControlStreamEndsTheConnection() =
+        runTest {
+            lateinit var connection: Http3Connection
+            lateinit var scope: FakeQuicScope
+            coroutineScope {
+                scope = FakeQuicScope(this, ClientStreams().outgoing(), liveStreams(peerControlStream(clientSettings())))
+                connection = Http3Connection.bootstrap(scope, TransportConfig())
+            }
+
+            val error =
+                assertNotNull(
+                    connection.connectionError,
+                    "the peer sent valid SETTINGS on its control stream and then FINed it while the connection was " +
+                        "live. RFC 9114 §6.2.1 makes that a connection error of type H3_CLOSED_CRITICAL_STREAM; null " +
+                        "means the control handler returned on end-of-stream and the connection kept going without " +
+                        "the stream it depends on (#530)",
+                )
+            assertEquals(
+                Http3Violation.ClosedCriticalStream(CriticalStreamType.CONTROL),
+                error.violation,
+                "the reason must name the stream that was closed, typed — not a generic control-stream failure",
+            )
+            assertEquals(
+                Http3ErrorCode.CLOSED_CRITICAL_STREAM,
+                withTimeout(5.seconds) { scope.closeErrorCode.await() },
+                "the CONNECTION_CLOSE must carry H3_CLOSED_CRITICAL_STREAM (RFC 9114 §8.1)",
+            )
+        }
+
+    /**
+     * **The same for the peer's QPACK encoder stream (#530).** RFC 9204 §4.2: "The sender MUST NOT close
+     * either of these streams, and the receiver MUST NOT request that the sender close either of these
+     * streams. Closure of either unidirectional stream type MUST be treated as a connection error of type
+     * H3_CLOSED_CRITICAL_STREAM."
+     *
+     * The stream carries a valid Set Dynamic Table Capacity and then FINs. The pump's `reader.next() ?:
+     * break` treated that exactly as it treats a healthy exit, so the decoder's dynamic table stopped
+     * tracking the peer's encoder table with nothing recorded — and the next response whose field section
+     * references the table blocks on a Required Insert Count that can never be raised (#472's symptom
+     * reached from a different cause).
+     */
+    @Test
+    fun aPeerThatClosesItsQpackEncoderStreamEndsTheConnection() =
+        runTest {
+            lateinit var connection: Http3Connection
+            lateinit var scope: FakeQuicScope
+            coroutineScope {
+                scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        liveStreams(
+                            peerStreamThatFins(
+                                id = 7,
+                                prefix =
+                                    listOf(Http3StreamType.QPACK_ENCODER.toInt()) +
+                                        encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                            ),
+                        ),
+                    )
+                connection = Http3Connection.bootstrap(scope, TransportConfig())
+            }
+
+            val error =
+                assertNotNull(
+                    connection.connectionError,
+                    "the peer opened its QPACK encoder stream, sent a valid instruction, and FINed it while the " +
+                        "connection was live. RFC 9204 §4.2 makes that a connection error of type " +
+                        "H3_CLOSED_CRITICAL_STREAM; null means the pump returned on end-of-stream and this " +
+                        "decoder's table silently stopped tracking the peer's (#530)",
+                )
+            assertEquals(
+                Http3Violation.ClosedCriticalStream(CriticalStreamType.QPACK_ENCODER),
+                error.violation,
+                "the reason must name the QPACK encoder stream",
+            )
+            assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, withTimeout(5.seconds) { scope.closeErrorCode.await() })
+        }
+
+    /**
+     * **The same for the peer's QPACK decoder stream (#530).** §4.2 names *both* instruction streams, and
+     * this one is what acknowledges our encoder's insertions — closing it strands every dynamic entry we
+     * ever insert as un-acknowledged, so the encoder can never evict and eventually refuses to insert.
+     */
+    @Test
+    fun aPeerThatClosesItsQpackDecoderStreamEndsTheConnection() =
+        runTest {
+            lateinit var connection: Http3Connection
+            coroutineScope {
+                val scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        liveStreams(
+                            peerStreamThatFins(
+                                id = 11,
+                                prefix =
+                                    listOf(Http3StreamType.QPACK_DECODER.toInt()) +
+                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                            ),
+                        ),
+                    )
+                connection = Http3Connection.bootstrap(scope, TransportConfig())
+            }
+
+            assertEquals(
+                Http3Violation.ClosedCriticalStream(CriticalStreamType.QPACK_DECODER),
+                connection.connectionError?.violation,
+                "the peer FINed its QPACK decoder stream while the connection was live — RFC 9204 §4.2 makes that " +
+                    "a connection error of type H3_CLOSED_CRITICAL_STREAM (#530)",
+            )
+        }
+
+    /**
+     * **A clean connection shutdown is not a closed critical stream (#530's control).**
+     *
+     * The escalation above must not fire on the ordinary end of a connection, and it very nearly would:
+     * `QuicheDriver` answers a read parked on a stream of a connection that has gone away with
+     * `ReadResult.End` — the same value a peer's FIN produces (its `StreamRecvResult.ConnectionGone` arm;
+     * a typed connection-gone read result needs `ReadResult` to gain a case, DitchOoM/buffer#376). So
+     * end-of-stream alone cannot say which happened, and a fix reading it as the peer's FIN would report
+     * every clean close as a protocol violation the peer never committed.
+     *
+     * [QuicScope.streams] is what tells them apart: it "completes when the connection closes". Here the
+     * peer's control and QPACK encoder streams end *after* that flow has completed — the shape of a
+     * connection going away — and the connection must record nothing.
+     */
+    @Test
+    fun aCleanShutdownEndsTheCriticalStreamsWithoutAViolation() =
+        runTest {
+            lateinit var connection: Http3Connection
+            lateinit var scope: FakeQuicScope
+            coroutineScope {
+                scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        incoming =
+                            listOf(
+                                peerControlStream(clientSettings()),
+                                peerStreamThatFins(
+                                    id = 7,
+                                    prefix =
+                                        listOf(Http3StreamType.QPACK_ENCODER.toInt()) +
+                                            encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                                ),
+                            ),
+                    )
+                connection = Http3Connection.bootstrap(scope, TransportConfig())
+            }
+
+            assertNull(
+                connection.connectionError,
+                "the connection closed: its peer-stream flow completed, and the reads parked on the control and " +
+                    "QPACK streams ended with it. That is a clean shutdown, not the peer closing a critical " +
+                    "stream — reporting H3_CLOSED_CRITICAL_STREAM here would blame the peer for our own close (#530)",
+            )
+            assertFalse(
+                scope.closeErrorCode.isCompleted,
+                "and no CONNECTION_CLOSE carrying an HTTP/3 error code may be sent for an ordinary shutdown",
+            )
+        }
+
+    /** Encodes one QPACK decoder instruction to the bytes a peer would put on the wire. */
+    private fun decoderBytes(instruction: QpackDecoderInstruction): List<Int> {
+        val buf = BufferFactory.Default.allocate(256)
+        QpackDecoderInstructionCodec.encode(buf, instruction)
+        buf.resetForRead()
+        return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
+    }
 
     // --- #496: the WebTransport mux owns the processor and stream the router handed it ------------
 

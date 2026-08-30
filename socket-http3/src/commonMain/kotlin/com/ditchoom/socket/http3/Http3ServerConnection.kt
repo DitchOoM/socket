@@ -117,6 +117,20 @@ class Http3ServerConnection internal constructor(
         }
         // WebTransport datagram demux (RFC 9297): a no-op when QUIC datagrams aren't enabled.
         webTransportMux?.startDatagramLoop()
+        try {
+            servePeerStreams()
+        } finally {
+            // The streams flow only completes when the connection closes (QuicScope.streams' contract),
+            // so this is the moment every still-parked read stops being able to say anything about the
+            // client: from here an end-of-stream on a critical stream is the connection going away, not
+            // the client closing it (#530). The handlers that observe it are launched into [scope], so
+            // they outlive this frame and see the flag.
+            criticalStreams.connectionEnded()
+        }
+    }
+
+    /** [serve]'s router: one launched handler per client-initiated stream, for the connection's life. */
+    private suspend fun servePeerStreams() {
         scope.streams().collect { stream ->
             scope.launch {
                 try {
@@ -155,12 +169,17 @@ class Http3ServerConnection internal constructor(
                 // The client's QPACK encoder stream drives our decoder's dynamic table (RFC 9204 §4.3).
                 Http3StreamType.QPACK_ENCODER ->
                     claimCriticalStream(CriticalStreamType.QPACK_ENCODER) {
-                        serverDecoder?.let { readClientEncoderInstructions(stream, processor, it) } ?: drain(stream)
+                        serverDecoder?.let { readClientEncoderInstructions(stream, processor, it) }
+                            ?: drainCriticalStream(stream, CriticalStreamType.QPACK_ENCODER)
                     }
                 // The client's QPACK decoder stream acks our encoder's inserts/sections (§4.4).
                 Http3StreamType.QPACK_DECODER ->
                     claimCriticalStream(CriticalStreamType.QPACK_DECODER) {
-                        if (serverDecoder != null) readClientDecoderInstructions(stream, processor) else drain(stream)
+                        if (serverDecoder != null) {
+                            readClientDecoderInstructions(stream, processor)
+                        } else {
+                            drainCriticalStream(stream, CriticalStreamType.QPACK_DECODER)
+                        }
                     }
                 // A peer-initiated unidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.1).
                 WebTransportWire.WT_UNI_STREAM_TYPE ->
@@ -216,7 +235,16 @@ class Http3ServerConnection internal constructor(
             // by design between the client's header-block insertions, so arming it here made ordinary
             // silence look like a failure. Liveness belongs to the connection's idle timeout, which is
             // what the client control stream has always relied on by reading with no deadline.
-            val instruction = reader.next() ?: break
+            val instruction = reader.next()
+            if (instruction == null) {
+                // The client FINed its encoder stream. Not this pump's ordinary exit — RFC 9204 §4.2
+                // gives it none: "The sender MUST NOT close either of these streams […] Closure of
+                // either unidirectional stream type MUST be treated as a connection error of type
+                // H3_CLOSED_CRITICAL_STREAM". This stream is the only thing keeping [decoder]'s dynamic
+                // table equal to the client's encoder table (#530).
+                criticalStreamClosed(CriticalStreamType.QPACK_ENCODER)
+                break
+            }
             decoder.applyEncoderInstruction(instruction)
         }
     }
@@ -240,7 +268,14 @@ class Http3ServerConnection internal constructor(
             //
             // No deadline, for the same reason as the encoder pump above (#495): the client acknowledges
             // only what our encoder inserted, so this stream is quiet whenever we are.
-            val instruction = reader.next() ?: break
+            val instruction = reader.next()
+            if (instruction == null) {
+                // §4.2 again, and it names BOTH instruction streams: this one is what acknowledges our
+                // encoder's insertions, so the client closing it strands every dynamic entry we insert
+                // as un-acknowledged and the encoder eventually stops being able to evict (#530).
+                criticalStreamClosed(CriticalStreamType.QPACK_DECODER)
+                break
+            }
             // Dropped when we have no encoder: these acknowledge insertions we never made.
             serverEncoder?.processDecoderInstruction(instruction)
         }
@@ -342,7 +377,14 @@ class Http3ServerConnection internal constructor(
     private suspend fun readControlFrames(reader: Http3StreamReader) {
         while (true) {
             when (val frame = reader.nextFrame()) {
-                null -> break // control stream ended
+                // The client closed its control stream. RFC 9114 §6.2.1: "If either control stream is
+                // closed at any point, this MUST be treated as a connection error of type
+                // H3_CLOSED_CRITICAL_STREAM." Breaking here left this server with no way to ever receive
+                // a MAX_PUSH_ID, a GOAWAY, or a CANCEL_PUSH again, and nothing said (#530).
+                null -> {
+                    criticalStreamClosed(CriticalStreamType.CONTROL)
+                    break
+                }
                 // MAX_PUSH_ID is client→server (§7.2.7); it is non-decreasing, so take the latest.
                 is Http3Frame.MaxPushId -> clientMaxPushId = frame.pushId
                 // A client may send GOAWAY (§5.2) / CANCEL_PUSH (§7.2.3) on its control stream — accept.
@@ -379,6 +421,26 @@ class Http3ServerConnection internal constructor(
         val duplicate = criticalStreams.claim(type)
         if (duplicate != null) return abortConnection(Http3StreamException(duplicate))
         handle()
+    }
+
+    /**
+     * The reader of this connection's [type] stream saw end-of-stream — the server's half of
+     * [Http3Connection.criticalStreamClosed], and the same two RFC sentences (#530).
+     *
+     * RFC 9114 §6.2.1: *"If either control stream is closed at any point, this MUST be treated as a
+     * connection error of type H3_CLOSED_CRITICAL_STREAM."* RFC 9204 §4.2, of the QPACK instruction
+     * streams: *"Closure of either unidirectional stream type MUST be treated as a connection error of
+     * type H3_CLOSED_CRITICAL_STREAM."* Both say "either", which is why the rule is one rule and not a
+     * per-role one: this server enforces it on the streams the client opens, exactly as the client
+     * enforces it on ours.
+     *
+     * Aborts rather than throwing: [serve]'s per-stream `catch` swallows an [Http3StreamException] so
+     * one request cannot take the connection down, which is right for a request and wrong for this — the
+     * same reason [claimCriticalStream] aborts. Not [abandonStalledStream] either: nothing stalled, and
+     * STOP_SENDING is meaningless on a stream the client has already closed.
+     */
+    private suspend fun criticalStreamClosed(type: CriticalStreamType) {
+        criticalStreams.peerClosed(type)?.let { abortConnection(Http3StreamException(it)) }
     }
 
     /**
@@ -776,11 +838,11 @@ class Http3ServerConnection internal constructor(
     }
 
     /**
-     * Read and discard a client unidirectional stream this server does not interpret — a QPACK
-     * instruction stream on a static-only server, a reserved/GREASE type (RFC 9114 §6.2/§9), a
-     * WebTransport stream with WebTransport disabled — until the client ends or resets it. The point is
-     * flow control: nothing else will read those bytes, and unread bytes hold the client's window for
-     * that stream shut.
+     * Read and discard a client unidirectional stream this server does not interpret — a reserved/GREASE
+     * type (RFC 9114 §6.2/§9), a WebTransport stream with WebTransport disabled, or (via
+     * [drainCriticalStream]) a QPACK instruction stream on a static-only server — until the client ends
+     * or resets it. The point is flow control: nothing else will read those bytes, and unread bytes hold
+     * the client's window for that stream shut.
      *
      * **No deadline** (#513), for the reason the QPACK pumps have none (#472/#495): every stream reaching
      * here is idle *by design*. A conformant client opens both QPACK streams whatever capacity either
@@ -791,10 +853,15 @@ class Http3ServerConnection internal constructor(
      * than failed*: the drain vanished with nothing logged, and the window it existed to keep open filled
      * and stayed full. Liveness here belongs to the connection's idle timeout.
      *
-     * Ending is therefore the client's to decide, and it is reported the way the pumps report theirs: a
-     * FIN or a RESET_STREAM returns normally. Note this is deliberately **not** [abandonStalledStream]'s
-     * arm — that names a stall and sends STOP_SENDING, which on a critical stream is the wrong remedy
-     * (RFC 9204 §4.2 has closing one be a connection error, not something to ask the client for).
+     * Ending is therefore the client's to decide, and a FIN or a RESET_STREAM returns normally. Note this
+     * is deliberately **not** [abandonStalledStream]'s arm — that names a stall and sends STOP_SENDING,
+     * which on a critical stream is the wrong remedy (RFC 9204 §4.2 has closing one be a connection
+     * error, not something to ask the client for).
+     *
+     * What a *critical* stream's ending then means is [drainCriticalStream]'s business, not this one's:
+     * every caller that hands a QPACK instruction stream here goes through that wrapper, and what is left
+     * reaching this function directly — GREASE, a reserved type, WebTransport with WebTransport disabled —
+     * really may end whenever the client likes (#530).
      */
     private suspend fun drain(stream: QuicByteStream) {
         while (true) {
@@ -803,6 +870,33 @@ class Http3ServerConnection internal constructor(
                 ReadResult.End, ReadResult.Reset -> return
             }
         }
+    }
+
+    /**
+     * [drain] a stream that is **critical** — a QPACK instruction stream on a static-only server, where
+     * `qpackCapacity = 0` means there is no dynamic table to apply its instructions to and so no pump to
+     * read it (#530).
+     *
+     * Draining is still required: RFC 9204 §4.2 says "An endpoint MUST allow its peer to create an
+     * encoder stream and a decoder stream even if the connection's settings prevent their use", and
+     * unread bytes hold the client's flow-control window for that stream shut. But the drain *ending* is
+     * not the neutral event it is for a GREASE stream — §4.2's "Closure of either unidirectional stream
+     * type MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM" applies to a stream
+     * nobody is interpreting exactly as it does to one being pumped.
+     *
+     * This is the reason the escalation could not live in the pumps alone: on this configuration the
+     * pumps never run, and this is the only place the FIN is ever observed. [drain] itself stays neutral
+     * — it is also the GREASE/WebTransport-disabled path, where end-of-stream really is just the end.
+     *
+     * §8.1 makes the code cover a stream "closed **or reset**", which is why both terminal read results
+     * come out of [drain] the same way and both land here.
+     */
+    private suspend fun drainCriticalStream(
+        stream: QuicByteStream,
+        type: CriticalStreamType,
+    ) {
+        drain(stream)
+        criticalStreamClosed(type)
     }
 
     private fun pseudo(

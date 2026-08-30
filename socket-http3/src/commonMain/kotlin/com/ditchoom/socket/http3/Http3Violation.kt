@@ -187,6 +187,45 @@ sealed interface Http3Violation {
         override fun describe() = "QPACK stream was reset by the peer"
     }
 
+    /**
+     * The peer closed its [type] stream while the connection was live (#530).
+     *
+     * The rule is spelled out twice, once per family of critical stream, and both times as a MUST.
+     * RFC 9114 §6.2.1, on the control stream: *"The sender MUST NOT close the control stream, and the
+     * receiver MUST NOT request that the sender close the control stream. If **either** control stream is
+     * closed at any point, this MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM."*
+     * RFC 9204 §4.2, on the QPACK instruction streams: *"The sender MUST NOT close either of these
+     * streams, and the receiver MUST NOT request that the sender close either of these streams. Closure
+     * of either unidirectional stream type MUST be treated as a connection error of type
+     * H3_CLOSED_CRITICAL_STREAM."* "Either" is what makes this one violation shared by both roles: a
+     * client closing its own control stream and a server closing its own are the same error, so each
+     * endpoint enforces it on the streams it *reads*.
+     *
+     * Not a conformance nicety. Each of these streams is the only carrier of state the connection keeps
+     * using afterwards: the control stream carries GOAWAY / MAX_PUSH_ID / CANCEL_PUSH, the peer's encoder
+     * stream is what keeps our [QpackDecoder]'s dynamic table equal to the peer's encoder table, and the
+     * peer's decoder stream is what acknowledges our own insertions. Ending the reading child and
+     * returning — what every one of these readers did before #530 — leaves the connection running on
+     * machinery the peer has destroyed, and the first field section that references the dynamic table
+     * then blocks on a Required Insert Count nothing will ever raise (#472's symptom, from a different
+     * cause).
+     *
+     * §8.1 defines the code as "A stream required by the HTTP/3 connection was **closed or reset**", so a
+     * RESET_STREAM lands here too; [QpackStreamReset] is the same code named by the QPACK instruction
+     * readers, which see a reset as a distinct read result.
+     *
+     * Deliberately **not** routed through `abandonStalledStream` (#511): that names a stall and sends
+     * STOP_SENDING, and a stream the peer has already closed neither stalled nor needs to be asked to
+     * stop. The report is a CONNECTION_CLOSE, not a per-stream signal.
+     */
+    data class ClosedCriticalStream(
+        val type: CriticalStreamType,
+    ) : Http3Violation {
+        override val errorCode get() = Http3ErrorCode.CLOSED_CRITICAL_STREAM
+
+        override fun describe() = "peer closed its ${type.label} stream, which must stay open for the life of the connection"
+    }
+
     // --- Push (RFC 9114 §4.6 / §7.2.7) — H3_ID_ERROR / H3_REQUEST_CANCELLED -----------------------
 
     /** A server push arrived though MAX_PUSH_ID was never sent (push disabled). */

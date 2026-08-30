@@ -16,6 +16,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
 // Test doubles for a peer-initiated stream that misbehaves after its first bytes, shared by the client
@@ -110,6 +111,77 @@ internal class StalledStream(
 }
 
 /**
+ * A **conformant** peer critical stream (#530): delivers [prefix], then stays open — silent, unfinished —
+ * for [openFor], which every scripted test outlives, and only then ends.
+ *
+ * This is what RFC 9114 §6.2.1 and RFC 9204 §4.2 require of a control or QPACK instruction stream: "The
+ * sender MUST NOT close the control stream", "The sender MUST NOT close either of these streams". A
+ * double that delivers its bytes and immediately FINs is scripting a peer that violates that rule, and
+ * since #530 both roles say so — with `H3_CLOSED_CRITICAL_STREAM`, which then wins the race to be the
+ * connection's error and hides whatever the test was actually about. Use this wherever a critical stream
+ * is scenery rather than the subject.
+ *
+ * "Ends after [openFor]" rather than "never ends": the end has to come eventually or the harness's
+ * enclosing `coroutineScope` would never join the reader. By then the connection's peer-stream flow has
+ * long completed, which is exactly the shape of a connection going away — so the endpoint reads that end
+ * as teardown and not as the peer closing anything (see [CriticalStreamGuard]). Under `runTest` the wait
+ * is virtual time and costs nothing.
+ */
+internal class OpenCriticalStream(
+    prefix: List<Int>,
+    private val openFor: Duration = CONNECTION_LIFETIME,
+    chunks: BufferFactory = BufferFactory.Default,
+) : ByteStream {
+    private val script = ArrayDeque<ReadResult>()
+    var closed = false
+        private set
+
+    init {
+        if (prefix.isNotEmpty()) {
+            val buf = chunks.allocate(prefix.size)
+            for (b in prefix) buf.writeByte(b.toByte())
+            buf.resetForRead()
+            script.addLast(ReadResult.Data(buf))
+        }
+    }
+
+    override val isOpen: Boolean get() = !closed
+    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+    override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+    // Honours the deadline the way QuicheDriver's read leaf does (withTimeout), so a reader that wrongly
+    // armed one on a critical stream still fails here rather than being quietly tolerated.
+    override suspend fun read(deadline: Duration): ReadResult =
+        withTimeout(deadline) {
+            script.removeFirstOrNull() ?: run {
+                delay(openFor)
+                ReadResult.End
+            }
+        }
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten {
+        val n = buffer.remaining()
+        repeat(n) { buffer.readByte() }
+        return BytesWritten(n)
+    }
+
+    override suspend fun close() {
+        closed = true
+    }
+
+    private companion object {
+        /**
+         * How long [OpenCriticalStream] models "the life of the connection" — longer than any scripted
+         * test's virtual timeline, so its end always lands after the peer-stream flow has completed.
+         */
+        val CONNECTION_LIFETIME: Duration = 1.hours
+    }
+}
+
+/**
  * Buffers this pool has handed out and not yet been given back — the pool's own accounting, read from
  * outside whatever borrowed them. Every pool miss is one distinct buffer, and at any moment each of them
  * is either sitting in the pool ([PoolStats.currentPoolSize]) or out with a borrower, so `misses − pooled`
@@ -125,20 +197,27 @@ internal fun BufferPool.outstanding(): Int = stats().let { (it.poolMisses - it.c
  * (`withTimeout(timeout)`) — a double that ignored it could not reproduce a deadline defect at all.
  * Under `runTest` the silence is virtual time, so the test is deterministic and instant.
  *
- * [readToEnd] is the reader's survival witness: it turns true only when a read returns
- * [ReadResult.End], which lies on the far side of the silence — a reader whose deadline expired
+ * [readToEnd] is the reader's survival witness: it turns true on the read that lies on the far side of
+ * the silence — the one this stream answers with [ReadResult.End] — and a reader whose deadline expired
  * inside the silence never gets there.
+ *
+ * [stayOpenFor] delays that end without moving the witness, for a **critical** stream (#530): a control
+ * or QPACK instruction stream that FINs is itself a connection error (RFC 9114 §6.2.1, RFC 9204 §4.2),
+ * so a test about something else must not have one end while the connection is live. Default zero — the
+ * stream ends as soon as the reader comes back, which is right for a GREASE or reserved stream and for
+ * any critical stream whose connection has already closed.
  */
 internal class SilentThenSpeakingStream(
     private val first: List<Int>,
     private val silence: Duration,
     private val afterSilence: List<Int>,
+    private val stayOpenFor: Duration = Duration.ZERO,
 ) : ByteStream {
     private var stage = 0
     var closed = false
         private set
 
-    /** True once end-of-stream was delivered — i.e. the reader was still reading after [silence]. */
+    /** True once the reader came back for the read past [silence] — the one answered with end-of-stream. */
     var readToEnd = false
         private set
 
@@ -156,6 +235,7 @@ internal class SilentThenSpeakingStream(
                 }
                 else -> {
                     readToEnd = true
+                    delay(stayOpenFor)
                     ReadResult.End
                 }
             }

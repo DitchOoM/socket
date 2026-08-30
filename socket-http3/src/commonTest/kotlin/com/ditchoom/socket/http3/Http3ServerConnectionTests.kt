@@ -41,6 +41,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -120,6 +121,16 @@ class Http3ServerConnectionTests {
             QuicStreamId(2),
             RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + trailing), ReadResult.End)),
         )
+
+    /**
+     * A **conformant** client control stream: 0x00 prefix, then [trailing], then it stays open — "The
+     * sender MUST NOT close the control stream" (RFC 9114 §6.2.1). Use this wherever the control stream
+     * is scenery rather than the subject: since #530 one that FINs while the connection is live is itself
+     * a connection error, and `H3_CLOSED_CRITICAL_STREAM` would win the race to be the error under test.
+     * [clientControl] above still FINs, which is right where the connection's streams run out with it.
+     */
+    private fun openClientControl(trailing: List<Int>): QuicByteStream =
+        QuicByteStream(QuicStreamId(2), OpenCriticalStream(listOf(Http3StreamType.CONTROL.toInt()) + trailing))
 
     /** A peer (client-initiated, unidirectional) uni stream carrying only its [type] prefix, then FIN. */
     private fun clientUniStream(
@@ -620,12 +631,16 @@ class Http3ServerConnectionTests {
                 "sanity: the section must reference dynamic-table inserts, or it cannot tell whether the pump applied them",
             )
 
+            // Both stay open past the end of this connection's stream flow: a QPACK instruction stream that
+            // FINs while the connection is live is a connection error of its own (#530, RFC 9204 §4.2), and
+            // this test is about the pumps surviving silence, not about that.
             val clientQpackEncoder =
                 SilentThenSpeakingStream(
                     first = listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes(setCapacity),
                     // Longer than the 15s default, so the deadline the pump armed expires inside the silence.
                     silence = 20.seconds,
                     afterSilence = inserts.flatMap { encoderBytes(it) },
+                    stayOpenFor = 1.hours,
                 )
             val clientQpackDecoder =
                 SilentThenSpeakingStream(
@@ -634,6 +649,7 @@ class Http3ServerConnectionTests {
                     // The client abandoning a section's references (§4.4.2) — nothing for the server to act on
                     // (it has no encoder: the client advertised capacity 0), but the pump must still be reading.
                     afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                    stayOpenFor = 1.hours,
                 )
             val server = ServerStreams()
             val decodedHeaders = CompletableDeferred<List<QpackHeaderField>>()
@@ -648,7 +664,7 @@ class Http3ServerConnectionTests {
                                 this,
                                 server.outgoing(),
                                 flow {
-                                    emit(clientControl(frameBytes(clientSettings())))
+                                    emit(openClientControl(frameBytes(clientSettings())))
                                     emit(QuicByteStream(QuicStreamId(6), clientQpackEncoder))
                                     emit(QuicByteStream(QuicStreamId(10), clientQpackDecoder))
                                     delay(25.seconds) // past the silence: the inserts have been on the wire for 5s
@@ -733,7 +749,8 @@ class Http3ServerConnectionTests {
         val handledPath = CompletableDeferred<String>()
         return runServer(
             flow {
-                emit(clientControl(frameBytes(clientSettings())))
+                // Conformant, so the connection's only error can be the one under test (#530).
+                emit(openClientControl(frameBytes(clientSettings())))
                 emit(QuicByteStream(QuicStreamId(0), stalled))
                 delay(20.seconds) // the stalled peek has been out past its 15s deadline for 5s
                 emit(clientRequest(id = 4, headers = requestHeadersFrame()))
@@ -1010,7 +1027,8 @@ class Http3ServerConnectionTests {
     fun aBadClientDecoderInstructionAbortsTheConnection(): TestResult =
         runServer(
             flow {
-                emit(clientControl(frameBytes(settings(Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L)))))
+                // Conformant, so the connection's only error can be the one under test (#530).
+                emit(openClientControl(frameBytes(settings(Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L)))))
                 delay(1.seconds) // the SETTINGS have been read, so the server's encoder exists
                 emit(
                     clientQpackStream(
@@ -1075,7 +1093,8 @@ class Http3ServerConnectionTests {
                                 this,
                                 serverOutgoing(),
                                 flow {
-                                    emit(clientControl(frameBytes(clientSettings())))
+                                    // Conformant, so the abort under test is the only one (#530).
+                                    emit(openClientControl(frameBytes(clientSettings())))
                                     emit(
                                         clientQpackStream(
                                             id = 6,
@@ -1169,6 +1188,182 @@ class Http3ServerConnectionTests {
             assertFalse(scope.closeErrorCode.isCompleted, "a quiet QPACK stream is not a connection error")
         }
     }
+
+    // === #530: a client that closes a critical stream ends the connection ==========================
+
+    /**
+     * Client streams delivered on a connection that is still **live** afterwards — the distinction #530
+     * turns on. [QuicScope.streams] completes when the connection closes, so a plain list of client
+     * streams is a connection that has *already ended* by the time its streams are read, and an
+     * end-of-stream there is teardown rather than the client closing anything. Emitting and then staying
+     * open for [liveFor] models the other case: the client FINs a critical stream while the connection
+     * carries on, and whatever the server does about it happens on a live connection.
+     */
+    private fun liveStreams(
+        vararg streams: QuicByteStream,
+        liveFor: Duration = 1.seconds,
+    ): Flow<QuicByteStream> =
+        flow {
+            for (stream in streams) emit(stream)
+            delay(liveFor)
+        }
+
+    /**
+     * **A client that FINs its control stream ends the connection with H3_CLOSED_CRITICAL_STREAM
+     * (#530).**
+     *
+     * RFC 9114 §6.2.1: "The sender MUST NOT close the control stream, and the receiver MUST NOT request
+     * that the sender close the control stream. If either control stream is closed at any point, this
+     * MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM." *Either* — the rule is
+     * one rule for both endpoints, and this is the server's half of the client case in
+     * [Http3ConnectionTests].
+     *
+     * The client control stream here is well-formed (type prefix `0x00`, SETTINGS first) and then FINs
+     * while the connection is live. `readControlFrames` `break`ed on that end-of-stream and
+     * [Http3ServerConnection.handleControl] returned: the stream carrying MAX_PUSH_ID, GOAWAY and
+     * CANCEL_PUSH was gone and the server went on serving as though nothing had happened.
+     */
+    @Test
+    fun aClientThatClosesItsControlStreamAbortsTheConnection(): TestResult {
+        val laterRequest = StalledStream(prefix = frameBytes(requestHeadersFrame()))
+        return runServer(
+            flow {
+                emit(clientControl(frameBytes(clientSettings())))
+                delay(1.seconds) // the control stream's FIN has been observed, on a live connection
+                emit(QuicByteStream(QuicStreamId(0), laterRequest))
+            },
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client sent valid SETTINGS on its control stream and then FINed it while the connection was " +
+                    "live. RFC 9114 §6.2.1 makes that a connection error of type H3_CLOSED_CRITICAL_STREAM; the " +
+                    "connection is still open, so the control handler simply returned on end-of-stream and the " +
+                    "server kept serving a connection whose control stream no longer exists (#530)",
+            )
+            assertEquals(
+                Http3ErrorCode.CLOSED_CRITICAL_STREAM,
+                scope.awaitCloseCode(),
+                "the CONNECTION_CLOSE must carry H3_CLOSED_CRITICAL_STREAM (RFC 9114 §8.1)",
+            )
+            assertEquals(
+                Disposition.Reset(Http3ErrorCode.CLOSED_CRITICAL_STREAM),
+                laterRequest.disposition,
+                "and a request arriving after the abort is answered with the connection's own code rather than " +
+                    "parked (the #512 arm), so the client learns why it will get no response",
+            )
+        }
+    }
+
+    /**
+     * **A client that FINs its QPACK encoder stream ends the connection (#530).** RFC 9204 §4.2: "The
+     * sender MUST NOT close either of these streams, and the receiver MUST NOT request that the sender
+     * close either of these streams. Closure of either unidirectional stream type MUST be treated as a
+     * connection error of type H3_CLOSED_CRITICAL_STREAM."
+     *
+     * With `qpackCapacity = 4096` this server reads the stream through
+     * [Http3ServerConnection.readClientEncoderInstructions], whose `reader.next() ?: break` made the FIN
+     * indistinguishable from a healthy exit: the pump returned and this decoder's dynamic table stopped
+     * tracking the client's encoder table with nothing recorded anywhere.
+     */
+    @Test
+    fun aClientThatClosesItsQpackEncoderStreamAbortsTheConnection(): TestResult =
+        runServer(
+            liveStreams(
+                clientQpackStream(
+                    id = 6,
+                    type = Http3StreamType.QPACK_ENCODER,
+                    instruction = encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                ),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client sent a valid instruction on its QPACK encoder stream and FINed it while the " +
+                    "connection was live — RFC 9204 §4.2 makes that a connection error of type " +
+                    "H3_CLOSED_CRITICAL_STREAM. The connection is still open, so the pump treated the FIN as a " +
+                    "healthy exit and this decoder's table silently stopped tracking the client's (#530)",
+            )
+            assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, scope.awaitCloseCode())
+        }
+
+    /** **The same for the client's QPACK decoder stream (#530)** — §4.2 names both instruction streams. */
+    @Test
+    fun aClientThatClosesItsQpackDecoderStreamAbortsTheConnection(): TestResult =
+        runServer(
+            liveStreams(
+                clientQpackStream(
+                    id = 10,
+                    type = Http3StreamType.QPACK_DECODER,
+                    instruction = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                ),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client FINed its QPACK decoder stream while the connection was live — RFC 9204 §4.2 makes " +
+                    "that a connection error of type H3_CLOSED_CRITICAL_STREAM. The connection is still open, so " +
+                    "the pump returned on end-of-stream and said nothing (#530)",
+            )
+            assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, scope.awaitCloseCode())
+        }
+
+    /**
+     * **A static-only server escalates the same closure, which reaches it through `drain` (#530).**
+     *
+     * With `qpackCapacity = 0` there is no dynamic table, so nothing interprets the client's QPACK
+     * instruction streams — but RFC 9204 §4.2 still has a conformant client open both ("An endpoint MUST
+     * allow its peer to create an encoder stream and a decoder stream even if the connection's settings
+     * prevent their use"), and closing one is still the connection error. Those streams land in
+     * [Http3ServerConnection.drain], which returned on end-of-stream exactly as it does for a GREASE
+     * stream. That is why the escalation has to live where the FIN is *observed* rather than only in the
+     * pumps: on this configuration the pumps never run at all.
+     */
+    @Test
+    fun aStaticOnlyServerAbortsWhenTheClientClosesADrainedQpackStream(): TestResult =
+        runServer(liveStreams(clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER)), qpackCapacity = 0) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "a QPACK encoder stream is critical whether or not this server has a dynamic table to apply it " +
+                    "to (RFC 9204 §4.2). On a static-only server it is drained, and the connection is still open " +
+                    "— so the drain returned on the client's FIN with nothing said (#530)",
+            )
+            assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, scope.awaitCloseCode())
+        }
+
+    /**
+     * **A clean connection shutdown is not a closed critical stream (#530's control).**
+     *
+     * The escalation must not fire on the ordinary end of a connection, and it very nearly would:
+     * `QuicheDriver` answers a read parked on a stream of a connection that has gone away with
+     * `ReadResult.End` — the same value a client's FIN produces (its `StreamRecvResult.ConnectionGone`
+     * arm; a typed connection-gone read result needs `ReadResult` to gain a case, DitchOoM/buffer#376).
+     * End-of-stream alone therefore cannot say which happened, and a fix that read it as the client's FIN
+     * would report every clean close as a violation the client never committed.
+     *
+     * [QuicScope.streams] is what tells them apart: it "completes when the connection closes". Here the
+     * client's control and QPACK streams end *after* that flow has completed — the shape of a connection
+     * going away — and the server must abort nothing.
+     */
+    @Test
+    fun aCleanShutdownEndsTheCriticalStreamsWithoutAViolation(): TestResult =
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER),
+                clientUniStream(id = 10, type = Http3StreamType.QPACK_DECODER),
+            ),
+            qpackCapacity = 0,
+        ) { scope ->
+            assertFalse(
+                scope.closeErrorCode.isCompleted,
+                "the connection closed: its client-stream flow completed, and the reads parked on the control and " +
+                    "QPACK streams ended with it. That is a clean shutdown, not the client closing a critical " +
+                    "stream — reporting H3_CLOSED_CRITICAL_STREAM here would blame the client for our own close " +
+                    "(#530)",
+            )
+        }
 
     // === WebTransport stream demux (draft-ietf-webtrans-http3 §4.1 / §4.2) — #496 ==============
 
