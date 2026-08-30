@@ -665,9 +665,14 @@ class Http3Connection private constructor(
             try {
                 scope.streams().collect { stream -> routes += launch { route(stream) } }
             } finally {
-                // The streams flow only completes when the connection closes. Let any in-flight
-                // route() finish first (one may be resolving SETTINGS), then — if the peer's
-                // control stream never delivered SETTINGS — unblock any awaiter.
+                // The streams flow only completes when the connection closes (QuicScope.streams'
+                // contract), so this is the moment every still-parked read stops being able to say
+                // anything about the peer: from here an end-of-stream on a critical stream is the
+                // connection going away, not the peer closing it (#530). Recorded BEFORE the join
+                // below, because the routes being joined are exactly the readers that will see it.
+                criticalStreams.connectionEnded()
+                // Let any in-flight route() finish first (one may be resolving SETTINGS), then — if
+                // the peer's control stream never delivered SETTINGS — unblock any awaiter.
                 routes.joinAll()
                 // No more pushes can arrive; complete the pushes flow for any collector.
                 pushChannel.close()
@@ -799,6 +804,32 @@ class Http3Connection private constructor(
     }
 
     /**
+     * The reader of this connection's [type] stream saw end-of-stream (#530).
+     *
+     * RFC 9114 §6.2.1: *"The sender MUST NOT close the control stream, and the receiver MUST NOT request
+     * that the sender close the control stream. If either control stream is closed at any point, this
+     * MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM."* RFC 9204 §4.2 says the
+     * same of the QPACK encoder and decoder streams. Each of these readers used to treat the peer's FIN
+     * as its ordinary exit — the pump returned, the control handler returned — and the connection kept
+     * running without the stream it depends on, until some later dynamic-table reference failed or
+     * blocked with nothing to explain it.
+     *
+     * Called wherever the FIN is *observed*, not from one place: the pumps and the control handler are
+     * genuinely different readers of genuinely different streams, and on a static-only endpoint a
+     * critical stream has no pump at all (see [Http3ServerConnection.drainCriticalStream]).
+     *
+     * Deliberately not [abandonStalledStream]: that names a stall and sends STOP_SENDING, and a stream
+     * the peer has already closed neither stalled nor can be asked to stop sending. The report is the
+     * CONNECTION_CLOSE [abortConnection] sends.
+     *
+     * [CriticalStreamGuard.peerClosed] returning null is the connection having already ended — see it
+     * for why an end-of-stream on its own cannot tell the two apart.
+     */
+    private suspend fun criticalStreamClosed(type: CriticalStreamType) {
+        criticalStreams.peerClosed(type)?.let { abortConnection(Http3StreamException(it)) }
+    }
+
+    /**
      * Feed the peer's QPACK encoder-stream instructions into our decoder until the stream ends. The
      * encoder stream is critical (RFC 9204 §4.2): a malformed instruction or a table-invariant
      * violation is a *connection* error of type QPACK_ENCODER_STREAM_ERROR, so [abort it][abortConnection]
@@ -815,7 +846,16 @@ class Http3Connection private constructor(
             // the peer's header-block insertions, so arming it here made ordinary silence look like a
             // failure. Liveness belongs to the connection's idle timeout, which is what the peer
             // control stream a few lines down has always relied on by reading with no deadline.
-            val instruction = reader.next() ?: break
+            val instruction = reader.next()
+            if (instruction == null) {
+                // The peer FINed its encoder stream. Not this pump's ordinary exit — RFC 9204 §4.2 has
+                // no ordinary exit for it: "The sender MUST NOT close either of these streams […]
+                // Closure of either unidirectional stream type MUST be treated as a connection error of
+                // type H3_CLOSED_CRITICAL_STREAM". This stream is the only thing keeping our decoder's
+                // dynamic table equal to the peer's encoder table (#530).
+                criticalStreamClosed(CriticalStreamType.QPACK_ENCODER)
+                break
+            }
             decoder.applyEncoderInstruction(instruction)
         }
     }
@@ -832,7 +872,14 @@ class Http3Connection private constructor(
         val reader = QpackInstructionReader.decoder(stream, processor)
         while (true) {
             // No deadline, for the same reason as the encoder pump above (#472).
-            val instruction = reader.next() ?: break
+            val instruction = reader.next()
+            if (instruction == null) {
+                // §4.2 again, and it names BOTH instruction streams: this one is what acknowledges our
+                // encoder's insertions, so the peer closing it strands every dynamic entry we insert as
+                // un-acknowledged and the encoder eventually stops being able to evict (#530).
+                criticalStreamClosed(CriticalStreamType.QPACK_DECODER)
+                break
+            }
             // The peer only acks entries our encoder inserted, so the encoder exists by now; guard anyway.
             encoder?.processDecoderInstruction(instruction)
         }
@@ -909,11 +956,22 @@ class Http3Connection private constructor(
         }
     }
 
-    /** Reads control frames after SETTINGS until end-of-stream, enforcing §7.2.4 frame rules. */
+    /**
+     * Reads control frames after SETTINGS until end-of-stream, enforcing §7.2.4 frame rules — and
+     * treating that end-of-stream as the §6.2.1 connection error it is (#530), rather than as this
+     * reader's ordinary exit.
+     */
     private suspend fun readControlFrames(reader: Http3StreamReader) {
         while (true) {
             when (val frame = reader.nextFrame()) {
-                null -> break // control stream ended
+                // The peer closed its control stream. RFC 9114 §6.2.1: "If either control stream is
+                // closed at any point, this MUST be treated as a connection error of type
+                // H3_CLOSED_CRITICAL_STREAM." Breaking here left the connection with no way to ever
+                // receive a GOAWAY, a CANCEL_PUSH, or any other control frame, and nothing said (#530).
+                null -> {
+                    criticalStreamClosed(CriticalStreamType.CONTROL)
+                    break
+                }
                 // GOAWAY (RFC 9114 §7.2.6): the server is going away; surface the last processable
                 // stream id. Ids are non-increasing across repeated GOAWAYs — keep the lowest.
                 is Http3Frame.GoAway ->
@@ -974,6 +1032,11 @@ class Http3Connection private constructor(
      * [com.ditchoom.buffer.flow.ReadPolicy], and a QUIC stream carries the transport's
      * `ReadPolicy.Bounded`, so an ordinary quiet GREASE stream expired at 15s and [route]'s stalled-stream
      * arm reported it as a stall.
+     *
+     * No **critical** stream reaches here on this role, which is why — unlike
+     * [Http3ServerConnection.drainCriticalStream] — there is nothing to escalate on end-of-stream (#530):
+     * [route] gives each of the three a reader unconditionally. The server's drain is the one that has to
+     * care, because a static-only server has no pump for the QPACK streams to hand them to.
      */
     private suspend fun drain(stream: ByteStream) {
         while (true) {
