@@ -409,11 +409,15 @@ jobs:
     # fetch, which is both latency and a failure mode, and keeps "one version per run" exception-free.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
-    # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
-    # compiled DLL has not yet been proven to load on a bare windows-latest
-    # (static-libgcc/stdc++ link is the intended fix; CI is the only place to
-    # verify it). Drop this once :socket-quic-quiche:jvmTest is green here ≥2 runs —
-    # exit criterion per PLAN.md Phase 2 rule 4.
+    # continue-on-error stays during Windows-peer bring-up, and #515 is the run on which that
+    # bring-up finally has something to bring up: the DLL had never been built at all (the MinGW
+    # cross-compile failed on every run), so "not yet proven to load on a bare windows-latest" was
+    # never even reached. It is now cross-linked and its 90 JNI entry points are in the export table,
+    # but whether a Windows JVM loads it and passes :socket-quic-quiche:jvmTest is still unmeasured,
+    # and CI is the only place that can measure it — a first-ever run of a suite that has never
+    # executed on this OS must not redden every PR. Everything BELOW this line is nonetheless a hard
+    # failure now: a missing DLL is an error, not a skip. Drop this once
+    # :socket-quic-quiche:jvmTest is green here ≥2 runs (#541).
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -435,40 +439,43 @@ jobs:
       # stageQuicheNativeResources expects it (libs/quiche/windows-x64/lib/)
       # so NativeLibLoader can extract quiche_jni.dll from the test classpath.
       #
-      # The cross-build is best-effort: editing socket-quic-quiche/src/jni/quiche_jni.c
-      # cold-busts the quiche native cache (keyed on its hash), and the fragile
-      # MinGW cross-build may then not emit the DLL → no artifact is uploaded
-      # (if-no-files-found: ignore). download-artifact errors on a missing
-      # artifact, so tolerate it (continue-on-error) and gate the test step on
-      # the DLL actually being present. This keeps the job GREEN when the DLL
-      # is absent — instead of a permanent cosmetic red on every PR — while
-      # still running (and surfacing) the tests whenever the DLL is produced.
+      # NOT continue-on-error, and no "skip the tests" branch below it (#515). Both used to be here on
+      # the theory that the cross-build was fragile and might legitimately not emit the DLL — a
+      # tolerance that turned out to be covering a compile that failed 100% of the time, so this job
+      # reported green having run nothing at all, every run, for the whole life of the lane. The
+      # cross-build is REQUIRED in build-linux.yaml's natives job now, and this job `needs:` it, so
+      # by the time these steps run the artifact exists unless the artifact round-trip itself broke.
+      # That is a defect worth a red step, not a silent skip.
       - name: Download Windows quiche native lib
-        id: download-dll
-        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
           path: socket-quic-quiche/libs/quiche/windows-x64/lib
-      - name: Check whether the Windows DLL is present
-        id: dll
+      # The download above can succeed with an artifact that is empty or wrong (`if-no-files-found:
+      # ignore` on the producer side means "upload nothing" is a possible shape), so assert the file
+      # itself before handing the run to Gradle — a `Could not find quiche_jni.dll` deep inside a
+      # NativeLibLoader stack trace is a much worse way to learn this.
+      - name: Assert the Windows DLL arrived
         shell: bash
         run: |
-          if [ -f socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "quiche_jni.dll present — running Windows JVM tests."
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Windows DLL missing::The Linux MinGW cross-build did not produce quiche_jni.dll (likely a cold native cache after a quiche_jni.c edit). Skipping Windows JVM tests this run."
+          dll=socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll
+          if [ ! -s "$dll" ]; then
+            echo "::error title=Windows DLL missing::$dll is absent or empty although build-linux's natives job reported success. The MinGW cross-build is REQUIRED there as of #515, so this is an artifact round-trip failure (quiche-windows-natives), not a tolerated cold cache — read the natives job's own annotations first."
+            ls -la socket-quic-quiche/libs/quiche/windows-x64/lib 2>/dev/null || echo "(the directory does not exist)"
+            exit 1
           fi
+          echo "quiche_jni.dll present ($(wc -c < "$dll" | tr -d ' ') bytes) — running Windows JVM tests."
       # :jvmTest is the root project's suite. :socket-quic-quiche:jvmTest is now
       # included (was excluded while no Windows native existed): the DLL above
       # plus the windows-x64 entry in nativeLibsByPlatform let it stage + load.
       # The leading colon scopes each task to its project; an unqualified
-      # `jvmTest` would match every subproject by name. Runs only when the DLL
-      # is present (see above).
+      # `jvmTest` would match every subproject by name.
+      #
+      # No `-PquicheJvmBackend`, so this resolves loadQuicheApi() to the base commonJvmMain loader →
+      # JniQuicheApi: this is the JNI backend against the DLL above, on every JDK, NOT FFM. There is
+      # no Windows FFM lane (no plain quiche.dll is published for windows-x64 — nativeLibsByPlatform
+      # lists quiche_jni.dll alone), so JNI is the only Windows path there is to exercise.
       - name: Run JVM tests
-        if: steps.dll.outputs.present == 'true'
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache
 
   docs:
