@@ -523,6 +523,106 @@ class Http3ConnectionTests {
             )
         }
 
+    // --- #513: one read-deadline policy for both roles --------------------------------------------
+
+    /**
+     * **An idle reserved/GREASE stream is drained without a deadline (#513, the client half).**
+     *
+     * `route()` drains a stream type it does not implement (RFC 9114 §6.2/§9: reserved and GREASE stream
+     * types must be tolerated) purely to keep the peer's flow-control window for it open. The drain read
+     * with no explicit deadline — which is *not* the same as no deadline: the no-arg
+     * [com.ditchoom.buffer.flow.ByteSource.read] consults the **stream's** [ReadPolicy], and a QUIC stream
+     * carries the transport's `ReadPolicy.Bounded(15.seconds)`. A reserved stream that sends nothing is
+     * exactly what §9 describes, so at 15s the read raised `TimeoutCancellationException`, `route()`'s
+     * stalled-stream arm reported an idle-by-design stream as a stall, and nothing read it again.
+     *
+     * Same rule as the QPACK pumps (#472) and the server's drain (#513): a read that is waiting on
+     * something the peer already owes gets [TransportConfig.readPolicy]; a stream that is idle by design
+     * gets no deadline and leaves liveness to the connection's idle timeout.
+     */
+    @Test
+    fun anIdleGreaseStreamIsDrainedWithoutADeadline() =
+        runTest {
+            // 0x21 — a reserved stream type of the form 0x1f * N + 0x21 (§6.2.3), one byte on the wire.
+            val greaseStream =
+                SilentThenSpeakingStream(
+                    first = listOf(0x21),
+                    // Longer than the 15s default, so a deadline armed on the drain expires inside the silence.
+                    silence = 20.seconds,
+                    afterSilence = listOf(0xDE, 0xAD),
+                )
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(QuicByteStream(QuicStreamId(11), greaseStream), peerControlStream(clientSettings())),
+                )
+
+            val connection = Http3Connection.bootstrap(scope, TransportConfig())
+            connection.peerSettings()
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(
+                greaseStream.readToEnd,
+                "the peer opened a reserved (GREASE) unidirectional stream, said nothing on it for 20s — longer " +
+                    "than the default 15s read deadline — and then wrote. The drain keeping its flow-control " +
+                    "window open must still have been reading: false means the drain's read carried the stream's " +
+                    "own 15s ReadPolicy and expired in ordinary silence (#513). " +
+                    "connectionError=${connection.connectionError}",
+            )
+            assertNull(connection.connectionError, "a quiet reserved stream is not a connection error")
+        }
+
+    /**
+     * **A peer unidirectional stream that never sends its type is abandoned by name (#513, the client
+     * half).** The server bounds this read (#511/#509) while `route()` read it with no bound at all, so a
+     * peer that opened a unidirectional stream and said nothing was waited on forever — a router child
+     * parked for the life of the connection with no name, nothing told to the peer, and no way for the
+     * two roles to be reasoned about together.
+     *
+     * #513 settles that: the *head* of a peer-initiated stream — the read waiting for what the peer
+     * already owes, here its type prefix (RFC 9114 §6.2) — is bounded by [TransportConfig.readPolicy] on
+     * both roles, and giving up on it is named and reaches the peer, exactly as
+     * [aStalledPeerBidiStreamIsAbandonedByName_andTheConnectionSurvives] requires of a bidirectional one.
+     */
+    @Test
+    fun aPeerUniStreamThatNeverSendsItsTypeIsAbandonedByName() =
+        runTest {
+            val stalled = StalledStream(prefix = emptyList()) // opened, then silent: not even a type
+            lateinit var connection: Http3Connection
+            // Not the plain in-scope bootstrap: with the type read unbounded the router parks forever and
+            // coroutineScope would wait on it. A separate job lets the clock be run out past the deadline.
+            val connectionJob =
+                launch {
+                    coroutineScope {
+                        val scope =
+                            FakeQuicScope(
+                                this,
+                                ClientStreams().outgoing(),
+                                incoming = listOf(QuicByteStream(QuicStreamId(11), stalled), peerControlStream(clientSettings())),
+                            )
+                        connection = Http3Connection.bootstrap(scope, TransportConfig())
+                    }
+                }
+            try {
+                testScheduler.advanceTimeBy(20.seconds) // past the 15s default read deadline
+                testScheduler.runCurrent()
+
+                assertEquals(
+                    Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                    stalled.disposition,
+                    "peer uni stream 11 sent nothing — not even its type — for 20s, past the default 15s read " +
+                        "deadline. It must be abandoned by name with H3_REQUEST_CANCELLED (RFC 9114 §4.1.1), the " +
+                        "way the server has abandoned the same stall since #511; Open means this router is still " +
+                        "waiting on it and will wait for the life of the connection (#513). " +
+                        "connectionError=${connection.connectionError}",
+                )
+                assertNull(connection.connectionError, "one stalled peer stream must not become a connection error")
+            } finally {
+                connectionJob.cancelAndJoin()
+            }
+        }
+
     // --- #496: the WebTransport mux owns the processor and stream the router handed it ------------
 
     /**

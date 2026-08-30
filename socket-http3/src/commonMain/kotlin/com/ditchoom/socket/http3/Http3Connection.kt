@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration
 
 /**
  * Parsed view of an HTTP/3 peer SETTINGS frame (RFC 9114 §7.2.4 / RFC 9204 §5).
@@ -685,6 +686,12 @@ class Http3Connection private constructor(
      * flow-control stalled. A single stream's failure is swallowed — it must not cancel the
      * connection scope — and the control handler resolves [peerSettings] on its own error path. A
      * read deadline expiring is one such failure, named and told to the peer (#477), not a cancellation.
+     *
+     * Which of these reads carries a deadline is [com.ditchoom.socket.TransportConfig.readPolicy]'s rule,
+     * settled for both roles by #513: the *head* of a peer-initiated stream — the bidi WebTransport peek,
+     * the uni type prefix, a push stream's Push ID — is bounded, because the peer already owes those
+     * bytes; [drain] and the QPACK pumps are not, because those streams are idle by design.
+     * [Http3ServerConnection.readStreamType] is the same read on the other role.
      */
     private suspend fun route(stream: QuicByteStream) {
         // One processor, shared so bytes buffered while reading the type prefix carry into the
@@ -707,7 +714,13 @@ class Http3Connection private constructor(
                 }
                 return
             }
-            when (Http3StreamReader(stream, processor).nextVarInt()) {
+            // The stream's type prefix (RFC 9114 §6.2) under [config]'s read deadline — the head of a
+            // peer-initiated stream, the read that waits for what the peer already owes us. Bounded on
+            // both roles since #513; the server has bounded it since #511/#509, while this read had no
+            // bound at all, so a peer that opened a unidirectional stream and never said what it was
+            // parked this router child for the life of the connection. Its expiry lands in the
+            // TimeoutCancellationException arm below, which names it and tells the peer.
+            when (Http3StreamReader(stream, processor).nextVarInt(config.readPolicy.toDeadline())) {
                 Http3StreamType.CONTROL ->
                     claimCriticalStream(CriticalStreamType.CONTROL) {
                         handleControl(Http3StreamReader(stream, processor))
@@ -950,10 +963,21 @@ class Http3Connection private constructor(
         }
     }
 
-    /** Reads and discards a stream's bytes until end-of-stream or reset. */
+    /**
+     * Read and discard a peer unidirectional stream this client does not interpret — a reserved/GREASE
+     * type (RFC 9114 §6.2/§9), a WebTransport stream with WebTransport disabled — until the peer ends or
+     * resets it, so its flow-control window stays open.
+     *
+     * **No deadline** (#513), the mirror of [Http3ServerConnection.drain] and for the same reason: a
+     * stream that reaches here is idle by design, and the connection's idle timeout is its liveness. The
+     * bound this had was not visible as one — the no-arg [ByteStream.read] consults the *stream's*
+     * [com.ditchoom.buffer.flow.ReadPolicy], and a QUIC stream carries the transport's
+     * `ReadPolicy.Bounded`, so an ordinary quiet GREASE stream expired at 15s and [route]'s stalled-stream
+     * arm reported it as a stall.
+     */
     private suspend fun drain(stream: ByteStream) {
         while (true) {
-            when (val result = stream.read()) {
+            when (val result = stream.read(Duration.INFINITE)) {
                 is ReadResult.Data -> result.buffer.freeIfNeeded()
                 ReadResult.End, ReadResult.Reset -> return
             }

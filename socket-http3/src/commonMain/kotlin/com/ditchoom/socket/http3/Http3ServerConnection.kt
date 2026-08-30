@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration
 
 /**
  * The **server** side of an HTTP/3 connection (RFC 9114 §3.2) — the production counterpart to the
@@ -98,10 +99,14 @@ class Http3ServerConnection internal constructor(
 
     // Connection-abort latch (RFC 9114 §8): a fatal connection-level violation closes the connection
     // exactly once. Guarded by abortMutex so concurrent stream handlers can't double-close.
+    //
+    // The latch IS the violation that tripped it (the client's [Http3Connection.connectionError] shape),
+    // not a separate boolean beside it: "aborted" and "why" can then never disagree, and [serve] needs
+    // the typed code to answer the streams that keep arriving after the CONNECTION_CLOSE (#512).
     private val abortMutex = Mutex()
 
     @Volatile
-    private var aborted = false
+    private var connectionError: Http3StreamException? = null
 
     /** Run the HTTP/3 server role over [scope] (one accepted QUIC connection). Returns when it closes. */
     suspend fun serve() {
@@ -115,6 +120,14 @@ class Http3ServerConnection internal constructor(
         scope.streams().collect { stream ->
             scope.launch {
                 try {
+                    // A connection this server has already aborted (RFC 9114 §8) serves nothing more. The
+                    // CONNECTION_CLOSE is what ends the connection, but until the peer has acted on it
+                    // streams keep arriving, and taking one would mean decoding it against QPACK state we
+                    // have already declared broken — a request whose field section references the dynamic
+                    // table then blocks on a Required Insert Count nothing will ever raise, and the client
+                    // waits for a response that cannot come (#512). Answer with the connection's own code
+                    // instead, so the failure the client sees is the one that actually happened.
+                    connectionError?.let { return@launch stream.resetQuietly(it.errorCode) }
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(stream)
                 } catch (_: Http3StreamException) {
                     // A single stream failing must not take the connection down.
@@ -169,6 +182,11 @@ class Http3ServerConnection internal constructor(
      * no bound at all), and giving up on it is named and told to the client exactly as [handleRequest]
      * does for a bidirectional stream: the failure is thrown as the per-stream [Http3StreamException]
      * that [serve] swallows, so the connection survives.
+     *
+     * This is the head of a peer-initiated stream — the read waiting for what the client already owes —
+     * which is exactly the set of reads [TransportConfig.readPolicy] governs; [Http3Connection.route]
+     * bounds its mirror of this read the same way since #513, and [drain] and the QPACK pumps, on the
+     * far side of that line, bound nothing.
      */
     private suspend fun readStreamType(
         stream: QuicByteStream,
@@ -229,10 +247,11 @@ class Http3ServerConnection internal constructor(
     }
 
     /**
-     * Run a critical QPACK stream pump [body], naming a read deadline that expires inside it — the
-     * server's counterpart of the arm #476 gave [Http3Connection.readCriticalQpackStream], and only that
-     * arm: a typed [Http3StreamException] out of the reader propagates to [serve]'s per-stream catch as
-     * before. A clean end-of-stream returns normally; cancellation propagates.
+     * Run a critical QPACK stream pump [body], turning what comes out of it into a *connection* abort —
+     * the server's counterpart of [Http3Connection.readCriticalQpackStream]: the typed
+     * [Http3StreamException] the [QpackInstructionReader] / [QpackDecoder] / [QpackEncoder] raises for a
+     * bad instruction, and a read deadline expiring inside the pump (#476's arm). A clean end-of-stream
+     * returns normally; cancellation propagates.
      */
     private suspend inline fun readCriticalQpackStream(
         qpackStream: QpackStream,
@@ -258,6 +277,19 @@ class Http3ServerConnection internal constructor(
             // coroutine active, a cancellation does not, and that one stays the cancellation it is.
             currentCoroutineContext().ensureActive()
             abortConnection(Http3StreamException(Http3Violation.QpackPumpDeadlineExpired(qpackStream, e)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Http3StreamException) {
+            // RFC 9204 §4.2: an error detected on the peer's QPACK instruction stream is a CONNECTION
+            // error of that stream's type (§8.3 — QPACK_ENCODER_STREAM_ERROR / QPACK_DECODER_STREAM_ERROR),
+            // never a per-stream one. The instruction stream is the only thing keeping this decoder's
+            // dynamic table equal to the client's encoder table, so a refused instruction means the two
+            // have already diverged: every later field section referencing the table decodes to the wrong
+            // fields or blocks on a Required Insert Count that never arrives. Letting [serve]'s per-stream
+            // catch swallow it — the arm that keeps ONE REQUEST from taking the connection down — left the
+            // server serving requests off a table it knew was wrong (#512). The client has escalated here
+            // since #472; this is the server's half.
+            abortConnection(e)
         }
     }
 
@@ -357,8 +389,8 @@ class Http3ServerConnection internal constructor(
      */
     private suspend fun abortConnection(error: Http3StreamException) {
         abortMutex.withLock {
-            if (aborted) return
-            aborted = true
+            if (connectionError != null) return
+            connectionError = error
         }
         try {
             scope.closeWithError(error.errorCode)
@@ -743,9 +775,30 @@ class Http3ServerConnection internal constructor(
         return DecoderStreamWrite.Sent
     }
 
+    /**
+     * Read and discard a client unidirectional stream this server does not interpret — a QPACK
+     * instruction stream on a static-only server, a reserved/GREASE type (RFC 9114 §6.2/§9), a
+     * WebTransport stream with WebTransport disabled — until the client ends or resets it. The point is
+     * flow control: nothing else will read those bytes, and unread bytes hold the client's window for
+     * that stream shut.
+     *
+     * **No deadline** (#513), for the reason the QPACK pumps have none (#472/#495): every stream reaching
+     * here is idle *by design*. A conformant client opens both QPACK streams whatever capacity either
+     * side advertised (RFC 9204 §4.2) and, having advertised `QPACK_MAX_TABLE_CAPACITY: 0`, then never
+     * sends an instruction on them; a reserved stream may carry nothing at all. Under
+     * [TransportConfig.readPolicy] that ordinary silence expired as a `TimeoutCancellationException`,
+     * which — being a `CancellationException` — completed [serve]'s `launch` child as *cancelled rather
+     * than failed*: the drain vanished with nothing logged, and the window it existed to keep open filled
+     * and stayed full. Liveness here belongs to the connection's idle timeout.
+     *
+     * Ending is therefore the client's to decide, and it is reported the way the pumps report theirs: a
+     * FIN or a RESET_STREAM returns normally. Note this is deliberately **not** [abandonStalledStream]'s
+     * arm — that names a stall and sends STOP_SENDING, which on a critical stream is the wrong remedy
+     * (RFC 9204 §4.2 has closing one be a connection error, not something to ask the client for).
+     */
     private suspend fun drain(stream: QuicByteStream) {
         while (true) {
-            when (val result = stream.read(config.readPolicy.toDeadline())) {
+            when (val result = stream.read(Duration.INFINITE)) {
                 is ReadResult.Data -> result.buffer.freeIfNeeded()
                 ReadResult.End, ReadResult.Reset -> return
             }
