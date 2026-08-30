@@ -78,6 +78,9 @@ import platform.posix.write
  *    [LastOutHandoff.enter], [close] via [LastOutHandoff.close], which counts the closer in for the
  *    same reason (it has to reach the wake pipe). Each leaves through [LastOutHandoff.exit], and the
  *    one that empties a closed word releases *everything* — socket, both pipe ends, dispatcher.
+ *    "Every party" includes the ones that are not on this class: [MulticastPosixUdpDatagramChannel]
+ *    delegates its data plane here and `setsockopt`s the same descriptor, so it borrows it through
+ *    [withDescriptor] rather than holding the number itself (#527).
  *  - [close] therefore never closes the socket. Waking a parked receiver was the only reason it ever
  *    did (#498's ordering), and that job now belongs to the [WakePipe]: the receive loop `poll`s both
  *    descriptors and calls `recvfrom` only when the *socket* is readable, and [close] writes one byte
@@ -268,6 +271,42 @@ internal class PosixUdpDatagramChannel(
     }
 
     /**
+     * Lends the channel's descriptor to [block] for the duration of one call, under the same admission
+     * every other party passes — a **scoped** borrow rather than an `enter()`/`exit()` pair a caller could
+     * forget half of. [MulticastPosixUdpDatagramChannel] takes its whole control plane through this
+     * (#527): it delegates its data plane to this channel already, and the descriptor it `setsockopt`s is
+     * this channel's, so it must be admitted like a `send` rather than reading the number out of a field.
+     *
+     * A borrower admitted here cannot have the descriptor released under it — [close] leaves it open and
+     * hands the release to whoever is last out, exactly as for [receive]/[send] — and one that arrives
+     * after [close] is [DescriptorUse.Refused] without a syscall, so it can never name a number the process
+     * has since recycled. [block] may suspend; the borrow is released on the way out however it ends,
+     * including on cancellation.
+     */
+    internal suspend fun <T> withDescriptor(block: suspend (fd: Int) -> T): DescriptorUse<T> {
+        when (handoff.enter()) {
+            LastOutHandoff.Admission.Refused -> return DescriptorUse.Refused
+            LastOutHandoff.Admission.Admitted -> Unit
+        }
+        return try {
+            DescriptorUse.Ran(block(fd))
+        } finally {
+            leave()
+        }
+    }
+
+    /** What [withDescriptor] decided — a sealed answer, so "refused" is never a value the block could return. */
+    internal sealed interface DescriptorUse<out T> {
+        /** The caller was admitted and its block ran with the descriptor; [value] is what the block produced. */
+        data class Ran<out T>(
+            val value: T,
+        ) : DescriptorUse<T>
+
+        /** The channel is closed: the block never ran, and never named the descriptor. */
+        data object Refused : DescriptorUse<Nothing>
+    }
+
+    /**
      * This party's departure. If it was the last one out of a closed channel, it releases the
      * descriptors and the dispatcher — and closes the dispatcher off its own thread, because
      * `MultiWorkerDispatcher.close()` joins its worker, and a caller that resumed *on* that worker
@@ -299,29 +338,28 @@ internal class PosixUdpDatagramChannel(
         to: SocketAddress,
         options: DatagramSendOptions,
     ) {
-        // A sender touches the same descriptor a receiver does, so it is admitted the same way: the CAS
+        // A sender touches the same descriptor a receiver does, so it borrows it the same way: the CAS
         // that says "still open" is what keeps close() from releasing fd under this sendto.
-        when (handoff.enter()) {
-            LastOutHandoff.Admission.Refused -> error("sink is closed")
-            LastOutHandoff.Admission.Admitted -> Unit
-        }
-        try {
-            val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
-            val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
-            val len = payload.remaining()
-            // Parity guard: the same condition reports the same typed reason on every backend.
-            if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
-            memScoped {
-                val addr = alloc<sockaddr_storage>()
-                val addrLen = to.writeSockaddr(addr)
-                // Check the result. A discarded `sendto` return is a datagram that vanishes between a
-                // clean return and the wire — for quiche, a packet its congestion controller counts as
-                // in flight but which never left the host.
-                val sent = sendto(fd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
-                if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
+        val use =
+            withDescriptor { socketFd ->
+                val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
+                val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
+                val len = payload.remaining()
+                // Parity guard: the same condition reports the same typed reason on every backend.
+                if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
+                memScoped {
+                    val addr = alloc<sockaddr_storage>()
+                    val addrLen = to.writeSockaddr(addr)
+                    // Check the result. A discarded `sendto` return is a datagram that vanishes between a
+                    // clean return and the wire — for quiche, a packet its congestion controller counts as
+                    // in flight but which never left the host.
+                    val sent = sendto(socketFd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
+                    if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
+                }
             }
-        } finally {
-            leave()
+        when (use) {
+            DescriptorUse.Refused -> error("sink is closed")
+            is DescriptorUse.Ran -> Unit
         }
     }
 

@@ -65,6 +65,39 @@ internal suspend fun boundLoopbackPosixChannel(beforeDispatch: suspend () -> Uni
     }
 }
 
+/** A [MulticastPosixUdpDatagramChannel] under test together with the descriptor number it was built over. */
+@OptIn(ExperimentalDatagramApi::class)
+internal class BoundMulticastChannel(
+    val fd: Int,
+    val base: PosixUdpDatagramChannel,
+    val channel: MulticastPosixUdpDatagramChannel,
+)
+
+/**
+ * A bound IPv4 loopback multicast channel over a known descriptor number — the same two-layer construction
+ * `UdpSocket.bindMulticast` performs (a [PosixUdpDatagramChannel] for the data plane, wrapped for the
+ * control plane), with the control-plane seams injected. IPv4 so the control ops resolve to the
+ * `IPPROTO_IP` options a plain `AF_INET` socket can be read back for.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+internal suspend fun boundLoopbackMulticastChannel(
+    beforeAdmission: suspend () -> Unit = {},
+    beforeSyscall: suspend () -> Unit = {},
+): BoundMulticastChannel {
+    val bound = boundLoopbackPosixChannel()
+    return BoundMulticastChannel(
+        fd = bound.fd,
+        base = bound.channel,
+        channel =
+            MulticastPosixUdpDatagramChannel(
+                ipv6 = false,
+                base = bound.channel,
+                beforeAdmission = beforeAdmission,
+                beforeSyscall = beforeSyscall,
+            ),
+    )
+}
+
 /** Whether [fd] currently names an open descriptor in this process (`fcntl(F_GETFD)` is EBADF otherwise). */
 internal fun isOpenDescriptor(fd: Int): Boolean = fcntl(fd, F_GETFD) != -1
 
