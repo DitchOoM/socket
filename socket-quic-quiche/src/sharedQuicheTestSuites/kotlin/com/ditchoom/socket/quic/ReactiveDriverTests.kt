@@ -5,7 +5,6 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -168,10 +167,9 @@ class ReactiveDriverTests {
 
             try {
                 val buf = bufferFactory.allocate(1024)
-                val addr = buf.nativeMemoryAccess!!.nativeAddress.toLong()
 
                 val deferred = CompletableDeferred<StreamRecvResult>()
-                driver.commands.send(QuicheCmd.StreamRecv(0L, addr, 1024, deferred))
+                driver.commands.send(QuicheCmd.StreamRecv(0L, buf.driverOwnedMemory(), 1024, deferred))
                 val result = withTimeout(2.seconds) { deferred.await() }
 
                 assertIs<StreamRecvResult.Done>(result)
@@ -191,10 +189,9 @@ class ReactiveDriverTests {
 
             try {
                 val buf = bufferFactory.allocate(1024)
-                val addr = buf.nativeMemoryAccess!!.nativeAddress.toLong()
 
                 val deferred = CompletableDeferred<StreamRecvResult>()
-                driver.commands.send(QuicheCmd.StreamRecv(0L, addr, 1024, deferred))
+                driver.commands.send(QuicheCmd.StreamRecv(0L, buf.driverOwnedMemory(), 1024, deferred))
                 val result = withTimeout(2.seconds) { deferred.await() }
 
                 assertIs<StreamRecvResult.Data>(result)

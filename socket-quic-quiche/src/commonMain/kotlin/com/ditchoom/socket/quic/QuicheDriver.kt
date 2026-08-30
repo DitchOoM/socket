@@ -954,7 +954,14 @@ class QuicheDriver(
                             entry.recvInfo
                         }
                     }
-                api.connRecv(conn, addr, cmd.len, info)
+                // No QuicheMemory here, deliberately: this command already carries the buffer itself,
+                // so the owner needs no re-pairing — only the fence, which costs nothing per datagram
+                // where an extra object on the receive hot path would not (#366).
+                try {
+                    api.connRecv(conn, addr, cmd.len, info)
+                } finally {
+                    reachabilityFence(cmd.buf)
+                }
                 cmd.buf.freeNativeMemory()
                 // Signal the server it may now release the cached recv_info (quiche copied
                 // what it needs during connRecv; the pointer is no longer referenced).
@@ -1018,12 +1025,27 @@ class QuicheDriver(
             }
 
             is QuicheCmd.StreamRecv -> {
-                val result = api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.addr, cmd.bufLen)
+                // endBorrow AFTER the call, always: quiche writes into this memory, and on a managed
+                // runtime nothing else is keeping it mapped by the time the driver loop gets here (#366).
+                val result =
+                    try {
+                        api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
+                    } finally {
+                        cmd.buf.endBorrow()
+                    }
                 cmd.result.complete(result)
             }
 
             is QuicheCmd.StreamSend -> {
-                val sent = api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.addr, cmd.bufLen, cmd.fin)
+                // The caller-fed write buffer (#366): quiche copies from this address, and the writer
+                // that enqueued the command stopped naming its buffer the moment it handed the address
+                // over. See [QuicheMemory] for what that cost.
+                val sent =
+                    try {
+                        api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen, cmd.fin)
+                    } finally {
+                        cmd.buf.endBorrow()
+                    }
                 cmd.result.complete(sent)
             }
 
@@ -1033,12 +1055,23 @@ class QuicheDriver(
             }
 
             is QuicheCmd.DgramSend -> {
-                val written = api.connDgramSend(conn, cmd.addr, cmd.bufLen)
+                // Caller-fed, same lifetime rule as StreamSend (#366).
+                val written =
+                    try {
+                        api.connDgramSend(conn, cmd.buf.address, cmd.bufLen)
+                    } finally {
+                        cmd.buf.endBorrow()
+                    }
                 cmd.result.complete(written)
             }
 
             is QuicheCmd.DgramRecv -> {
-                val result = api.connDgramRecv(conn, cmd.addr, cmd.bufLen)
+                val result =
+                    try {
+                        api.connDgramRecv(conn, cmd.buf.address, cmd.bufLen)
+                    } finally {
+                        cmd.buf.endBorrow()
+                    }
                 cmd.result.complete(result)
             }
 
@@ -1046,7 +1079,13 @@ class QuicheDriver(
                 // A throwing backend (JNI/cinterop stub until their step lands) must NOT crash the loop or
                 // wedge the awaiting caller — complete the deferred exceptionally so connect rethrows.
                 try {
-                    cmd.result.complete(api.connPeerCert(conn, cmd.addr, cmd.bufLen))
+                    cmd.result.complete(
+                        try {
+                            api.connPeerCert(conn, cmd.buf.address, cmd.bufLen)
+                        } finally {
+                            cmd.buf.endBorrow()
+                        },
+                    )
                 } catch (t: Throwable) {
                     cmd.result.completeExceptionally(t)
                 }
@@ -2110,8 +2149,8 @@ class QuicheDriver(
      * A backend call threw with [cmd] already dequeued — so [cleanup]'s teardown drain can never
      * reach it, and without this its deferred would never complete. That is not a theoretical gap:
      * `streamRead`/`streamWrite`/the datagram adapter end with a NonCancellable `join()` on exactly
-     * that deferred (the barrier that keeps a caller from freeing a buffer whose raw address a
-     * queued command still carries), so an uncompleted deferred is a permanent, uncancellable hang.
+     * that deferred (the barrier that keeps a caller from freeing a buffer a queued command is still
+     * borrowing), so an uncompleted deferred is a permanent, uncancellable hang.
      * The PeerCert arm has guarded itself this way since it landed (see its inline try/catch);
      * every arm gets the same protection at the dispatch site. The throw still unwinds [run]
      * afterwards, so the connection tears down through [cleanup] exactly as before.
@@ -2485,10 +2524,13 @@ class DriverStreamAdapter(
         // leaf factory that passed requireNativeMemory() at setup) at every production construction
         // site, so this is an invariant — contrast the caller's buffer in [streamWrite].
         val buffer = bufferFactory.allocate(bufferSize)
-        val addr = buffer.driverOwnedNativeAddress()
+        // Address AND owner (#366): the driver loop writes into this memory long after this
+        // coroutine suspends, and on a managed runtime "the local is still in scope" is not a
+        // lifetime. See [QuicheMemory].
+        val memory = buffer.driverOwnedMemory()
 
         // A StreamRecv we enqueued but the driver has not yet completed. While this is set, the driver may
-        // still be about to WRITE received bytes into `addr` inside connStreamRecv. The command channel is
+        // still be about to WRITE received bytes into `memory` inside connStreamRecv. The command channel is
         // UNLIMITED so `commands.send` never suspends — by the time a timeout or external cancellation can
         // unwind us, the command is already queued. If we let `buffer` be released here (freed below, or for
         // a heap/GC-backed buffer simply dropped so its Cleaner reclaims the native memory) before the
@@ -2548,8 +2590,8 @@ class DriverStreamAdapter(
                         // send). Unlike send it is not a suspend call, so there is no state in which the
                         // command is buffered yet the call throws CancellationException — the gap that
                         // would leave `inFlight` unset and let the finally below skip its join while the
-                        // driver still holds this buffer's raw address (#401 hunt).
-                        driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred)).getOrThrow()
+                        // driver still holds this buffer's borrowed memory (#401 hunt).
+                        driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, memory, bufferSize, deferred)).getOrThrow()
                         // Mark in-flight only AFTER a successful enqueue: if trySend threw (channel closed)
                         // the command never reached the driver, so there is nothing to join (joining it would hang).
                         inFlight = deferred
@@ -2699,8 +2741,8 @@ class DriverStreamAdapter(
                 }
             }
             // The driver ALWAYS completes the deferred — in execute() after connStreamRecv, or in
-            // cleanup()/failCommand() on teardown (which does NOT dereference `addr`) — so this join can
-            // never hang. After it returns, quiche is provably done with `addr`; only then release.
+            // cleanup()/failCommand() on teardown (which does NOT dereference the memory) — so this
+            // join can never hang. After it returns, quiche is provably done with it; only then release.
             val abandoned = inFlight
             if (abandoned != null) {
                 withContext(NonCancellable) { abandoned.join() }
@@ -2730,19 +2772,19 @@ class DriverStreamAdapter(
         // are untouched and a correctly allocated write can follow. This was `nativeMemoryAccess!!` — a
         // NullPointerException with no message, reachable by any consumer writing a BufferFactory.Default
         // buffer on Linux Kotlin/Native (or a managed() buffer anywhere, the JVM included).
-        val native =
-            buffer.nativeMemoryAccess
+        val memory =
+            buffer.callerFedMemory()
                 ?: throw QuicNativeMemoryRequiredException.forBuffer(
                     QuicWriteTarget.Stream(streamId.id),
                     buffer,
                     QuicheDriver.capabilities,
                 )
-        val addr = native.nativeAddress + buffer.position()
 
         // A StreamSend we enqueued but the driver has not yet completed. While this is set, the driver may
-        // still READ `addr` inside connStreamSend. The caller owns `buffer` and frees it (or drops its last
-        // reference) the instant we return — so on cancellation we must wait for any in-flight send to finish
-        // first; otherwise quiche reads freed/Cleaner-reclaimed memory. (A read-after-free is less likely to
+        // still READ `memory` inside connStreamSend. The caller owns `buffer` and frees it the instant we
+        // return — so on cancellation we must wait for any in-flight send to finish first; otherwise quiche
+        // reads memory the caller has already released. (Dropping the caller's last *reference* is the other
+        // half of that, and no join can cover it: it is [QuicheMemory] that keeps the buffer reachable.) (A read-after-free is less likely to
         // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
         // and the lifetime contract must hold symmetrically.)
         var inFlight: CompletableDeferred<StreamSendResult>? = null
@@ -2752,7 +2794,7 @@ class DriverStreamAdapter(
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
                     // buffered-yet-cancelled state that could skip the finally's join.
-                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred)).getOrThrow()
+                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, false, deferred)).getOrThrow()
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
                     inFlight = deferred
                     val sent = deferred.await()
@@ -2813,8 +2855,8 @@ class DriverStreamAdapter(
             // writableSignal was closed by cleanup() — the connection went away while we were parked.
             throw driver.connectionClosed()
         } finally {
-            // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
-            // return to the caller who will free `buffer`. The driver always completes the deferred
+            // Wait — non-cancellably — for any in-flight StreamSend to finish reading the borrowed
+            // memory before we return to the caller who will free `buffer`. The driver always completes the deferred
             // (execute() after connStreamSend, or failCommand() on teardown), so this never hangs.
             inFlight?.let { withContext(NonCancellable) { it.join() } }
         }
@@ -2823,7 +2865,7 @@ class DriverStreamAdapter(
     override suspend fun streamClose(streamId: QuicStreamId) {
         try {
             val deferred = CompletableDeferred<StreamSendResult>()
-            driver.commands.send(QuicheCmd.StreamSend(streamId.id, 0L, 0, true, deferred))
+            driver.commands.send(QuicheCmd.StreamSend(streamId.id, QuicheMemory.Empty, 0, true, deferred))
             deferred.await()
         } catch (_: ClosedSendChannelException) {
             // Connection already closed

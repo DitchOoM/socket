@@ -66,18 +66,25 @@ sealed interface QuicheCmd {
         val unidirectional: Boolean = false,
     ) : QuicheCmd
 
-    /** Read data from a QUIC stream. */
+    /**
+     * Read data from a QUIC stream into [buf]. quiche WRITES into that memory on the driver loop
+     * long after the reader that enqueued this command may have stopped naming its buffer, which is
+     * why [buf] carries the owner and not a bare address — see [QuicheMemory].
+     */
     class StreamRecv(
         val streamId: Long,
-        val addr: Long,
+        val buf: QuicheMemory,
         val bufLen: Int,
         val result: CompletableDeferred<StreamRecvResult>,
     ) : QuicheCmd
 
-    /** Write data to a QUIC stream. */
+    /**
+     * Write data to a QUIC stream from [buf]. [QuicheMemory.Empty] is the FIN-only send
+     * (`stream_send(len = 0, fin = true)`), which carries no payload at all.
+     */
     class StreamSend(
         val streamId: Long,
-        val addr: Long,
+        val buf: QuicheMemory,
         val bufLen: Int,
         val fin: Boolean,
         val result: CompletableDeferred<StreamSendResult>,
@@ -95,38 +102,40 @@ sealed interface QuicheCmd {
     ) : QuicheCmd
 
     /**
-     * Send one unreliable datagram (RFC 9221) from [addr]..[addr]+[bufLen]. [result] is the quiche
+     * Send one unreliable datagram (RFC 9221) from [buf]. [result] is the quiche
      * return: bytes written (== [bufLen]) on success, or a negative code ([QuicheDriver.QUICHE_ERR_DONE]
-     * when the send queue is full — backpressure). The caller owns the buffer; the driver only reads it.
+     * when the send queue is full — backpressure). The caller owns the buffer; the driver only reads
+     * it, and [buf] is what keeps that memory mapped until it has (see [QuicheMemory]).
+     * [QuicheMemory.Empty] is the zero-length datagram, which RFC 9221 allows.
      */
     class DgramSend(
-        val addr: Long,
+        val buf: QuicheMemory,
         val bufLen: Int,
         val result: CompletableDeferred<Int>,
     ) : QuicheCmd
 
     /**
-     * Receive one unreliable datagram into [addr]..[addr]+[bufLen]. Decoded into [StreamRecvResult]
+     * Receive one unreliable datagram into [buf]. Decoded into [StreamRecvResult]
      * (always `fin = false`): [StreamRecvResult.Data] with the datagram length, [StreamRecvResult.Done]
-     * when none is queued, or [StreamRecvResult.Error]. The driver writes into [addr]; the caller must
-     * keep that buffer alive until [result] completes (see the lifetime guard in receiveDatagram).
+     * when none is queued, or [StreamRecvResult.Error]. The driver writes into that memory, and [buf]
+     * is what keeps it mapped until it has (see [QuicheMemory]).
      */
     class DgramRecv(
-        val addr: Long,
+        val buf: QuicheMemory,
         val bufLen: Int,
         val result: CompletableDeferred<StreamRecvResult>,
     ) : QuicheCmd
 
     /**
-     * Read the peer's TLS leaf certificate DER into [addr]..[addr]+[bufLen] (`quiche_conn_peer_cert`),
-     * for `serverCertificateHashes` leaf-hash pinning. [result] is the DER length: copied into [addr]
+     * Read the peer's TLS leaf certificate DER into [buf] (`quiche_conn_peer_cert`), for
+     * `serverCertificateHashes` leaf-hash pinning. [result] is the DER length: copied into the buffer
      * when it fits ([result] <= [bufLen]); when larger, nothing is copied and the caller re-allocates
      * to [result] bytes and re-issues. 0 = peer presented no certificate. Routed through the driver so
-     * the read is serialized with all other quiche-conn access. The caller owns the buffer at [addr]
-     * and must keep it alive until [result] completes (mirrors the StreamRecv/DgramRecv lifetime rule).
+     * the read is serialized with all other quiche-conn access. [buf] carries the owner for the same
+     * reason StreamRecv/DgramRecv do (see [QuicheMemory]).
      */
     class PeerCert(
-        val addr: Long,
+        val buf: QuicheMemory,
         val bufLen: Int,
         val result: CompletableDeferred<Int>,
     ) : QuicheCmd

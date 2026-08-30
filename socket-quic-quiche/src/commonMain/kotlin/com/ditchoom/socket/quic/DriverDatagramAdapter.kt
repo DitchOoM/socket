@@ -13,7 +13,6 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -32,10 +31,11 @@ import kotlinx.coroutines.withContext
  * - **receive**: acquire from the driver's per-connection [QuicheDriver.recvBufPool] (the caller's
  *   `freeNativeMemory()` recycles the buffer back to that pool), let quiche write into it, transfer
  *   ownership to the caller on success and free it otherwise. A [NonCancellable] join on the in-flight
- *   command guarantees quiche has finished writing `addr` before the buffer can be released (the
+ *   command guarantees quiche has finished writing before the buffer can be released (the
  *   read-after-free guard from [DriverStreamAdapter]).
- * - **send**: the caller owns the buffer; the driver only reads its native address. The same in-flight
- *   join guarantees quiche finished reading before the caller frees/recycles it.
+ * - **send**: the caller owns the buffer; the driver only reads it. The same in-flight join guarantees
+ *   quiche finished reading before the caller frees/recycles it — and the [QuicheMemory] the command
+ *   carries is what keeps the buffer *reachable* meanwhile, which no join can do (#366).
  *
  * A QUIC datagram flow has one implicit peer (the connected refinement has no destination parameter)
  * and no per-datagram IP control plane, so [send] ignores its `options` argument, [capabilities]
@@ -102,29 +102,27 @@ internal class DriverDatagramAdapter(
         // address, so pass a null pointer in that case (the backends send NULL/len 0). Otherwise this is
         // a caller-fed buffer (#502): a heap payload is rejected by type before anything is enqueued —
         // see DriverStreamAdapter.streamWrite, the stream half of the same contract.
-        val addr =
+        val memory =
             if (remaining > 0) {
-                val native =
-                    payload.nativeMemoryAccess
-                        ?: throw QuicNativeMemoryRequiredException.forBuffer(
-                            QuicWriteTarget.Datagram,
-                            payload,
-                            QuicheDriver.capabilities,
-                        )
-                native.nativeAddress + payload.position()
+                payload.callerFedMemory()
+                    ?: throw QuicNativeMemoryRequiredException.forBuffer(
+                        QuicWriteTarget.Datagram,
+                        payload,
+                        QuicheDriver.capabilities,
+                    )
             } else {
-                0L
+                QuicheMemory.Empty
             }
 
         // See DriverStreamAdapter.streamWrite: keep the buffer alive until any in-flight send finishes
-        // reading `addr`, since the caller frees it the instant we return.
+        // reading `memory`, since the caller frees it the instant we return.
         var inFlight: CompletableDeferred<Int>? = null
         try {
             while (true) {
                 val deferred = CompletableDeferred<Int>()
                 // trySend, not send — see DriverStreamAdapter.streamRead: atomic enqueue-or-throw,
                 // no buffered-yet-cancelled state that could skip the finally's join on `inFlight`.
-                driver.commands.trySend(QuicheCmd.DgramSend(addr, remaining, deferred)).getOrThrow()
+                driver.commands.trySend(QuicheCmd.DgramSend(memory, remaining, deferred)).getOrThrow()
                 inFlight = deferred
                 val written = deferred.await()
                 inFlight = null
@@ -152,9 +150,10 @@ internal class DriverDatagramAdapter(
 
     override suspend fun receive(): DatagramReadResult {
         val buffer = driver.recvBufPool.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
-        val addr = buffer.driverOwnedNativeAddress()
+        // Address AND owner — see DriverStreamAdapter.streamRead and [QuicheMemory] (#366).
+        val memory = buffer.driverOwnedMemory()
 
-        // See DriverStreamAdapter.streamRead: the driver may still be writing into `addr` inside
+        // See DriverStreamAdapter.streamRead: the driver may still be writing into `memory` inside
         // connDgramRecv when we unwind, so wait (non-cancellably) for any in-flight recv before freeing.
         var inFlight: CompletableDeferred<StreamRecvResult>? = null
         var transferred = false
@@ -162,7 +161,7 @@ internal class DriverDatagramAdapter(
             while (true) {
                 val deferred = CompletableDeferred<StreamRecvResult>()
                 // trySend, not send — same atomic enqueue-or-throw as DgramSend above.
-                driver.commands.trySend(QuicheCmd.DgramRecv(addr, QuicheDriver.MAX_DATAGRAM_SIZE, deferred)).getOrThrow()
+                driver.commands.trySend(QuicheCmd.DgramRecv(memory, QuicheDriver.MAX_DATAGRAM_SIZE, deferred)).getOrThrow()
                 inFlight = deferred
                 val result = deferred.await()
                 inFlight = null
