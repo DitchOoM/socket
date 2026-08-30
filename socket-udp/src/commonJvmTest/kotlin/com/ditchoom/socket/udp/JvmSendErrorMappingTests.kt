@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.skip.recordSkip
@@ -37,14 +38,15 @@ import java.nio.channels.DatagramChannel as NioChannel
  *
  * These drive the production send loop ([writeAbsorbingBackpressure]) with a writer that throws exactly
  * what the JDK's natives throw. The types and `strerror` phrases are not invented: each is either
- * measured on JDK 21 / macOS 26 (`java SendProbe.java`, table in PR #457's description) or read off
- * jdk21u and AOSP libcore, with the producing line cited in [jvmSendErrorOf]'s KDoc. Every mapped case
- * here reported `Transport` before the fix.
+ * measured on JDK 21.0.9 / macOS 26.6.2 (the probe and its output are in PR #457's description) or read
+ * off jdk21u `jdk-21.0.9-ga` and AOSP libcore `android-14.0.0_r1`, with the producing line cited in
+ * [jvmSendErrorOf]'s KDoc. Every mapped case here reported `Transport` before the fix.
  *
- * Through a stub writer rather than a socket because the host decides whether a destination is
- * unroutable: on this Mac `240.0.0.1` drew `ENETUNREACH` on one run and was quietly forwarded to the
- * default gateway on the next, once a VPN's `utun` default route appeared. The conditions loopback
- * *can* produce on demand are exercised on a real channel in [JvmSendErrorRealSocketTests].
+ * Through a stub writer rather than a socket because the *host's route table*, not this library, decides
+ * whether a destination is unroutable: measured today, this Mac forwarded `240.0.0.1`, `192.0.2.1`,
+ * `2001:db8::1` and unscoped `fe80::1` up its default route and threw nothing at all, connected or not.
+ * The conditions a host can be made to produce on demand — including a genuinely unroutable one, a
+ * socket bound to the v6 loopback — are exercised on a real channel in [JvmSendErrorRealSocketTests].
  */
 class JvmSendErrorMappingTests {
     private val neverWaits: suspend (Duration) -> WriteReadiness = { error("a throwing write must not wait on readiness") }
@@ -76,8 +78,9 @@ class JvmSendErrorMappingTests {
 
     /**
      * `write0` path (a connected channel), `ENETUNREACH`: `IOUtil.c convertReturnVal` throws a **bare**
-     * `IOException` — measured as `java.io.IOException("Network is unreachable")` for a connected
-     * write to `240.0.0.1`. No type carries the condition on this path; only the phrase does.
+     * `IOException` whose only content is the `strerror` text. Linux renders this errno "Network is
+     * unreachable"; Darwin renders the same condition `EHOSTUNREACH` (next test). No type carries
+     * either on this path.
      */
     @Test
     fun bareIOExceptionNetworkIsUnreachable_reportsUnreachable() {
@@ -85,9 +88,12 @@ class JvmSendErrorMappingTests {
     }
 
     /**
-     * `write0` path, `EHOSTUNREACH`: measured as `java.io.IOException("No route to host")` for a
-     * connected write from `::1` to `2001:db8::1`. The same errno that is `NoRouteToHostException` on
-     * the unconnected path has no dedicated type here.
+     * `write0` path, `EHOSTUNREACH`: **measured** as `java.io.IOException("No route to host")` for a
+     * connected write from a socket bound to `::1` to `2001:db8::1`. The same errno is
+     * `NoRouteToHostException` on the unconnected path and has no dedicated type here — which is why
+     * #457's "types only, no string matching" shape could not reach the connected case, and the
+     * connected case is the one a QUIC connection is in. [JvmSendErrorRealSocketTests] drives the real
+     * socket that produces it.
      */
     @Test
     fun bareIOExceptionNoRouteToHost_reportsUnreachable() {
@@ -150,15 +156,19 @@ class JvmSendErrorMappingTests {
     }
 
     /**
-     * `EACCES`: measured as `BindException("Permission denied")` on the unconnected path — `Net.c`
-     * files `EACCES` under `BindException` even for a send — and a bare `IOException` on the connected
-     * one, both for a broadcast destination without `SO_BROADCAST`.
+     * `EACCES`: measured as `BindException("Permission denied")` on the unconnected path — the JDK's
+     * `Net.c` files `EACCES` under `BindException` even for a send — and a bare `IOException` on the
+     * connected one, both for a `255.255.255.255` destination without `SO_BROADCAST`. **Android differs**:
+     * libcore's `handleSocketErrorWithDefault` has no `EACCES` case, so the same condition arrives as a
+     * plain `SocketException`. All three are one member.
      */
     @Test
-    fun permissionDenied_reportsNotPermitted() {
+    fun permissionDenied_reportsNotPermitted_onAllThreeCarriers() {
         val error = assertIs<DatagramSendError.NotPermitted>(report(BindException("Permission denied")))
         assertEquals(ERRNO_NOT_SURFACED, error.errno)
         assertIs<DatagramSendError.NotPermitted>(report(IOException("Permission denied")))
+        // Android: libcore Net.c:823-853 has no EACCES arm, so it falls to the SocketException default.
+        assertIs<DatagramSendError.NotPermitted>(report(SocketException("Permission denied")))
     }
 
     // --- what stays Transport, and why -----------------------------------------------------------
@@ -263,18 +273,55 @@ class JvmSendErrorRealSocketTests {
         }
 
     /**
-     * Opportunistic: the first destination this host refuses to route reports [DatagramSendError.Unreachable].
-     * Three rungs, because which one a host refuses depends on its route table (Darwin forwards an
-     * unconnected `sendto` to a reserved address up the default route and refuses the connected
-     * `send`; Linux refuses the `connect()` itself, which is not a send). A host that refuses none of
-     * them records a loud skip — the mapping is pinned regardless by [JvmSendErrorMappingTests].
+     * A socket bound to the **v6 loopback** has no route to a global v6 address, and no default route
+     * can supply one: `::1` is not a source address any off-link path will accept. That makes the
+     * unreachable case reproducible on a desk, which reserved and TEST-NET destinations are not —
+     * measured today, this Mac quietly forwarded `240.0.0.1`, `192.0.2.1`, `2001:db8::1` (from `::`)
+     * and unscoped `fe80::1` up its default route and threw nothing.
+     *
+     * Both native paths are driven, because they fail differently and only one of them has a type:
+     * `send0` raises `NoRouteToHostException`, `write0` raises a bare `IOException("No route to host")`.
+     * The connected one is the path that matters — a QUIC connection is a connected socket — and it is
+     * the one a types-only mapping cannot classify.
+     *
+     * Later rungs are kept as fallbacks for a host whose v6 loopback is absent or whose kernel refuses
+     * at `connect()`/`bind()` instead of at send time. A host that refuses none of them records a loud
+     * skip; the mapping itself stays pinned by [JvmSendErrorMappingTests].
      */
     @Test
-    fun unroutableDestination_reportsUnreachable_whereTheHostRefusesIt() =
+    fun unroutableDestination_reportsUnreachable_onBothNativePaths() =
         runBlocking(Dispatchers.IO) {
             withTimeout(30_000) {
                 val rungs =
                     listOf<Pair<String, suspend () -> Unit>>(
+                        "send0: bound ::1, addressed send to 2001:db8::1" to {
+                            val s =
+                                v6LoopbackChannel { nio ->
+                                    AddressedNioDatagramChannel(nio, InternedJvmSocketAddress(nio.localAddress as InetSocketAddress))
+                                }
+                            try {
+                                s.send(payload(), to = UdpSocket.resolve("2001:db8::1", 9))
+                            } finally {
+                                s.close()
+                            }
+                        },
+                        "write0: bound ::1, connected write to 2001:db8::1" to {
+                            val peer = UdpSocket.resolve("2001:db8::1", 9)
+                            val s =
+                                v6LoopbackChannel { nio ->
+                                    nio.connect(InetSocketAddress("2001:db8::1", 9))
+                                    ConnectedNioDatagramChannel(
+                                        nio,
+                                        peer,
+                                        LocalAddress.of(InternedJvmSocketAddress(nio.localAddress as InetSocketAddress)),
+                                    )
+                                }
+                            try {
+                                s.send(payload())
+                            } finally {
+                                s.close()
+                            }
+                        },
                         "connected write to 240.0.0.1" to {
                             val s = UdpSocket.connect("240.0.0.1", 9)
                             try {
@@ -291,19 +338,9 @@ class JvmSendErrorRealSocketTests {
                                 s.close()
                             }
                         },
-                        "addressed send to 2001:db8::1 from a v6 socket" to {
-                            val nio = NioChannel.open(StandardProtocolFamily.INET6)
-                            nio.configureBlocking(false)
-                            nio.bind(InetSocketAddress("::", 0))
-                            val s = AddressedNioDatagramChannel(nio, InternedJvmSocketAddress(nio.localAddress as InetSocketAddress))
-                            try {
-                                s.send(payload(), to = UdpSocket.resolve("2001:db8::1", 9))
-                            } finally {
-                                s.close()
-                            }
-                        },
                     )
                 val outcomes = mutableListOf<String>()
+                var reached = 0
                 for ((name, rung) in rungs) {
                     try {
                         rung()
@@ -313,12 +350,15 @@ class JvmSendErrorRealSocketTests {
                             e.error,
                             "$name: the host refused the route, and that must reach a consumer as Unreachable",
                         )
-                        return@withTimeout
+                        // Both v6-loopback rungs are driven so the two native paths are each proven; the
+                        // 240.0.0.1 fallbacks only have to work if neither of them could run.
+                        if (++reached == 2) return@withTimeout
                     } catch (e: IOException) {
                         // connect()/bind() refused before any send happened — not this library's send path.
                         outcomes += "$name: ${e::class.simpleName}(${e.message}) before the send"
                     }
                 }
+                if (reached > 0) return@withTimeout
                 recordSkip(
                     JvmSendErrorRealSocketTests::class,
                     SkipReason.HostBehaviourDiffers("no rung was refused at send time on this host: $outcomes"),
@@ -326,4 +366,21 @@ class JvmSendErrorRealSocketTests {
                 )
             }
         }
+
+    /**
+     * A non-blocking v6 channel bound to `::1` — a source address with no route off the host — handed
+     * to [wrap], which owns it from then on. A throw anywhere before [wrap] returns closes the raw
+     * channel rather than leaking the descriptor into the rest of the suite.
+     */
+    private fun <T> v6LoopbackChannel(wrap: (NioChannel) -> T): T {
+        val nio = NioChannel.open(StandardProtocolFamily.INET6)
+        return try {
+            nio.configureBlocking(false)
+            nio.bind(InetSocketAddress("::1", 0))
+            wrap(nio)
+        } catch (t: Throwable) {
+            nio.close()
+            throw t
+        }
+    }
 }

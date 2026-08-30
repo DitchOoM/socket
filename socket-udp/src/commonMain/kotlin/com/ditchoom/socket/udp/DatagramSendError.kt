@@ -29,20 +29,36 @@ package com.ditchoom.socket.udp
  * ## Where each member is constructed
  *
  * A member a consumer can branch on is only worth branching on if every backend constructs it for
- * the same condition. This is the table; a backend that cannot produce a member says so here rather
- * than leaving a consumer to discover it on one platform (#457 was exactly that: `Unreachable` was
- * unconstructible on JVM/Android, so a migration trigger wired to it could never fire there).
+ * the same condition. A backend that *cannot* produce a member says so here rather than leaving a
+ * consumer to discover it on one platform (#457 was exactly that: [Unreachable] was unconstructible
+ * on JVM/Android, so a migration trigger wired to it could never fire there).
  *
- * | Member | K/N POSIX (`sendErrnoToError`) | Apple NW, POSIX domain | JVM / Android NIO (`jvmSendErrorOf`) | Node (`nodeSendError`) |
- * |---|---|---|---|---|
- * | [TooLarge] | parity guard; `EMSGSIZE` | parity guard; `EMSGSIZE` | parity guard; `"Message too long"` | parity guard; `EMSGSIZE` |
- * | [Unreachable] | `EHOSTUNREACH` `ENETUNREACH` `ENETDOWN` `EHOSTDOWN` `EAFNOSUPPORT` | same | `NoRouteToHostException`; the same five errnos' `strerror` text | same five names |
- * | [PortUnreachable] | `ECONNREFUSED` | `ECONNREFUSED` | `PortUnreachableException` | `ECONNREFUSED` |
- * | [NotPermitted] | `EACCES` | `EACCES` | `"Permission denied"` | `EACCES` |
- * | [WouldBlock] | `EAGAIN` `EWOULDBLOCK` `ENOBUFS` | same | send budget exhausted; `"No buffer space available"` | `EAGAIN` `ENOBUFS` |
- * | [OsError] | every other errno | every other errno | **never** — NIO surfaces no errno; [Transport] is its raw member | **never** |
- * | [PlatformError] | never | non-POSIX domains (dns, tls) | never | never |
- * | [Transport] | never | never | every other `IOException`, kept as the cause | every other error, kept as the cause |
+ * Five backends send, and three of them share one classifier:
+ *
+ * - **Linux io_uring** — `IoUringDatagramChannel`, through `sendErrnoToError(-res)`.
+ * - **Apple POSIX** — `PosixUdpDatagramChannel`, through `sendErrnoToError(errno)`.
+ * - **Apple Network.framework** — `NwUdpDatagramChannel`: the POSIX error domain through
+ *   `sendErrnoToError`, every other domain as [PlatformError].
+ * - **JVM / Android NIO** — `NioDatagramChannel`, through `jvmSendErrorOf`, which has no errno to read
+ *   and works from the JDK's exception type and its `strerror` message instead.
+ * - **Node** — `NodeDatagramChannel`, through `nodeSendError`, which reads the errno's *name*.
+ *
+ * What each member means on each of them:
+ *
+ * - [TooLarge] — the oversize parity guard on all five, and additionally `EMSGSIZE` (POSIX, Node) or
+ *   `"Message too long"` (JVM/Android) when the interface MTU refuses a datagram the guard allowed.
+ * - [Unreachable] — `EHOSTUNREACH`, `ENETUNREACH`, `ENETDOWN`, `EHOSTDOWN`, `EAFNOSUPPORT`; the same
+ *   five errno *names* on Node; on JVM/Android `NoRouteToHostException` plus those five errnos'
+ *   `strerror` text, which is all the JDK leaves of them.
+ * - [PortUnreachable] — `ECONNREFUSED` everywhere; `PortUnreachableException` on JVM/Android.
+ * - [NotPermitted] — `EACCES`; `"Permission denied"` on JVM/Android.
+ * - [WouldBlock] — `EAGAIN`, `EWOULDBLOCK`, `ENOBUFS`; on JVM/Android the send budget running out, and
+ *   `"No buffer space available"`.
+ * - [OsError] — every other errno on the three POSIX backends. **Never on JVM/Android or Node**: NIO
+ *   and Node never surface an errno, so [Transport] is their raw member instead.
+ * - [PlatformError] — Apple Network.framework's non-POSIX domains (dns, tls) only. Never elsewhere.
+ * - [Transport] — every unclassified `IOException` (JVM/Android) or `Error` (Node), kept as the cause.
+ *   **Never on the three POSIX backends**, which always have an errno and report [OsError].
  */
 sealed interface DatagramSendError {
     /** The payload exceeded what this socket can transmit in one datagram (`EMSGSIZE`). */
@@ -134,10 +150,18 @@ sealed interface DatagramSendError {
 }
 
 /**
- * The `errno` a backend reports when its runtime never surfaced one (JVM/Android NIO, Node). Zero is
- * not an errno on any platform — POSIX errno values start at 1 — so it cannot be mistaken for a code.
+ * The value [DatagramSendError.Unreachable.errno] and [DatagramSendError.NotPermitted.errno] carry on
+ * a backend whose runtime never surfaced an errno — JVM/Android NIO, which reduces it to an exception
+ * type or a `strerror` message before this library sees it, and Node, which reports a name.
+ *
+ * Zero is not an errno on any platform this library runs on — POSIX numbers them from 1 — so it cannot
+ * be mistaken for a real code. It is public because it is observable: a consumer reading `errno` off a
+ * member needs to be able to tell "the platform said `EHOSTUNREACH`" from "the platform did not say".
+ *
+ * The member is the contract, and it is the same on every backend. The number is a diagnostic for the
+ * three backends that have one, and is never the thing to branch on.
  */
-internal const val ERRNO_NOT_SURFACED = 0
+const val ERRNO_NOT_SURFACED = 0
 
 private fun errnoSuffix(errno: Int): String = if (errno == ERRNO_NOT_SURFACED) "" else " (errno=$errno)"
 
