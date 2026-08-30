@@ -1,3 +1,5 @@
+@file:OptIn(InternalQuicApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -73,9 +75,12 @@ class MigrationPathSourceAddressTests {
      * [UdpSocketChannelFactory.routeSourceAddress] learns the source address by opening a probe with an
      * *unnamed* bind — the one configuration this whole fix exists to avoid. Pointed at the peer's own
      * port, that probe draws from the very 4-tuple space the open paths hold, so its failure rate rises
-     * with the number of paths open; and because the probe swallows failure to `null`, one lost draw
-     * silently hands the real connect the unnamed bind. That is a fix that dissolves exactly when the
+     * with the number of paths open; and because the probe swallowed failure to `null`, one lost draw
+     * silently handed the real connect the unnamed bind. That is a fix that dissolves exactly when the
      * migration it protects gets hard.
+     *
+     * A lost draw is now [RouteSource.Unresolved] and `openPath` refuses it outright (#523), so this
+     * still measures the draw itself — the whole point being that it never has to be refused.
      *
      * This measures the probe alone, so it does not depend on the two-in-a-row coincidence the
      * end-to-end test needs. Measured on macOS with [PATHS] paths held, per [PROBE_DRAWS] probes:
@@ -96,13 +101,19 @@ class MigrationPathSourceAddressTests {
             try {
                 repeat(PATHS) { opened += factory.openPath(null, 0) }
 
-                var unresolved = 0
-                repeat(PROBE_DRAWS) { if (factory.routeSourceAddress() == null) unresolved++ }
+                val unresolved = ArrayList<RouteProbeFailure>()
+                repeat(PROBE_DRAWS) {
+                    when (val source = factory.routeSourceAddress()) {
+                        is RouteSource.Unresolved -> unresolved += source.reason
+                        is RouteSource.Resolved, RouteSource.PlatformAssigned -> Unit
+                    }
+                }
                 assertEquals(
                     0,
-                    unresolved,
-                    "the route probe lost $unresolved of $PROBE_DRAWS draws to the $PATHS paths it " +
-                        "was resolving a source address for",
+                    unresolved.size,
+                    "the route probe lost ${unresolved.size} of $PROBE_DRAWS draws to the $PATHS paths " +
+                        "it was resolving a source address for: " +
+                        unresolved.map { it.describe() }.distinct(),
                 )
             } finally {
                 for (path in opened) {
