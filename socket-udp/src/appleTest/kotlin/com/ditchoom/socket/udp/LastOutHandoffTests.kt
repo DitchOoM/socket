@@ -14,30 +14,40 @@ import kotlin.test.assertTrue
 /**
  * The [LastOutHandoff] state machine, transition by transition, and its one invariant under
  * contention: however users and the closer interleave, exactly one party is told it is last out.
+ *
+ * The closer is one of those parties (#507): it is counted in by [LastOutHandoff.close] and leaves
+ * through [LastOutHandoff.exit] like a user, because it still has to reach the resource — the channel's
+ * wake pipe — before anyone may release it.
  */
 class LastOutHandoffTests {
     @Test
-    fun closeWithNobodyInside_isTheClosersToDo_andASecondCloseIsNot() {
+    fun closeWithNobodyInside_countsTheCloserIn_andItsOwnExitIsLastOut() {
         val handoff = LastOutHandoff()
         assertFalse(handoff.closed)
-        assertEquals(LastOutHandoff.Closing.LastOut, handoff.close())
+        assertEquals(LastOutHandoff.Closing.Admitted, handoff.close())
         assertTrue(handoff.closed)
         assertEquals(LastOutHandoff.Closing.AlreadyClosed, handoff.close())
+        assertEquals(LastOutHandoff.Departure.LastOut, handoff.exit())
     }
 
     @Test
-    fun closeWithAUserInside_handsOff_andThatUserIsLastOut() {
+    fun closeWithAUserInside_isNotLastOutUntilBothPartiesHaveLeft() {
         val handoff = LastOutHandoff()
         assertEquals(LastOutHandoff.Admission.Admitted, handoff.enter())
-        assertEquals(LastOutHandoff.Closing.HandedOff, handoff.close())
+        assertEquals(LastOutHandoff.Closing.Admitted, handoff.close())
         assertTrue(handoff.closed, "closed is visible while the user is still inside")
+        // Whichever of the two leaves first must NOT release. If that is the user, the closer may still
+        // be writing the wake byte to a pipe the release would close; if it is the closer, the user may
+        // still be inside a syscall on the socket the release would close.
+        assertEquals(LastOutHandoff.Departure.NotLast, handoff.exit())
         assertEquals(LastOutHandoff.Departure.LastOut, handoff.exit())
     }
 
     @Test
     fun enterAfterClose_isRefused_andOwesNoExit() {
         val handoff = LastOutHandoff()
-        assertEquals(LastOutHandoff.Closing.LastOut, handoff.close())
+        assertEquals(LastOutHandoff.Closing.Admitted, handoff.close())
+        assertEquals(LastOutHandoff.Departure.LastOut, handoff.exit())
         assertEquals(LastOutHandoff.Admission.Refused, handoff.enter())
         // Refused did not count anyone in, so the word is still closed-and-empty: an exit here would
         // be the programming error below, not a second LastOut.
@@ -45,19 +55,21 @@ class LastOutHandoffTests {
     }
 
     @Test
-    fun exitBeforeClose_isNotLast_andTheLaterCloseIsLastOut() {
+    fun exitBeforeClose_isNotLast_andTheLaterCloserIsLastOut() {
         val handoff = LastOutHandoff()
         assertEquals(LastOutHandoff.Admission.Admitted, handoff.enter())
         assertEquals(LastOutHandoff.Departure.NotLast, handoff.exit())
-        assertEquals(LastOutHandoff.Closing.LastOut, handoff.close())
+        assertEquals(LastOutHandoff.Closing.Admitted, handoff.close())
+        assertEquals(LastOutHandoff.Departure.LastOut, handoff.exit())
     }
 
     @Test
-    fun withTwoUsersInside_onlyTheSecondToLeaveIsLastOut() {
+    fun withTwoUsersInside_onlyTheLastOfTheThreePartiesIsLastOut() {
         val handoff = LastOutHandoff()
         assertEquals(LastOutHandoff.Admission.Admitted, handoff.enter())
         assertEquals(LastOutHandoff.Admission.Admitted, handoff.enter())
-        assertEquals(LastOutHandoff.Closing.HandedOff, handoff.close())
+        assertEquals(LastOutHandoff.Closing.Admitted, handoff.close())
+        assertEquals(LastOutHandoff.Departure.NotLast, handoff.exit())
         assertEquals(LastOutHandoff.Departure.NotLast, handoff.exit())
         assertEquals(LastOutHandoff.Departure.LastOut, handoff.exit())
     }
@@ -96,9 +108,12 @@ class LastOutHandoffTests {
                 val closer =
                     async(Dispatchers.Default) {
                         when (handoff.close()) {
-                            LastOutHandoff.Closing.LastOut -> lastOuts.incrementAndGet()
-                            LastOutHandoff.Closing.HandedOff -> Unit
+                            LastOutHandoff.Closing.Admitted -> Unit
                             LastOutHandoff.Closing.AlreadyClosed -> error("only one closer in this round")
+                        }
+                        when (handoff.exit()) {
+                            LastOutHandoff.Departure.NotLast -> Unit
+                            LastOutHandoff.Departure.LastOut -> lastOuts.incrementAndGet()
                         }
                     }
                 closer.await()
