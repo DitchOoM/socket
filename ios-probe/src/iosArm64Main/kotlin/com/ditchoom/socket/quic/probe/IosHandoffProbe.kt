@@ -5,13 +5,15 @@ package com.ditchoom.socket.quic.probe
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationResult
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
+import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -195,15 +197,24 @@ object IosHandoffProbe {
                         val sentAt = NSDate().timeIntervalSince1970
                         val payload = "probe-$seq;"
                         try {
+                            // Write takes no ownership, so this buffer is ours to free; read transfers
+                            // it, so the scoped form frees that one for us (#538). The Android sibling
+                            // of this loop did neither and died at VmSize 20.8 GB, 2 h 36 m into a
+                            // 5-hour walk — a K/N buffer is explicitly freed with no collector behind
+                            // it at all, so this probe had even less to fall back on.
                             val out = BufferFactory.Default.allocate(payload.length)
-                            out.writeString(payload, Charset.UTF8)
-                            out.resetForRead()
-                            stream.write(out, 5.seconds)
+                            try {
+                                out.writeString(payload, Charset.UTF8)
+                                out.resetForRead()
+                                stream.write(out, 5.seconds)
+                            } finally {
+                                out.freeIfNeeded()
+                            }
                             sentAll.append(payload)
-                            val resp = stream.read(readTimeoutMs.milliseconds)
+                            val resp = stream.read(readTimeoutMs.milliseconds) { it.readString(it.remaining(), Charset.UTF8) }
                             val rtt = ((NSDate().timeIntervalSince1970 - sentAt) * 1000).toLong()
-                            if (resp is ReadResult.Data) {
-                                val echoed = resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8)
+                            if (resp is ScopedRead.Data) {
+                                val echoed = resp.value
                                 recvAll.append(echoed)
                                 val intact = sentAll.startsWith(recvAll)
                                 val pending = sentAll.length - recvAll.length

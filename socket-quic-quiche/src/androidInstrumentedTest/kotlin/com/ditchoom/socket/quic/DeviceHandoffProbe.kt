@@ -11,7 +11,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -208,15 +208,27 @@ class DeviceHandoffProbe {
                             // Delimited so payload boundaries stay visible in a coalesced read.
                             val payload = "probe-$seq;"
                             try {
+                                // Write takes no ownership, so this one IS ours to free — and on a
+                                // multi-hour walk a 10-byte-per-round leak is still a leak.
                                 val out = BufferFactory.Default.allocate(payload.length)
-                                out.writeString(payload, Charset.UTF8)
-                                out.resetForRead()
-                                stream.write(out, 5.seconds)
+                                try {
+                                    out.writeString(payload, Charset.UTF8)
+                                    out.resetForRead()
+                                    stream.write(out, 5.seconds)
+                                } finally {
+                                    out.freeIfNeeded()
+                                }
                                 sentAll.append(payload)
-                                val resp = stream.read(readTimeoutMs.milliseconds)
+                                // Scoped read (#538): the echoed bytes are decoded inside the block and
+                                // the buffer is released on the way out. This loop used to take the
+                                // transferring read and drop the buffer — 45 382 times, on the walk that
+                                // filed the issue, until the process died at VmSize 20.8 GB with a
+                                // std::bad_alloc raised inside the unwinder. Nothing about the probe's
+                                // own logic was wrong; it did exactly what the KDoc of the day permitted.
+                                val resp = stream.read(readTimeoutMs.milliseconds) { it.readString(it.remaining(), Charset.UTF8) }
                                 val rtt = System.currentTimeMillis() - sentAt
-                                if (resp is ReadResult.Data) {
-                                    val echoed = resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8)
+                                if (resp is ScopedRead.Data) {
+                                    val echoed = resp.value
                                     recvAll.append(echoed)
                                     val intact = sentAll.startsWith(recvAll)
                                     val pending = sentAll.length - recvAll.length

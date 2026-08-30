@@ -37,17 +37,30 @@ interface QuicheStreamAdapter {
      * release point here by design. The caller must release it when fully
      * consumed via `buffer.freeIfNeeded()` (equivalently
      * `PlatformBuffer.freeNativeMemory()`), which is polymorphic on the
-     * concrete buffer: a no-op for heap buffers (the default
-     * [BufferFactory.Default], reclaimed by GC), an actual free for off-heap
-     * `deterministic()` buffers, and a pool-return for pooled factories.
+     * concrete buffer: a pool-return for pooled factories (which is what every
+     * production construction site passes — [QuicheDriver.streamReadPool]), and
+     * an actual free for off-heap `deterministic()` buffers.
      *
-     * This is what makes a caller-supplied pooled or `deterministic()`
-     * [bufferFactory] safe: the codec/mux path already honors it — a
-     * `CodecConnection` hands the buffer to its `StreamProcessor`, which takes
+     * **Skipping the release is never harmless, on any factory** (#538). Under
+     * the default [BufferFactory.Default] the native allocation behind the
+     * buffer is owned by the *collector* — an `Arena.ofAuto()` segment on
+     * JDK 21+, a `Cleaner`-backed direct `ByteBuffer` on JDK 17 / Android — and
+     * the collector schedules itself on *managed-heap* pressure, which a
+     * pointer-sized wrapper in front of a 64 KB native allocation does not
+     * produce. And because production always reads through a pool, a buffer
+     * that is never released is a pool slot that is never returned, so every
+     * later read misses the pool and allocates fresh. That compounds without
+     * bound: a device walk that read and dropped reached 20.8 GB of address
+     * space in 2 h 36 m and died of `std::bad_alloc`.
+     *
+     * Callers that do not keep the bytes should not be releasing anything by
+     * hand — use the scoped `read(deadline) { … }` (`ScopedRead`, in
+     * `:socket-quic`), which releases on every exit path including exception
+     * and cancellation. The codec/mux path already honors ownership without it:
+     * a `CodecConnection` hands the buffer to its `StreamProcessor`, which takes
      * ownership and frees each chunk on consume and on `release()` — so
-     * injecting such a factory via `TransportConfig.bufferFactory` through
-     * `withQuicMux` leaks nothing. Only a consumer of the *raw* [read] API who
-     * ignores the returned buffer's ownership leaks under a non-GC factory.
+     * injecting a pooled or `deterministic()` factory via
+     * `TransportConfig.bufferFactory` through `withQuicMux` leaks nothing.
      */
     suspend fun streamRead(
         streamId: QuicStreamId,
@@ -120,14 +133,26 @@ class QuicheStreamByteStream(
     override val isOpen: Boolean get() = !closed
 
     /**
-     * Read the next chunk from the stream.
+     * Read the next chunk from the stream, **transferring the buffer to the
+     * caller**.
      *
-     * On [ReadResult.Data] the returned buffer is **caller-owned** — release it
-     * via `buffer.freeIfNeeded()` once consumed. Harmless to skip under the
-     * default heap [BufferFactory.Default] (GC reclaims), but required to avoid
-     * a native leak under a `deterministic()` or pooled factory. See
-     * [QuicheStreamAdapter.streamRead] for the full ownership contract; the
-     * codec/mux path (`CodecConnection` → `StreamProcessor`) already honors it.
+     * On [ReadResult.Data] the returned buffer is caller-owned and the caller
+     * must release it via `buffer.freeIfNeeded()` once consumed. Skipping that
+     * leaks native memory on every platform and every factory — including the
+     * default [BufferFactory.Default], whose native allocation is owned by the
+     * collector and whose collector will not run on native pressure, and
+     * especially under the pool this stream is always constructed with, where
+     * an unreleased buffer permanently costs a pool slot. See
+     * [QuicheStreamAdapter.streamRead] for the full contract and #538 for what
+     * it cost to believe otherwise.
+     *
+     * **Prefer the scoped `read(deadline) { … }`** (`ScopedRead`, in
+     * `:socket-quic`) unless the bytes genuinely have to outlive the call: it
+     * releases on every exit path, including exception and cancellation, so the
+     * release is not the caller's to remember. This overload stays for the
+     * callers who really do keep the buffer — the codec/mux path
+     * (`CodecConnection` → `StreamProcessor`) is the production example, and it
+     * frees each chunk on consume and on `release()`.
      */
     override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicheStreamByteStream($streamId) is closed" }

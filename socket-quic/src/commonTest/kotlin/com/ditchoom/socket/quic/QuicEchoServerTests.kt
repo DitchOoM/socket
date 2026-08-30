@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
@@ -121,13 +122,13 @@ class QuicEchoServerTests {
                 buf.resetForRead()
                 stream.write(buf, 5.seconds)
 
-                val serverResult = peerStreams[i].read(5.seconds)
-                assertIs<ReadResult.Data>(serverResult)
-                peerStreams[i].write(serverResult.buffer, 5.seconds)
+                // Scoped on both halves (#538) — the other tests in this file free by hand and this
+                // one did not, which is exactly the asymmetry the scoped form removes.
+                val serverResult = peerStreams[i].read(5.seconds) { peerStreams[i].write(it, 5.seconds) }
+                assertIs<ScopedRead.Data<BytesWritten>>(serverResult)
 
-                val clientResult = stream.read(5.seconds)
-                assertIs<ReadResult.Data>(clientResult)
-                assertBufferEquals(msg, clientResult.buffer, factory)
+                val clientResult = stream.read(5.seconds) { assertBufferEquals(msg, it, factory) }
+                assertIs<ScopedRead.Data<Unit>>(clientResult)
             }
 
             streams.forEach { it.close() }

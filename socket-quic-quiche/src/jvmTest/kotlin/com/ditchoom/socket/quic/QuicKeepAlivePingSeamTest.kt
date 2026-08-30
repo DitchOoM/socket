@@ -77,8 +77,7 @@ class QuicKeepAlivePingSeamTest {
         connections {
             val stream = acceptStream()
             while (true) {
-                val data = stream.read(9.seconds)
-                if (data is ReadResult.Data) stream.write(data.buffer, 5.seconds) else break
+                if (stream.read(9.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
             }
             stream.close()
         }

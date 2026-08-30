@@ -474,9 +474,21 @@ class QuicheDriver(
      * documents ("a pool-return for pooled factories").
      *
      * Without this, each stream read allocated a fresh [STREAM_READ_BUFFER_SIZE] buffer from the
-     * leaf factory. Under the default GC-reclaimed factory those accumulate to the JVM's direct
-     * memory cap under high read throughput — the same failure `ReadBufferSource` fixes for the
-     * TCP read path — and under a `deterministic()` factory they churn malloc/free per read.
+     * leaf factory. Under the default collector-owned factory those accumulate under high read
+     * throughput — the same failure `ReadBufferSource` fixes for the TCP read path — and under a
+     * `deterministic()` factory they churn malloc/free per read.
+     *
+     * The pool is a recycling optimisation, **not** a leak guard, and the direction of the coupling is
+     * worth stating because #538 got it backwards: a consumer that never releases what `streamRead`
+     * handed it is *worse* off with the pool than without, because the slot never returns and every
+     * later read misses. Nothing downstream saves such a consumer either. The production leaf is
+     * `BufferFactory.network()` = `deterministic()`, whose memory is released by an explicit
+     * `freeNativeMemory()` and by nothing else — an `Arena.ofShared()` on JDK 21+ — so an unreleased
+     * buffer stays mapped for the life of the process, no collector involved. Even the collector-owned
+     * `BufferFactory.Default` only substitutes one unbounded growth for another: the collector
+     * schedules itself on managed-heap pressure, which a pointer-sized wrapper in front of 64 KB does
+     * not produce. The scoped `read(deadline) { … }` (`ScopedRead`, in `:socket-quic`) is what makes the
+     * release automatic.
      *
      * MultiThreaded mode: stream readers acquire on their own coroutines; consumers release on
      * theirs. maxPoolSize=16 → ≤1 MB cached (16 × 64 KB) per connection at steady state; misses

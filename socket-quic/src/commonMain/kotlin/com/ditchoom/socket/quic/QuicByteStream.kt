@@ -55,6 +55,26 @@ class QuicByteStream(
 
     override val writePolicy: WritePolicy get() = delegate.writePolicy
 
+    /**
+     * Read the next chunk, **transferring the buffer to the caller**: on [ReadResult.Data] the caller
+     * owns `buffer` and must release it with `buffer.freeIfNeeded()` once it is done with the bytes.
+     *
+     * There is no factory under which forgetting that is safe (#538). The QUIC read path always draws
+     * from a per-connection pool, so an unreleased buffer is a pool slot that never comes back and
+     * every later read allocates fresh; and under the default [com.ditchoom.buffer.BufferFactory.Default]
+     * the native allocation behind the buffer is owned by the collector, which schedules itself on
+     * managed-heap pressure and therefore does not run for a pointer-sized wrapper in front of 64 KB of
+     * native memory. The two compound: a device walk that read and dropped reached 20.8 GB of address
+     * space in 2 h 36 m before it was killed by a native allocation failure.
+     *
+     * **Use the scoped [read] (`read(deadline) { … }`, returning [ScopedRead]) unless the bytes have to
+     * outlive the call** — it releases on every exit path, exception and cancellation included. This
+     * overload is for the callers that genuinely keep the buffer, and it is the one the codec/mux path
+     * uses: `CodecConnection` hands each chunk to its `StreamProcessor`, which takes ownership.
+     *
+     * Note the asymmetry with [write], which is zero-copy and takes **no** ownership: the caller still
+     * owns the buffer it wrote and still frees it. Read transfers, write does not.
+     */
     override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicByteStream($streamId) is closed" }
         return delegate.read(deadline)

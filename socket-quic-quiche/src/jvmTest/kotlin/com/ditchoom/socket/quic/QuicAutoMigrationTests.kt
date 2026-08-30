@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -58,11 +57,16 @@ class QuicAutoMigrationTests {
         val acc = ByteArray(expected.size)
         var got = 0
         while (got < expected.size) {
-            val resp = read(5.seconds)
-            if (resp !is ReadResult.Data) return "no_data"
-            val take = minOf(resp.buffer.remaining(), expected.size - got)
-            for (j in 0 until take) acc[got + j] = resp.buffer.readByte()
-            got += take
+            // Scoped read (#538): the bytes are copied out inside the block, so the buffer goes back
+            // to the driver's pool on the way out instead of waiting for a collector that never runs.
+            val resp =
+                read(5.seconds) { chunk ->
+                    val take = minOf(chunk.remaining(), expected.size - got)
+                    for (j in 0 until take) acc[got + j] = chunk.readByte()
+                    take
+                }
+            if (resp !is ScopedRead.Data) return "no_data"
+            got += resp.value
         }
         return acc.decodeToString()
     }
@@ -94,12 +98,9 @@ class QuicAutoMigrationTests {
                                 connections {
                                     val stream = acceptStream()
                                     while (true) {
-                                        val data = stream.read(8.seconds)
-                                        if (data is ReadResult.Data) {
-                                            stream.write(data.buffer, 5.seconds)
-                                        } else {
-                                            break
-                                        }
+                                        // Echo inside the read scope: write is zero-copy and takes no
+                                        // ownership, the scope releases the read buffer on exit (#538).
+                                        if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
                                     }
                                     stream.close()
                                 }

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -147,6 +148,9 @@ class StreamResetReadTests {
                 val first = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Data>(first, "buffered bytes must be delivered before any terminal verdict")
                 assertEquals(4, first.buffer.remaining())
+                // streamRead transfers the buffer; below the ByteStream layer the scoped read cannot
+                // reach, so the release is explicit here (#538).
+                first.buffer.freeIfNeeded()
                 val second = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Reset>(second, "the reset must follow the data it arrived behind")
             } finally {
@@ -179,6 +183,7 @@ class StreamResetReadTests {
                         "the bytes that follow — got $result",
                 )
                 assertEquals(3, result.buffer.remaining())
+                result.buffer.freeIfNeeded()
             } finally {
                 driver.destroy()
             }
@@ -222,6 +227,7 @@ class StreamResetReadTests {
                         "the data it is supposed to follow, the #318 shape — got $first",
                 )
                 assertEquals(2, first.buffer.remaining())
+                first.buffer.freeIfNeeded()
                 assertIs<ReadResult.End>(adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds))
             } finally {
                 driver.destroy()
@@ -307,6 +313,7 @@ class StreamResetReadTests {
                 val first = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Data>(first, "buffered bytes must be delivered before the failure")
                 assertEquals(4, first.buffer.remaining())
+                first.buffer.freeIfNeeded()
                 assertFailsWith<QuicStreamReadException>("the failure must follow the data it arrived behind") {
                     adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 }

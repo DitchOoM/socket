@@ -15,6 +15,7 @@ import com.ditchoom.socket.http3.withHttp3Server
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -213,7 +214,9 @@ abstract class WebTransportTestSuite {
                         val session = accept()
                         val stream = session.incomingBidiStreams.first()
                         // Read the opener's first chunk, then abort the stream with a WebTransport code.
-                        withTimeout(5.seconds) { stream.read() }
+                        // Scoped (#538): the chunk is not wanted, so nothing should have to remember to
+                        // release it.
+                        withTimeout(5.seconds) { stream.read { it.remaining() } }
                         (stream as Resettable).reset(wtCode.toLong()) // Resettable.reset is the buffer-flow Long contract
                     },
                     onRequest = { response.send(404) },
