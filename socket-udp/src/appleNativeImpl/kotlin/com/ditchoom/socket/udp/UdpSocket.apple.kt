@@ -79,7 +79,10 @@ actual object UdpSocket {
         // silently never receive its packets (the handshake idle-times-out) — this is what makes a quiche
         // server reachable from the NW client either way. A specific host keeps its address family.
         val wildcard = localHost == null
-        val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V6, localPort) as AppleSocketAddress
+        // A dual-stack wildcard does NOT own the IPv4 half of its port on Darwin — see
+        // [wildcardPortOwnedForIpv4]. Take the port from the IPv4 table before this socket exists.
+        val port = if (wildcard) wildcardPortOwnedForIpv4(localPort) else localPort
+        val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V6, port) as AppleSocketAddress
         val af = if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET
         val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
         check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
@@ -262,6 +265,48 @@ actual object UdpSocket {
             v.value = if (enabled) 1 else 0
             setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, v.ptr, sizeOf<IntVar>().convert())
         }
+    }
+
+    /**
+     * The port a wildcard bind should use, taken from the **IPv4** table first.
+     *
+     * The wildcard bind above is `::` with `IPV6_V6ONLY = 0` on purpose (see its comment): one socket
+     * serving both families, so an `NWConnection` client that resolves `localhost` to `::1` and a peer
+     * that dials `127.0.0.1` both reach it. What that socket does not do on Darwin is *own* the IPv4
+     * half of its port. A plain `AF_INET` socket may already hold `0.0.0.0:port`; the dual-stack bind
+     * still succeeds, and every datagram addressed to `127.0.0.1:port` is delivered to the more
+     * specific IPv4 socket. Measured on macOS 15, with the delivery rule pinned three ways: an
+     * `AF_INET` **wildcard** holder wins IPv4 and leaves IPv6 alone, while a `127.0.0.1`-specific
+     * holder and an `IPV6_V6ONLY` holder both make the dual-stack bind fail outright. So exactly one
+     * shape is dangerous, and it is the one that binds first and says nothing.
+     *
+     * With an ephemeral port that is invisible: `bind(0)` picks from the IPv6 table, so it can hand out
+     * a port whose IPv4 half belongs to an unrelated daemon (`homed`, `adb`, …). A QUIC server bound
+     * that way never receives an IPv4 client's Initial — the client retransmits for the whole idle
+     * timeout and closes with `local: IdleTimeout` over an empty server trace, which is
+     * [#450](https://github.com/DitchOoM/socket/issues/450) / #367. Measured at roughly 1 bind in 4 000
+     * on the JVM actual, whose wildcard bind is the same dual-stack socket.
+     *
+     * So an `AF_INET` probe takes the port first — `bind(0)` on it is handed a port free for IPv4 by
+     * definition — and is closed before the real socket binds it. UDP has no `TIME_WAIT`, so the port
+     * is immediately rebindable. An explicitly requested port whose IPv4 half is taken fails here,
+     * rather than succeeding into a socket that is open, healthy and permanently deaf over IPv4.
+     *
+     * The probe must come first: an `AF_INET` bind *after* a dual-stack bind on the same port is
+     * refused, so probing afterwards would only report a conflict with ourselves.
+     */
+    private suspend fun wildcardPortOwnedForIpv4(requestedPort: Int): Int {
+        val probeLocal = AppleSocketAddressResolver.resolve(WILDCARD_V4, requestedPort) as AppleSocketAddress
+        val probeFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        check(probeFd >= 0) { "socket(AF_INET, SOCK_DGRAM) failed" }
+        bindTo(probeFd, probeLocal) // closes probeFd and fails loudly if the IPv4 half is taken
+        val bound =
+            localAddressOf(probeFd) ?: run {
+                close(probeFd)
+                error("getsockname failed for the IPv4 port probe")
+            }
+        close(probeFd)
+        return bound.port
     }
 
     private fun bindTo(
