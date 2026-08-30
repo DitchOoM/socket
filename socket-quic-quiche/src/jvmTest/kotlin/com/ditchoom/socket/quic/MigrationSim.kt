@@ -10,6 +10,8 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
+import com.ditchoom.socket.quic.sim.SimClockChoice
+import com.ditchoom.socket.quic.sim.resolve
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -20,7 +22,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -419,24 +420,30 @@ internal fun migrationSimOptions(
     )
 
 /**
- * Establish a real client/server quiche pair over a [MultiPathPipe] on [testScope]'s virtual time and
- * run [block] against it. Everything is torn down before returning.
+ * Establish a real client/server quiche pair over a [MultiPathPipe] on the calling `runTest` scheduler's
+ * virtual time and run [block] against it. Everything is torn down before returning.
  *
  * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
  * each path the driver opens afterwards (argument is the 1-based probe index).
+ *
+ * [clock] defaults to [SimClockChoice.Virtual] rather than the calling dispatcher's clock because this
+ * harness exists for virtual time (see the class KDoc: 7.168s of §8.2.4 budget in 0ms of wall); it is
+ * resolved against the calling dispatcher before anything native is allocated, so calling this from a
+ * real dispatcher — or asking for [SimClockChoice.Wall] under `runTest` — fails at construction (#497).
  */
 internal suspend fun <R> withMigrationSim(
-    testScope: TestScope,
     seed: Long,
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
+    clock: SimClockChoice = SimClockChoice.Virtual,
     block: suspend MigrationSimScope.() -> R,
 ): R {
+    // First, before loadQuicheApi(): an incoherent clock fails here, typed, with nothing to tear down.
+    val driverClock = clock.resolve()
     val api = loadQuicheApi()
     val bufferFactory = BufferFactory.network()
-    val clock = SimClock(testScope.testScheduler)
 
     val clientRandom = Random(seed xor 0x434C49454E54L) // "CLIENT"
     val serverRandom = Random(seed xor 0x534552564552L) // "SERVER"
@@ -545,7 +552,7 @@ internal suspend fun <R> withMigrationSim(
                 clientMode = true,
                 isServer = false,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = clock,
+                clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
                 onCleanup = { clientPeerSock.free() },
@@ -564,7 +571,7 @@ internal suspend fun <R> withMigrationSim(
                 clientMode = false,
                 isServer = true,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = clock,
+                clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = serverRandom,
                 onCleanup = { serverLocalSock.free() },

@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readBuffer
 import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
@@ -13,13 +14,9 @@ import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.isKotlinNative
 import com.ditchoom.socket.quic.runQuicTest
 import com.ditchoom.socket.quic.scaled
 import com.ditchoom.socket.quic.withQuicConnection
-import com.ditchoom.socket.testkit.skip.SkipGate
-import com.ditchoom.socket.testkit.skip.SkipReason
-import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -180,31 +177,19 @@ abstract class NetworkHarnessTestSuite {
      * Where the harness is reachable the native quiche binding is present (the echo server is quiche
      * itself), so no native-missing guard is needed here.
      *
-     * **Kotlin/Native: loud skip pending #502.** The first Linux-native run (PR #501) got past the
-     * handshake and died on the first `stream.write()` with a `NullPointerException` from
-     * `QuicheDriver.streamWrite`'s `nativeMemoryAccess!!` — the `BufferFactory.Default` buffer below
-     * has no native memory on K/N, and nothing in the write contract says it must. That is the
-     * library's defect, not the test's, so the test keeps the portable buffer (switching to a native
-     * one would hide exactly what it found), runs on the JVM, and on K/N records a skip that names
-     * the issue. Gated on the platform, never on catching the NPE.
+     * The send buffer is allocated **per the connection's declared
+     * [com.ditchoom.socket.quic.QuicScope.capabilities]** — the #502 contract. Where
+     * `requiresNativeMemoryBuffers` holds (every quiche backend, on every platform) it comes from the
+     * scope's own `bufferFactory`; otherwise the portable `BufferFactory.Default` is fine. This is
+     * the test that found #502: its first Linux-native run (PR #501) got past the handshake and died
+     * on the first `stream.write()` of a `BufferFactory.Default` buffer with a `NullPointerException`
+     * from the driver's `nativeMemoryAccess!!`, and until the capability existed it had to skip on
+     * Kotlin/Native. It runs everywhere now; that a heap buffer is *rejected by type* rather than
+     * crashing is [com.ditchoom.socket.quic.QuicServerTestSuite]'s to prove on every backend.
      */
     @Test
     fun quicEchoAccessorStreamRoundTrips() =
         runQuicTest(timeout = 30.seconds) {
-            if (isKotlinNative()) {
-                recordSkip(
-                    this@NetworkHarnessTestSuite::class,
-                    SkipReason.BlockedByIssue(
-                        issue = 502,
-                        detail =
-                            "QuicByteStream.write throws NullPointerException on Kotlin/Native for a " +
-                                "BufferFactory.Default buffer (no native memory; QuicheDriver.streamWrite " +
-                                "`nativeMemoryAccess!!`) — the JVM lane runs this round-trip, K/N does not until #502 lands",
-                    ),
-                    gate = SkipGate.HostCannotProvideIt("QuicByteStream.write from a non-native buffer on Kotlin/Native (#502)"),
-                )
-                return@runQuicTest
-            }
             val ran =
                 withNetworkHarness {
                     val ep =
@@ -223,13 +208,28 @@ abstract class NetworkHarnessTestSuite {
                         timeout = 10.seconds.scaled,
                     ) {
                         val stream = openStream()
-                        val sendBuf = BufferFactory.Default.allocate(payload.length)
-                        sendBuf.writeString(payload, Charset.UTF8)
-                        sendBuf.resetForRead()
-                        stream.write(sendBuf, 5.seconds.scaled)
+                        // Allocate as the connection says, not as the platform happens to: the scope's
+                        // factory is native-memory-backed wherever that is required, and Default is the
+                        // portable choice wherever it is not. Freed after the write — write is zero-copy
+                        // and takes no ownership.
+                        val sendFactory = if (capabilities.requiresNativeMemoryBuffers) bufferFactory else BufferFactory.Default
+                        val sendBuf = sendFactory.allocate(payload.length)
+                        try {
+                            sendBuf.writeString(payload, Charset.UTF8)
+                            sendBuf.resetForRead()
+                            stream.write(sendBuf, 5.seconds.scaled)
+                        } finally {
+                            sendBuf.freeIfNeeded()
+                        }
                         val response = stream.read(5.seconds.scaled)
                         assertTrue(response is ReadResult.Data, "quic-echo returned no data")
-                        val echoed = response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                        // read transfers ownership; the pooled chunk goes back once decoded.
+                        val echoed =
+                            try {
+                                response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                            } finally {
+                                response.buffer.freeIfNeeded()
+                            }
                         assertTrue(echoed.startsWith(payload), "expected echo of '$payload', got '$echoed'")
                         stream.close()
                     }

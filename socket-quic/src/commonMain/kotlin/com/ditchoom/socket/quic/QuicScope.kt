@@ -91,6 +91,20 @@ interface QuicScope : CoroutineScope {
      */
     val bufferFactory: BufferFactory
 
+    /**
+     * What this connection's data plane requires of the buffers handed to [QuicByteStream.write] and
+     * to [datagramChannel]`.send` — read it before choosing a [BufferFactory] for outbound data.
+     * [bufferFactory] always satisfies it; this is for code that allocates elsewhere (a codec's own
+     * pool, a portable helper written against `BufferFactory.Default`) and needs to know whether that
+     * is acceptable here. See [QuicCapabilities.requiresNativeMemoryBuffers] for the contract and the
+     * typed rejection ([QuicNativeMemoryRequiredException]) a violation produces.
+     *
+     * Defaults to throwing for scope implementations with no connection behind them, matching
+     * [identity]. [QuicConnection] redeclares it abstract, so every real backend must answer.
+     */
+    val capabilities: QuicCapabilities
+        get() = throw UnsupportedOperationException("Connection capabilities are not available on this platform")
+
     /** Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN). */
     suspend fun openStream(): QuicByteStream
 
@@ -176,10 +190,13 @@ interface QuicScope : CoroutineScope {
      * the shared datagram trichotomy). Every received [Datagram]'s peer is [remoteAddress];
      * [com.ditchoom.buffer.flow.DatagramSink.maxWritableSize] tracks the current path MTU and is `0`
      * when datagrams are not enabled (not set locally, or the peer never advertised
-     * `max_datagram_frame_size`). Sends read the payload zero-copy (the caller retains ownership); the
-     * connected refinement has no destination parameter at all — a QUIC datagram flow has one implicit
-     * peer — and the IP control-plane `options` do not apply. The returned instance is stable for the
-     * connection's life.
+     * `max_datagram_frame_size`). Sends read the payload zero-copy (the caller retains ownership) and,
+     * where [capabilities] says [QuicCapabilities.requiresNativeMemoryBuffers], the payload must be
+     * native-memory-backed — the channel's own `capabilities.requiresNativeMemoryBuffers` restates the
+     * same requirement in buffer-flow's vocabulary, and a heap payload is rejected with a
+     * [QuicNativeMemoryRequiredException] before anything is enqueued. The connected refinement has no
+     * destination parameter at all — a QUIC datagram flow has one implicit peer — and the IP
+     * control-plane `options` do not apply. The returned instance is stable for the connection's life.
      *
      * Defaults to [UnsupportedOperationException]; platforms that support datagrams override this.
      */

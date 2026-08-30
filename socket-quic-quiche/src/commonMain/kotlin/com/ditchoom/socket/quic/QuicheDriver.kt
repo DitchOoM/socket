@@ -462,7 +462,7 @@ class QuicheDriver(
         private set
 
     private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
-    private val sendAddr = udpSendBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+    private val sendAddr = udpSendBuf.driverOwnedNativeAddress()
     private var driverJob: Job? = null
 
     /**
@@ -687,7 +687,7 @@ class QuicheDriver(
     private val pePeerOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(SOCKADDR_STORAGE_SIZE) else null
     private val pePeerLenOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(4) else null
 
-    private fun addr(buf: PlatformBuffer?): Long = if (buf == null) 0L else buf.nativeMemoryAccess!!.nativeAddress.toLong()
+    private fun addr(buf: PlatformBuffer?): Long = if (buf == null) 0L else buf.driverOwnedNativeAddress()
 
     /**
      * The migration in flight: which path it opened, the endpoint that path **resolved to** (not the
@@ -932,10 +932,7 @@ class QuicheDriver(
     private fun execute(cmd: QuicheCmd) {
         when (cmd) {
             is QuicheCmd.RecvPacket -> {
-                val addr =
-                    cmd.buf.nativeMemoryAccess!!
-                        .nativeAddress
-                        .toLong()
+                val addr = cmd.buf.driverOwnedNativeAddress()
                 // Hand quiche the recv_info that tells the truth about where this packet arrived —
                 // exhaustive over the three ways a packet enters (see [PacketSource]).
                 val source = cmd.source
@@ -1893,9 +1890,9 @@ class QuicheDriver(
             val rc =
                 api.connNewScid(
                     conn,
-                    scid.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    scid.driverOwnedNativeAddress(),
                     QUIC_MAX_CONN_ID_LEN,
-                    token.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    token.driverOwnedNativeAddress(),
                     true,
                     addr(seqScratch),
                 )
@@ -2234,6 +2231,16 @@ class QuicheDriver(
         const val MAX_DATAGRAM_SIZE = 1350
 
         /**
+         * What every driver-backed connection declares to its callers (#502). All three bindings —
+         * FFM, JNI, cinterop — pass `quiche_conn_stream_send` / `quiche_conn_dgram_send` a raw
+         * address and a length, so a caller-supplied buffer must expose one; there is no copy at the
+         * boundary on any platform. Stated once here, and answered identically by the client
+         * connections on JVM/Android, Linux and Apple and by the server-side [DriverQuicConnection],
+         * because it is a property of the engine binding, not of the platform.
+         */
+        val capabilities: QuicCapabilities = QuicCapabilities(requiresNativeMemoryBuffers = true)
+
+        /**
          * How many consecutive receive failures a path's reader tolerates before it stops (#396).
          *
          * The loops previously retried a failed `receive` with `continue` — no delay, no bound. A
@@ -2474,8 +2481,11 @@ class DriverStreamAdapter(
     ): ReadResult {
         // Before allocating anything: a chunk drained at teardown is already ours to hand back.
         pendingData()?.let { return it }
+        // Driver-owned, not caller-fed: [bufferFactory] is the driver's streamReadPool (a pool over the
+        // leaf factory that passed requireNativeMemory() at setup) at every production construction
+        // site, so this is an invariant — contrast the caller's buffer in [streamWrite].
         val buffer = bufferFactory.allocate(bufferSize)
-        val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
+        val addr = buffer.driverOwnedNativeAddress()
 
         // A StreamRecv we enqueued but the driver has not yet completed. While this is set, the driver may
         // still be about to WRITE received bytes into `addr` inside connStreamRecv. The command channel is
@@ -2714,7 +2724,20 @@ class DriverStreamAdapter(
         // Empty input: nothing to send (quiche would report 0). Return before touching the buffer's
         // native address — a zero-length buffer may not expose one — and never park on an empty write.
         if (remaining == 0) return 0
-        val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position()
+        // Caller-fed buffer (#502) — with the datagram send, one of the two addresses in this driver that
+        // come from a public API rather than from the driver's own vetted factory. A buffer without native
+        // memory is rejected BY TYPE here, before any command is enqueued: the stream and the connection
+        // are untouched and a correctly allocated write can follow. This was `nativeMemoryAccess!!` — a
+        // NullPointerException with no message, reachable by any consumer writing a BufferFactory.Default
+        // buffer on Linux Kotlin/Native (or a managed() buffer anywhere, the JVM included).
+        val native =
+            buffer.nativeMemoryAccess
+                ?: throw QuicNativeMemoryRequiredException.forBuffer(
+                    QuicWriteTarget.Stream(streamId.id),
+                    buffer,
+                    QuicheDriver.capabilities,
+                )
+        val addr = native.nativeAddress + buffer.position()
 
         // A StreamSend we enqueued but the driver has not yet completed. While this is set, the driver may
         // still READ `addr` inside connStreamSend. The caller owns `buffer` and frees it (or drops its last
@@ -2821,6 +2844,25 @@ class DriverStreamAdapter(
         }
     }
 }
+
+/**
+ * The raw address of a buffer the **driver** allocated for itself — the UDP send buffer, packet
+ * buffers from the receive pool, sockaddr / CID / token scratch, the stream-read pool.
+ *
+ * Every factory a driver is built from passed `TransportConfig.quicBufferFactory()`'s
+ * `requireNativeMemory()` probe at setup, so a `null` here is a broken invariant — a factory that
+ * answered the probe natively and then handed out a heap buffer — never a caller's mistake. Hence
+ * [checkNotNull] with the invariant spelled out, in contrast to the typed
+ * [QuicNativeMemoryRequiredException] that [DriverStreamAdapter.streamWrite] and
+ * [DriverDatagramAdapter.send] give a **caller-fed** buffer (#502). That split is the audit result:
+ * of this driver's former `nativeMemoryAccess!!` sites, exactly those two took a buffer from a
+ * public API; every other one is on memory the driver allocated.
+ */
+internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
+    checkNotNull(nativeMemoryAccess) {
+        "driver-owned ${this::class.simpleName} has no native memory: the connection's BufferFactory " +
+            "passed requireNativeMemory() at setup and then allocated a heap buffer — a factory that lies to the probe"
+    }.nativeAddress
 
 /**
  * quiche yielded more retired connection IDs than the count it reported a moment earlier, so the

@@ -10,6 +10,7 @@ import com.ditchoom.data.readInto
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
 import com.ditchoom.socket.harness.HarnessConfig
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -295,23 +296,31 @@ class SimpleSocketTests {
 
 expect fun supportsIPv6(): Boolean
 
+/**
+ * Both tests wait on the handler's own signal — a [CompletableDeferred] the collector completes with
+ * what it read, once it has closed the accepted socket — and assert on that value. They used to
+ * `delay(100)` and then read a `var` the collector had set on `Dispatchers.Default`: on a loaded
+ * Linux runner the constant lost the race against accept + `readString` and the counter read 0, and
+ * on Kotlin/Native the read itself was an unsynchronised cross-thread read that need not have seen
+ * the write even when the server had handled the client (#381). The server is closed and the job
+ * cancelled only after the signal, so teardown never races the handler either.
+ */
 class IPv6SocketTests {
     @Test
     fun serverBindsToIPv6() =
         runTestNoTimeSkipping {
-            if (!supportsIPv6()) return@runTestNoTimeSkipping
+            if (!requireIPv6(IPv6SocketTests::class)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val text = "ipv6 test"
             val acceptedClientFlow = server.bind(host = "::")
-            var serverReceived = false
+            val serverReceived = CompletableDeferred<String>()
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
                         val received = serverToClient.readString()
-                        assertEquals(text, received)
-                        serverReceived = true
                         serverToClient.close()
+                        serverReceived.complete(received)
                     }
                 }
 
@@ -321,9 +330,7 @@ class IPv6SocketTests {
             client.writeString(text)
             client.close()
 
-            // Give server time to process
-            delay(100)
-            assertTrue(serverReceived, "Server should have received the message")
+            assertEquals(text, serverReceived.awaitOrFail("the '::'-bound server to read the client's message"))
 
             server.close()
             serverJob.cancel()
@@ -332,19 +339,18 @@ class IPv6SocketTests {
     @Test
     fun serverAcceptsBothIPv4AndIPv6() =
         runTestNoTimeSkipping {
-            if (!supportsIPv6()) return@runTestNoTimeSkipping
+            if (!requireIPv6(IPv6SocketTests::class)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
-            var clientsHandled = 0
             val acceptedClientFlow = server.bind() // Default should use dual-stack
+            val ipv4ClientHandled = CompletableDeferred<String>()
 
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
                         val received = serverToClient.readString()
-                        assertTrue(received.isNotEmpty())
-                        clientsHandled++
                         serverToClient.close()
+                        ipv4ClientHandled.complete(received)
                     }
                 }
 
@@ -354,12 +360,11 @@ class IPv6SocketTests {
             client1.writeString("ipv4")
             client1.close()
 
-            delay(100)
+            val received = ipv4ClientHandled.awaitOrFail("the dual-stack server to handle the IPv4 client")
+            assertTrue(received.isNotEmpty(), "the dual-stack server handled the IPv4 client but read nothing from it")
 
             server.close()
             serverJob.cancel()
-
-            assertTrue(clientsHandled >= 1, "Server should have handled at least one client")
         }
 }
 

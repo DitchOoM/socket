@@ -181,9 +181,13 @@ class SemanticSimTests {
      * The virtual-time deliverable (see [withSemanticSim] kdoc): a LOSSLESS handshake between two
      * REAL quiche endpoints completes fully under `runTest` virtual time — it is a pure event
      * cascade (channel sends/receives on the single-threaded test scheduler), never blocked on a
-     * quiche timer. Timer-dependent paths (loss recovery, idle timeout) cannot be virtualized
-     * because quiche's C API is internally clocked by `Instant::now()`, which is why every
-     * impaired scenario above runs under `runQuicTest` real dispatchers instead.
+     * quiche timer.
+     *
+     * This is a plain `runTest`, so since #497 the sim resolves its clock to the scheduler's and quiche's
+     * own timers are virtual too — the old "timer-dependent paths cannot be virtualized" note here was
+     * stale (the #260 caller-clock patch made them virtualizable; `HandshakeIdleTimeoutSimTests` drives
+     * loss recovery and the idle timeout under virtual time). The impaired scenarios above stay under
+     * `runQuicTest`, which is real dispatchers, so they run coherently on the wall clock.
      */
     @Test
     fun lossless_handshake_completes_under_virtual_time() =

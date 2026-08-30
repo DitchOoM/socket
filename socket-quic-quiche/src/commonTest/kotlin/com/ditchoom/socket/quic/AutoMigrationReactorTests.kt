@@ -106,6 +106,7 @@ class AutoMigrationReactorTests {
 
         // --- Unused by the reactor; present only to satisfy the interface. ---
         override val bufferFactory: BufferFactory get() = BufferFactory.Default
+        override val capabilities: QuicCapabilities get() = QuicCapabilities.None
         override val state: StateFlow<QuicConnectionState> = MutableStateFlow(QuicConnectionState.Idle)
 
         override suspend fun openStream(): QuicByteStream = error("unused")

@@ -2,11 +2,14 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.managed
+import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.udp.MultiplexedProtocol
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.demultiplex
@@ -187,6 +190,143 @@ abstract class QuicServerTestSuite {
                 }
             }
         }
+
+    /**
+     * #502: a write's native-memory requirement is a **declared capability** with a typed rejection,
+     * not a `NullPointerException` from the driver's `nativeMemoryAccess!!`.
+     *
+     * Reads [QuicScope.capabilities] off the live connection and then makes the backend *demonstrate*
+     * the claim with the two factories a portable caller reaches for: `BufferFactory.Default` — heap
+     * on Linux Kotlin/Native (the original sighting, `NetworkHarnessTests[linuxX64]`), native
+     * elsewhere — and `BufferFactory.managed()`, heap on every platform, JVM included. For each buffer
+     * the test asks the buffer itself whether it has native memory and asserts the matching outcome:
+     *
+     * - no native memory **and** `requiresNativeMemoryBuffers` → [QuicNativeMemoryRequiredException]
+     *   naming the stream, the declared capability and where to allocate from; nothing consumed, the
+     *   stream still open — and, to prove nothing was enqueued or poisoned, a correctly allocated
+     *   write on the same stream round-trips afterwards;
+     * - otherwise → the write round-trips through the echo.
+     *
+     * The `managed()` buffer guarantees at least one heap case on every platform (asserted, so the
+     * test can never pass vacuously); on Linux K/N the `Default` buffer is a second one. The
+     * `requiresNativeMemoryBuffers = false` branch is exercised by no shipped backend today (every
+     * backend is quiche), but the test is written against the capability, not against quiche, so a
+     * copying backend would prove its own claim here without edits.
+     */
+    @Test
+    fun writeRejectsABufferWithoutNativeMemoryAsTheCapabilitySays() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                // Echo every chunk until the client's FIN.
+                                while (true) {
+                                    val data = stream.read(5.seconds)
+                                    if (data !is ReadResult.Data) break
+                                    try {
+                                        stream.writeFully(data.buffer, 5.seconds)
+                                    } finally {
+                                        data.buffer.freeIfNeeded()
+                                    }
+                                }
+                                stream.close()
+                            }
+                        }
+                    try {
+                        withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                            val declared = capabilities
+                            val stream = openStream()
+                            val candidates =
+                                listOf(
+                                    "BufferFactory.Default" to BufferFactory.Default,
+                                    "BufferFactory.managed()" to BufferFactory.managed(),
+                                )
+                            var heapBuffersSeen = 0
+                            for ((name, factory) in candidates) {
+                                val payload = "502:$name"
+                                val buf = factory.allocate(payload.length)
+                                try {
+                                    buf.writeString(payload, Charset.UTF8)
+                                    buf.resetForRead()
+                                    val hasNativeMemory = buf.nativeMemoryAccess != null
+                                    if (!hasNativeMemory) heapBuffersSeen++
+                                    if (!hasNativeMemory && declared.requiresNativeMemoryBuffers) {
+                                        val rejection =
+                                            assertFailsWith<QuicNativeMemoryRequiredException>(
+                                                "$name has no native memory and the connection declares $declared, so " +
+                                                    "write must reject it by type (not NPE, not send)",
+                                            ) { stream.write(buf, 5.seconds) }
+                                        assertEquals(QuicWriteTarget.Stream(stream.streamId.id), rejection.target)
+                                        assertEquals(declared, rejection.capabilities)
+                                        val message = rejection.message ?: ""
+                                        assertTrue(
+                                            message.contains("stream ${stream.streamId.id}"),
+                                            "the message must name the stream: $message",
+                                        )
+                                        assertTrue(
+                                            message.contains("requiresNativeMemoryBuffers=true"),
+                                            "the message must quote the declared capability: $message",
+                                        )
+                                        assertTrue(
+                                            message.contains("QuicScope.bufferFactory"),
+                                            "the message must say where to allocate from: $message",
+                                        )
+                                        assertEquals(payload.length, buf.remaining(), "a rejected write consumes nothing")
+                                        assertTrue(stream.isOpen, "a rejected write leaves the stream open")
+                                    } else {
+                                        stream.writeFully(buf, 5.seconds)
+                                        assertEquals(payload, readExactly(stream, payload.length), "$name should round-trip")
+                                    }
+                                } finally {
+                                    buf.freeIfNeeded()
+                                }
+                            }
+                            assertTrue(
+                                heapBuffersSeen > 0,
+                                "precondition: BufferFactory.managed() must allocate a buffer without native memory on " +
+                                    "this platform, or this test proved nothing",
+                            )
+                            // The connection's own factory always satisfies its own declaration — and after a
+                            // rejection the stream must still carry a correctly allocated write.
+                            val payload = "502:QuicScope.bufferFactory"
+                            val out = bufferFactory.allocate(payload.length)
+                            try {
+                                out.writeString(payload, Charset.UTF8)
+                                out.resetForRead()
+                                stream.writeFully(out, 5.seconds)
+                            } finally {
+                                out.freeIfNeeded()
+                            }
+                            assertEquals(payload, readExactly(stream, payload.length))
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /** Read from [stream] until exactly [length] bytes have arrived (an echo may come back in chunks). */
+    private suspend fun readExactly(
+        stream: QuicByteStream,
+        length: Int,
+    ): String {
+        val text = StringBuilder()
+        while (text.length < length) {
+            val chunk = stream.read(5.seconds)
+            assertIs<ReadResult.Data>(chunk, "echo ended after ${text.length}/$length bytes")
+            try {
+                text.append(chunk.buffer.readString(chunk.buffer.remaining(), Charset.UTF8))
+            } finally {
+                chunk.buffer.freeIfNeeded()
+            }
+        }
+        return text.toString()
+    }
 
     /**
      * ALPN demultiplexing: ONE listener on ONE UDP port offers two application protocols, and each
