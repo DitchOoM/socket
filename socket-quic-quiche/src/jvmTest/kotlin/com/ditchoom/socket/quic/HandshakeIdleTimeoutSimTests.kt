@@ -133,6 +133,12 @@ class HandshakeIdleTimeoutSimTests {
      *
      * A seed that lands on [Outcome.LocalIdleTimeout] is the thing two load hunts failed to produce:
      * a handshake idle-timeout that can be re-run on demand, under a debugger, with a trace.
+     *
+     * **Read the count as a signature, not as a mechanism.** Seed 4's entry here has been bisected —
+     * see [seed4IsTwoLostInitialsInsideATwoSecondIdleBudget_notALoopbackStall] — and it is two
+     * consecutive losses of one Initial inside a 2s idle budget: correct RFC 9000 §10.1 behaviour, at
+     * the binomial rate 30% loss implies, and it establishes under the 10s idle timeout
+     * `Http3LoopbackTestSuite` actually uses. It reproduces #450's *report*, not #450.
      */
     @Test
     fun searchSeedsForAHandshakeThatIdleTimesOut() =
@@ -313,6 +319,157 @@ class HandshakeIdleTimeoutSimTests {
                     "typed reason — that is what #450's local sighting recorded. Measured directly " +
                     "from the client rather than inferred from an establishment gate, because " +
                     "inferring it from the gate is how this test previously reported the opposite.",
+            )
+        }
+
+    /** One attempt plus the pipe's own record of every datagram it carried and how it fared. */
+    private data class TracedAttempt(
+        val outcome: Outcome,
+        val settledAtMs: Long,
+        /** Every datagram offered to the pipe, its virtual instant relative to the first one. */
+        val datagrams: List<Pair<Long, ImpairedPipe.Observation>>,
+    ) {
+        fun clientDatagramAt(index: Int): Long = datagrams.filter { it.second.side == "C" }[index].first
+    }
+
+    /**
+     * One handshake attempt with the wire attached: which datagram each side put on the pipe, when,
+     * and whether the pipe delivered it. [forceDrop] overrides the seeded fate of a datagram by index
+     * *without* changing the RNG draw sequence, so a single decision can be pinned in isolation.
+     */
+    private suspend fun TestScope.tracedAttempt(
+        seed: Long,
+        loss: Double,
+        idleTimeout: kotlin.time.Duration,
+        forceDrop: Set<Int> = emptySet(),
+    ): TracedAttempt =
+        withSemanticSim(
+            ImpairmentConfig(seed = seed, loss = loss, latency = 5.milliseconds, forceDrop = forceDrop),
+            quicOptions = semanticSimOptions(idleTimeout = idleTimeout),
+            establishTimeout = 60.seconds,
+            clock = SimClockChoice.Virtual,
+            // The block IS the wait: a gate would consume the handshake before it can be watched.
+            gate = EstablishmentGate.None,
+        ) {
+            val started = testScheduler.currentTime
+            val settled =
+                withTimeoutOrNull(60.seconds) {
+                    clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                }
+            TracedAttempt(
+                outcome = settled?.let(::classify) ?: Outcome.Threw("StillHandshaking"),
+                settledAtMs = testScheduler.currentTime - started,
+                datagrams = pipe.observations().map { (it.atMs - started) to it },
+            )
+        }
+
+    /** QUIC v1 long header, packet type Initial: form=1, fixed=1, type=00 (RFC 9000 §17.2.2). */
+    private fun ImpairedPipe.Observation.isInitial(): Boolean = (bytes[0].toInt() and 0xf0) == 0xc0
+
+    /**
+     * **What seed 4 actually is — and, decisively, what it is not.**
+     *
+     * [searchSeedsForAHandshakeThatIdleTimesOut] finds seed 4 producing `ByLocal(IdleTimeout)` during
+     * the handshake, which is #450's *signature*. This test bisects that seed down to the single
+     * decision behind it, and the answer is that it is not #450's *mechanism*:
+     *
+     * | drop script (loss = 0, so the RNG decides nothing) | idle 2s | idle 10s |
+     * |---|---|---|
+     * | nothing                          | Established, 10ms   | Established, 10ms   |
+     * | the client's first Initial       | Established, 1009ms | Established, 1009ms |
+     * | its first PTO retransmission     | Established, 1029ms | Established, 1029ms |
+     * | **both**                         | **LocalIdleTimeout, 2997ms** | **Established, 3007ms** |
+     *
+     * So the trigger is exactly two consecutive losses of the *same* Initial — at 30% loss a
+     * p = 0.09 event, and 1 of 12 seeds hitting it is the binomial rate, not a defect — and what turns
+     * that into a close is the **2s idle timeout the sim picked**, not anything in the stack.
+     *
+     * The arithmetic is a photo finish, which is why it looks alarming and is not. quiche floors the
+     * idle timeout at 3×PTO (RFC 9000 §10.1), so with PTO = 999ms the deadline is 2997ms; and §10.1
+     * restarts the idle timer on a send only when *no other ack-eliciting packet has been sent since
+     * the last receive*, so the 999ms retransmission does not push it out. Meanwhile the PTO backoff
+     * schedules the third Initial at 999 + 1998 = **2997ms** — the same instant. The connection dies
+     * one tick before the transmission that would have saved it, exactly as the RFC specifies.
+     *
+     * Raise the idle timeout to the 10s that `Http3LoopbackTestSuite` actually configures and the very
+     * same two drops establish at 3007ms. **A loopback path loses nothing for 10s**, so this seed
+     * cannot be, and does not model, the field defect in #450 / #367: it is the idle timer working.
+     *
+     * Kept as an assertion rather than deleted because the seed sweep above will keep reporting
+     * `LOCAL IDLE T/O: 1 [4]` forever, and without this the next reader draws the same wrong
+     * conclusion from it.
+     */
+    @Test
+    fun seed4IsTwoLostInitialsInsideATwoSecondIdleBudget_notALoopbackStall() =
+        runTest(timeout = 300.seconds) {
+            val seeded = tracedAttempt(seed = 4L, loss = 0.30, idleTimeout = 2.seconds)
+            val dropped = seeded.datagrams.filter { it.second.dropped }.map { it.second }
+
+            println(
+                buildString {
+                    appendLine("[#450 seed 4] outcome=${seeded.outcome} at ${seeded.settledAtMs}ms")
+                    seeded.datagrams.forEach { (at, o) ->
+                        appendLine("  #${o.index} t=${at}ms ${o.side} ${if (o.dropped) "DROP" else "ok"} len=${o.len}")
+                    }
+                },
+            )
+
+            assertEquals(
+                Outcome.LocalIdleTimeout,
+                seeded.outcome,
+                "seed 4 is the sweep's one idle-timeout seed; if that moved, quiche or the pipe changed",
+            )
+            assertEquals(
+                2,
+                seeded.datagrams.size,
+                "seed 4 puts exactly two datagrams on the wire before it gives up: ${seeded.datagrams}",
+            )
+            assertEquals(2, dropped.size, "both of them are dropped — nothing ever reaches the server")
+            assertTrue(
+                dropped.all { it.side == "C" && it.isInitial() },
+                "both losses are the CLIENT's Initial (the first and its PTO retransmission), not a " +
+                    "server reply: ${dropped.map { it.side to it.len }}",
+            )
+
+            // Minimality, with the RNG taken out of the picture (loss = 0 + an explicit drop script):
+            // either loss alone is survivable; it takes both.
+            val first = tracedAttempt(4L, loss = 0.0, idleTimeout = 2.seconds, forceDrop = setOf(0))
+            val second = tracedAttempt(4L, loss = 0.0, idleTimeout = 2.seconds, forceDrop = setOf(1))
+            val both = tracedAttempt(4L, loss = 0.0, idleTimeout = 2.seconds, forceDrop = setOf(0, 1))
+            println("[#450 seed 4] drop #0 -> $first")
+            println("[#450 seed 4] drop #1 -> $second")
+            println("[#450 seed 4] drop #0+#1 -> ${both.outcome} at ${both.settledAtMs}ms")
+
+            assertEquals(Outcome.Established, first.outcome, "losing only the first Initial is survivable")
+            assertEquals(Outcome.Established, second.outcome, "losing only the retransmission is survivable")
+            assertEquals(
+                Outcome.LocalIdleTimeout,
+                both.outcome,
+                "it takes BOTH losses — that is the whole of what seed 4 perturbs",
+            )
+            assertEquals(
+                seeded.settledAtMs,
+                both.settledAtMs,
+                "the scripted pair reproduces the seeded run exactly, so the script IS the seed's mechanism",
+            )
+
+            // The load-bearing half: the same two losses under the idle timeout the loopback suite
+            // actually configures. Nothing about the stack changes — only the budget.
+            val atTenSeconds = tracedAttempt(4L, loss = 0.0, idleTimeout = 10.seconds, forceDrop = setOf(0, 1))
+            println("[#450 seed 4] drop #0+#1 at idle=10s -> ${atTenSeconds.outcome} at ${atTenSeconds.settledAtMs}ms")
+
+            assertEquals(
+                Outcome.Established,
+                atTenSeconds.outcome,
+                "the identical drop script establishes at the 10s idle timeout Http3LoopbackTestSuite " +
+                    "configures. Seed 4 is an idle BUDGET being exceeded, not a stall — so it does not " +
+                    "model #450, whose loopback path loses nothing for 10s.",
+            )
+            assertEquals(
+                both.settledAtMs,
+                atTenSeconds.clientDatagramAt(2),
+                "the photo finish: the third Initial leaves at exactly the instant the 2s-idle run gave " +
+                    "up. One tick of budget separates seed 4 from a completed handshake.",
             )
         }
 

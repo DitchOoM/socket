@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.net.StandardSocketOptions
@@ -37,10 +38,32 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
+    ): AddressedDatagramChannel {
+        if (localHost != null) return boundTo(localHost, localPort, receiveBufferSize, bufferFactory)
+        // Wildcard: take the port from the IPv4 table first — see [wildcardPortOwnedForIpv4]. Only the
+        // ephemeral case retries, and only because the port IPv4 offered can, rarely, be held by an
+        // IPv6-only socket, which nothing but the real bind discovers.
+        var lastFailure: BindException? = null
+        repeat(if (localPort == 0) MAX_WILDCARD_BIND_ATTEMPTS else 1) {
+            val port = wildcardPortOwnedForIpv4(localPort)
+            try {
+                return boundTo(WILDCARD, port, receiveBufferSize, bufferFactory)
+            } catch (e: BindException) {
+                lastFailure = e
+            }
+        }
+        throw lastFailure ?: BindException("Failed to bind a wildcard UDP port")
+    }
+
+    private fun boundTo(
+        host: String,
+        port: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): AddressedDatagramChannel =
         NioChannel.open().closedIfSetupFails {
             configureBlocking(false)
-            bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
+            bind(InetSocketAddress(host, port))
             // An addressed channel's localAddress is non-null by construction (buffer-flow contract):
             // if getsockname cannot report the bound address, fail fast HERE, before any channel exists.
             val local =
@@ -135,6 +158,48 @@ actual object UdpSocket {
             throw t
         }
     }
+
+    /**
+     * The port a wildcard bind should use, chosen (or validated) through an **IPv4-only** socket first.
+     *
+     * `DatagramChannel.open()` takes no protocol family, so on a dual-stack host the JDK returns an
+     * `AF_INET6` socket with `IPV6_V6ONLY` cleared and turns the `0.0.0.0` wildcard into `in6addr_any`
+     * — one socket meant to serve both families (`udp46`). On BSD/Darwin it does not own the IPv4 half
+     * of its port: a plain `AF_INET` socket may already hold `0.0.0.0:port`, the dual-stack bind
+     * **still succeeds**, and every datagram addressed to `127.0.0.1:port` is delivered to the more
+     * specific IPv4 socket. Measured directly on macOS 15 — `socket(AF_INET)` bound to `0.0.0.0:P`,
+     * then `socket(AF_INET6, V6ONLY=0)` bound to `[::]:P`: the second bind succeeds and reads nothing,
+     * while Linux refuses it outright. The caller is handed a socket that is open, healthy, parked in
+     * `select()`, and permanently deaf over IPv4, with no error anywhere.
+     *
+     * With an ephemeral port that is a lottery nobody can see: `bind(0)` picks from the IPv6 table, so
+     * it can hand out a port whose IPv4 half belongs to an unrelated daemon (`homed`, `adb`, …).
+     * Measured at roughly 1 bind in 4 000 on a developer Mac, which is what made
+     * [#450](https://github.com/DitchOoM/socket/issues/450) look load-dependent: a QUIC server bound
+     * that way never receives its client's Initial, the client PTO-retransmits for the whole idle
+     * timeout and closes with `local: IdleTimeout`, and the server's trace is empty because no
+     * connection was ever created (#367). Only the suite that binds a fresh ephemeral port per test
+     * drew often enough to hit it.
+     *
+     * So the port comes from the IPv4 table before the real socket exists. `bind(0)` on an `AF_INET`
+     * probe is handed a port that is free for IPv4 by definition; the probe is closed — UDP has no
+     * `TIME_WAIT`, so the port is immediately rebindable — and the dual-stack socket takes it. An
+     * explicitly requested port whose IPv4 half is taken fails here with the same [BindException]
+     * Linux already raises for the real bind, rather than succeeding into a deaf socket.
+     *
+     * The probe must come **first**: measured on the same host, an `AF_INET` bind *after* a dual-stack
+     * bind on the same port is refused, so probing afterwards would report a conflict with ourselves.
+     */
+    private fun wildcardPortOwnedForIpv4(requestedPort: Int): Int =
+        NioChannel.open(StandardProtocolFamily.INET).closedIfSetupFails {
+            bind(InetSocketAddress(WILDCARD, requestedPort))
+            val port = (localAddress as InetSocketAddress).port
+            close()
+            port
+        }
+
+    /** Bounded retry for [bind]'s ephemeral wildcard case — see [wildcardPortOwnedForIpv4]. */
+    private const val MAX_WILDCARD_BIND_ATTEMPTS = 8
 
     private const val WILDCARD = "0.0.0.0"
     private const val WILDCARD_V6 = "::"

@@ -35,6 +35,14 @@ internal class ImpairmentConfig(
     val duplicateProb: Double = 0.0,
     val latency: Duration = Duration.ZERO,
     val jitter: Duration = Duration.ZERO,
+    /**
+     * Bisection seam: datagram indices (in RNG-draw order, i.e. [ImpairedPipe.decisions] order) whose
+     * seeded drop decision is overridden. The RNG draws are still consumed — the override replaces
+     * the *decision*, not the *draw* — so every other datagram keeps its seeded fate and a single
+     * decision can be pinned in isolation. A datagram in both sets is delivered.
+     */
+    val forceDeliver: Set<Int> = emptySet(),
+    val forceDrop: Set<Int> = emptySet(),
 )
 
 /**
@@ -91,11 +99,33 @@ internal class ImpairedPipe(
 
     fun decisions(): List<Decision> = synchronized(lock) { decisionTrace.toList() }
 
+    /**
+     * One row per datagram that consumed draws, with what [Decision] deliberately leaves out: which
+     * side sent it, its size, its first byte (packet type), and the virtual instant it was offered to
+     * the pipe (−1 off a test scheduler). Diagnostics only — [Decision] stays the determinism invariant.
+     */
+    internal data class Observation(
+        val index: Int,
+        val side: String,
+        val len: Int,
+        val dropped: Boolean,
+        val seededDrop: Boolean,
+        val atMs: Long,
+        val bytes: ByteArray,
+    )
+
+    private val observationTrace = ArrayList<Observation>()
+
+    fun observations(): List<Observation> = synchronized(lock) { observationTrace.toList() }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun virtualNowMs(): Long = scope.coroutineContext[kotlinx.coroutines.test.TestCoroutineScheduler]?.currentTime ?: -1L
+
     private val toServer = Channel<ByteArray>(Channel.UNLIMITED)
     private val toClient = Channel<ByteArray>(Channel.UNLIMITED)
 
-    val clientEndpoint: UdpChannel = Endpoint(inbound = toClient, outbound = toServer, stats = clientStats)
-    val serverEndpoint: UdpChannel = Endpoint(inbound = toServer, outbound = toClient, stats = serverStats)
+    val clientEndpoint: UdpChannel = Endpoint(inbound = toClient, outbound = toServer, stats = clientStats, side = "C")
+    val serverEndpoint: UdpChannel = Endpoint(inbound = toServer, outbound = toClient, stats = serverStats, side = "S")
 
     fun close() {
         toServer.close()
@@ -106,6 +136,7 @@ internal class ImpairedPipe(
         private val inbound: Channel<ByteArray>,
         private val outbound: Channel<ByteArray>,
         private val stats: SideStats,
+        private val side: String,
     ) : UdpChannel {
         override suspend fun receive(buffer: PlatformBuffer): Int {
             val datagram =
@@ -149,9 +180,17 @@ internal class ImpairedPipe(
                 val reorderSlots = if (config.reorderWindow > 0) rng.nextInt(config.reorderWindow + 1) else 0
                 val jitterFraction = rng.nextDouble()
 
-                val dropped = dropRoll < config.loss
+                val seededDrop = dropRoll < config.loss
+                val index = decisionTrace.size
+                val dropped =
+                    when {
+                        index in config.forceDeliver -> false
+                        index in config.forceDrop -> true
+                        else -> seededDrop
+                    }
                 val duplicated = !dropped && dupRoll < config.duplicateProb
                 decisionTrace.add(Decision(dropped, duplicated, reorderSlots))
+                observationTrace.add(Observation(index, side, len, dropped, seededDrop, virtualNowMs(), copy))
                 if (dropped) {
                     stats.dropped++
                     return@synchronized

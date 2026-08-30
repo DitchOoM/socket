@@ -69,6 +69,35 @@ class AppleUdpBindConformanceTests {
         }
 
     @Test
+    fun wildcardBind_refusesAPortWhoseIPv4HalfAnEarlierAfInetSocketAlreadyOwns() =
+        runBlocking {
+            // The mirror of the two legs above, and the one that actually bit: the *earlier* socket is
+            // the AF_INET wildcard, and Darwin lets the dual-stack `::` bind succeed on top of it —
+            // then hands every 127.0.0.1:port datagram to the AF_INET socket. Measured three ways on
+            // macOS 15: an AF_INET **wildcard** holder wins IPv4 and leaves ::1 alone, while a
+            // 127.0.0.1-specific holder and an IPV6_V6ONLY holder both make the dual-stack bind fail.
+            // So this shape is the only silent one, which is why it had to be caught by choosing the
+            // port through IPv4 rather than by the kernel refusing the bind.
+            //
+            // `bind("0.0.0.0", 0)` is a genuine AF_INET socket here (the family follows the address),
+            // so the thief needs no raw POSIX.
+            //
+            // What this prevents: a QUIC server bound to a port whose IPv4 half belongs to some daemon
+            // is open, healthy and permanently deaf over IPv4 — the client retransmits its Initial for
+            // the whole idle timeout and closes with `local: IdleTimeout` over an empty server trace
+            // (DitchOoM/socket#450, #367).
+            val thief = bind("0.0.0.0")
+            val port = thief.localAddress.port
+            assertFails(
+                "the wildcard bind on :$port must fail while an AF_INET socket holds 0.0.0.0:$port — " +
+                    "succeeding returns a socket that never receives an IPv4 datagram",
+            ) {
+                runBlocking { bind(null, port) }
+            }
+            Unit
+        }
+
+    @Test
     fun unicastBind_holdsItsPortExclusively() =
         runBlocking {
             // Darwin enforces this one even with SO_REUSEADDR, so it does not discriminate the fix — it
