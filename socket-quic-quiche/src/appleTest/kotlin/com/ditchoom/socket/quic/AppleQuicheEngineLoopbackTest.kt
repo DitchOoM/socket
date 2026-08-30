@@ -5,7 +5,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
@@ -46,8 +45,9 @@ class AppleQuicheEngineLoopbackTest {
                     launch {
                         server.connections {
                             val stream = acceptStream()
-                            val data = stream.read(5.seconds)
-                            if (data is ReadResult.Data) stream.write(data.buffer, 5.seconds)
+                            // Echo inside the read scope: write is zero-copy and takes no ownership,
+                            // the scope releases the read buffer on exit (#538).
+                            stream.read(5.seconds) { stream.write(it, 5.seconds) }
                             stream.close()
                         }
                     }
@@ -63,10 +63,10 @@ class AppleQuicheEngineLoopbackTest {
                     sendBuf.writeString("hello quic!", Charset.UTF8)
                     sendBuf.resetForRead()
                     stream.write(sendBuf, 5.seconds)
-                    val response = stream.read(5.seconds)
+                    val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                     echo.complete(
-                        if (response is ReadResult.Data) {
-                            response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                        if (response is ScopedRead.Data) {
+                            response.value
                         } else {
                             "no_data:${response::class.simpleName}"
                         },

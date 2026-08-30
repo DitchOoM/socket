@@ -274,14 +274,16 @@ abstract class SourceIdReadbackTestSuite {
         }
     }
 
-    private fun ReadResult.text(): String = if (this is ReadResult.Data) buffer.readString(buffer.remaining(), Charset.UTF8) else "no_data"
+    private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else "no_data"
 
     private suspend fun QuicByteStream.echo(payload: String): String {
         val out = BufferFactory.deterministic().allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        return read(30.seconds).text()
+        // Scoped read (#538): the bytes are decoded inside the block, so the buffer goes back to
+        // the driver's pool instead of waiting for a collector that owns it and never runs.
+        return read(30.seconds) { it.readString(it.remaining(), Charset.UTF8) }.text()
     }
 
     private companion object {

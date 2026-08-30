@@ -22,10 +22,15 @@ import kotlin.time.Duration.Companion.seconds
  * Regression tests for QUIC read-path buffer recycling — the quiche-layer companion of the TCP
  * `ReadBufferPoolingTest`. [DriverStreamAdapter.streamRead] used to allocate a fresh 64 KB buffer
  * from the leaf factory on EVERY stream read (and [DriverDatagramAdapter.receive] a fresh
- * 1350-byte buffer per datagram); under the default GC-reclaimed factory those accumulate to the
- * JVM direct-memory cap under high read throughput. Reads now draw from the driver's per-connection
+ * 1350-byte buffer per datagram); under the default collector-owned factory those accumulate without
+ * bound under high read throughput. Reads now draw from the driver's per-connection
  * [QuicheDriver.streamReadPool] / [QuicheDriver.recvBufPool], and the consumer's `freeNativeMemory()`
  * recycles each buffer back to its pool.
+ *
+ * Recycling is what this suite measures; it is **not** a leak guard, and #538 is what the difference
+ * costs. The pool only recycles what the consumer releases, and the consumer that never does is worse
+ * off with the pool than without it. `QuicStreamReadMemorySoakTests` measures that half — the process's
+ * native footprint over thousands of real reads — where this one measures allocation counts.
  *
  * Deterministic: a counting leaf factory records how many buffers the driver actually allocates.
  * With pooling that is a handful (driver scratch + pool misses); pre-fix it was ≈ one per read.
@@ -63,7 +68,7 @@ class QuicReadPoolingTests {
 
     // The native-memory leaf factories QUIC accepts on THIS platform (quicBufferFactory() rejects
     // heap factories at setup): network() is the production default (what quicBufferFactory()
-    // resolves to when the caller doesn't override); Default is a valid GC-reclaimed override only
+    // resolves to when the caller doesn't override); Default is a valid collector-owned override only
     // where it allocates native buffers (JVM Arena, Apple NSMutableData) — on Linux it is a managed
     // ByteArrayBuffer, so probe like requireNativeMemory().
     private val leafFactories: List<Pair<String, BufferFactory>>

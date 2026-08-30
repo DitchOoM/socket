@@ -76,8 +76,11 @@ abstract class QuicPassiveMigrationTestSuite {
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        val resp = read(readTimeout)
-        return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
+        // Scoped read (#538): the echo is decoded inside the block and the buffer returns to the
+        // driver's pool on the way out — read transfers ownership, and no collector owns what a
+        // `deterministic()` factory hands back.
+        val resp = read(readTimeout) { it.readString(it.remaining(), Charset.UTF8) }
+        return if (resp is ScopedRead.Data) resp.value else "no_data"
     }
 
     @Test

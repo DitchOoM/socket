@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.SocketTimeoutException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -85,7 +84,7 @@ class OpenStreamReadBeforeWriteTests {
                                 val stream = openStream()
                                 val outcome =
                                     try {
-                                        Read(stream.read(1.seconds))
+                                        Read(stream.read(1.seconds) { it.remaining() })
                                     } catch (e: QuicStreamReadException) {
                                         Threw(e)
                                     } catch (e: TimeoutCancellationException) {
@@ -109,7 +108,7 @@ class OpenStreamReadBeforeWriteTests {
                                         )
                                     is Read ->
                                         assertTrue(
-                                            outcome.result !is ReadResult.End,
+                                            outcome.result !is ScopedRead.End,
                                             "a read before the first write must not report end-of-stream " +
                                                 "(#423): nothing has closed this stream, and reporting End " +
                                                 "tells the caller to stop reading and release it.",
@@ -143,8 +142,7 @@ class OpenStreamReadBeforeWriteTests {
                                 connections {
                                     serverReady.complete(Unit)
                                     val stream = acceptStream()
-                                    val data = stream.read(10.seconds)
-                                    if (data is ReadResult.Data) stream.write(data.buffer, 10.seconds)
+                                    stream.read(10.seconds) { stream.write(it, 10.seconds) }
                                     stream.close()
                                 }
                             }
@@ -154,7 +152,10 @@ class OpenStreamReadBeforeWriteTests {
                                     val stream = openStream()
 
                                     // Reader first, writer second — the ordering #423 broke.
-                                    val reader = async(Dispatchers.IO) { stream.read(10.seconds) }
+                                    val reader =
+                                        async(Dispatchers.IO) {
+                                            stream.read(10.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                        }
 
                                     val payload = "read-before-write"
                                     val buf = BufferFactory.Default.allocate(payload.length)
@@ -163,8 +164,8 @@ class OpenStreamReadBeforeWriteTests {
                                     stream.write(buf, 10.seconds)
 
                                     val response = reader.await()
-                                    if (response is ReadResult.Data) {
-                                        response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                                    if (response is ScopedRead.Data) {
+                                        response.value
                                     } else {
                                         fail(
                                             "the reader started before the first write got $response instead of " +
@@ -186,7 +187,7 @@ class OpenStreamReadBeforeWriteTests {
     private sealed interface ReadOutcome
 
     private data class Read(
-        val result: ReadResult,
+        val result: ScopedRead<Int>,
     ) : ReadOutcome
 
     private data class Threw(

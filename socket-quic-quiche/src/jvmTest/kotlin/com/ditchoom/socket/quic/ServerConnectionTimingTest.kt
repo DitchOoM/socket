@@ -131,10 +131,7 @@ class ServerConnectionTimingTest {
                             launch(Dispatchers.IO) {
                                 connections {
                                     val stream = acceptStream()
-                                    val data = stream.read(5.seconds)
-                                    if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                        stream.write(data.buffer, 5.seconds)
-                                    }
+                                    stream.read(5.seconds) { stream.write(it, 5.seconds) }
                                     stream.close()
                                 }
                             }
@@ -151,11 +148,9 @@ class ServerConnectionTimingTest {
                                     buf.resetForRead()
                                     stream.write(buf, 5.seconds)
 
-                                    val response = stream.read(5.seconds)
-                                    if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                        echoResult.complete(
-                                            response.buffer.readString(response.buffer.remaining(), Charset.UTF8),
-                                        )
+                                    val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                    if (response is ScopedRead.Data) {
+                                        echoResult.complete(response.value)
                                     } else {
                                         echoResult.complete("no_data")
                                     }

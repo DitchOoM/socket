@@ -128,10 +128,11 @@ class QuicLocalServerTests {
                                         steps.server = "acceptStream"
                                         val stream = acceptStream()
                                         steps.server = "read"
-                                        val data = stream.read(5.seconds)
-                                        if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                        // Scoped read (#538): echo zero-copy inside the block, and the
+                                        // read buffer goes back to the driver's pool on the way out.
+                                        stream.read(5.seconds) {
                                             steps.server = "write"
-                                            stream.write(data.buffer, 5.seconds)
+                                            stream.write(it, 5.seconds)
                                         }
                                         steps.server = "close"
                                         stream.close()
@@ -154,9 +155,9 @@ class QuicLocalServerTests {
                                         stream.write(sendBuf, 5.seconds)
 
                                         steps.client = "read"
-                                        val response = stream.read(5.seconds)
-                                        if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                            echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                        val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                        if (response is ScopedRead.Data) {
+                                            echoResult.complete(response.value)
                                         } else {
                                             echoResult.complete("no_data")
                                         }
@@ -226,9 +227,9 @@ class QuicLocalServerTests {
                                         val received = StringBuilder()
                                         while (true) {
                                             steps.server = "read(${received.length})"
-                                            val r = stream.read(5.seconds)
-                                            if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
-                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                            val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                            if (r !is ScopedRead.Data) break
+                                            received.append(r.value)
                                         }
                                         val reply = BufferFactory.Default.allocate(received.length)
                                         reply.writeString(received.toString(), Charset.UTF8)
@@ -267,9 +268,9 @@ class QuicLocalServerTests {
                                         delay(2.seconds)
 
                                         steps.client = "read"
-                                        val response = stream.read(5.seconds)
-                                        if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                            echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                        val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                        if (response is ScopedRead.Data) {
+                                            echoResult.complete(response.value)
                                         } else {
                                             echoResult.complete("no_data:${response::class.simpleName}")
                                         }
@@ -372,14 +373,10 @@ class QuicLocalServerTests {
                             val stream = acceptStream()
                             // Warm-up leg: echo the token back, so the client can prove the path is up
                             // (and the handshake tail acked) before it arms the impairment.
-                            val warmup = stream.read(10.seconds)
-                            if (warmup is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                stream.write(warmup.buffer, 10.seconds)
-                            }
+                            stream.read(10.seconds) { stream.write(it, 10.seconds) }
                             // Request leg: drain to the peer's FIN.
                             while (true) {
-                                val r = stream.read(10.seconds)
-                                if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
+                                if (stream.read(10.seconds) { it.remaining() } !is ScopedRead.Data) break
                             }
                             // The reply this test is about: written, FINed, and then the handler returns,
                             // which closes the connection.
@@ -456,12 +453,12 @@ class QuicLocalServerTests {
         while (sb.length < total) {
             val r =
                 try {
-                    stream.read(timeout)
+                    stream.read(timeout) { it.readString(it.remaining(), Charset.UTF8) }
                 } catch (_: TimeoutCancellationException) {
                     break
                 }
-            if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
-            sb.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+            if (r !is ScopedRead.Data) break
+            sb.append(r.value)
         }
         return sb.toString()
     }

@@ -51,8 +51,9 @@ dependencies {
 // Client — handshake completes before the block runs; connection closes on block exit.
 withQuicConnection("example.com", 443, QuicOptions(alpnProtocols = listOf("h3"))) {
     val stream = openStream()
-    stream.write(buf, 5.seconds)
-    val response = stream.read(5.seconds)
+    stream.write(buf, 5.seconds)                        // zero-copy; you keep `buf` and free it
+    // Scoped read: your block gets the bytes, the buffer is released on every exit path.
+    val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
     stream.close()
 }
 
@@ -67,7 +68,9 @@ withQuicServer(port = 4433, tlsConfig = QuicTlsConfig(certChainPath, privKeyPath
 
 Backed by quiche on every platform: JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and quiche cinterop on Apple (client UDP rides `NWConnection` for path-migration awareness; the server uses a dual-stack POSIX UDP socket). JS/wasmJs throw `UnsupportedOperationException` (no raw UDP).
 
-Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for bytes, `shutdownSend()` to half-close the send side (FIN) for request/response, and `reset(errorCode)` to abort both directions. `read()` returns a `ReadResult` — `Data` (a buffer), `End` (peer FIN), or `Reset` (peer abort). Unreliable datagrams (RFC 9221) are available via `sendDatagram()`/`receiveDatagram()` when `QuicOptions.datagrams` is set.
+Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for bytes, `shutdownSend()` to half-close the send side (FIN) for request/response, and `reset(errorCode)` to abort both directions.
+
+Buffer ownership is asymmetric, and the scoped `read(deadline) { … }` above exists so you do not have to hold it in your head: **`write` is zero-copy and takes no ownership** (you still own and free what you wrote), while **`read` transfers the buffer to you**. The scoped form returns a `ScopedRead` — `Data` (whatever your block computed), `End` (peer FIN) or `Reset` (peer abort) — and releases the buffer on every exit path, exception and cancellation included. The transferring `read(deadline): ReadResult` is still there for callers that genuinely keep the bytes; they must call `buffer.freeIfNeeded()`, and skipping it is never safe on any platform or factory (see #538). Unreliable datagrams (RFC 9221) are available via `sendDatagram()`/`receiveDatagram()` when `QuicOptions.datagrams` is set.
 
 Allocate send buffers from the scope's `bufferFactory` (defaults to `BufferFactory.network()` — the native-memory factory QUIC needs on every backend) and pair them with `use { }`; the connection scope reclaims streams on exit, but buffers are yours to free. The requirement is a declared capability, not a platform quirk: `capabilities.requiresNativeMemoryBuffers` is `true` on every quiche backend, and a write handed a heap buffer (`BufferFactory.Default` on Linux native, `BufferFactory.managed()` anywhere) is rejected with a typed `QuicNativeMemoryRequiredException` before anything is sent.
 

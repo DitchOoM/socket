@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.HalfCloseable
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -58,8 +57,8 @@ class QuichePlainProbeClient {
                         buf.resetForRead()
                         stream.write(buf, 5.seconds)
                         (stream as HalfCloseable).shutdownSend()
-                        val r = stream.read(5.seconds)
-                        val echo = if (r is ReadResult.Data) r.buffer.readString(r.buffer.remaining(), Charset.UTF8) else "<$r>"
+                        val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                        val echo = if (r is ScopedRead.Data) r.value else "<$r>"
                         println("PLAIN_CLIENT_STREAM echo=$echo")
                         stream.close()
                     }.onFailure { println("PLAIN_CLIENT_STREAM_FAILED ${it.message}") }

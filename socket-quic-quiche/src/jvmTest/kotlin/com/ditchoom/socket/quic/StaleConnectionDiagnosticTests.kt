@@ -126,10 +126,10 @@ class StaleConnectionDiagnosticTests {
             val received = ArrayList<Byte>(payload.length)
             var chunks = 0
             while (received.size < payload.length) {
-                val response = stream.read(5.seconds)
-                if (response !is ReadResult.Data) break
+                // Scoped read (#538): the bytes are copied out inside the block; the buffer is released.
+                val response = stream.read(5.seconds) { chunk -> repeat(chunk.remaining()) { received.add(chunk.readByte()) } }
+                if (response !is ScopedRead.Data) break
                 chunks++
-                repeat(response.buffer.remaining()) { received.add(response.buffer.readByte()) }
             }
             result.complete(
                 if (chunks == 0) {

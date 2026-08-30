@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
@@ -199,8 +198,7 @@ class JvmQuicTraceCaptureTests {
                             launch(Dispatchers.IO) {
                                 connections {
                                     val stream = acceptStream()
-                                    val data = stream.read(5.seconds)
-                                    if (data is ReadResult.Data) stream.write(data.buffer, 5.seconds)
+                                    stream.read(5.seconds) { stream.write(it, 5.seconds) }
                                     stream.close()
                                 }
                             }
@@ -240,10 +238,10 @@ class JvmQuicTraceCaptureTests {
                                     awaitNetStateTapped(lines, "networkId=$migratedTo") { it.networkId == migratedTo }
                                     monitor.set(NetworkState.Offline)
 
-                                    val response = stream.read(5.seconds)
+                                    val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                     val echoed =
-                                        if (response is ReadResult.Data) {
-                                            response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                                        if (response is ScopedRead.Data) {
+                                            response.value
                                         } else {
                                             "no_data"
                                         }
@@ -321,8 +319,7 @@ class JvmQuicTraceCaptureTests {
                             launch(Dispatchers.IO) {
                                 connections {
                                     val stream = acceptStream()
-                                    val data = stream.read(5.seconds)
-                                    if (data is ReadResult.Data) stream.write(data.buffer, 5.seconds)
+                                    stream.read(5.seconds) { stream.write(it, 5.seconds) }
                                     stream.close()
                                 }
                             }
@@ -335,10 +332,10 @@ class JvmQuicTraceCaptureTests {
                                 sendBuf.writeString(payload, Charset.UTF8)
                                 sendBuf.resetForRead()
                                 stream.write(sendBuf, 5.seconds)
-                                val response = stream.read(5.seconds)
+                                val response = stream.read(5.seconds) { describeEcho(it, expected = payload) }
                                 echoed.complete(
-                                    if (response is ReadResult.Data) {
-                                        describeEcho(response.buffer, expected = payload)
+                                    if (response is ScopedRead.Data) {
+                                        response.value
                                     } else {
                                         "no_data"
                                     },

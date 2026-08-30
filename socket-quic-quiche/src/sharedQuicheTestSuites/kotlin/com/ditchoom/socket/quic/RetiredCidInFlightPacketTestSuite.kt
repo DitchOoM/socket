@@ -191,7 +191,7 @@ abstract class RetiredCidInFlightPacketTestSuite {
                         val expected = "in-flightafter"
                         val echoed = StringBuilder()
                         while (echoed.length < expected.length) {
-                            val chunk = stream.read(30.seconds).text()
+                            val chunk = stream.read(30.seconds) { it.readString(it.remaining(), Charset.UTF8) }.text()
                             if (chunk == NO_DATA) break
                             echoed.append(chunk)
                         }
@@ -229,7 +229,7 @@ abstract class RetiredCidInFlightPacketTestSuite {
         return ConnectionIdKey.from(buf, offset = 0, length = cid.size)
     }
 
-    private fun ReadResult.text(): String = if (this is ReadResult.Data) buffer.readString(buffer.remaining(), Charset.UTF8) else NO_DATA
+    private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else NO_DATA
 
     private suspend fun QuicByteStream.writeString(
         payload: String,
@@ -243,7 +243,9 @@ abstract class RetiredCidInFlightPacketTestSuite {
 
     private suspend fun QuicByteStream.echo(payload: String): String {
         writeString(payload, 5.seconds)
-        return read(30.seconds).text()
+        // Scoped read (#538): the bytes are decoded inside the block, so the buffer goes back to
+        // the driver's pool instead of waiting for a collector that owns it and never runs.
+        return read(30.seconds) { it.readString(it.remaining(), Charset.UTF8) }.text()
     }
 
     private companion object {

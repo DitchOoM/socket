@@ -16,8 +16,9 @@ connection on exit:
 
 ```kotlin
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.use
+import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.read
 import kotlin.time.Duration.Companion.seconds
 
 val reply = withQuicConnection(
@@ -39,14 +40,11 @@ val reply = withQuicConnection(
     // We won't send anything more — half-close the write side (FIN); the read side stays open.
     stream.shutdownSend()
 
-    // Read the response. The buffer in `Data` is yours to free.
-    val text = when (val r = stream.read(5.seconds)) {
-        is ReadResult.Data -> {
-            val s = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
-            r.buffer.freeIfNeeded()
-            s
-        }
-        ReadResult.End, ReadResult.Reset -> ""
+    // Read the response. The scoped read gives the block the bytes and releases the buffer on
+    // every exit path — exception and cancellation included — so the free is not yours to remember.
+    val text = when (val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }) {
+        is ScopedRead.Data -> r.value
+        ScopedRead.End, ScopedRead.Reset -> ""
     }
     stream.close() // optional here — the scope would reclaim it — but sends a prompt FIN.
     text
@@ -70,13 +68,9 @@ withQuicServer(
         // you finish it — `try/finally` guarantees the close even if the body throws.
         val stream = acceptStream()
         try {
-            when (val r = stream.read(5.seconds)) {
-                is ReadResult.Data -> {
-                    stream.write(r.buffer, 5.seconds) // echo (zero-copy)
-                    r.buffer.freeIfNeeded()           // you own the read buffer
-                }
-                ReadResult.End, ReadResult.Reset -> {}
-            }
+            // Echo, zero-copy and leak-free: write takes no ownership of the buffer, and the read
+            // scope releases it on the way out.
+            stream.read(5.seconds) { bytes -> stream.write(bytes, 5.seconds) }
         } finally {
             stream.close()
         }

@@ -4,7 +4,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
@@ -91,8 +90,8 @@ class AndroidQuicConnectivityTests {
                 sendBuf.resetForRead()
                 stream.write(sendBuf, 5.seconds)
 
-                val response = stream.read(5.seconds)
-                assertIs<com.ditchoom.buffer.flow.ReadResult.Data>(response)
+                val response = stream.read(5.seconds) { it.remaining() }
+                assertIs<ScopedRead.Data<Int>>(response)
 
                 stream.close()
             }
@@ -103,8 +102,10 @@ class AndroidQuicConnectivityTests {
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        val resp = read(5.seconds)
-        return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
+        // Scoped read (#538): decode inside the block, buffer released on the way out — read
+        // transfers ownership and no collector will reclaim what a pool never gets back.
+        val resp = read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+        return if (resp is ScopedRead.Data) resp.value else "no_data"
     }
 
     /**
