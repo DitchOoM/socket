@@ -7,6 +7,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -381,17 +382,19 @@ internal class AppleQuicConnection(
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
     /**
-     * Read the peer's leaf certificate DER into the native buffer at [addr] (capacity [capacity]),
+     * Read the peer's leaf certificate DER into [der] (capacity [capacity]),
      * routed through the driver so the `quiche_conn_peer_cert` read is serialized with all other conn
      * access. Snprintf-style return (see [QuicheCmd.PeerCert]); used by the post-handshake
      * serverCertificateHashes verifier. Mirrors [JvmQuicConnection.readPeerCertDer].
      */
     suspend fun readPeerCertDer(
-        addr: Long,
+        der: PlatformBuffer,
         capacity: Int,
     ): Int {
         val deferred = CompletableDeferred<Int>()
-        driver.commands.send(QuicheCmd.PeerCert(addr, capacity, deferred))
+        // The buffer travels with its address (#366): quiche writes the DER into it on the driver
+        // loop, so what keeps that memory mapped has to reach the driver too. See [QuicheMemory].
+        driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred))
         return deferred.await()
     }
 

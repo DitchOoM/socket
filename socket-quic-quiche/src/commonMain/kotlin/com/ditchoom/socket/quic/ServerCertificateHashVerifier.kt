@@ -3,8 +3,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.toHexString
 import com.ditchoom.socket.CertificateHashPinningException
 import com.ditchoom.socket.CertificateHashPinningFailure
@@ -27,8 +27,10 @@ private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
  * On any failure it [closeConnection]s and throws [CertificateHashPinningException] (with a structured
  * [CertificateHashPinningFailure]), so an unverified connection is never handed back.
  *
- * [readPeerCertDer] is snprintf-style: copies the DER into the buffer at `addr` when it fits within
+ * [readPeerCertDer] is snprintf-style: copies the DER into the buffer it is handed when it fits within
  * `capacity` and returns its length; returns a larger length (no copy) when it does not fit; 0 = no cert.
+ * It takes the **buffer**, not its address: quiche writes into that memory on the driver loop, so what
+ * keeps it mapped has to travel with the address (#366 — see [QuicheMemory]).
  *
  * Under the default [CertificateHashVerification.HashOnly] the quiche handshake ran with `verify_peer`
  * off (see [applyQuicOptions]); this leaf-hash match is the sole trust check, matching the browser.
@@ -46,7 +48,7 @@ private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
 internal suspend fun verifyServerCertificateHashes(
     pinned: List<CertificateHash>,
     bufferFactory: BufferFactory,
-    readPeerCertDer: suspend (addr: Long, capacity: Int) -> Int,
+    readPeerCertDer: suspend (der: PlatformBuffer, capacity: Int) -> Int,
     closeConnection: suspend () -> Unit,
     parseLeafFields: ((der: ReadBuffer) -> X509PinFields?)? = null,
     now: Instant = Clock.System.now(),
@@ -57,8 +59,7 @@ internal suspend fun verifyServerCertificateHashes(
         while (true) {
             val derBuf = bufferFactory.allocate(capacity)
             try {
-                val addr = derBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-                val len = readPeerCertDer(addr, capacity)
+                val len = readPeerCertDer(derBuf, capacity)
                 when {
                     len <= 0 -> throw CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
                     len > capacity -> {
