@@ -8,6 +8,8 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
+import com.ditchoom.socket.quic.sim.SimClockChoice
+import com.ditchoom.socket.quic.sim.resolve
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -51,9 +53,24 @@ import kotlin.time.Duration.Companion.seconds
  *
  * What is still true is that it is **not automatic**. Advancing the coroutine test scheduler alone moves
  * nothing inside quiche; the clock reaches it only through [CallerClockQuicheApi], which [QuicheDriver]
- * installs when — and only when — its [DriverClock] reports [DriverTime.Virtual]. This sim passes
- * `clock = RealDriverClock` below, so today it genuinely does run quiche on the wall clock. That is a
- * wiring choice, not a limitation.
+ * installs when — and only when — its [DriverClock] reports [DriverTime.Virtual].
+ *
+ * ### The clock is resolved from the calling dispatcher (DitchOoM/socket#497)
+ *
+ * This sim used to default to `RealDriverClock`, and under `runTest` that was not "slow" but
+ * **incoherent**: our `delay()`s, `select { onTimeout }` wakes and the establishment `withTimeout`
+ * fast-forwarded on the scheduler while quiche's PTO/idle/loss timers read a wall clock that had barely
+ * moved. Measured on seed 1 at 30% loss: 61 timer wakes on which quiche reported 985–998ms still to go to
+ * its first PTO *every time* — 11ms of wall had passed across all of them — while each wake advanced
+ * virtual time by that same ~995ms, so the 60s establishment bound expired without quiche ever
+ * retransmitting the lost Initial. The same seed on the scheduler's clock: PTO fires at virtual 999ms,
+ * `Established` at 1009ms. Four of six seeds flipped outcome between the two clocks.
+ *
+ * So [withSemanticSim] takes a [SimClockChoice] and resolves it against the calling dispatcher before it
+ * allocates anything native: under a `TestDispatcher` the default is the scheduler's clock, on a real
+ * dispatcher it is the wall clock, and asking for the pairing that cannot be coherent is a construction
+ * error. (`runQuicTest` is `runTest` + `withContext(Dispatchers.Default)`, so a sim inside it is on real
+ * dispatchers and stays on wall time — the resolver keys on the interceptor, not the scheduler element.)
  *
  * Measured, not inferred — `PathValidationVirtualClockTests` runs one scenario twice against real quiche
  * and varies only the clock. An unanswered PATH_CHALLENGE reaches `PathState::Failed` after 3 timer
@@ -75,6 +92,8 @@ internal class SemanticSimScope(
     val clientDriver: QuicheDriver,
     val serverDriver: QuicheDriver,
     val pipe: ImpairedPipe,
+    /** The clock both drivers — and, through [CallerClockQuicheApi], both libquiche conns — ran on. */
+    val clock: DriverClock,
 )
 
 /**
@@ -138,24 +157,18 @@ internal suspend fun <R> withSemanticSim(
     // W3 trace tap: attached to the CLIENT driver (channel decorator + state mirror + stats poll),
     // mirroring how a consumer records its client-side connection in the field (RFC §5).
     clientRecorder: com.ditchoom.socket.quic.trace.QuicTraceRecorder? = null,
-    // The clock BOTH drivers run on. Defaults to [RealDriverClock], which is what every existing sim
-    // test was written against, so this parameter changes nothing until a caller opts in.
-    //
-    // Pass a [SimClock] to make quiche's OWN timers virtual (via [CallerClockQuicheApi], which
-    // [QuicheDriver] installs only when the clock reports [DriverTime.Virtual]). The KDoc above calls
-    // the RealDriverClock default "a wiring choice, not a limitation" — this is the wire.
-    //
-    // Why it matters beyond speed: under `runTest` with a REAL driver clock the sim's timing is
-    // incoherent rather than merely slow. Our own delay()s fast-forward on the test scheduler while
-    // quiche's internal PTO/idle timers read a wall clock that has barely moved, so the two sides of
-    // the FFI disagree about how much time passed. A virtual clock makes them agree — and makes a
-    // deliberate, exact skew expressible instead of something only a loaded machine produces by luck.
-    clock: DriverClock = RealDriverClock,
+    // The clock BOTH drivers — and, through [CallerClockQuicheApi], both libquiche conns — run on,
+    // resolved against the calling dispatcher before anything native is allocated. The default is
+    // whatever clock that dispatcher already runs `delay()` on, so the two sides of the FFI agree; the
+    // pairing that cannot agree is a construction error. See [SimClockChoice] and the class KDoc (#497).
+    clock: SimClockChoice = SimClockChoice.OfCallingDispatcher,
     // Which drivers the establishment gate waits on before running [block] — see [EstablishmentGate].
     // Defaults to both, which is what every pre-existing test wants.
     gate: EstablishmentGate = EstablishmentGate.ClientAndServer,
     block: suspend SemanticSimScope.() -> R,
 ): R {
+    // First, before loadQuicheApi(): an incoherent clock fails here, typed, with nothing to tear down.
+    val driverClock = clock.resolve()
     val api = loadQuicheApi()
     val bufferFactory = BufferFactory.network()
     // Role-separated seeded entropy (scid + stateless-reset tokens). Distinct instances so
@@ -267,7 +280,7 @@ internal suspend fun <R> withSemanticSim(
                 clientMode = true,
                 isServer = false,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = clock,
+                clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
                 recorder = clientRecorder,
@@ -291,7 +304,7 @@ internal suspend fun <R> withSemanticSim(
                 clientMode = true,
                 isServer = true,
                 keepAliveInterval = quicOptions.keepAliveInterval,
-                clock = clock,
+                clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = serverRandom,
                 onCleanup = {
@@ -317,7 +330,7 @@ internal suspend fun <R> withSemanticSim(
                     EstablishmentGate.None -> Unit
                 }
             }
-            SemanticSimScope(client, server, clientDriver, serverDriver, pipe).block()
+            SemanticSimScope(client, server, clientDriver, serverDriver, pipe, driverClock).block()
         } finally {
             withContext(NonCancellable) {
                 // close() sends QuicheCmd.Close then destroy()-joins the driver, whose cleanup()

@@ -17,6 +17,8 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -121,49 +123,87 @@ internal class WebTransportMux(
      * Take ownership of a peer-opened **bidirectional** stream whose leading `0x41` signal was just
      * observed: read the Session ID, hand the stream (with any bytes already buffered after the header)
      * to the owning session's [WebTransportSession.incomingBidiStreams], or reset it if no live session
-     * owns it. Always consumes [processor]; the caller must not touch [stream]/[processor] afterward.
+     * owns it. Always consumes [processor] and [stream] — on every exit, not only success (#496): the
+     * routers flag the pair as this mux's *before* calling, so their own `finally` neither releases nor
+     * closes, and a Session ID read that throws (its deadline expiring, the peer resetting the stream, a
+     * FIN mid-varint) would otherwise leave the processor's buffered chunk out of the pool for good and
+     * the peer's half of the stream open. The caller must not touch [stream]/[processor] afterward.
      */
     suspend fun acceptIncomingBidi(
         stream: QuicByteStream,
         processor: StreamProcessor,
     ) {
-        val reader = Http3StreamReader(stream, processor)
-        reader.nextVarInt(config.readPolicy.toDeadline()) // the 0x41 signal (already peeked by the router)
-        val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
-        val session = session(sessionId)
-        if (session == null || session.isClosed) {
+        var handedOver = false
+        try {
+            val reader = Http3StreamReader(stream, processor)
+            reader.nextVarInt(config.readPolicy.toDeadline()) // the 0x41 signal (already peeked by the router)
+            val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
+            val session = session(sessionId)
+            if (session == null || session.isClosed) {
+                resetQuietly(stream)
+                return
+            }
+            val wt = WebTransportStream(sessionId, stream, drainBuffered(processor))
+            handedOver = true
+            session.deliverIncomingBidi(wt)
+        } catch (e: Throwable) {
+            if (!handedOver) abandon(stream, e)
+            throw e
+        } finally {
+            // On every path: whatever the processor still held was either copied into the stream's
+            // pending buffer above or is going nowhere. Its chunks are the QUIC receive pool's leaves.
             processor.release()
-            resetQuietly(stream)
-            return
         }
-        val pending = drainBuffered(processor)
-        processor.release()
-        val wt = WebTransportStream(sessionId, stream, pending)
-        session.deliverIncomingBidi(wt)
     }
 
     /**
      * Take ownership of a peer-opened **unidirectional** stream whose `0x54` type prefix was just
      * consumed: read the Session ID, hand the receive stream to the owning session's
      * [WebTransportSession.incomingUniStreams], or reset it if no live session owns it. Always consumes
-     * [processor].
+     * [processor] and [stream] on every exit, exactly as [acceptIncomingBidi] does (#496).
      */
     suspend fun acceptIncomingUni(
         stream: QuicByteStream,
         processor: StreamProcessor,
     ) {
-        val reader = Http3StreamReader(stream, processor)
-        val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
-        val session = session(sessionId)
-        if (session == null || session.isClosed) {
-            processor.release()
-            resetQuietly(stream)
-            return
+        var handedOver = false
+        try {
+            val reader = Http3StreamReader(stream, processor)
+            val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
+            val session = session(sessionId)
+            if (session == null || session.isClosed) {
+                resetQuietly(stream)
+                return
+            }
+            val wt = WebTransportReceiveStream(sessionId, stream, drainBuffered(processor))
+            handedOver = true
+            session.deliverIncomingUni(wt)
+        } catch (e: Throwable) {
+            if (!handedOver) abandon(stream, e)
+            throw e
+        } finally {
+            processor.release() // see acceptIncomingBidi
         }
-        val pending = drainBuffered(processor)
-        processor.release()
-        val wt = WebTransportReceiveStream(sessionId, stream, pending)
-        session.deliverIncomingUni(wt)
+    }
+
+    /**
+     * Dispose of a peer stream this mux could not hand to a session because reading its header threw
+     * [cause] (#496). The peer is told with RESET_STREAM + STOP_SENDING carrying `H3_REQUEST_CANCELLED` —
+     * the code RFC 9114 §4.1.1 gives for data no longer needed, and the one [Http3Connection]'s router
+     * already uses for a peer stream that stalls before it can be routed (#477) — unless [cause] is this
+     * coroutine's own cancellation rather than a read deadline, which gets the bare close a cancelled
+     * router leaves too: a read deadline's `TimeoutCancellationException` leaves the coroutine active, a
+     * cancellation does not. Quietly either way; the connection may already be gone.
+     */
+    private suspend fun abandon(
+        stream: QuicByteStream,
+        cause: Throwable,
+    ) {
+        if (cause is CancellationException && !currentCoroutineContext().isActive) {
+            closeQuietly(stream)
+        } else {
+            resetQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
+        }
     }
 
     /** Copy whatever bytes the [processor] still holds into an owned buffer (or null when empty). */
@@ -374,9 +414,22 @@ internal class WebTransportMux(
         streamWriter.writeFrame(stream, Http3Frame.Data(payload))
     }
 
-    private suspend fun resetQuietly(stream: QuicByteStream) {
+    private suspend fun resetQuietly(
+        stream: QuicByteStream,
+        errorCode: Long = 0,
+    ) {
         try {
-            stream.reset(0)
+            stream.reset(errorCode)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Already gone.
+        }
+    }
+
+    private suspend fun closeQuietly(stream: QuicByteStream) {
+        try {
+            stream.close()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {

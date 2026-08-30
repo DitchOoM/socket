@@ -6,6 +6,8 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.managed
+import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
@@ -138,6 +140,81 @@ abstract class QuicDatagramTestSuite {
                             roundTripped = echoed.getCompleted()
                         }
                         assertEquals("hello dgram", roundTripped)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * #502, datagram half: the channel's buffer-flow `DatagramCapabilities.requiresNativeMemoryBuffers`
+     * must agree with the connection's [QuicScope.capabilities], and a heap payload must be rejected by
+     * type — the same [QuicNativeMemoryRequiredException], targeting [QuicWriteTarget.Datagram] — before
+     * anything is enqueued, while a payload from the scope's own factory is accepted. Before this the
+     * QUIC datagram channel advertised `DatagramCapabilities.None` (a real claim that any buffer is
+     * fine) over a send path that dereferenced `nativeMemoryAccess!!`.
+     */
+    @Test
+    fun sendRejectsABufferWithoutNativeMemoryAsTheCapabilitySays() =
+        runQuicTest(timeout = 30.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = dgramOptions) {
+                    // Server: hold each accepted connection open until the client is done with it.
+                    val serverJob =
+                        launch {
+                            connections {
+                                while (true) {
+                                    when (val r = datagramChannel().receive()) {
+                                        is DatagramReadResult.Received -> r.datagram.payload.freeIfNeeded()
+                                        is DatagramReadResult.Closed -> break
+                                    }
+                                }
+                            }
+                        }
+                    try {
+                        withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {
+                            val declared = capabilities
+                            val channel = datagramChannel()
+                            assertTrue(channel.maxWritableSize > 0, "datagrams should be sendable")
+                            assertEquals(
+                                declared.requiresNativeMemoryBuffers,
+                                channel.capabilities.requiresNativeMemoryBuffers,
+                                "the datagram channel must restate the connection's buffer requirement",
+                            )
+                            val heap = BufferFactory.managed().allocate(4)
+                            try {
+                                heap.writeString("heap", Charset.UTF8)
+                                heap.resetForRead()
+                                assertTrue(
+                                    heap.nativeMemoryAccess == null,
+                                    "precondition: BufferFactory.managed() must allocate without native memory here",
+                                )
+                                if (declared.requiresNativeMemoryBuffers) {
+                                    val rejection = assertFailsWith<QuicNativeMemoryRequiredException> { channel.send(heap) }
+                                    assertEquals(QuicWriteTarget.Datagram, rejection.target)
+                                    assertEquals(declared, rejection.capabilities)
+                                    assertTrue(
+                                        (rejection.message ?: "").contains("datagramChannel().send"),
+                                        "the message must name the datagram send: ${rejection.message}",
+                                    )
+                                    assertEquals(4, heap.remaining(), "a rejected send consumes nothing")
+                                } else {
+                                    channel.send(heap)
+                                }
+                            } finally {
+                                heap.freeIfNeeded()
+                            }
+                            // The scope's own factory always satisfies the declaration.
+                            val native = bufferFactory.allocate(6)
+                            try {
+                                native.writeString("native", Charset.UTF8)
+                                native.resetForRead()
+                                channel.send(native)
+                            } finally {
+                                native.freeIfNeeded()
+                            }
+                        }
                     } finally {
                         serverJob.cancel()
                     }

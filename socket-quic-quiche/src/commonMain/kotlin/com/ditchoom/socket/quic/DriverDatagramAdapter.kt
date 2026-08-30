@@ -38,9 +38,9 @@ import kotlinx.coroutines.withContext
  *   join guarantees quiche finished reading before the caller frees/recycles it.
  *
  * A QUIC datagram flow has one implicit peer (the connected refinement has no destination parameter)
- * and no per-datagram IP control plane, so [send] ignores its `options` argument, [capabilities] is
- * [DatagramCapabilities.None], and [close] is a no-op (the connection owns the datagram flow's
- * lifecycle).
+ * and no per-datagram IP control plane, so [send] ignores its `options` argument, [capabilities]
+ * advertises nothing but the native-memory requirement the send path imposes, and [close] is a no-op
+ * (the connection owns the datagram flow's lifecycle).
  */
 internal class DriverDatagramAdapter(
     private val driver: QuicheDriver,
@@ -70,8 +70,15 @@ internal class DriverDatagramAdapter(
     /** QUIC does not surface the underlying UDP endpoint — the typed absent state, never `null`. */
     override val localAddress: LocalAddress = LocalAddress.Unknown
 
-    /** QUIC application datagrams carry no raw IP control plane (ECN/DF/PKTINFO). */
-    override val capabilities: DatagramCapabilities = DatagramCapabilities.None
+    /**
+     * QUIC application datagrams carry no raw IP control plane (ECN/DF/PKTINFO) — but [send] hands
+     * quiche the payload's raw address, so the one data-plane requirement is stated (#502): the same
+     * answer as the connection's [QuicScope.capabilities], in buffer-flow's vocabulary. This used to be
+     * [DatagramCapabilities.None], which that type's own doc calls a *real claim* that heap payloads are
+     * sendable — made over a `nativeMemoryAccess!!`.
+     */
+    override val capabilities: DatagramCapabilities =
+        DatagramCapabilities(requiresNativeMemoryBuffers = QuicheDriver.capabilities.requiresNativeMemoryBuffers)
 
     override val maxWritableSize: Int
         get() =
@@ -92,8 +99,22 @@ internal class DriverDatagramAdapter(
                 require(remaining <= max.bytes) { "datagram too large: $remaining > ${max.bytes} bytes" }
         }
         // A zero-length datagram is valid (RFC 9221); a 0-remaining buffer may not expose a native
-        // address, so pass a null pointer in that case (the backends send NULL/len 0).
-        val addr = if (remaining > 0) payload.nativeMemoryAccess!!.nativeAddress.toLong() + payload.position() else 0L
+        // address, so pass a null pointer in that case (the backends send NULL/len 0). Otherwise this is
+        // a caller-fed buffer (#502): a heap payload is rejected by type before anything is enqueued —
+        // see DriverStreamAdapter.streamWrite, the stream half of the same contract.
+        val addr =
+            if (remaining > 0) {
+                val native =
+                    payload.nativeMemoryAccess
+                        ?: throw QuicNativeMemoryRequiredException.forBuffer(
+                            QuicWriteTarget.Datagram,
+                            payload,
+                            QuicheDriver.capabilities,
+                        )
+                native.nativeAddress + payload.position()
+            } else {
+                0L
+            }
 
         // See DriverStreamAdapter.streamWrite: keep the buffer alive until any in-flight send finishes
         // reading `addr`, since the caller frees it the instant we return.
@@ -131,7 +152,7 @@ internal class DriverDatagramAdapter(
 
     override suspend fun receive(): DatagramReadResult {
         val buffer = driver.recvBufPool.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
-        val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
+        val addr = buffer.driverOwnedNativeAddress()
 
         // See DriverStreamAdapter.streamRead: the driver may still be writing into `addr` inside
         // connDgramRecv when we unwind, so wait (non-cancellably) for any in-flight recv before freeing.
