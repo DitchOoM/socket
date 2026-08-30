@@ -304,6 +304,10 @@ expect fun supportsIPv6(): Boolean
  * on Kotlin/Native the read itself was an unsynchronised cross-thread read that need not have seen
  * the write even when the server had handled the client (#381). The server is closed and the job
  * cancelled only after the signal, so teardown never races the handler either.
+ *
+ * [serverAcceptsBothIPv4AndIPv6] additionally opens the IPv6 client its name has always promised
+ * (#518); until then it connected over IPv4 twice over — once in the name and never in the body —
+ * so a listener that was quietly IPv4-only satisfied it.
  */
 class IPv6SocketTests {
     @Test
@@ -343,14 +347,19 @@ class IPv6SocketTests {
 
             val server = ServerSocket.allocate()
             val acceptedClientFlow = server.bind() // Default should use dual-stack
-            val ipv4ClientHandled = CompletableDeferred<String>()
+            // One signal per accepted client, in accept order. The IPv6 client is opened only after
+            // the IPv4 client's signal, so index 0 is the IPv4 client and index 1 the IPv6 one — the
+            // test names which family it is asserting about without having to ask the socket.
+            val handled = List(2) { CompletableDeferred<String>() }
 
             val serverJob =
                 launch(Dispatchers.Default) {
+                    val signals = handled.iterator()
                     acceptedClientFlow.collect { serverToClient ->
                         val received = serverToClient.readString()
                         serverToClient.close()
-                        ipv4ClientHandled.complete(received)
+                        if (!signals.hasNext()) fail("the server accepted a third client; the test opens only two")
+                        signals.next().complete(received)
                     }
                 }
 
@@ -360,8 +369,25 @@ class IPv6SocketTests {
             client1.writeString("ipv4")
             client1.close()
 
-            val received = ipv4ClientHandled.awaitOrFail("the dual-stack server to handle the IPv4 client")
-            assertTrue(received.isNotEmpty(), "the dual-stack server handled the IPv4 client but read nothing from it")
+            assertEquals(
+                "ipv4",
+                handled[0].awaitOrFail("the dual-stack server to handle the IPv4 client on 127.0.0.1"),
+                "the dual-stack server did not read what the IPv4 client sent",
+            )
+
+            // ...and using IPv6 loopback, which is the half this test's name promises and only ever
+            // claimed: before #518 it opened an IPv4 client and stopped there, so a server that was
+            // silently IPv4-only would have passed it.
+            val client2 = ClientSocket.allocate()
+            client2.open(server.port(), hostname = "::1")
+            client2.writeString("ipv6")
+            client2.close()
+
+            assertEquals(
+                "ipv6",
+                handled[1].awaitOrFail("the dual-stack server to handle the IPv6 client on ::1"),
+                "the dual-stack server did not read what the IPv6 client sent",
+            )
 
             server.close()
             serverJob.cancel()
