@@ -51,25 +51,7 @@ internal class UdpSocketChannelFactory(
         localHost: String?,
         localPort: Int,
     ): NewPath {
-        // An unnamed source binds the address the route would choose, never the wildcard — see
-        // [routeSourceAddress]. A caller that named one gets exactly that, unchanged, and no probe is
-        // taken on its behalf. Exhaustive on purpose: the three answers demand opposite handling, and
-        // when they shared a `null` the one that meant "the probe failed" silently took the branch
-        // meant for "this platform names the endpoint itself" — which is the unnamed bind #434
-        // removed (#523). A new member must state its own answer here rather than inherit one.
-        val bindHost =
-            if (localHost != null) {
-                localHost
-            } else {
-                when (val source = routeSourceAddress()) {
-                    is RouteSource.Resolved -> source.host
-                    // The platform picks; there is no source to name and asking for one is meaningless.
-                    RouteSource.PlatformAssigned -> null
-                    // Fail the open. See [UnresolvedRouteSourceException] for why this is not a fallback.
-                    is RouteSource.Unresolved -> throw UnresolvedRouteSourceException(source.reason)
-                }
-            }
-        val channel = openChannel.open(peer.host, peer.port, bindHost, localPort, receiveBufferSize, recvBufferFactory)
+        val channel = openConnectedChannel(localHost, localPort)
         val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(
@@ -83,6 +65,67 @@ internal class UdpSocketChannelFactory(
             release = { encoded.free() },
         )
     }
+
+    /**
+     * Open a UDP socket connected to [peer] from a local endpoint chosen by [resolveBindHost] — the one
+     * place in the client where a socket to this peer is created.
+     *
+     * [openPath] wraps this and pins the resulting sockaddr for the driver; the **primary** path calls it
+     * directly, because it needs the channel and encodes its own sockaddr alongside the peer's (#519).
+     * Both therefore bind the same way by construction: there is no second call site that could reach
+     * `UdpSocket.connect` with an unnamed source, which is what #434 removed from migration paths and
+     * #519 found still in place on the primary one.
+     */
+    internal suspend fun openConnectedChannel(
+        localHost: String?,
+        localPort: Int,
+    ): ConnectedDatagramChannel =
+        openChannel.open(
+            peer.host,
+            peer.port,
+            resolveBindHost(localHost),
+            localPort,
+            receiveBufferSize,
+            recvBufferFactory,
+        )
+
+    /**
+     * The local address a socket to [peer] binds: exactly [localHost] when the caller named one, and
+     * otherwise the source address the routing table would choose ([routeSourceAddress]).
+     *
+     * An unnamed source binds the address the route would choose, never the wildcard — see
+     * [routeSourceAddress]. A caller that named one gets exactly that, unchanged, and no probe is taken
+     * on its behalf. Exhaustive on purpose: the three answers demand opposite handling, and when they
+     * shared a `null` the one that meant "the probe failed" silently took the branch meant for "this
+     * platform names the endpoint itself" — which is the unnamed bind #434 removed (#523). A new member
+     * must state its own answer here rather than inherit one.
+     *
+     * The returned `null` is not a fourth answer: it is [UdpSocket.connect]'s own `localHost` argument,
+     * whose contract already defines `null` as "the platform picks". This function's job is to make sure
+     * that argument is only ever `null` because a platform said so.
+     *
+     * Shared with the **primary** connection path, not just migration paths (#519). Every client's first
+     * socket used to be opened by a bare `UdpSocket.connect(peer)` — the unnamed bind #434 removed here,
+     * behind an 8-attempt `BindException` retry. Measured on macOS/JDK 21, single-threaded, 3000 sockets
+     * held connected to one peer: **264 `EADDRINUSE` at `connect` with the unnamed bind, 0 with this**.
+     * The mechanism is not a race — `udp6_bind([::]:0)` picks its port through `in6_pcblookup_local`,
+     * which skips every pcb without `INP_IPV6`, and `udp6_connect` to a v4-mapped peer clears `INP_IPV6`
+     * — so every socket already connected to that peer is invisible to the next wildcard bind and
+     * `in_pcbconnect` then finds the exact 4-tuple. A process holding many connections to one server
+     * pays `k / 16384` per connect, and a retry only lowers that to `(k / 16384)^8` rather than to zero.
+     */
+    internal suspend fun resolveBindHost(localHost: String?): String? =
+        if (localHost != null) {
+            localHost
+        } else {
+            when (val source = routeSourceAddress()) {
+                is RouteSource.Resolved -> source.host
+                // The platform picks; there is no source to name and asking for one is meaningless.
+                RouteSource.PlatformAssigned -> null
+                // Fail the open. See [UnresolvedRouteSourceException] for why this is not a fallback.
+                is RouteSource.Unresolved -> throw UnresolvedRouteSourceException(source.reason)
+            }
+        }
 
     /**
      * What source address the routing table would choose for [peer] — as a [RouteSource], which says
