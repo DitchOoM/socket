@@ -3,10 +3,12 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Common [UdpChannelFactory] over `:socket-udp` (Phase 6). Opens a new connected [UdpSocket.connect]
@@ -28,6 +30,12 @@ import com.ditchoom.socket.udp.UdpSocket
  * the JVM and Linux actuals `bind` before `connect`, while the Apple actual hands the endpoint to
  * `NWConnection` and its own comment calls `localHost`/`localPort` "advisory". The call site is the only
  * place that knows which actual it is compiled against, so it is the only place that can answer honestly.
+ *
+ * [openChannel] is how every socket here is opened — the route probe and the path itself — and it
+ * defaults to the platform's [UdpSocket.connect]. It is a parameter so that a test can refuse a probe
+ * the host would happily serve: every member of [RouteProbeFailure] is a condition (no descriptors, a
+ * sandbox, a `getsockname` that fails) which cannot be provoked on a real socket on demand, and a
+ * decision no test can drive is how #482 lived unnoticed under a green suite.
  */
 @OptIn(InternalQuicApi::class)
 internal class UdpSocketChannelFactory(
@@ -37,15 +45,31 @@ internal class UdpSocketChannelFactory(
     private val recvBufferFactory: BufferFactory,
     private val receiveBufferSize: Int,
     override val localEndpointSupport: LocalEndpointSupport,
+    private val openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
 ) : UdpChannelFactory {
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
     ): NewPath {
         // An unnamed source binds the address the route would choose, never the wildcard — see
-        // [routeSourceAddress]. A caller that named one gets exactly that, unchanged.
-        val bindHost = localHost ?: routeSourceAddress()
-        val channel = UdpSocket.connect(peer.host, peer.port, bindHost, localPort, receiveBufferSize, recvBufferFactory)
+        // [routeSourceAddress]. A caller that named one gets exactly that, unchanged, and no probe is
+        // taken on its behalf. Exhaustive on purpose: the three answers demand opposite handling, and
+        // when they shared a `null` the one that meant "the probe failed" silently took the branch
+        // meant for "this platform names the endpoint itself" — which is the unnamed bind #434
+        // removed (#523). A new member must state its own answer here rather than inherit one.
+        val bindHost =
+            if (localHost != null) {
+                localHost
+            } else {
+                when (val source = routeSourceAddress()) {
+                    is RouteSource.Resolved -> source.host
+                    // The platform picks; there is no source to name and asking for one is meaningless.
+                    RouteSource.PlatformAssigned -> null
+                    // Fail the open. See [UnresolvedRouteSourceException] for why this is not a fallback.
+                    is RouteSource.Unresolved -> throw UnresolvedRouteSourceException(source.reason)
+                }
+            }
+        val channel = openChannel.open(peer.host, peer.port, bindHost, localPort, receiveBufferSize, recvBufferFactory)
         val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(
@@ -61,9 +85,14 @@ internal class UdpSocketChannelFactory(
     }
 
     /**
-     * The source address the routing table would choose for [peer], or `null` when there is none to
-     * name — the platform assigns the endpoint itself, or the route cannot be determined. The bind then
-     * falls back to the platform default, exactly as before.
+     * What source address the routing table would choose for [peer] — as a [RouteSource], which says
+     * *which* of the three answers it is.
+     *
+     * This used to be a `String?` whose `null` meant "the platform assigns the endpoint itself" **and**
+     * "the probe failed" **and**, because the failure was swallowed by a bare `catch`, "bind the
+     * wildcard anyway" — the one configuration this whole function exists to avoid. #483 removed the
+     * only trigger that fired in practice; the shape survived, and #523 removes it: the platform's
+     * answer and the probe's failure are different facts and now say so.
      *
      * **Why an unnamed bind is not good enough.** A bind with no source address chooses the ephemeral
      * port knowing only the *local* side, so the kernel can return a port whose full 4-tuple
@@ -118,29 +147,42 @@ internal class UdpSocketChannelFactory(
      * same, because a route is chosen by destination *address*, not by port. Nothing is ever sent, so
      * the port is contacted only in the sense that a connected UDP socket names it.
      *
-     * Only for [LocalEndpointSupport.Bindable] actuals — the JVM and Linux `connect`s, which bind
-     * before connecting. Apple's assigns the endpoint through `NWConnection` and documents
+     * Only [LocalEndpointSupport.Bindable] actuals probe at all — the JVM and Linux `connect`s, which
+     * bind before connecting. Apple's assigns the endpoint through `NWConnection` and documents
      * `localHost`/`localPort` as advisory, so naming a source there would be a hint the platform is
-     * free to ignore rather than the fix, and it is skipped.
+     * free to ignore rather than the fix; that answer is [RouteSource.PlatformAssigned], which is a
+     * member and not a failure.
      *
      * Resolved per call rather than reused from the connection's current path: a migration usually
      * happens *because* the old path died, so the route's answer now is the interface that is actually
      * up. The probe sends nothing — a UDP `connect` only fixes the 4-tuple locally — and is closed
      * before the real bind.
      */
-    internal suspend fun routeSourceAddress(): String? {
-        if (localEndpointSupport != LocalEndpointSupport.Bindable) return null
-        return try {
-            val probe = UdpSocket.connect(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
+    internal suspend fun routeSourceAddress(): RouteSource {
+        if (localEndpointSupport != LocalEndpointSupport.Bindable) return RouteSource.PlatformAssigned
+        val probe =
             try {
-                probe.localAddress.orNull()?.host
+                openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
+            } catch (cancellation: CancellationException) {
+                // Cancellation is not a route answer. The old bare `catch (_: Exception)` swallowed it
+                // too, so cancelling a migration mid-probe reported a resolved-enough route and bound
+                // the wildcard — a cancelled coroutine quietly opening the socket #434 removed.
+                throw cancellation
+            } catch (refusal: Exception) {
+                return RouteSource.Unresolved(RouteProbeFailure.ProbeRefused(refusal))
+            }
+        // Read before closing, close before the real bind: the probe must never be one of the sockets
+        // the path draws against.
+        val local =
+            try {
+                probe.localAddress.orNull()
             } finally {
                 probe.close()
             }
-        } catch (_: Exception) {
-            // No route, or a sandbox that forbids the probe: fall back to the unnamed bind and let the
-            // real connect report the truth rather than inventing an error here.
-            null
+        return when {
+            local == null -> RouteSource.Unresolved(RouteProbeFailure.SourceAddressUnknown)
+            namesNoInterface(local.host) -> RouteSource.Unresolved(RouteProbeFailure.SourceAddressUnnamed(local.host))
+            else -> RouteSource.Resolved(local.host)
         }
     }
 
@@ -158,5 +200,43 @@ internal class UdpSocketChannelFactory(
 
         /** RFC 862 echo — used only when [peer] is itself on [ROUTE_PROBE_PORT]. */
         const val ROUTE_PROBE_PORT_ALT = 7
+    }
+}
+
+/**
+ * Whether [host] names no interface — the wildcard, in either family and in any of its written forms
+ * (`0.0.0.0`, `::`, `0:0:0:0:0:0:0:0`, `0000:0000:…`).
+ *
+ * Every one of those is written with nothing but zeros and separators, and every address that *does*
+ * name an interface has at least one non-zero digit in it, so this needs no parser and no family
+ * switch. An empty host names nothing either, and answers `true` for the same reason.
+ */
+private fun namesNoInterface(host: String): Boolean = host.all { it == '0' || it == '.' || it == ':' }
+
+/**
+ * How [UdpSocketChannelFactory] opens a connected UDP socket: [UdpSocket.connect]'s shape, with the
+ * defaults spelled out so an implementation cannot silently disagree about them.
+ *
+ * The single seam through which both sockets in that factory are opened — the route probe and the
+ * migration path — so a test can serve one and refuse the other, which is the only way to drive
+ * [RouteProbeFailure]'s members: a real host will not exhaust its descriptors, deny a socket or fail
+ * `getsockname` because a test asked it to.
+ */
+internal fun interface ConnectedUdpOpener {
+    suspend fun open(
+        remoteHost: String,
+        remotePort: Int,
+        localHost: String?,
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): ConnectedDatagramChannel
+
+    companion object {
+        /** The real thing: the platform's `UdpSocket.connect` actual. */
+        val Platform: ConnectedUdpOpener =
+            ConnectedUdpOpener { remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory ->
+                UdpSocket.connect(remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory)
+            }
     }
 }
