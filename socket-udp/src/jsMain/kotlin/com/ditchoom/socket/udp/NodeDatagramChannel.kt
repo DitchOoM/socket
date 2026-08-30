@@ -228,8 +228,10 @@ private fun nodeSendError(
 ): DatagramSendError =
     when (error.asDynamic().code as? String) {
         "EMSGSIZE" -> DatagramSendError.TooLarge(attempted, MAX_UDP_PAYLOAD)
-        "EHOSTUNREACH", "ENETUNREACH", "EAFNOSUPPORT" -> DatagramSendError.Unreachable(errno = 0)
-        "EACCES" -> DatagramSendError.NotPermitted(errno = 0)
+        // The same table as sendErrnoToError, by name: Node hands over the errno's name, never its number.
+        "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN", "EAFNOSUPPORT" -> DatagramSendError.Unreachable(ERRNO_NOT_SURFACED)
+        "ECONNREFUSED" -> DatagramSendError.PortUnreachable
+        "EACCES" -> DatagramSendError.NotPermitted(ERRNO_NOT_SURFACED)
         "EAGAIN", "ENOBUFS" -> DatagramSendError.WouldBlock
         else -> DatagramSendError.Transport(NodeSendFailure(error.toString()))
     }
