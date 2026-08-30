@@ -30,6 +30,11 @@ import com.ditchoom.buffer.flow.SocketAddress
  * control operations are `suspend` so a platform that must hop to a socket-owning dispatcher (Apple) can,
  * but they are cheap `setsockopt`-class calls, not blocking I/O. Every control operation throws
  * [MulticastException] on failure — never a bare platform error string.
+ *
+ * A control operation on a closed channel — including one racing the [close] that closes it — never reaches
+ * the socket: it is refused with [MulticastException.ChannelClosed]. That is a correctness property, not a
+ * convenience. A backend whose control plane names a raw descriptor would otherwise `setsockopt` a
+ * descriptor number the OS has already handed to an unrelated socket (#527).
  */
 @ExperimentalDatagramApi
 interface MulticastDatagramChannel : AddressedDatagramChannel {
@@ -147,6 +152,26 @@ sealed class MulticastException(
         detail: String,
         cause: Throwable? = null,
     ) : MulticastException("$option failed: $detail", cause)
+
+    /**
+     * [operation] never reached the socket: the channel was closed before this call was admitted to the
+     * descriptor. Its own subtype rather than a [JoinFailed]/[OptionFailed] carrying the word "closed" in a
+     * detail string, because the two are different facts and a consumer branches on the difference: an
+     * [OptionFailed] means the kernel rejected the option on *this* channel's socket and a retry is
+     * pointless in the same way twice, while this one means the channel is gone — reopen, do not retry.
+     *
+     * Load-bearing, not cosmetic (#527): a backend whose control plane names a raw descriptor must decide
+     * "closed" in the same atomic step that admits the call, or the `setsockopt` lands on whatever socket
+     * the process has since been handed that descriptor number. Reporting a distinct type is what lets a
+     * test tell "refused before the syscall" apart from "the syscall failed", which is the only way to see
+     * that difference from the caller's side. The Apple backend reports it; Linux is the same shape and
+     * follows in #526. The JVM and Node backends delegate the closed check to their runtime's own channel
+     * (`ClosedChannelException` / a Node throw), which surfaces through [JoinFailed]/[OptionFailed] — no
+     * descriptor of theirs is reachable after close, so there is nothing to steal there.
+     */
+    class ChannelClosed(
+        val operation: String,
+    ) : MulticastException("$operation refused: the channel is closed")
 }
 
 /** The same platform capabilities with [DatagramCapabilities.multicast] flipped on — the one field a

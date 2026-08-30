@@ -179,8 +179,11 @@ actual object UdpSocket {
                 close(fd)
                 error("getsockname failed for bound UDP socket")
             }
+        // The multicast channel is handed the base channel, not the descriptor: `fd` now has exactly one
+        // owner, and the control plane borrows it back through the same admission the data plane passes
+        // (#527).
         val base = PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
-        return MulticastPosixUdpDatagramChannel(fd, ipv6 = v6, base = base)
+        return MulticastPosixUdpDatagramChannel(ipv6 = v6, base = base)
     }
 
     actual suspend fun resolve(
