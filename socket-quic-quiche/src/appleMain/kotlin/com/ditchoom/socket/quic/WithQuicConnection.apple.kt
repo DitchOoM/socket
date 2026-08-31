@@ -125,21 +125,31 @@ internal suspend fun buildAppleQuicConnection(
                 loadAppleSystemCaTrust(config)
             }
 
-            // Datapath: open a connected :socket-udp channel over NWConnection-UDP (Phase 6 adapter-first
-            // cutover). UdpSocket.connect waits until NW is ready + assigns the local endpoint, cancellably
-            // (so the QUIC timeout interrupts a stuck connect and never leaks the nw_connection_t); we map
-            // its typed connect failure to the QUIC error contract.
+            // Datapath: open the connection's primary :socket-udp path over NWConnection-UDP (Phase 6
+            // adapter-first cutover) through the same factory that opens every migration path, so both
+            // ask the one question about the local endpoint (#519). Here the answer is
+            // [RouteSource.PlatformAssigned]: NW owns endpoint assignment, so no route is probed and the
+            // bind stays unnamed — the one legitimate unnamed bind, and byte-identical to before.
+            // UdpSocket.connect waits until NW is ready + assigns the local endpoint, cancellably (so the
+            // QUIC timeout interrupts a stuck connect and never leaks the nw_connection_t); we map its
+            // typed connect failure to the QUIC error contract.
             val peer = UdpSocket.resolve(hostname, port)
+            val codec = SocketAddressCodec(appleSockAddrLayout)
+            val channelFactory =
+                UdpSocketChannelFactory(
+                    peer = peer,
+                    codec = codec,
+                    bufferFactory = bufferFactory,
+                    recvBufferFactory = recvBufPool,
+                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                    // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
+                    // localHost/localPort "advisory" and ignores them. Declared so the driver refuses an
+                    // explicit endpoint instead of silently binding somewhere else and reporting success.
+                    localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                )
             val channel =
                 try {
-                    withTimeout(timeout) {
-                        UdpSocket.connect(
-                            remoteHost = peer.host,
-                            remotePort = peer.port,
-                            receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                            bufferFactory = recvBufPool,
-                        )
-                    }
+                    withTimeout(timeout) { channelFactory.openPrimaryChannel() }
                 } catch (e: UdpConnectException) {
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(hostname, port, platformError = e.message)
@@ -165,8 +175,8 @@ internal suspend fun buildAppleQuicConnection(
             // Encode the peer + local sockaddrs via the one SocketAddressCodec (Phase 6 sockaddr SPI, BSD
             // layout, replacing the NW sockaddr pull + memcpy). A single encoding of each backs
             // quiche_connect AND recv_info; both stay pinned for the driver's life and are freed by
-            // onCleanup so recv_info.from/to can never dangle.
-            val codec = SocketAddressCodec(appleSockAddrLayout)
+            // onCleanup so recv_info.from/to can never dangle. The codec is the one built above for
+            // [channelFactory], so the primary path's sockaddr and a migration path's cannot diverge.
             val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
 
@@ -238,19 +248,9 @@ internal suspend fun buildAppleQuicConnection(
                             MigrationCapability.Supported(
                                 peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                                 primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                                channelFactory =
-                                    UdpSocketChannelFactory(
-                                        peer = peer,
-                                        codec = codec,
-                                        bufferFactory = bufferFactory,
-                                        recvBufferFactory = recvBufPool,
-                                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                                        // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
-                                        // localHost/localPort "advisory" and ignores them. Declared so the
-                                        // driver refuses an explicit endpoint instead of silently binding
-                                        // somewhere else and reporting success.
-                                        localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
-                                    ),
+                                // The same factory that opened the primary path above — one per
+                                // connection, so every path it holds was bound by one discipline (#519).
+                                channelFactory = channelFactory,
                             )
                         },
                     onCleanup = {

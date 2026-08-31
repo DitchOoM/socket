@@ -11,9 +11,11 @@ import com.ditchoom.socket.udp.UdpSocket
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Common [UdpChannelFactory] over `:socket-udp` (Phase 6). Opens a new connected [UdpSocket.connect]
- * channel to the same [peer], bound to a chosen local endpoint, for active connection migration —
- * replacing the per-platform `NioUdpChannelFactory` / `IoUringUdpChannelFactory`.
+ * Common [UdpChannelFactory] over `:socket-udp` (Phase 6). Opens every connected [UdpSocket.connect]
+ * channel a client connection uses — the primary path it starts on ([openPrimaryChannel], #519) and
+ * each additional path it migrates onto ([openPath]) — each bound to a chosen local endpoint, replacing
+ * the per-platform `NioUdpChannelFactory` / `IoUringUdpChannelFactory`. One instance per connection, so
+ * every socket it hands out was bound by one source-address discipline.
  *
  * [peer] is already resolved, so reconnecting passes its numeric [SocketAddress.host] and is a literal
  * parse to the same address (no DNS). The new path's local sockaddr is encoded via [codec] into pinned
@@ -47,29 +49,56 @@ internal class UdpSocketChannelFactory(
     override val localEndpointSupport: LocalEndpointSupport,
     private val openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
 ) : UdpChannelFactory {
+    /**
+     * Open the connection's **primary** path: the socket `quiche_connect` is handed, whose local
+     * sockaddr becomes `recv_info.to`, and which carries every datagram until the connection migrates.
+     *
+     * The same open as [openPath] with no caller-named source, through the same [bindHostFor] —
+     * deliberately one function of [routeSourceAddress] and not a parallel one. Until #519 the primary
+     * path opened itself with an unnamed bind and an 8-deep `BindException` retry, so the *first* path
+     * of every connection carried the collision #434 removed from every path after it. It is also the
+     * path that carries it longest: a migration path is retired, the primary socket is held for the
+     * connection's life, so every later draw in the process — this connection's own migrations included
+     * — contends with it.
+     *
+     * **Why the retry went and nothing replaced it.** Its KDoc blamed a race between concurrent
+     * `bind(0)` calls; the collision is neither concurrent nor a race. `udp6_bind([::]:0)` picks the
+     * port through `in6_pcblookup_local`, which skips every pcb without `INP_IPV6`, and `udp6_connect`
+     * to a v4-mapped peer clears `INP_IPV6` on success — so every socket already connected to that peer
+     * is invisible to the next wildcard bind, and `in_pcbconnect` then finds the exact 4-tuple and
+     * answers `EADDRINUSE` one syscall later. A retry re-draws from the same blind space: with `k`
+     * sockets held to the peer it turns `k / 16384` per draw into `(k / 16384)^8` instead of into zero,
+     * and degrades exactly where #519 says it hurts — a process holding many connections to one server.
+     * Measured on macOS 26.6 / JDK 21, replicating `UdpSocket.connect`'s NIO shape, per 2000 draws:
+     * 250 sockets held → **29** `connect0` refusals unnamed, **0** with the route's source address;
+     * 1000 held → **120** and **0**. Neither variant is ever refused at `bind0`.
+     *
+     * **Why an unresolved route fails the connect** (see [UnresolvedRouteSourceException] for the shared
+     * half of the argument, which is about migration paths and does not transfer on its own). Refusing a
+     * migration costs the caller nothing it had — the connection keeps living where it is, and the
+     * failure is retryable. Refusing a connect costs the caller the connection, so the question has to
+     * be answered again here. It comes out the same way for a stronger reason: **the unnamed bind does
+     * not buy a connection either.** [RouteProbeFailure.ProbeRefused] is the same call to the same
+     * address the real connect is about to make, differing only in a destination port a connected UDP
+     * socket never contacts — no descriptor, a sandbox, no route refuse both, and the one refusal that
+     * is a *draw* rather than the environment was made disjoint from the peer's paths by #483.
+     * [RouteProbeFailure.SourceAddressUnknown] is a state the primary open already fails on two
+     * statements later, because quiche needs that address. And a [RouteProbeFailure.SourceAddressUnnamed]
+     * source would be encoded into `quiche_connect`'s local sockaddr and `recv_info.to` for the
+     * connection's life, so what the fallback returns is not a degraded connection but a broken one
+     * reporting success. The fallback therefore trades a typed refusal for an untyped one arriving
+     * later — #482's defect — with the aggravation that a connect failure reaches an application that
+     * can retry it, while a wildcard-bound primary socket reaches it looking healthy.
+     */
+    internal suspend fun openPrimaryChannel(): ConnectedDatagramChannel =
+        openChannel.open(peer.host, peer.port, bindHostFor(null), 0, receiveBufferSize, recvBufferFactory)
+
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
     ): NewPath {
-        // An unnamed source binds the address the route would choose, never the wildcard — see
-        // [routeSourceAddress]. A caller that named one gets exactly that, unchanged, and no probe is
-        // taken on its behalf. Exhaustive on purpose: the three answers demand opposite handling, and
-        // when they shared a `null` the one that meant "the probe failed" silently took the branch
-        // meant for "this platform names the endpoint itself" — which is the unnamed bind #434
-        // removed (#523). A new member must state its own answer here rather than inherit one.
-        val bindHost =
-            if (localHost != null) {
-                localHost
-            } else {
-                when (val source = routeSourceAddress()) {
-                    is RouteSource.Resolved -> source.host
-                    // The platform picks; there is no source to name and asking for one is meaningless.
-                    RouteSource.PlatformAssigned -> null
-                    // Fail the open. See [UnresolvedRouteSourceException] for why this is not a fallback.
-                    is RouteSource.Unresolved -> throw UnresolvedRouteSourceException(source.reason)
-                }
-            }
-        val channel = openChannel.open(peer.host, peer.port, bindHost, localPort, receiveBufferSize, recvBufferFactory)
+        val channel =
+            openChannel.open(peer.host, peer.port, bindHostFor(localHost), localPort, receiveBufferSize, recvBufferFactory)
         val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(
@@ -82,6 +111,31 @@ internal class UdpSocketChannelFactory(
             localEndpoint = QuicLocalEndpoint(local.host, local.port),
             release = { encoded.free() },
         )
+    }
+
+    /**
+     * The local host every socket this factory opens binds: [localHost] when the caller named one, and
+     * otherwise whatever [routeSourceAddress] answers — never the wildcard because something failed.
+     *
+     * One function for the primary path and every migration path, because the question is the same one
+     * and #519 is what happens when it is asked twice: the primary path kept its own unnamed bind
+     * through #434, #483 and #523, which each fixed the copy next door.
+     *
+     * A caller that named a source gets exactly that, unchanged, and no probe is taken on its behalf.
+     * Exhaustive on purpose: the three answers demand opposite handling, and when they shared a `null`
+     * the one that meant "the probe failed" silently took the branch meant for "this platform names the
+     * endpoint itself" — which is the unnamed bind #434 removed (#523). A new member must state its own
+     * answer here rather than inherit one.
+     */
+    private suspend fun bindHostFor(localHost: String?): String? {
+        if (localHost != null) return localHost
+        return when (val source = routeSourceAddress()) {
+            is RouteSource.Resolved -> source.host
+            // The platform picks; there is no source to name and asking for one is meaningless.
+            RouteSource.PlatformAssigned -> null
+            // Fail the open. See [UnresolvedRouteSourceException] for why this is not a fallback.
+            is RouteSource.Unresolved -> throw UnresolvedRouteSourceException(source.reason)
+        }
     }
 
     /**
