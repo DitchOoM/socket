@@ -34,6 +34,54 @@ import kotlin.time.Duration.Companion.seconds
  */
 class IoUringManagerTests {
     /**
+     * A last-socket close releases the ring and keeps the worker (#302, #307).
+     *
+     * `cleanup()` used to end with `scope.cancel()` + `dispatcher.close()`, and that pair cost a flat
+     * **~100 ms** on every last-socket close. Measured step by step on the unfixed code: the eventfd
+     * write reached the event loop's `finally` in 18–60 µs, the join took 73–157 µs, `scope.cancel()`
+     * 48–108 µs, and `dispatcher.close()` **99.71–100.05 ms**.
+     *
+     * It was never io_uring — the wake path was always reactive. On Kotlin/Native
+     * `CloseableCoroutineDispatcher.close()` blocks the caller until the backing worker terminates, and
+     * the worker only notices shutdown after its own ~100 ms bounded park expires. #302's original
+     * hypothesis is wrong and retracted in its own comments; #307's claim that `:socket-udp` had
+     * already fixed this is also wrong — both managers carried it, which is why both are fixed together
+     * and both carry this guard.
+     *
+     * **Counting threads, not milliseconds.** [rapidBindConnectCloseCyclesAreClean] below states the
+     * suite's own position: *"a wall-clock budget on cleanup() only adds flakiness"*. The mechanism is
+     * exactly countable instead — keeping the worker is the fix, so a cycle must not allocate one.
+     */
+    @Test
+    fun repeatedCleanupCyclesReuseOneWorkerThread() =
+        runTestNoTimeSkipping {
+            // A delta: whether a worker exists already depends on suite order.
+            val before = IoUringManager.pollerDispatchersCreated.value
+
+            repeat(TEARDOWN_CYCLES) {
+                val server = ServerSocket.allocate()
+                val serverFlow = server.bind(0, "127.0.0.1")
+                val serverJob = launch { runCatching { serverFlow.collect { it.close() } } }
+                // The poller only starts on a submission, so a cycle that opened nothing testifies to
+                // nothing. Connecting is what makes this cycle own a worker.
+                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                client.open(server.port(), "127.0.0.1")
+                client.close()
+                server.close()
+                serverJob.cancelAndJoin()
+                IoUringManager.cleanup()
+            }
+
+            val created = IoUringManager.pollerDispatchersCreated.value - before
+            assertTrue(
+                created <= 1,
+                "$TEARDOWN_CYCLES cleanup cycles created $created poller worker threads. Releasing the " +
+                    "worker on the last close is what cost a flat ~100 ms per close (#302/#307); one " +
+                    "creation across all cycles is the fix holding.",
+            )
+        }
+
+    /**
      * Test that shutdown completes quickly (< 200ms) rather than waiting
      * for the DEFAULT_POLL_TIMEOUT (1 second).
      *
@@ -508,4 +556,12 @@ class IoUringManagerTests {
                 IoUringManager.cleanup()
             }
         }
+
+    private companion object {
+        /**
+         * Enough cycles that a per-cycle worker allocation is unmistakable (the assertion is `<= 1`, so
+         * a regression reads as [TEARDOWN_CYCLES] or one more), and few enough to stay quick.
+         */
+        const val TEARDOWN_CYCLES = 5
+    }
 }
