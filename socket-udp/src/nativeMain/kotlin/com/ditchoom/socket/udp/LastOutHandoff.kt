@@ -6,17 +6,25 @@ import kotlin.concurrent.AtomicInt
  * Decides which party releases resources that in-flight users are still touching — the last one out —
  * and makes the decision in the same atomic step that records it.
  *
- * ## The shape it exists for (#498, #507)
+ * ## The shape it exists for (#498, #507, #526)
  *
- * `PosixUdpDatagramChannel.receive()` was a check-then-dispatch: read a closed flag, then
- * `withContext(recvDispatcher)`. `close()` was flag → fd → `recvDispatcher.close()`. A receiver that
- * had passed the flag and not yet dispatched met a dead single-thread dispatcher, and kotlinx reported
+ * Both native UDP backends had it. On Apple, `PosixUdpDatagramChannel.receive()` was a
+ * check-then-dispatch: read a closed flag, then `withContext(recvDispatcher)`. `close()` was flag → fd
+ * → `recvDispatcher.close()`. A receiver that had passed the flag and not yet dispatched met a dead
+ * single-thread dispatcher, and kotlinx reported
  * `IllegalStateException: Dispatcher … was closed, attempted to schedule` where the caller was owed
  * `DatagramReadResult.Closed` (#498). The same receiver then called `recvfrom` on a descriptor number
  * `close()` had already closed, and once the process recycled that number it read *another socket's*
  * datagram (#507). No ordering of `close()`'s steps fixes either: whatever releases a resource has to
  * know nobody can still reach it, and a flag cannot say so — it records that closing began, not who is
  * still inside.
+ *
+ * Linux is the same ordering with a wider window (#526): `IoUringDatagramChannelCore.receive()` read the
+ * flag and then called `IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_recvmsg(sqe, fd, …) }`,
+ * whose lambda does **not** run at the call site — it is handed to a channel and invoked by the
+ * process-global poller thread in its drain loop. So the descriptor number was read after a channel
+ * hand-off *and* a poller iteration, and a submission could name a number `close()` had already closed
+ * and the process had recycled. That is why this type lives in `nativeMain`: one answer, both backends.
  *
  * ## One word, one CAS
  *
@@ -29,7 +37,8 @@ import kotlin.concurrent.AtomicInt
  *    touching anything.
  *  - [close] sets the bit **and counts the closer in exactly like a user**, because a closer is one:
  *    it still has to reach the resource to wake the users inside (`PosixUdpDatagramChannel` writes to
- *    its wake pipe) before anyone may release it. It owes exactly one [exit], like any user.
+ *    its wake pipe; `IoUringDatagramChannelCore` enqueues the cancel that retires the in-flight
+ *    submission) before anyone may release it. It owes exactly one [exit], like any user.
  *  - [exit] uncounts a party; if that leaves the word at closed-and-empty, this party was the last one
  *    out and owns the release.
  *
