@@ -38,6 +38,8 @@ import com.ditchoom.socket.udp.linux.cmsg_data
 import com.ditchoom.socket.udp.linux.cmsg_firsthdr
 import com.ditchoom.socket.udp.linux.cmsg_nxthdr
 import com.ditchoom.socket.udp.linux.cmsghdr
+import com.ditchoom.socket.udp.linux.io_uring_prep_cancel64
+import com.ditchoom.socket.udp.linux.io_uring_prep_nop
 import com.ditchoom.socket.udp.linux.io_uring_prep_recvmsg
 import com.ditchoom.socket.udp.linux.io_uring_prep_sendmsg
 import com.ditchoom.socket.udp.linux.iovec
@@ -57,6 +59,9 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import platform.posix.ETIME
 import platform.posix.ETIMEDOUT
 import platform.posix.IPPROTO_IP
@@ -69,7 +74,7 @@ import platform.posix.memset
 import platform.posix.setsockopt
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
-import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 
 /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
@@ -77,6 +82,12 @@ private const val MAX_UDP_PAYLOAD = 65507
 
 /** Ancillary-data scratch — ample for IP_TOS(1) + IP_TTL(4) + IP_PKTINFO(12) each in a cmsghdr. */
 private const val CONTROL_BUFFER_SIZE = 256
+
+/**
+ * "This channel has no submission in flight." `IoUringManager.nextUserData()` counts up from 1 and 0 is
+ * reserved for the eventfd wake, so 0 can never be a live `user_data` and needs no separate flag.
+ */
+private const val NO_OP_IN_FLIGHT = 0L
 
 /**
  * Shared core of the Linux io_uring datagram channels — the `recvmsg`/`sendmsg` machinery behind
@@ -93,9 +104,11 @@ private const val CONTROL_BUFFER_SIZE = 256
  *   `IP_MTU_DISCOVER`/`IPV6_DONTFRAG`, TTL via `IP_TTL`/`IPV6_UNICAST_HOPS` (all applied on change).
  * - **`PathKey`/migration dropped** — the send target's sockaddr is materialized from [SocketAddress]
  *   primitives into a `memScoped` scratch (RFC §4), zero-alloc.
- * - **UAF-safe teardown without a join** — recv/send scratch lives in a per-call `memScoped` arena;
- *   [IoUringManager.submitAndWait] drains the kernel before returning even on cancel/close, so a
- *   concurrent [close] closes only the fd and never races a shared buffer.
+ * - **UAF-safe teardown without a join** — recv/send scratch lives in a per-call `memScoped` arena and
+ *   [IoUringManager.submitAndWait] drains the kernel before returning even on cancel/close, so no
+ *   teardown races a shared buffer. The *descriptor* is owned by [LastOutHandoff] rather than by
+ *   [close]: every read, write and control op is admitted, and whoever is last out closes the fd, so a
+ *   submission prepared on the poller thread can never name a number the process has recycled (#526).
  *
  * The addressing mode is fixed at construction ([connectedPeer] non-null = connected): the wrappers
  * add only the mode-specific send arity, so the base type can no longer express "send without knowing
@@ -105,7 +118,7 @@ private const val CONTROL_BUFFER_SIZE = 256
  */
 @ExperimentalDatagramApi
 internal abstract class IoUringDatagramChannelCore(
-    protected val fd: Int,
+    private val fd: Int,
     /** The fixed peer of a connected channel; `null` = addressed mode (per-packet sources). */
     protected val connectedPeer: LinuxSocketAddress?,
     /** The bound local port, stamped onto an `IP_PKTINFO`-derived [Datagram.localAddress]. */
@@ -113,8 +126,38 @@ internal abstract class IoUringDatagramChannelCore(
     private val ipv6: Boolean,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    /**
+     * Test seam: runs inside [receive]'s admission, *after* this receiver is counted in and before its
+     * submission is handed to the poller. That is exactly the window #526 lives in — the descriptor
+     * number used to be read there by code running on another thread, after `close()` had freed it —
+     * and it cannot be reached from outside, so a test that cannot park here cannot drive the defect at
+     * all. Production passes nothing and pays an empty suspend call per receive.
+     */
+    private val beforeSubmit: suspend () -> Unit = {},
 ) : DatagramChannel {
-    private val closedFlag = AtomicInt(0)
+    /**
+     * Who releases the descriptor — the last party out — in one CAS; see [LastOutHandoff].
+     *
+     * A `closedFlag` cannot do this job here. `receive()` read the flag and then called
+     * `IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_recvmsg(sqe, fd, …) }`, and that lambda
+     * does not run at the call site: it rides a channel to the process-global poller thread, which
+     * invokes it in its drain loop. So the descriptor number was read after a channel hand-off *and* a
+     * poller iteration, while `close()` had already run `close(fd)` — and any `socket()`/`open()`/
+     * `accept()` in the process that recycled the number in between made the submission read, or
+     * `sendmsg` write, **another socket** (#526, the same defect as Apple's #507 with a wider window).
+     */
+    private val handoff = LastOutHandoff()
+
+    /**
+     * The `user_data` of this channel's in-flight receive submission, or [NO_OP_IN_FLIGHT].
+     *
+     * Written by the receive `prepareOp` and read by [close]'s cancel `prepareOp` — **both on the
+     * poller thread**, which is what makes the pair race-free without a lock. See [close].
+     */
+    private val inFlightReceive = AtomicLong(NO_OP_IN_FLIGHT)
+
+    /** The `user_data` of this channel's in-flight send submission, or [NO_OP_IN_FLIGHT]. */
+    private val inFlightSend = AtomicLong(NO_OP_IN_FLIGHT)
 
     /** Connected mode: `recvmsg` skips the source sockaddr and `sendmsg` omits `msg_name`. */
     private val connected get() = connectedPeer != null
@@ -123,7 +166,7 @@ internal abstract class IoUringDatagramChannelCore(
         enableReceiveControlPlane()
     }
 
-    override val isOpen: Boolean get() = closedFlag.value == 0
+    override val isOpen: Boolean get() = !handoff.closed
 
     /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IP). PMTU is a consumer concern. */
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
@@ -256,56 +299,82 @@ internal abstract class IoUringDatagramChannelCore(
         val basePtr = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         try {
             while (true) {
-                if (closedFlag.value != 0) return DatagramReadResult.Closed()
+                // Admission, not a flag read: the CAS that observes "open" also counts this receiver in,
+                // so nothing can release the descriptor between here and the poller thread preparing the
+                // submission that names it. Taken per iteration — an idle re-arm that spans a close
+                // leaves and is refused on the next lap rather than pinning the descriptor open.
+                when (handoff.enter()) {
+                    LastOutHandoff.Admission.Refused -> {
+                        payload.freeNativeMemory()
+                        return DatagramReadResult.Closed()
+                    }
+                    LastOutHandoff.Admission.Admitted -> Unit
+                }
                 val outcome: DatagramReadResult? =
-                    memScoped {
-                        val addr = alloc<sockaddr_storage>()
-                        val iov = alloc<iovec>()
-                        val msg = alloc<msghdr>()
-                        val control = allocArray<ByteVar>(CONTROL_BUFFER_SIZE)
-                        memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
-                        iov.iov_base = basePtr
-                        iov.iov_len = payload.capacity.convert()
-                        msg.msg_name = if (connected) null else addr.ptr
-                        msg.msg_namelen = if (connected) 0u else sizeOf<sockaddr_storage>().convert()
-                        msg.msg_iov = iov.ptr
-                        msg.msg_iovlen = 1.convert()
-                        msg.msg_control = control
-                        msg.msg_controllen = CONTROL_BUFFER_SIZE.convert()
+                    try {
+                        beforeSubmit()
+                        memScoped {
+                            val addr = alloc<sockaddr_storage>()
+                            val iov = alloc<iovec>()
+                            val msg = alloc<msghdr>()
+                            val control = allocArray<ByteVar>(CONTROL_BUFFER_SIZE)
+                            memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
+                            iov.iov_base = basePtr
+                            iov.iov_len = payload.capacity.convert()
+                            msg.msg_name = if (connected) null else addr.ptr
+                            msg.msg_namelen = if (connected) 0u else sizeOf<sockaddr_storage>().convert()
+                            msg.msg_iov = iov.ptr
+                            msg.msg_iovlen = 1.convert()
+                            msg.msg_control = control
+                            msg.msg_controllen = CONTROL_BUFFER_SIZE.convert()
 
-                        val n =
-                            IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
-                                io_uring_prep_recvmsg(sqe, fd, msg.ptr, 0u)
-                            }
-                        when {
-                            closedFlag.value != 0 -> DatagramReadResult.Closed()
-                            // UDP has no EOF: n >= 0 is a whole datagram (n == 0 is a valid empty one).
-                            n >= 0 -> {
-                                val peer =
-                                    if (connected) connectedPeer else sockaddrToLinuxSocketAddress(addr.ptr.reinterpret<sockaddr>())
-                                // Unroutable/unknown source family (spurious CQE) — skip, keep waiting.
-                                if (peer == null) {
-                                    null
-                                } else {
-                                    val cp = parseControlPlane(msg.ptr)
-                                    payload.position(0)
-                                    payload.setLimit(n)
-                                    DatagramReadResult.Received(
-                                        Datagram(
-                                            payload = payload,
-                                            peer = peer,
-                                            ecn = cp.ecn,
-                                            localAddress = cp.localAddress,
-                                            hopLimit = cp.hopLimit,
-                                        ),
-                                    )
+                            val n =
+                                IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
+                                    // Runs on the poller thread — see [close] for why that is what makes
+                                    // this safe. Naming the descriptor is conditional on the close not
+                                    // having happened yet; a nop wakes this receiver at once instead.
+                                    if (handoff.closed) {
+                                        io_uring_prep_nop(sqe)
+                                    } else {
+                                        inFlightReceive.value = userData
+                                        io_uring_prep_recvmsg(sqe, fd, msg.ptr, 0u)
+                                    }
                                 }
+                            inFlightReceive.value = NO_OP_IN_FLIGHT
+                            when {
+                                // Before the `n >= 0` arm on purpose: a nop completes with 0, which would
+                                // otherwise read as a valid empty datagram.
+                                handoff.closed -> DatagramReadResult.Closed()
+                                // UDP has no EOF: n >= 0 is a whole datagram (n == 0 is a valid empty one).
+                                n >= 0 -> {
+                                    val peer =
+                                        if (connected) connectedPeer else sockaddrToLinuxSocketAddress(addr.ptr.reinterpret<sockaddr>())
+                                    // Unroutable/unknown source family (spurious CQE) — skip, keep waiting.
+                                    if (peer == null) {
+                                        null
+                                    } else {
+                                        val cp = parseControlPlane(msg.ptr)
+                                        payload.position(0)
+                                        payload.setLimit(n)
+                                        DatagramReadResult.Received(
+                                            Datagram(
+                                                payload = payload,
+                                                peer = peer,
+                                                ecn = cp.ecn,
+                                                localAddress = cp.localAddress,
+                                                hopLimit = cp.hopLimit,
+                                            ),
+                                        )
+                                    }
+                                }
+                                // Idle re-arm — the deadline fired with no data; loop and re-submit.
+                                n == -ETIMEDOUT || n == -ETIME -> null
+                                // Socket closed underneath us (EBADF / ECANCELED) or a hard error.
+                                else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                             }
-                            // Idle re-arm — the deadline fired with no data; loop and re-submit.
-                            n == -ETIMEDOUT || n == -ETIME -> null
-                            // Socket closed underneath us (EBADF / ECANCELED) or a hard error.
-                            else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                         }
+                    } finally {
+                        leave()
                     }
                 if (outcome is DatagramReadResult.Received) return outcome
                 if (outcome is DatagramReadResult.Closed) {
@@ -330,7 +399,26 @@ internal abstract class IoUringDatagramChannelCore(
         target: SocketAddress?,
         options: DatagramSendOptions,
     ) {
-        check(closedFlag.value == 0) { "sink is closed" }
+        // Admission, not a flag read — the same reason receive() takes one: applyControlPlane's
+        // setsockopt and the sendmsg submission both name the descriptor, and the submission does it
+        // from the poller thread. A refused sender never touches it and reports the closed sink it
+        // always did.
+        when (handoff.enter()) {
+            LastOutHandoff.Admission.Refused -> error("sink is closed")
+            LastOutHandoff.Admission.Admitted -> Unit
+        }
+        try {
+            sendAdmitted(payload, target, options)
+        } finally {
+            leave()
+        }
+    }
+
+    private suspend fun sendAdmitted(
+        payload: ReadBuffer,
+        target: SocketAddress?,
+        options: DatagramSendOptions,
+    ) {
         applyControlPlane(options)
         // Send the readable window [position, limit) straight from the buffer's native memory — no
         // copy, and reading position()/remaining() does not consume it (send-does-not-consume).
@@ -363,20 +451,134 @@ internal abstract class IoUringDatagramChannelCore(
             // discarding it made a failed sendmsg indistinguishable from a delivered datagram — which
             // for quiche means a packet counted as in flight that never left the host.
             val res =
-                IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
-                    io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
+                IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
+                    // On the poller thread, exactly like receive's: a close that got here first means
+                    // this send must not name the descriptor, and a nop retires the submission instead.
+                    if (handoff.closed) {
+                        io_uring_prep_nop(sqe)
+                    } else {
+                        inFlightSend.value = userData
+                        io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
+                    }
                 }
+            inFlightSend.value = NO_OP_IN_FLIGHT
+            // Checked before `res`: a nop reports 0, which would otherwise read as a delivered datagram.
+            if (handoff.closed) error("sink is closed")
             if (res < 0) throw DatagramSendException(sendErrnoToError(-res, attempted = len, limit = maxWritableSize))
         }
     }
 
-    override fun close() {
-        if (!closedFlag.compareAndSet(0, 1)) return
-        // Closing the fd makes any in-flight io_uring recvmsg complete promptly (-ECANCELED / -EBADF),
-        // so a parked receive returns Closed. No shared native structs to free here — each receive/send
-        // owns its own memScoped arena — so this cannot race a kernel write.
+    /**
+     * Borrow the descriptor for [block] under the same admission every read and write passes — a
+     * **scoped** borrow rather than an `enter()`/`exit()` pair a caller could forget half of.
+     * [MulticastIoUringDatagramChannel] takes its whole control plane through this: it delegates its
+     * data plane to this channel already, and the descriptor it `setsockopt`s is this channel's, so it
+     * must be admitted like a `send` rather than reading the number out of a field (#527's shape).
+     *
+     * A borrower admitted here cannot have the descriptor released under it, and one that arrives after
+     * [close] is [DescriptorUse.Refused] without a syscall, so it can never name a number the process
+     * has since recycled. [block] may suspend; the borrow is released however it ends, cancellation
+     * included.
+     */
+    internal suspend fun <T> withDescriptor(block: suspend (fd: Int) -> T): DescriptorUse<T> {
+        when (handoff.enter()) {
+            LastOutHandoff.Admission.Refused -> return DescriptorUse.Refused
+            LastOutHandoff.Admission.Admitted -> Unit
+        }
+        return try {
+            DescriptorUse.Ran(block(fd))
+        } finally {
+            leave()
+        }
+    }
+
+    /** What [withDescriptor] decided — a sealed answer, so "refused" is never a value the block could return. */
+    internal sealed interface DescriptorUse<out T> {
+        /** The caller was admitted and its block ran with the descriptor; [value] is what it produced. */
+        data class Ran<out T>(
+            val value: T,
+        ) : DescriptorUse<T>
+
+        /** The channel is closed: the block never ran, and never named the descriptor. */
+        data object Refused : DescriptorUse<Nothing>
+    }
+
+    /**
+     * This party's departure. If it was the last one out of a closed channel, it releases the
+     * descriptor.
+     *
+     * The hop off this thread is not decoration: the release ends in [IoUringManager.onSocketClosed],
+     * which on the last socket runs `cleanup()`, which `runBlocking`-joins the poller job. A caller
+     * that resumed *on* the poller thread — a `Dispatchers.Unconfined` receiver, resumed by the very
+     * `deferred.complete()` the poller makes — would otherwise join itself. [NonCancellable] because
+     * the usual reason control is here is the caller's cancellation, and a cancelled hop would skip the
+     * release and leak the descriptor.
+     */
+    private suspend fun leave() {
+        when (handoff.exit()) {
+            LastOutHandoff.Departure.NotLast -> Unit
+            LastOutHandoff.Departure.LastOut -> withContext(NonCancellable + Dispatchers.Default) { releaseDescriptor() }
+        }
+    }
+
+    /** Reached by exactly one party — the CAS that lands the word on closed-and-empty. */
+    private fun releaseDescriptor() {
         close(fd)
         IoUringManager.onSocketClosed()
+    }
+
+    /**
+     * Refuses every further party, retires the submission any party already inside is parked on, and
+     * leaves like any of them — releasing the descriptor only if it turns out to be last out.
+     *
+     * **Why the descriptor is not closed here.** It used to be, and that is #526: `close(fd)` while a
+     * receiver was between its flag check and the poller preparing `io_uring_prep_recvmsg(sqe, fd, …)`
+     * let the submission name a number the process may have recycled, reading — or, for `sendmsg`,
+     * writing — another socket. Closing the descriptor is therefore the last party's job, and this
+     * closer is counted in like a user because it is one until it has finished waking the others.
+     *
+     * **Why the wake is a cancel by `user_data` and not by fd.** `io_uring_prep_cancel_fd` exists, but
+     * it would put the descriptor number back in a submission prepared later on the poller thread —
+     * the very hazard being removed. Cancelling by `user_data` names no descriptor at all.
+     *
+     * **Why reading [inFlightReceive] inside the `prepareOp` closes the window rather than shrinking
+     * it.** Both this cancel's prepare and a receiver's prepare run in the poller's single drain loop,
+     * so they are ordered against each other, and either order is correct:
+     *
+     *  - the receiver prepared first → it stored its `user_data`, which this cancel then reads and
+     *    retires;
+     *  - this cancel prepared first → it finds nothing to cancel, and the receiver's prepare, running
+     *    afterwards, sees `handoff.closed` (set before this request was ever enqueued) and prepares a
+     *    nop instead of naming the descriptor.
+     *
+     * Read at the call site instead, the first case would race and the receiver would park for its full
+     * idle re-arm. There is one residual: if the ring is full the request is completed `-EBUSY` and its
+     * `prepareOp` never runs, so an in-flight receive is not retired early and returns on its own
+     * deadline. That costs latency, never correctness — the descriptor is still held open by its
+     * admission until that receiver leaves.
+     */
+    override fun close() {
+        when (handoff.close()) {
+            LastOutHandoff.Closing.AlreadyClosed -> Unit
+            LastOutHandoff.Closing.Admitted -> {
+                IoUringManager.submitNoWaitUnsafe { sqe ->
+                    val parked = inFlightReceive.value
+                    val sending = inFlightSend.value
+                    when {
+                        parked != NO_OP_IN_FLIGHT -> io_uring_prep_cancel64(sqe, parked.toULong(), 0)
+                        sending != NO_OP_IN_FLIGHT -> io_uring_prep_cancel64(sqe, sending.toULong(), 0)
+                        else -> io_uring_prep_nop(sqe)
+                    }
+                }
+                when (handoff.exit()) {
+                    LastOutHandoff.Departure.NotLast -> Unit
+                    // Nobody else was inside, so this is the ordinary close: release inline. Unlike
+                    // [leave] this is not running on a coroutine the poller resumed, so the join in
+                    // cleanup() cannot be a self-join.
+                    LastOutHandoff.Departure.LastOut -> releaseDescriptor()
+                }
+            }
+        }
     }
 
     /** Build an IPv4 [SocketAddress] from 4 network-order address bytes at [ptr]+[offset] with [port]. */
@@ -446,7 +648,8 @@ internal class AddressedIoUringDatagramChannel(
     ipv6: Boolean,
     receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     bufferFactory: BufferFactory = BufferFactory.deterministic(),
-) : IoUringDatagramChannelCore(fd, null, localAddress.port, ipv6, receiveBufferSize, bufferFactory),
+    beforeSubmit: suspend () -> Unit = {},
+) : IoUringDatagramChannelCore(fd, null, localAddress.port, ipv6, receiveBufferSize, bufferFactory, beforeSubmit),
     AddressedDatagramChannel {
     override suspend fun send(
         payload: ReadBuffer,

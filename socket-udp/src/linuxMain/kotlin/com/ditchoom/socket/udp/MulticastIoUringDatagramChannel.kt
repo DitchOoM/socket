@@ -30,9 +30,14 @@ import platform.posix.strerror
  */
 @ExperimentalDatagramApi
 internal class MulticastIoUringDatagramChannel(
-    private val fd: Int,
     private val ipv6: Boolean,
     private val base: AddressedIoUringDatagramChannel,
+    /**
+     * Test seam: runs on entry to every control op, *before* this caller is admitted to [base]'s
+     * descriptor. Lets a test park a caller in the window `close()` used to race. Production passes
+     * nothing and pays an empty suspend call.
+     */
+    private val beforeAdmission: suspend () -> Unit = {},
 ) : MulticastDatagramChannel,
     AddressedDatagramChannel by base {
     override val capabilities: DatagramCapabilities = base.capabilities.withMulticast()
@@ -41,28 +46,28 @@ internal class MulticastIoUringDatagramChannel(
 
     override suspend fun leaveGroup(membership: MulticastMembership) = membership(join = false, membership)
 
-    private fun membership(
+    private suspend fun membership(
         join: Boolean,
         membership: MulticastMembership,
     ) {
         val iface = resolveInterface(membership.networkInterface)
-        memScoped {
-            val addr = alloc<sockaddr_storage>()
-            membership.group.writeSockaddr(addr)
-            // Bare reinterpret(): the cinterop C funcs take the def's OWN `sockaddr` (UdpSockets.def has no
-            // headerFilter, so it generates its own type) — let inference pick it, as socket_bind does.
-            val rc =
+        val operation = if (join) "joinGroup" else "leaveGroup"
+        control(operation, { detail ->
+            if (join) {
+                MulticastException.JoinFailed(membership.group, membership.networkInterface, detail)
+            } else {
+                MulticastException.LeaveFailed(membership.group, membership.networkInterface, detail)
+            }
+        }) { fd ->
+            memScoped {
+                val addr = alloc<sockaddr_storage>()
+                membership.group.writeSockaddr(addr)
+                // Bare reinterpret(): the cinterop C funcs take the def's OWN `sockaddr` (UdpSockets.def has
+                // no headerFilter, so it generates its own type) — let inference pick it, as socket_bind does.
                 if (join) {
                     socket_mc_join(fd, addr.ptr.reinterpret(), iface.ipv4Be, iface.ifindex)
                 } else {
                     socket_mc_leave(fd, addr.ptr.reinterpret(), iface.ipv4Be, iface.ifindex)
-                }
-            if (rc != 0) {
-                val detail = errnoMessage()
-                throw if (join) {
-                    MulticastException.JoinFailed(membership.group, membership.networkInterface, detail)
-                } else {
-                    MulticastException.LeaveFailed(membership.group, membership.networkInterface, detail)
                 }
             }
         }
@@ -70,22 +75,65 @@ internal class MulticastIoUringDatagramChannel(
 
     override suspend fun setTimeToLive(ttl: Int) {
         require(ttl in 0..255) { "ttl out of range: $ttl" }
-        if (socket_mc_set_ttl(fd, if (ipv6) 1 else 0, ttl) != 0) {
-            throw MulticastException.OptionFailed("setTimeToLive($ttl)", errnoMessage())
-        }
+        option("setTimeToLive($ttl)") { fd -> socket_mc_set_ttl(fd, if (ipv6) 1 else 0, ttl) }
     }
 
     override suspend fun setLoopbackEnabled(enabled: Boolean) {
-        if (socket_mc_set_loop(fd, if (ipv6) 1 else 0, if (enabled) 1 else 0) != 0) {
-            throw MulticastException.OptionFailed("setLoopbackEnabled($enabled)", errnoMessage())
+        option("setLoopbackEnabled($enabled)") { fd ->
+            socket_mc_set_loop(fd, if (ipv6) 1 else 0, if (enabled) 1 else 0)
         }
     }
 
     override suspend fun setOutboundInterface(networkInterface: MulticastInterface) {
         val iface = resolveInterface(networkInterface)
-        if (socket_mc_set_if(fd, if (ipv6) 1 else 0, iface.ipv4Be, iface.ifindex) != 0) {
-            throw MulticastException.OptionFailed("setOutboundInterface", errnoMessage())
+        option("setOutboundInterface") { fd -> socket_mc_set_if(fd, if (ipv6) 1 else 0, iface.ipv4Be, iface.ifindex) }
+    }
+
+    private suspend fun option(
+        operation: String,
+        syscall: (fd: Int) -> Int,
+    ) = control(operation, { detail -> MulticastException.OptionFailed(operation, detail) }, syscall)
+
+    /**
+     * Runs one `socket_mc_*` call on [base]'s descriptor, borrowed through the admission every other user
+     * of that descriptor passes (#526/#527). Three outcomes and no fourth: applied, refused because the
+     * channel is closed (no syscall ran, so no recycled descriptor number was ever named), or attempted
+     * and failed with an `errno` — read inside the borrow, before anything on the way out can overwrite it.
+     *
+     * This class used to hold the descriptor number in a field of its own and `setsockopt` it directly,
+     * which is the one user of that number that `close()` could not see coming.
+     */
+    private suspend fun control(
+        operation: String,
+        failed: (detail: String) -> MulticastException,
+        syscall: (fd: Int) -> Int,
+    ) {
+        beforeAdmission()
+        val use = base.withDescriptor { fd -> if (syscall(fd) == 0) Control.Applied else Control.Failed(errnoMessage()) }
+        val outcome =
+            when (use) {
+                IoUringDatagramChannelCore.DescriptorUse.Refused -> Control.Refused
+                is IoUringDatagramChannelCore.DescriptorUse.Ran -> use.value
+            }
+        when (outcome) {
+            Control.Applied -> Unit
+            Control.Refused -> throw MulticastException.ChannelClosed(operation)
+            is Control.Failed -> throw failed(outcome.detail)
         }
+    }
+
+    /** What one control-plane call produced. */
+    private sealed interface Control {
+        /** The `setsockopt` returned 0. */
+        data object Applied : Control
+
+        /** The channel was closed before this call was admitted: no descriptor was named, no syscall ran. */
+        data object Refused : Control
+
+        /** The `setsockopt` ran on this channel's own descriptor and failed; [detail] is its `errno`. */
+        data class Failed(
+            val detail: String,
+        ) : Control
     }
 
     private class ResolvedInterface(

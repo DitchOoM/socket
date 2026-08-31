@@ -151,7 +151,7 @@ actual object UdpSocket {
                 bufferFactory = bufferFactory,
             )
         IoUringManager.onSocketOpened()
-        return MulticastIoUringDatagramChannel(fd = fd, ipv6 = v6, base = base)
+        return MulticastIoUringDatagramChannel(ipv6 = v6, base = base)
     }
 
     actual suspend fun resolve(
