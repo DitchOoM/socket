@@ -116,8 +116,10 @@ sealed interface RouteProbeFailure {
 }
 
 /**
- * Thrown by [UdpChannelFactory.openPath] when the route source could not be resolved and the caller
- * named no source of its own. Carries the typed [reason]; catch-and-inspect rather than catch-and-parse.
+ * Thrown when the route source could not be resolved and the caller named no source of its own — by
+ * [UdpChannelFactory.openPath] for a migration path, and since #519 by
+ * `UdpSocketChannelFactory.openPrimaryChannel` for the socket a connection starts on. Carries the typed
+ * [reason]; catch-and-inspect rather than catch-and-parse.
  *
  * **Why this fails the path open instead of falling back to an unnamed bind.** The fallback is what
  * #482 documented as the defect: an unnamed bind against the peer every other path on this connection
@@ -133,6 +135,11 @@ sealed interface RouteProbeFailure {
  * living on the path it is on, and `AutoMigrationWiring` already classifies `LocalPathUnavailable` as
  * retryable-without-new-information, so the reactor asks again. What it gains is that the answer names
  * the actual failure the first time it happens.
+ *
+ * That last paragraph is the *migration* argument and it does not transfer to a connect, which has no
+ * position to keep living in: refusing it costs the caller the connection. #519 answers that case
+ * separately and reaches the same conclusion on the stronger ground that the unnamed bind does not buy
+ * a connection either — see `UdpSocketChannelFactory.openPrimaryChannel`.
  */
 @InternalQuicApi
 class UnresolvedRouteSourceException(

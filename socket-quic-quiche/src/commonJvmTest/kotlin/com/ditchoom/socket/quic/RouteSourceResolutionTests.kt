@@ -4,15 +4,9 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.ConnectedDatagramChannel
-import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramReadResult
-import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.socket.udp.MAX_UDP_DATAGRAM_SIZE
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
@@ -57,7 +51,7 @@ class RouteSourceResolutionTests {
         runBlocking {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
             val refusal = IllegalStateException("no descriptor left for the route probe")
-            val opener = ScriptedOpener(peer.port, ProbeAnswer.Refuse(refusal))
+            val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Refuse(refusal))
             val factory = factoryFor(peer, opener)
 
             val opened = runCatching { factory.openPath(null, 0) }
@@ -90,7 +84,7 @@ class RouteSourceResolutionTests {
     fun aServedRouteProbeResolvesTheSourceThePathThenBinds() =
         runBlocking {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
-            val opener = ScriptedOpener(peer.port, ProbeAnswer.Serve)
+            val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Serve)
             val factory = factoryFor(peer, opener)
 
             assertEquals(RouteSource.Resolved("127.0.0.1"), factory.routeSourceAddress())
@@ -120,7 +114,7 @@ class RouteSourceResolutionTests {
     fun aProbeThatReportsNoLocalAddressIsUnresolved() =
         runBlocking {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
-            val opener = ScriptedOpener(peer.port, ProbeAnswer.Report(LocalAddress.Unknown))
+            val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Report(LocalAddress.Unknown))
 
             val source = factoryFor(peer, opener).routeSourceAddress()
 
@@ -146,7 +140,7 @@ class RouteSourceResolutionTests {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
             for (wildcard in listOf("0.0.0.0", "::", "0:0:0:0:0:0:0:0")) {
                 val reported = SocketAddress.ofLiteral(wildcard, 54321)
-                val opener = ScriptedOpener(peer.port, ProbeAnswer.Report(LocalAddress.of(reported)))
+                val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Report(LocalAddress.of(reported)))
 
                 val source = factoryFor(peer, opener).routeSourceAddress()
 
@@ -167,7 +161,7 @@ class RouteSourceResolutionTests {
     fun aCallerThatNamesASourceIsServedWithoutAProbe() =
         runBlocking {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
-            val opener = ScriptedOpener(peer.port, ProbeAnswer.Refuse(IllegalStateException("no probe here")))
+            val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Refuse(IllegalStateException("no probe here")))
             val path = factoryFor(peer, opener).openPath("127.0.0.1", 0)
             try {
                 assertEquals(emptyList(), opener.probes, "a named source needs no route probe")
@@ -190,7 +184,7 @@ class RouteSourceResolutionTests {
     fun aPlatformThatAssignsTheEndpointBindsUnnamedAndNeverProbes() =
         runBlocking {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
-            val opener = ScriptedOpener(peer.port, ProbeAnswer.Refuse(IllegalStateException("no probe here")))
+            val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Refuse(IllegalStateException("no probe here")))
             val factory =
                 UdpSocketChannelFactory(
                     peer = peer,
@@ -230,104 +224,6 @@ class RouteSourceResolutionTests {
         localEndpointSupport = LocalEndpointSupport.Bindable,
         openChannel = opener,
     )
-
-    /** What the scripted opener does with the route probe. The path socket is always served for real. */
-    private sealed interface ProbeAnswer {
-        /** `UdpSocket.connect` refuses the probe — no descriptors, a sandbox, no route. */
-        data class Refuse(
-            val cause: Throwable,
-        ) : ProbeAnswer
-
-        /** The probe connects and reports [localAddress] — including the states no real host offers. */
-        data class Report(
-            val localAddress: LocalAddress,
-        ) : ProbeAnswer
-
-        /** The probe is served by the platform, exactly as in production. */
-        data object Serve : ProbeAnswer
-    }
-
-    /**
-     * Serves the migration path socket for real and scripts only the route probe, telling them apart by
-     * destination port: the probe never goes to [peerPort] (that is #483's fix), and the path always
-     * does. So a refusal here is a refusal of the probe alone, and the path connect the wildcard
-     * fallback used to reach is genuinely available for `openPath` to take.
-     */
-    private class ScriptedOpener(
-        private val peerPort: Int,
-        private val probeAnswer: ProbeAnswer,
-    ) : ConnectedUdpOpener {
-        /** Destination ports the route probe was pointed at, in order. */
-        val probes = mutableListOf<Int>()
-
-        /** The `localHost` each *path* open asked to bind, in order — `null` is the unnamed bind. */
-        val pathBinds = mutableListOf<String?>()
-
-        /** Probe channels handed out, so a test can assert the probe was closed. */
-        val probeChannels = mutableListOf<ScriptedChannel>()
-
-        override suspend fun open(
-            remoteHost: String,
-            remotePort: Int,
-            localHost: String?,
-            localPort: Int,
-            receiveBufferSize: Int,
-            bufferFactory: BufferFactory,
-        ): ConnectedDatagramChannel {
-            if (remotePort == peerPort) {
-                pathBinds += localHost
-                return ConnectedUdpOpener.Platform.open(
-                    remoteHost,
-                    remotePort,
-                    localHost,
-                    localPort,
-                    receiveBufferSize,
-                    bufferFactory,
-                )
-            }
-            probes += remotePort
-            return when (probeAnswer) {
-                is ProbeAnswer.Refuse -> throw probeAnswer.cause
-                is ProbeAnswer.Report ->
-                    ScriptedChannel(SocketAddress.ofLiteral(remoteHost, remotePort), probeAnswer.localAddress)
-                        .also { probeChannels += it }
-
-                ProbeAnswer.Serve ->
-                    ConnectedUdpOpener.Platform.open(
-                        remoteHost,
-                        remotePort,
-                        localHost,
-                        localPort,
-                        receiveBufferSize,
-                        bufferFactory,
-                    )
-            }
-        }
-    }
-
-    /** A connected channel that only answers [localAddress] — the one thing the route probe reads. */
-    private class ScriptedChannel(
-        override val peer: SocketAddress,
-        override val localAddress: LocalAddress,
-    ) : ConnectedDatagramChannel {
-        var closed = false
-            private set
-
-        override val isOpen: Boolean get() = !closed
-        override val capabilities: DatagramCapabilities = DatagramCapabilities.None
-        override val maxWritableSize: Int = MAX_UDP_DATAGRAM_SIZE
-
-        override suspend fun receive(): DatagramReadResult = DatagramReadResult.Closed()
-
-        override suspend fun send(
-            payload: ReadBuffer,
-            options: DatagramSendOptions,
-        ) = fail("the route probe must never send: a connected UDP socket fixes the 4-tuple and nothing else")
-
-        override fun close() {
-            closed = true
-        }
-    }
 
     private companion object {
         /**

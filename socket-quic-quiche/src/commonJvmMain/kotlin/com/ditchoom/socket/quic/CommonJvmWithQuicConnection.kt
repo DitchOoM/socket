@@ -4,9 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
-import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -18,13 +16,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
-import java.net.BindException
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
-
-/** Bounded retry budget for the Darwin ephemeral-port collision — see [openConnectedUdpChannel]. */
-private const val MAX_EPHEMERAL_BIND_ATTEMPTS = 8
 
 /**
  * Shared JVM/Android [withQuicConnection] test seam backed by quiche + [ConnectedDatagramChannel].
@@ -125,12 +119,24 @@ internal suspend fun buildJvmQuicConnection(
             }
         }
 
-        // 2. Resolve the peer once (numeric literal → no DNS), then open a connected :socket-udp channel
-        // to it (Phase 6 adapter-first cutover) with a QUIC-sized receive staging buffer. The bind(0)+
-        // connect is NOT atomic on Darwin — see [openConnectedDatagramChannel] — so it retries the rare
-        // ephemeral-port collision instead of letting it surface as a flake.
+        // 2. Resolve the peer once (numeric literal → no DNS), then open the connection's primary
+        // :socket-udp path through the same factory that opens every migration path — so the first path
+        // binds the route's source address like all the others, instead of the unnamed bind #434
+        // removed from the rest (#519). The factory is built here rather than at the migration wiring
+        // below because the primary path is the first thing it opens.
         val peer = UdpSocket.resolve(hostname, port)
-        val channel = openConnectedDatagramChannel(peer, recvBufPool)
+        val codec = SocketAddressCodec(hostOsSockAddrLayout())
+        val channelFactory =
+            UdpSocketChannelFactory(
+                peer = peer,
+                codec = codec,
+                bufferFactory = bufferFactory,
+                recvBufferFactory = recvBufPool,
+                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                // NIO binds the requested local endpoint before connecting.
+                localEndpointSupport = LocalEndpointSupport.Bindable,
+            )
+        val channel = channelFactory.openPrimaryChannel()
         // Wrapped here rather than at driver-construction time so that from this point on there is a
         // single handle that releases both the socket and its selector coroutine.
         val udpChannel = DatagramChannelUdpChannel(channel)
@@ -153,8 +159,9 @@ internal suspend fun buildJvmQuicConnection(
         // quiche_connect (copied inline) AND recv_info (pointer stored), so both stay pinned for the
         // driver's life and are freed by onCleanup. Without that pin the PlatformBuffers go GC-eligible
         // and the DirectByteBuffer Cleaner can free the native memory mid-connection, leaving recvInfo.from
-        // dangling — quiche/src/ffi.rs:2059 panic "unsupported address type".
-        val codec = SocketAddressCodec(hostOsSockAddrLayout())
+        // dangling — quiche/src/ffi.rs:2059 panic "unsupported address type". The codec is the one built
+        // in step 2 for [channelFactory]; a migration path's sockaddr and the primary's are encoded by
+        // the same instance so a divergence between them is unrepresentable.
         val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
         val localSockAddr = codec.encodeToNative(localAddress, bufferFactory)
 
@@ -208,23 +215,15 @@ internal suspend fun buildJvmQuicConnection(
                 recorder = tuning.recorderFactory(),
                 networkObservation = tuning.networkObservation,
                 // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned by
-                // onCleanup for the driver's life) and a factory for opening additional :socket-udp path
-                // sockets to the same peer.
+                // onCleanup for the driver's life) and the same factory that opened the primary path in
+                // step 2 — one factory per connection, so every path it ever holds was bound by one
+                // source-address discipline (#519).
                 migration =
                     clientMigrationCapability(quicOptions.migration) {
                         MigrationCapability.Supported(
                             peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                             primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                            channelFactory =
-                                UdpSocketChannelFactory(
-                                    peer = peer,
-                                    codec = codec,
-                                    bufferFactory = bufferFactory,
-                                    recvBufferFactory = recvBufPool,
-                                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                                    // NIO binds the requested local endpoint before connecting.
-                                    localEndpointSupport = LocalEndpointSupport.Bindable,
-                                ),
+                            channelFactory = channelFactory,
                         )
                     },
                 onCleanup = {
@@ -293,50 +292,6 @@ internal suspend fun buildJvmQuicConnection(
             ConnectProgress.ConnectionOwnsTeardown -> Unit
         }
     }
-}
-
-/**
- * Open a connected `:socket-udp` [ConnectedDatagramChannel] to the already-resolved [peer] (bound to an
- * ephemeral local port), retrying the rare ephemeral-port collision. The channel allocates each datagram
- * from [recvBufPool] (the driver's recv pool) at a QUIC-sized ([QuicheDriver.MAX_DATAGRAM_SIZE]) staging
- * size, so a received datagram is handed to the driver already pooled — no copy, no 64 KB allocation.
- *
- * [UdpSocket.connect] binds(0) before connect() so the OS assigns the source port up front. On Linux
- * that reservation is effectively atomic, but on BSD/Darwin it is NOT: two UDP sockets racing bind(0)
- * on the loopback source can be handed the same ephemeral port, and because every client here connects
- * to the same `127.0.0.1:port` peer, the second one forms a duplicate 4-tuple and connect() fails at
- * `sun.nio.ch.Net.connect0` with `BindException: Address already in use` (EADDRINUSE). This is the rare
- * high-concurrency soak flake (24 simultaneous connects) — reproduced deterministically at ~1 collision
- * per few-thousand connects.
- *
- * The race is inherent to concurrent ephemeral-port assignment, not to the explicit bind, so the bounded
- * retry is the load-bearing fix: on collision we discard the channel and try a fresh one (the OS almost
- * always hands out a different port next time). Only [BindException] (EADDRINUSE) is retried — any other
- * failure, or exhausting the attempts, rethrows.
- *
- * In practice this is a birthday-paradox collision in the ~16k-port ephemeral range: ~0.04% of connects
- * need a 2nd attempt and none were ever observed needing a 3rd, so [MAX_EPHEMERAL_BIND_ATTEMPTS] is
- * generous safety margin, not a hot path. On Linux the collision never happens, so the retry loop
- * simply succeeds on its first attempt.
- */
-private suspend fun openConnectedDatagramChannel(
-    peer: SocketAddress,
-    recvBufPool: BufferPool,
-): ConnectedDatagramChannel {
-    var lastFailure: BindException? = null
-    repeat(MAX_EPHEMERAL_BIND_ATTEMPTS) {
-        try {
-            return UdpSocket.connect(
-                remoteHost = peer.host,
-                remotePort = peer.port,
-                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                bufferFactory = recvBufPool,
-            )
-        } catch (e: BindException) {
-            lastFailure = e
-        }
-    }
-    throw lastFailure ?: BindException("Failed to bind an ephemeral UDP port for ${peer.host}:${peer.port}")
 }
 
 /** Adapts [QuicheApi] to the platform-neutral [QuicConfigCalls] interface. */

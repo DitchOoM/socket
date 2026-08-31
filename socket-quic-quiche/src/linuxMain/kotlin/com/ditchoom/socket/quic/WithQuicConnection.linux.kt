@@ -121,16 +121,24 @@ internal suspend fun buildLinuxQuicConnection(
                 loadSystemCaTrust(config)
             }
 
-            // Resolve the peer once (numeric literal → no DNS), then open a connected :socket-udp channel
-            // to it (Phase 6 adapter-first cutover) with a QUIC-sized receive staging buffer.
+            // Resolve the peer once (numeric literal → no DNS), then open the connection's primary
+            // :socket-udp path (Phase 6 adapter-first cutover) with a QUIC-sized receive staging buffer,
+            // through the same factory that opens every migration path — so the first path binds the
+            // route's source address like all the others, instead of the unnamed bind #434 removed from
+            // the rest (#519).
             val peer = UdpSocket.resolve(hostname, port)
-            val channel =
-                UdpSocket.connect(
-                    remoteHost = peer.host,
-                    remotePort = peer.port,
+            val codec = SocketAddressCodec(linuxSockAddrLayout)
+            val channelFactory =
+                UdpSocketChannelFactory(
+                    peer = peer,
+                    codec = codec,
+                    bufferFactory = bufferFactory,
+                    recvBufferFactory = recvBufPool,
                     receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                    bufferFactory = recvBufPool,
+                    // io_uring binds the requested local endpoint before connecting.
+                    localEndpointSupport = LocalEndpointSupport.Bindable,
                 )
+            val channel = channelFactory.openPrimaryChannel()
             // Wrapped here rather than at driver-construction time so that from this point on there is a
             // single handle that releases both the socket and its reader coroutine.
             val udpChannel = DatagramChannelUdpChannel(channel)
@@ -142,8 +150,8 @@ internal suspend fun buildLinuxQuicConnection(
             // Encode the peer + local sockaddrs via the one differential-tested SocketAddressCodec (Phase 6
             // sockaddr SPI, replacing the memcpy'd kernel sockaddrs). A single encoding of each backs
             // quiche_connect AND recv_info; both stay pinned for the driver's life and are freed by
-            // onCleanup so recv_info.from/to can never dangle.
-            val codec = SocketAddressCodec(linuxSockAddrLayout)
+            // onCleanup so recv_info.from/to can never dangle. The codec is the one built above for
+            // [channelFactory], so the primary path's sockaddr and a migration path's cannot diverge.
             val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
 
@@ -197,23 +205,15 @@ internal suspend fun buildLinuxQuicConnection(
                     recorder = tuning.recorderFactory(),
                     networkObservation = tuning.networkObservation,
                     // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned via
-                    // onCleanup for the driver's life) and a factory that opens additional :socket-udp
-                    // path sockets to the same peer. Mirrors the JVM client.
+                    // onCleanup for the driver's life) and the same factory that opened the primary path
+                    // above — one per connection, so every path it holds was bound by one source-address
+                    // discipline (#519). Mirrors the JVM client.
                     migration =
                         clientMigrationCapability(quicOptions.migration) {
                             MigrationCapability.Supported(
                                 peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                                 primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                                channelFactory =
-                                    UdpSocketChannelFactory(
-                                        peer = peer,
-                                        codec = codec,
-                                        bufferFactory = bufferFactory,
-                                        recvBufferFactory = recvBufPool,
-                                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                                        // io_uring binds the requested local endpoint before connecting.
-                                        localEndpointSupport = LocalEndpointSupport.Bindable,
-                                    ),
+                                channelFactory = channelFactory,
                             )
                         },
                     onCleanup = {
