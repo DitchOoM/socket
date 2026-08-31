@@ -140,6 +140,111 @@ class NetworkControlServerCapabilityTests {
         )
     }
 
+    /**
+     * The #554 gate. Latency must be applied to the interface the device actually routes through.
+     *
+     * `eth0` was hardcoded and no emulator image has one — API 29 routes through `radio0` — so
+     * `tc qdisc add dev eth0` failed with `Cannot find device "eth0"`. RED against the previous
+     * server, which named `eth0` unconditionally.
+     *
+     * This is the second half of #389. That change made the server answer for what it did, which
+     * turned this from a silent no-op into a red test; naming the right interface is what makes the
+     * impairment actually happen. The two together are the difference between a migration test that
+     * passes having impaired nothing and one that means something.
+     */
+    @Test
+    fun latencyIsAppliedToTheInterfaceTheDeviceActuallyRoutesThrough() {
+        val shell = ScriptedShell(rootAvailable = true)
+        val server = serverWith(shell)
+
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.AddLatency(500)))
+
+        assertTrue(
+            shell.ran.any { it == "tc qdisc add dev radio0 root netem delay 500ms" },
+            "the impairment must name the routed interface, not a guess: ${shell.ran}",
+        )
+        assertTrue(
+            shell.ran.none { "eth0" in it },
+            "no command may name eth0 — that is the device that does not exist (#554): ${shell.ran}",
+        )
+        assertEquals(
+            listOf("tc qdisc del dev radio0 root"),
+            server.trackedForTest(),
+            "the tracked undo must name the same interface the impairment used, or cleanup leaves the qdisc installed",
+        )
+    }
+
+    /**
+     * A device whose routing table names no interface answers an error, rather than impairing nothing.
+     *
+     * The failure this replaces is the #389 shape again: with no interface discoverable there is
+     * nothing to apply `tc` to, and the only honest answer is to say so. Silently falling back to a
+     * constant would put us back where we started.
+     */
+    @Test
+    fun aDeviceWithNoDiscoverableRouteAnswersErrorRatherThanImpairingNothing() {
+        val shell = RouteLessShell()
+        val server = serverWith(shell)
+
+        val error = assertIs<NetCtrlResponse.Error>(server.dispatchForTest(NetCtrlCommand.AddLatency(200)))
+        assertTrue(
+            "Network is unreachable" in error.message,
+            "the error must carry the device's own words: ${error.message}",
+        )
+        assertTrue(
+            shell.ran.none { it.startsWith("tc ") },
+            "no tc command may be attempted when there is no interface to apply it to: ${shell.ran}",
+        )
+        assertTrue(server.trackedForTest().isEmpty(), "nothing applied, so nothing to undo")
+    }
+
+    /**
+     * The interface is discovered once, for the reason the capability is: an impairment and its
+     * removal that disagreed about the interface would leave the qdisc installed.
+     */
+    @Test
+    fun theEgressInterfaceIsDiscoveredOnce() {
+        val shell = ScriptedShell(rootAvailable = true)
+        val server = serverWith(shell)
+
+        server.dispatchForTest(NetCtrlCommand.AddLatency(100))
+        server.dispatchForTest(NetCtrlCommand.RemoveLatency())
+
+        assertEquals(
+            1,
+            shell.ran.count { it == NetworkControlServer.EGRESS_ROUTE_QUERY },
+            "the route should be asked once, not per impairment: ${shell.ran}",
+        )
+    }
+
+    /** The parser keys on the `dev` marker, because field order differs across images. */
+    @Test
+    fun theRouteParserReadsTheInterfaceRegardlessOfFieldOrder() {
+        assertEquals(
+            "radio0",
+            NetworkControlServer.parseEgressInterface("8.8.8.8 via 10.0.2.2 dev radio0 src 10.0.2.16 uid 0"),
+        )
+        assertEquals(
+            "wlan0",
+            NetworkControlServer.parseEgressInterface("8.8.8.8 via 192.168.1.1 dev wlan0 table 1021 src 192.168.1.5"),
+        )
+        assertEquals(
+            "radio0",
+            NetworkControlServer.parseEgressInterface("   8.8.8.8   via  10.0.2.2   dev   radio0  \n"),
+        )
+        assertEquals(
+            null,
+            NetworkControlServer.parseEgressInterface("RTNETLINK answers: Network is unreachable"),
+            "output naming no interface must not be read as one",
+        )
+        assertEquals(null, NetworkControlServer.parseEgressInterface(""), "empty output names no interface")
+        assertEquals(
+            null,
+            NetworkControlServer.parseEgressInterface("8.8.8.8 via 10.0.2.2 dev"),
+            "a trailing `dev` with nothing after it is not an interface name",
+        )
+    }
+
     private fun serverWith(shell: DeviceShell) = NetworkControlServer(port = 0, adbSerial = null, shell = shell)
 
     /**
@@ -157,11 +262,29 @@ class NetworkControlServerCapabilityTests {
             ran += shellCommand
             // 127 and this message are what an unrooted device actually produces; the assertions read
             // the text, so a fake that invented its own would prove nothing about the real one.
-            return if (rootAvailable) ShellOutcome.Ran("") else ShellOutcome.Failed(127, SU_MISSING)
+            if (!rootAvailable) return ShellOutcome.Failed(127, SU_MISSING)
+            // Verbatim from an API-29 emulator. The interface is `radio0`, not `eth0` — the whole of
+            // #554 — so a fake that answered a made-up name would not hold the fix honest.
+            if (shellCommand == NetworkControlServer.EGRESS_ROUTE_QUERY) return ShellOutcome.Ran(ROUTE_GET_API29)
+            return ShellOutcome.Ran("")
+        }
+    }
+
+    /** A device that serves privileged commands but whose routing table names no interface. */
+    private class RouteLessShell : DeviceShell {
+        val ran = mutableListOf<String>()
+
+        override fun run(shellCommand: String): ShellOutcome {
+            ran += shellCommand
+            if (shellCommand == NetworkControlServer.EGRESS_ROUTE_QUERY) {
+                return ShellOutcome.Failed(2, "RTNETLINK answers: Network is unreachable")
+            }
+            return ShellOutcome.Ran("")
         }
     }
 
     private companion object {
         const val SU_MISSING = "su: inaccessible or not found"
+        const val ROUTE_GET_API29 = "8.8.8.8 via 10.0.2.2 dev radio0 src 10.0.2.16 uid 0"
     }
 }
