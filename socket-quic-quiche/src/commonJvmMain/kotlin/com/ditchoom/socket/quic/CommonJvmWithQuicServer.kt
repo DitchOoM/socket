@@ -73,7 +73,8 @@ internal suspend fun buildJvmQuicServer(
         // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
-        val channel = binding.openServerChannel(recvBufPool)
+        // Not openServerChannel: a wildcard bind must answer from the address the client dialled (#556).
+        val channel = binding.openReplySourcePinnedServerChannel(recvBufPool)
         val localAddress = channel.localAddress
 
         val server =
