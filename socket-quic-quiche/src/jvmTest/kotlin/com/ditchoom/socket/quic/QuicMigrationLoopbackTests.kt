@@ -193,7 +193,22 @@ class QuicMigrationLoopbackTests {
     private suspend fun migrationTest(target: MigrationTarget.LocalAddress) {
         skipOnMissingNativeLib {
             withTimeout(20.seconds) {
-                withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                // host = 127.0.0.1, NOT the wildcard (#555/#556). A wildcard-bound server never pins
+                // the source address of its replies — there is no destination capture on NIO
+                // (`NioDatagramChannel`: "no IP_PKTINFO on NIO"), so the kernel picks it. Darwin picks
+                // the source matching the destination, Linux picks the interface primary. With the
+                // wildcard, migrating the client to 127.0.0.2 made the server answer *from* 127.0.0.2;
+                // the client's socket is connect()ed to 127.0.0.1 (NioUdpChannelFactory.openPath, which
+                // is correct), so the kernel dropped every reply, no PATH_RESPONSE arrived, and quiche
+                // reported PathNotValidated at the ~3s deadline. Measured: wildcard 3.019s red vs
+                // explicit bind 0.014s green, and Linux passed throughout purely because of its
+                // different source choice.
+                //
+                // Binding explicitly keeps this test about what it exercises — the CLIENT migrating to
+                // a new local address. The server-side defect is real and is tracked in #556; it is NOT
+                // fixed here, and with this bind nothing exercises a wildcard server under an address
+                // migration any more (that combination only ever passed on Linux, by luck).
+                withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                     // Echo loop: mirror every message back until the stream ends.
                     val serverJob =
                         launch(Dispatchers.IO) {
