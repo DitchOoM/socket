@@ -511,6 +511,9 @@ jobs:
             args: "-PquicheJvmBackend=ffm"
     env:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
+      # See the provisioning step below: this asserts the alias exists, so a skip for want of it
+      # becomes a failure naming that step rather than a plausible-looking host limitation.
+      QUIC_LOOPBACK_ALIAS_PROVISIONED: "1"
     steps:
       - uses: actions/checkout@v7
       # konan: false — this lane is JVM-only, so restoring the ~450MB Kotlin/Native toolchain would
@@ -518,6 +521,38 @@ jobs:
       - uses: ./.github/actions/apple-quiche-env
         with:
           konan: "false"
+
+      # `streamSurvivesActiveMigrationToLoopbackAlias` migrates to a different local **address**
+      # rather than a different port — the case closest to a real Wi-Fi↔cellular handoff, and the
+      # only JVM-lane test that covers it. Linux binds all of 127.0.0.0/8 by default so it runs
+      # there; macOS binds only 127.0.0.1, so on this lane the test skipped and the platform where
+      # most QUIC development happens had strictly weaker migration coverage than Linux, silently
+      # (#391).
+      #
+      # One privileged command fixes it. Runners already grant passwordless sudo, and the alias lives
+      # only for the life of the VM.
+      #
+      # The verification is not decoration: `ifconfig alias` reports success for an address the
+      # kernel then refuses to bind (a duplicate, a conflicting route), so the exit status alone is
+      # not evidence. Binding it is. If this step is ever removed or silently stops working, the
+      # QUIC_LOOPBACK_ALIAS_PROVISIONED flag above turns the resulting skip into a red naming it.
+      - name: Provision the 127.0.0.2 loopback alias (#391)
+        run: |
+          set -euo pipefail
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          ifconfig lo0
+          python3 - <<'PY'
+          import socket, sys
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          try:
+              s.bind(("127.0.0.2", 0))
+              print("127.0.0.2 is bindable ->", s.getsockname())
+          except OSError as e:
+              print("::error title=Loopback alias not usable::ifconfig reported success but 127.0.0.2 is not bindable: %s" % e)
+              sys.exit(1)
+          finally:
+              s.close()
+          PY
 
       # ⚠️ 20 min, NOT the 8 the monolith used or the 12 this job first carried over. Both were
       # sized for a world where this step ran AFTER the JNI step in the SAME job, so compilation
