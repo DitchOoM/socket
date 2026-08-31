@@ -148,11 +148,24 @@ internal object IoUringManager {
         }
     }
 
+    /**
+     * How many poller worker threads this manager has actually created.
+     *
+     * The regression guard for #302/#307, and deliberately not a wall clock: keeping the worker across
+     * [cleanup] is the fix, so a bind/close/cleanup cycle must not allocate a new one. Re-adding
+     * `dispatcher?.close()` there makes this grow once per cycle, which a test can assert exactly —
+     * where the ~100 ms it costs could only be asserted with a timing budget this suite has already
+     * (rightly) refused to add elsewhere.
+     */
+    internal val pollerDispatchersCreated = AtomicInt(0)
+
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private fun getOrCreatePollerDispatcher(): CloseableCoroutineDispatcher {
         pollerDispatcherRef.value?.let { return it }
         val newDispatcher = newSingleThreadContext("io_uring-udp-poller")
-        if (!pollerDispatcherRef.compareAndSet(null, newDispatcher)) {
+        if (pollerDispatcherRef.compareAndSet(null, newDispatcher)) {
+            pollerDispatchersCreated.incrementAndGet()
+        } else {
             newDispatcher.close()
         }
         return pollerDispatcherRef.value!!
@@ -624,10 +637,29 @@ internal object IoUringManager {
                 runBlocking { job.join() }
             }
 
-            // Safe now — event loop has exited and cleaned up ring resources
-            val scope = pollerScopeRef.getAndSet(null)
-            scope?.cancel()
-            val dispatcher = pollerDispatcherRef.getAndSet(null)
-            dispatcher?.close()
+            // The poller's scope and its worker thread are deliberately KEPT (#302/#307).
+            //
+            // Everything the kernel knows about is already gone: the event loop's own `finally` closed
+            // the eventfd, destroyed the ring and drained the pending ops before the join above
+            // returned. What used to follow was `scope.cancel()` + `dispatcher.close()`, and that pair
+            // cost a flat **~100 ms** on every last-socket close — measured step by step on the unfixed
+            // code: eventfd write → the loop's `finally` 18–60 µs, the join 73–157 µs, `scope.cancel()`
+            // 48–108 µs, and `dispatcher.close()` **99.71–100.05 ms**.
+            //
+            // It was never io_uring. On Kotlin/Native `CloseableCoroutineDispatcher.close()` blocks the
+            // caller until the backing worker terminates, and the worker only notices shutdown after its
+            // own ~100 ms bounded park expires. Isolated: closing a dispatcher whose worker ran at least
+            // one task is a flat 100.03 ms; one whose worker was never allocated is ~1 µs. That is also
+            // why the original strace showed a 100 ms *timed* futex with no eventfd traffic and no
+            // `io_uring_enter` in the window — the ring was already destroyed and what remained was the
+            // coroutine worker being torn down.
+            //
+            // The premise the teardown was written for — the comment on [activeSocketCount], that a
+            // `newSingleThreadContext` thread is non-daemon and would prevent process exit — no longer
+            // holds: a linuxX64 binary that leaks a started dispatcher exits in single-digit ms with
+            // code 0. So one idle worker thread is retained for the process lifetime, and because the
+            // refs are kept rather than nulled, [getOrCreatePollerDispatcher] reuses it: a bind/close
+            // cycle no longer allocates a thread per cycle either. [pollerDispatchersCreated] is the
+            // regression guard on exactly that, and it needs no wall clock to fire.
         }
 }
