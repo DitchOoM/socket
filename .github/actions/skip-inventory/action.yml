@@ -52,9 +52,33 @@ runs:
         #     `logcat-<class>-<method>.txt` beside the XML, and only there — verified by reading
         #     both after a deliberately-unreachable run.
         # Parenthesised so each root gets the right `-name` set (BSD and GNU find both accept it).
+        # ⚠️ The whole alternation is parenthesised, and that is the entire point. `-print0` is an
+        # expression like any other and binds by the same implicit-AND rule, so
+        #
+        #     find . \( A \) -o \( B \) -print0
+        #
+        # parses as `A -o ( B -a -print0 )`: files matching A are matched, found to satisfy the `-o`,
+        # and **never printed**. Only the second branch reaches stdout.
+        #
+        # That is what this file did, and B is the Android branch — so from the moment the Android
+        # root was added, every non-Android lane inventoried an empty set and reported
+        # "No [TEST-SKIPPED] markers found" no matter how many tests skipped. Measured in a workspace
+        # holding real iOS + watchOS + JVM results: the first branch alone prints 1979 files, this
+        # expression printed 3, parenthesised it prints 1982 — and the markers those 1979 files hold
+        # come to 69 skipped invocations, among them the 32 `transport-unavailable` and 10
+        # `simulator-lacks-network-services` the three simulator lanes were reporting as none.
+        #
+        # An inventory whose failure mode is "✅ nothing to report" is worse than no inventory: this
+        # one is read to decide where `SOCKET_REQUIRE_ALL_TESTS=1` may be turned on.
+        RESULT_FILES=$(find . \
+            \( \( -path '*/build/test-results/*' -name '*.xml' \) \
+               -o \( -path '*/build/outputs/androidTest-results/*' \( -name '*.xml' -o -name 'logcat-*.txt' \) \) \) \
+            -print0 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' ')
+        RESULT_FILES=${RESULT_FILES:-0}
+
         MARKERS=$(find . \
-            \( -path '*/build/test-results/*' -name '*.xml' \) \
-            -o \( -path '*/build/outputs/androidTest-results/*' \( -name '*.xml' -o -name 'logcat-*.txt' \) \) \
+            \( \( -path '*/build/test-results/*' -name '*.xml' \) \
+               -o \( -path '*/build/outputs/androidTest-results/*' \( -name '*.xml' -o -name 'logcat-*.txt' \) \) \) \
             -print0 2>/dev/null \
           | xargs -0 -r grep -hoE '\[TEST-SKIPPED\] site=[^ ]+ reason=[^ ]+' 2>/dev/null | sort || true)
 
@@ -77,12 +101,25 @@ runs:
           fi
         }
 
-        if [ -z "$MARKERS" ]; then
-          echo "No [TEST-SKIPPED] markers found; runner-reported skips: $RUNNER_SKIPS"
+        # "No skips" and "nothing to read" are different facts, and reporting the second as the first
+        # is how the bug above stayed invisible for as long as it did. Say which one this is.
+        if [ "$RESULT_FILES" -eq 0 ]; then
+          echo "::warning title=Skip inventory read nothing::No test-result files were found under build/test-results/ or build/outputs/androidTest-results/, so this inventory validated nothing. A lane that runs tests should produce them; if this lane does not run any, it does not need this step."
           {
             echo "### Skip inventory"
             echo
-            echo "✅ No typed (\`SkipReason\`) skips on this lane."
+            echo "⚠️ **No test-result files found.** This inventory read nothing, so it is not evidence"
+            echo "that nothing skipped — do not set \`SOCKET_REQUIRE_ALL_TESTS=1\` on the strength of it."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        if [ -z "$MARKERS" ]; then
+          echo "No [TEST-SKIPPED] markers found in $RESULT_FILES result file(s); runner-reported skips: $RUNNER_SKIPS"
+          {
+            echo "### Skip inventory"
+            echo
+            echo "✅ No typed (\`SkipReason\`) skips on this lane, across **$RESULT_FILES** result file(s)."
             untypedNote
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
