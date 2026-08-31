@@ -540,17 +540,40 @@ jobs:
           # returns the tag OBJECT sha for annotated tags, and every tag this recovery path exists for
           # was hand-backfilled with `git tag` — so that spelling would fire the mismatch warning below
           # on its own primary use case.
-          tag_commit=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha' 2>/dev/null || true)
-          if [ -n "$tag_commit" ]; then
-            # Recovery path. `target_commitish` is documented as "unused if the Git tag already
-            # exists", so the existing tag stays authoritative and --target is deliberately omitted
-            # rather than passed-and-ignored. The containment guard below is skipped with it: it
-            # guards the CREATION of a ref, and no ref is being created here.
+          #
+          # ── Read the EXIT STATUS, not the output (#548) ──────────────────────────────────────────
+          # `gh api` writes its error BODY to stdout, so for a tag that does not exist the 422
+          #     {"message":"No commit found for SHA: v4.11.0","documentation_url":…,"status":"422"}
+          # landed in $tag_commit, `2>/dev/null` did not touch it, `|| true` discarded the non-zero
+          # exit, and `[ -n "$tag_commit" ]` read the error as "the tag exists". That took the
+          # recovery branch — which omits --target — on the one path it was written to avoid, and
+          # `gh release create` with no target tags whatever the DEFAULT BRANCH happens to be at that
+          # moment. v4.11.0 was built and published from 8d9e0294 and tagged at af6cd7d7, a merge that
+          # landed seven minutes later; v4.10.1's tag went to #481's merge the same way. The
+          # containment guard in the `else` arm below has therefore never run on a normal release: it
+          # was unreachable whenever the tag did not already exist, which is every normal release.
+          if tag_commit=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha' 2>/dev/null); then
+            tag_exists=yes
+          else
+            tag_exists=no
+            tag_commit=""
+          fi
+          # A probe that answered something other than a commit sha has not answered, and every branch
+          # from here decides where a permanent tag lands. Refuse rather than guess.
+          if [ "$tag_exists" = yes ] && ! printf '%s' "$tag_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::the lookup of ${tag} returned '${tag_commit}', which is not a commit sha — refusing to decide where to tag ${version} from an unparseable answer."
+            exit 1
+          fi
+          if [ "$tag_exists" = yes ]; then
+            # Recovery path: the tag is PROVEN to exist and $tag_commit is its commit.
+            # `target_commitish` is documented as "unused if the Git tag already exists", but it is
+            # passed anyway and pointed at the tag's own commit: an omitted --target is the thing that
+            # silently tags HEAD, so this step no longer contains a spelling that can do that.
             echo "::notice::Tag ${tag} already exists (-> ${tag_commit}) but has no GitHub release — creating the release on the existing tag."
             if [ "$tag_commit" != "$RELEASE_SHA" ]; then
-              echo "::warning::${tag} points at ${tag_commit}, not this run's ${RELEASE_SHA}. Keeping the existing tag."
+              echo "::warning::${tag} points at ${tag_commit}, not this run's ${RELEASE_SHA}. Keeping the existing tag — the artifacts this run published were built from ${RELEASE_SHA}, so the tag and the release contents differ."
             fi
-            target_args=()
+            target_args=(--target="${tag_commit}")
           else
             # Refuse to tag a commit that is not on the default branch. `compare` reports the head's
             # relationship to the base: `identical` (it IS main's head) or `behind` (main has moved
