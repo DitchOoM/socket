@@ -13,11 +13,15 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -133,6 +137,67 @@ class PerLocalAddressServerChannelTests {
         val only = FakeSocket("127.0.0.1", 4433)
         assertTrue(PerLocalAddressServerChannel.of(listOf(only)) === only)
     }
+
+    /**
+     * The route map is bounded, and it is the *oldest* peers that go.
+     *
+     * Its key is whatever source a datagram claims, and UDP lets a peer claim anything: unbounded,
+     * a spray of spoofed sources grows the server's heap without limit — the attack the registry
+     * already bounds its recv_info cache against. RED against a plain map.
+     */
+    @Test
+    fun theRouteMapIsBoundedAndEvictsTheLeastRecentlySeenPeer() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias)) as PerLocalAddressServerChannel
+
+            val spray = PerLocalAddressServerChannel.MAX_REPLY_ROUTES + 64
+            val newest = literal("198.51.100.7", 1024 + spray - 1)
+            repeat(spray) { i ->
+                alias.deliver(literal("198.51.100.7", 1024 + i))
+                withTimeout(5.seconds) { channel.receive() }
+            }
+
+            assertTrue(
+                channel.routeCount <= PerLocalAddressServerChannel.MAX_REPLY_ROUTES,
+                "a spoofed-source spray must not grow the route map past its bound; held ${channel.routeCount}",
+            )
+            // The bound must cost the oldest peers their route, never the newest — a live peer's most
+            // recent datagram is what keeps it routable.
+            channel.send(payload(), newest)
+            assertEquals(1, alias.sent.size, "the most recently seen peer still routes by the socket it dialled")
+            assertEquals(0, loopback.sent.size)
+            channel.close()
+        }
+
+    /**
+     * A receive on a closed composite yields Closed rather than throwing — the contract every member
+     * keeps, and the one the server's reader loop is written against. RED against a bare receive on
+     * the fan-in channel, which throws ClosedReceiveChannelException.
+     */
+    @Test
+    fun aReceiveAfterCloseYieldsClosed() =
+        runBlocking<Unit> {
+            val channel = PerLocalAddressServerChannel.of(listOf(FakeSocket("127.0.0.1", 4433), FakeSocket("127.0.0.2", 4433)))
+            channel.close()
+            val result = withTimeout(5.seconds) { channel.receive() }
+            assertIs<DatagramReadResult.Closed>(result)
+        }
+
+    /** A receive parked when close() arrives wakes with Closed, so a reader loop ends instead of failing. */
+    @Test
+    fun aParkedReceiveWakesWithClosedWhenClosedUnderneath() =
+        runBlocking<Unit> {
+            val channel = PerLocalAddressServerChannel.of(listOf(FakeSocket("127.0.0.1", 4433), FakeSocket("127.0.0.2", 4433)))
+            val parked = async(Dispatchers.Default) { channel.receive() }
+            // Long enough that the receive is almost always parked when close() runs; and if it is not,
+            // the other ordering is the case above, which must hold too — so this cannot flake.
+            delay(100)
+            channel.close()
+            val result = withTimeout(5.seconds) { parked.await() }
+            assertIs<DatagramReadResult.Closed>(result)
+        }
 
     private fun payload(): ReadBuffer = BufferFactory.Default.allocate(4).also { it.resetForRead() }
 

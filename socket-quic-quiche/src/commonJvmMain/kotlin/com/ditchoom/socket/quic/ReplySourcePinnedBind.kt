@@ -20,28 +20,26 @@ import kotlinx.coroutines.CancellationException
  *  - **The wildcard** — the defective case. The kernel picks each reply's source and the choice
  *    differs per OS; see [PerLocalAddressServerChannel] for the measurements.
  *
- * ## Choosing the strategy
+ * ## Why this is not chosen by capability (yet)
  *
- * The capability is asked of the platform rather than assumed, which is what
- * [com.ditchoom.buffer.flow.DatagramCapabilities.sourceAddressSelect] exists for. A backend that can
- * pin a source per datagram (`IP_PKTINFO`) needs one socket and no enumeration, and this switches to
- * it the moment one reports so — no caller changes, no second implementation to retire.
- *
- * The probe binds an **ephemeral** port, never the requested one: capabilities are a property of the
- * backend, not of a port, and probing the real port would mean closing and rebinding it, handing the
- * window to anything else on the host.
+ * [com.ditchoom.buffer.flow.DatagramCapabilities.sourceAddressSelect] is the flag that would let a
+ * backend with `IP_PKTINFO` take a one-socket path instead. It is deliberately **not** consulted
+ * here. Pinning through cmsg only works if the server *asks* for the source on every send
+ * (`DatagramSendOptions.fromLocal`, taken from quiche's `send_info.from`), and the shared server does
+ * not yet do that — it sends `to` the peer and nothing else, and feeds quiche one fixed
+ * `recv_info.to` so quiche could not supply a per-path `from` even if asked. Selecting the
+ * one-socket path on the flag alone would therefore re-open the defect, silently, on the first
+ * backend to report it. The switch belongs with that plumbing, which is the Apple/Linux half of
+ * #556. On JVM the composite is the whole answer today: NIO has no cmsg, and never will.
  *
  * ## Cost, stated plainly
  *
- * The fallback puts a coroutine hand-off on the server's receive path — one rendezvous per datagram,
- * because N sockets have to be multiplexed and the channel interface offers no shared selector. That
- * is the price of not having `IP_PKTINFO`, and it is the reason the cmsg branch above is worth
- * taking as soon as a backend offers it, rather than being dead code.
+ * The composite puts a coroutine hand-off on the server's receive path — one rendezvous per
+ * datagram, because N sockets have to be multiplexed and the channel interface offers no shared
+ * selector. That is the price of not having `IP_PKTINFO` on this platform.
  */
 internal suspend fun QuicPortBinding.openReplySourcePinnedServerChannel(recvBufPool: BufferPool): AddressedDatagramChannel {
     if (this !is QuicPortBinding.Own || host != null) return openServerChannel(recvBufPool)
-
-    if (platformCanSelectSourceAddress(recvBufPool)) return openServerChannel(recvBufPool)
 
     val addresses = enumerateLocalUnicastAddresses().distinct()
     // Nothing to enumerate (an isolated container with every interface down) leaves the wildcard as
@@ -50,21 +48,6 @@ internal suspend fun QuicPortBinding.openReplySourcePinnedServerChannel(recvBufP
     if (addresses.isEmpty()) return openServerChannel(recvBufPool)
 
     return PerLocalAddressServerChannel.of(bindEachAddress(addresses, port, recvBufPool))
-}
-
-/**
- * Whether this platform can pin a reply's source without one socket per address.
- *
- * Both halves are required and neither implies the other: knowing where a datagram was addressed is
- * useless if the reply cannot be sent from there, and vice versa.
- */
-private suspend fun platformCanSelectSourceAddress(recvBufPool: BufferPool): Boolean {
-    val probe = UdpSocket.bind(localHost = null, localPort = 0, bufferFactory = recvBufPool)
-    return try {
-        probe.capabilities.localAddressReceive && probe.capabilities.sourceAddressSelect
-    } finally {
-        probe.close()
-    }
 }
 
 /**
