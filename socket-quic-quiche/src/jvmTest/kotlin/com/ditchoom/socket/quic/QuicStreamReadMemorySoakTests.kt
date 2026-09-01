@@ -140,7 +140,11 @@ class QuicStreamReadMemorySoakTests {
                             }
 
                         try {
-                            withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds) {
+                            // The wrapper's `timeout` bounds connect + block + close TOGETHER, so it must be
+                            // the soak's own budget: the default 15s is a 1.5x margin over a healthy lane's
+                            // 8-10s and a slow runner crosses it, turning a memory verdict into a timing one
+                            // (the same trap `idleTimeout` above was raised to avoid, one layer up).
+                            withQuicConnection("127.0.0.1", port, options, timeout = SOAK_BUDGET) {
                                 val stream = openStream()
                                 // One send buffer for the whole soak: it is caller-owned and reused, so
                                 // nothing the *write* side allocates can drift into the read-side number.
