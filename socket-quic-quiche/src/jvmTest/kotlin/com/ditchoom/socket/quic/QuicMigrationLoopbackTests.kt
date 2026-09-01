@@ -97,11 +97,30 @@ class QuicMigrationLoopbackTests {
     }
 
     /**
+     * Whether this lane says it has provisioned the `127.0.0.2` loopback alias.
+     *
+     * The alias skip is exempt from both other gates on purpose — `SOCKET_REQUIRE_ALL_TESTS` because
+     * `SkipGate.HostCannotProvideIt` names a capability a lane cannot install, and
+     * `QUIC_MIGRATION_REQUIRE_RUN` because the alias test is supplemental. Both exemptions rest on
+     * the same premise: nothing can make the host provide it.
+     *
+     * A lane that runs `ifconfig lo0 alias 127.0.0.2 up` has falsified that premise for itself, and
+     * from then on a skip there is not a host limitation but a broken provisioning step — which,
+     * unescalated, would silently give the lane back the coverage hole the step exists to close.
+     * Setting this says so, and turns the skip into a failure that names the step.
+     */
+    private val aliasProvisioned: Boolean =
+        System.getenv("QUIC_LOOPBACK_ALIAS_PROVISIONED")?.lowercase() in setOf("1", "true", "yes")
+
+    /**
      * Verify 127.0.0.2 is bindable (Linux: yes by default; macOS/BSD needs a
-     * privileged `ifconfig lo0 alias` that we don't require). This is a plain
-     * skip that QUIC_MIGRATION_REQUIRE_RUN does NOT escalate: the alias test is
-     * supplemental IP-change coverage, while [streamSurvivesActiveMigrationToNewLocalPort]
-     * carries the unprivileged must-run migration guarantee on every platform.
+     * privileged `ifconfig lo0 alias`, which the macOS lanes now run — see
+     * [aliasProvisioned] and #391).
+     *
+     * On a host that has not provisioned it this stays a plain skip that
+     * QUIC_MIGRATION_REQUIRE_RUN does NOT escalate: the alias test is supplemental IP-change
+     * coverage, while [streamSurvivesActiveMigrationToNewLocalPort] carries the unprivileged
+     * must-run migration guarantee on every platform.
      */
     private fun assumeLoopbackAliasBindable() {
         val bindable =
@@ -113,6 +132,17 @@ class QuicMigrationLoopbackTests {
             } catch (e: Exception) {
                 false
             }
+        if (!bindable && aliasProvisioned) {
+            // The lane asserted it installed the alias, so this is not a host that cannot provide one
+            // — it is a provisioning step that did not work. Failing here is the whole value of the
+            // flag: a silent skip would hand the lane back exactly the hole #391 closed, and the next
+            // person to read the inventory would see a legitimate-looking `host-behaviour-differs`.
+            kotlin.test.fail(
+                "QUIC_LOOPBACK_ALIAS_PROVISIONED is set but 127.0.0.2 is not bindable. The lane's " +
+                    "`ifconfig lo0 alias 127.0.0.2 up` step did not take effect — this is a broken lane, " +
+                    "not a host limitation.",
+            )
+        }
         if (!bindable) {
             // Reported, not escalated: see the docstring. It still has to be *visible*, because a host
             // that quietly stopped being able to bind the alias looks exactly like one that never could.
