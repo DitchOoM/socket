@@ -15,9 +15,42 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+/* Socket address types + byte-order helpers. This shim decodes sockaddr fields itself
+ * (nSockAddrFamily/Port/V4/V6Hi/V6Lo) and casts caller-owned addresses for quiche's
+ * sockaddr-taking entry points, so it names its own dependency rather than inheriting whatever
+ * quiche.h happens to pull in. MinGW (the Windows x64 cross-build in .github/workflows/build-linux.yaml)
+ * has none of the POSIX headers; the Winsock pair below declares the same set:
+ *   winsock2.h  struct sockaddr, struct sockaddr_in, AF_INET, ntohs, ntohl
+ *   ws2tcpip.h  struct sockaddr_in6, struct sockaddr_storage, AF_INET6, socklen_t
+ * The struct layouts are identical to Linux's (sockaddr_in 16 bytes, sockaddr_in6 28, sockaddr_storage
+ * 128, all fields at the same offsets), and every AF value this file compares against is supplied by
+ * the platform header — Windows AF_INET6 is 23, not Linux's 10, which is exactly the value
+ * hostOsSockAddrLayout() (socket-udp) encodes into the sockaddr on a Windows JVM. Unguarded, these
+ * three POSIX includes failed the MinGW cross-compile on every CI run (#515). */
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
+
+/* On PE targets the Linux JDK's jni_md.h — which is what the MinGW cross-build in
+ * .github/workflows/build-linux.yaml includes, there being no win32/jni_md.h in a Linux JDK — expands
+ * JNIEXPORT to `__attribute__((visibility("default")))`, which PE ignores. Nothing then carries
+ * dllexport, so the DLL's export table would come from GNU ld's auto-export fallback: it exports
+ * every global symbol, all of quiche's and BoringSSL's included. That happens to contain the 90 JNI
+ * entry points today, but ld disables auto-export entirely the moment ANY symbol is explicitly
+ * exported — so one future dllexport anywhere in this file would silently empty the table of
+ * Java_* names and turn every native method into an UnsatisfiedLinkError at first call. Name the
+ * export set instead: exactly the 90 JNIEXPORT entry points, no fallback in the loop.
+ * (Measured, same link line: 90 exported names / 4630528 bytes stripped, against 7925 / 5159424
+ * under auto-export.) */
+#ifdef _WIN32
+#undef JNIEXPORT
+#define JNIEXPORT __declspec(dllexport)
+#endif
 
 /* Package: com.ditchoom.socket.quic */
 /* Class: JniQuicheApi */

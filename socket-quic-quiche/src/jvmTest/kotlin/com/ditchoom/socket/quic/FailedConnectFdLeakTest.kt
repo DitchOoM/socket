@@ -3,6 +3,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import com.sun.management.UnixOperatingSystemMXBean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -58,11 +61,39 @@ import kotlin.time.Duration.Companion.seconds
  * `127.0.0.1:9` is RFC 863 discard: nothing listens, so every attempt must time out. The test asserts
  * that all [ATTEMPTS] actually threw. Without that, a machine where something happened to be bound to
  * port 9 would establish connections, close them cleanly, leak nothing, and report a meaningless pass.
+ *
+ * ## Unix only, and it says so
+ *
+ * The instrument is [UnixOperatingSystemMXBean.getOpenFileDescriptorCount], which the JVM implements
+ * only where descriptors are the OS's own currency. On Windows the MXBean is not that type and the
+ * cast throws `ClassCastException` — a broken test, not a finding about the code — so the platform is
+ * reported as a typed skip instead.
+ *
+ * This surfaced the first time the Windows lane ever ran (#515). That lane's Gradle step is gated on
+ * a `quiche_jni.dll` which had never been produced on any run, so the step had never executed and
+ * this test had never met a non-Unix host.
  */
 class FailedConnectFdLeakTest {
     @Test
     fun aConnectThatFailsToEstablishReturnsItsFileDescriptors() =
         runTest(timeout = 120.seconds) {
+            val osBean = ManagementFactory.getOperatingSystemMXBean()
+            if (osBean !is UnixOperatingSystemMXBean) {
+                // HostCannotProvideIt, not a lane fault: no setting installs POSIX descriptor
+                // accounting on Windows, so gating on it would only make that lane permanently red.
+                recordSkip(
+                    FailedConnectFdLeakTest::class,
+                    SkipReason.HostBehaviourDiffers(
+                        "this host's OperatingSystemMXBean is ${osBean::class.java.name}, not a " +
+                            "UnixOperatingSystemMXBean, so open-descriptor counts are unavailable and the " +
+                            "leak this test measures cannot be observed here",
+                    ),
+                    SkipGate.HostCannotProvideIt(
+                        "UnixOperatingSystemMXBean.openFileDescriptorCount (POSIX descriptor accounting)",
+                    ),
+                )
+                return@runTest
+            }
             withContext(Dispatchers.Default) {
                 val options =
                     QuicOptions(
@@ -113,6 +144,7 @@ class FailedConnectFdLeakTest {
             withQuicConnection(RECEIVER_HOST, RECEIVER_PORT, options, transport, CONNECT_TIMEOUT) { }
         }.isSuccess
 
+    /** Only reached past the [UnixOperatingSystemMXBean] check the test opens with. */
     private fun openFileDescriptors(): Long =
         (ManagementFactory.getOperatingSystemMXBean() as UnixOperatingSystemMXBean).openFileDescriptorCount
 

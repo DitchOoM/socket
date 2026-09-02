@@ -18,10 +18,12 @@
 #                            + the cargo skip marker  .built-<quiche>-qlog-jvm-<patchDigest>   (dotfile!)
 #                            + the JNI-shim skip marker .jni-built-<quiche>                     (dotfile!)
 #   android arm64-v8a        socket-quic-quiche/src/androidMain/jniLibs/arm64-v8a/{libquiche.so,libquiche_jni.so}
-#   windows-x64              socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll — OPTIONAL: review.yaml's
-#                            build-windows treats the DLL as best-effort (skips its tests with a warning when it is
-#                            absent), so its absence is reported here but does not fail. Issue #515 tracks making it
-#                            required once the cross-compile actually works.
+#   windows-x64              socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll — REQUIRED as of #515.
+#                            It was optional here because the MinGW cross-compile had never once succeeded (an
+#                            unguarded <sys/socket.h>, then a missing `qlog` cargo feature behind it), and
+#                            review.yaml's build-windows skipped :socket-quic-quiche:jvmTest whenever it was absent
+#                            — which was every run. The cross-build works now, so an absent DLL is a defect and
+#                            fails this job like every other file in the set.
 #
 # The patch digest in the `.built-*` marker is computed inside build.gradle.kts, so the marker is
 # matched by `.built-<quiche>-qlog-jvm-*` — the quiche version IS pinned here (read from the same
@@ -106,12 +108,10 @@ d="socket-quic-quiche/src/androidMain/jniLibs/arm64-v8a"
 require_file "$d/libquiche.so"
 require_file "$d/libquiche_jni.so"
 
-win="socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll"
-if [ -s "$root/$win" ]; then
-  echo "ok: $win ($(wc -c < "$root/$win" | tr -d ' ') bytes) [optional]"
-else
-  echo "absent (tolerated): $win — best-effort MinGW cross-build; review.yaml's build-windows skips its JVM tests without it (#515)"
-fi
+# The MinGW cross-build is the producer (build-linux.yaml's natives job); review.yaml's build-windows
+# is the only consumer and cannot run :socket-quic-quiche:jvmTest without it — the JNI backend is the
+# default one that task resolves, so a missing DLL is not a degraded Windows run, it is no Windows run.
+require_file "socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll"
 
 if [ "$missing_count" -eq 0 ]; then
   echo "natives artifact complete: $ok_count required file(s)/marker(s) present for quiche $quiche_ver"
