@@ -34,6 +34,7 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.incrementAndFetch
+import kotlin.reflect.KClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -565,11 +566,38 @@ private fun WebTransportTestSuite.runWebTransportTest(
  */
 @OptIn(ExperimentalAtomicApi::class)
 class WebTransportDiagnostics {
-    private val lastStep = AtomicReference("(not started)")
+    private val lastStep = AtomicReference<Step>(Step.NotStarted)
     private val serverEvents = AtomicReference(emptyList<String>())
     private val clientEvents = AtomicReference(emptyList<String>())
-    private val boundPort = AtomicInt(0)
-    private val postMortemReport = AtomicReference("(no post-mortem: the failure happened outside the server's lifetime)")
+    private val binding = AtomicReference<ServerBinding>(ServerBinding.NotBound)
+    private val postMortemReport = AtomicReference<PostMortem>(PostMortem.NotTaken)
+
+    /** How far the test body got. A state, not a label with a sentinel meaning "none". */
+    private sealed interface Step {
+        data object NotStarted : Step
+
+        data class Reached(
+            val label: String,
+        ) : Step
+    }
+
+    /** Whether the test's server has reported a bound port yet — the post-mortem needs one to probe. */
+    sealed interface ServerBinding {
+        data object NotBound : ServerBinding
+
+        data class Bound(
+            val port: Int,
+        ) : ServerBinding
+    }
+
+    /** Whether the suite got to take the post-mortem before the server was torn down. */
+    private sealed interface PostMortem {
+        data object NotTaken : PostMortem
+
+        data class Taken(
+            val report: String,
+        ) : PostMortem
+    }
 
     /**
      * Per-side datagram tallies, kept as plain atomic increments at sink time so the summary line of
@@ -581,19 +609,19 @@ class WebTransportDiagnostics {
 
     /** Records the step the test body is about to attempt. Cheap enough to leave on always. */
     fun mark(step: String) {
-        lastStep.store(step)
+        lastStep.store(Step.Reached(step))
     }
 
     /** The port the test's server bound — where the post-mortem probes go. */
     fun serverBound(port: Int) {
-        boundPort.store(port)
+        binding.store(ServerBinding.Bound(port))
     }
 
-    val serverPort: Int get() = boundPort.load()
+    val serverBinding: ServerBinding get() = binding.load()
 
     /** The post-mortem the suite took while the server was still bound; part of [report]. */
     fun postMortem(text: String) {
-        postMortemReport.store(text)
+        postMortemReport.store(PostMortem.Taken(text))
     }
 
     /**
@@ -646,7 +674,8 @@ class WebTransportDiagnostics {
      * the two event counts above, so a future "0 server events" can be trusted to mean "nothing was
      * dequeued" rather than "the server half of the capture came unwired".
      */
-    val serverRingStartsWithDatagramIn: Boolean get() = server.firstEvent.load() == FIRST_EVENT_DGRAM_IN
+    val serverRingStartsWithDatagramIn: Boolean
+        get() = (server.firstEvent.load() as? FirstEvent.Recorded)?.kind == TraceEvent.DgramIn::class
 
     fun report(cause: Throwable): String =
         buildString {
@@ -658,17 +687,38 @@ class WebTransportDiagnostics {
                 appendLine("  caused by: ${next::class.simpleName}: ${next.message}")
                 next = next.cause
             }
-            appendLine("last step reached: ${lastStep.load()}")
-            appendLine("server port: ${serverPort.takeIf { it != 0 } ?: "(never bound)"}")
+            appendLine(
+                "last step reached: " +
+                    when (val step = lastStep.load()) {
+                        Step.NotStarted -> "(not started)"
+                        is Step.Reached -> step.label
+                    },
+            )
+            appendLine(
+                "server port: " +
+                    when (val bound = binding.load()) {
+                        ServerBinding.NotBound -> "(never bound)"
+                        is ServerBinding.Bound -> bound.port.toString()
+                    },
+            )
             // The summary the ring cannot give once it has wrapped. "sent N, received 0" on one side
             // beside "received N" on the other is the whole #367 question answered in one line.
             appendLine(
                 "datagrams: client sent ${client.out.load()} / received ${client.inn.load()}; " +
                     "server sent ${server.out.load()} / received ${server.inn.load()}; " +
                     "server-level drops ${server.drops.load()}; " +
-                    "server ring starts with ${server.firstEvent.load().ifEmpty { "(nothing)" }}",
+                    "server ring starts with " +
+                    when (val first = server.firstEvent.load()) {
+                        FirstEvent.NotYet -> "(nothing)"
+                        is FirstEvent.Recorded -> first.kind.simpleName
+                    },
             )
-            appendLine(postMortemReport.load())
+            appendLine(
+                when (val taken = postMortemReport.load()) {
+                    PostMortem.NotTaken -> "(no post-mortem: the failure happened outside the server's lifetime)"
+                    is PostMortem.Taken -> taken.report
+                },
+            )
             appendTrace("client", clientEvents.load())
             appendTrace("server", serverEvents.load())
             appendLine("=== end diagnostics ===")
@@ -682,13 +732,20 @@ class WebTransportDiagnostics {
         captured.forEach { appendLine("  $it") }
     }
 
+    /** The first event a side ever recorded: nothing yet, or the event type it was. Set once, by CAS. */
+    private sealed interface FirstEvent {
+        data object NotYet : FirstEvent
+
+        data class Recorded(
+            val kind: KClass<out TraceEvent>,
+        ) : FirstEvent
+    }
+
     private class SideCounters {
         val out = AtomicInt(0)
         val inn = AtomicInt(0)
         val drops = AtomicInt(0)
-
-        /** The kind of the first event this side ever recorded; empty until then. Set once, by CAS. */
-        val firstEvent = AtomicReference("")
+        val firstEvent = AtomicReference<FirstEvent>(FirstEvent.NotYet)
     }
 
     /**
@@ -701,24 +758,13 @@ class WebTransportDiagnostics {
         counters: SideCounters,
     ): TraceSink =
         TraceSink { event: TraceEvent ->
-            val kind =
-                when (event) {
-                    is TraceEvent.DgramOut -> {
-                        counters.out.incrementAndFetch()
-                        "DGRAM_OUT"
-                    }
-                    is TraceEvent.DgramIn -> {
-                        counters.inn.incrementAndFetch()
-                        FIRST_EVENT_DGRAM_IN
-                    }
-                    is TraceEvent.Error -> {
-                        if (event.type.contains(SERVER_DROP_TYPE)) counters.drops.incrementAndFetch()
-                        "ERROR"
-                    }
-                    is TraceEvent.State -> "STATE"
-                    else -> event::class.simpleName ?: "?"
-                }
-            counters.firstEvent.compareAndSet("", kind)
+            when (event) {
+                is TraceEvent.DgramOut -> counters.out.incrementAndFetch()
+                is TraceEvent.DgramIn -> counters.inn.incrementAndFetch()
+                is TraceEvent.Error -> if (event.type.startsWith(SERVER_DROP_PREFIX)) counters.drops.incrementAndFetch()
+                else -> Unit
+            }
+            counters.firstEvent.compareAndSet(FirstEvent.NotYet, FirstEvent.Recorded(event::class))
             // Truncated: a DGRAM line carries the full packet hex (~2400 chars for a 1200-byte
             // datagram), and hundreds of those would bury the report in CI. The prefix keeps everything
             // that localises a stall — timestamp, kind, direction, size, 4-tuple — and STATE /
@@ -739,8 +785,13 @@ class WebTransportDiagnostics {
         const val MAX_LINE = 180
         const val MAX_CAUSE_DEPTH = 6
 
-        /** The qualified-name fragment every `ServerDatagramDrop` subclass carries on its ERROR line. */
-        const val SERVER_DROP_TYPE = "ServerDatagramDrop"
-        const val FIRST_EVENT_DGRAM_IN = "DGRAM_IN"
+        /**
+         * The v1 trace wire format writes an `ERROR` line's type as the throwable's **qualified** class
+         * name, and every `ServerDatagramDrop` member is nested in that sealed class — so its qualified
+         * name plus a dot is the exact prefix of every server-level drop, and nothing else. The type
+         * itself is internal to `:socket-quic-quiche` and not reachable from this module; the wire
+         * form is the contract that crosses it, the way a retrace against R8's mapping reads it.
+         */
+        const val SERVER_DROP_PREFIX = "com.ditchoom.socket.quic.ServerDatagramDrop."
     }
 }

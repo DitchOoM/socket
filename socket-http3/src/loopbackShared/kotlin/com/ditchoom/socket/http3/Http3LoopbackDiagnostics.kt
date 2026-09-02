@@ -29,12 +29,22 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  */
 @OptIn(ExperimentalAtomicApi::class)
 class Http3LoopbackDiagnostics {
-    private val lastStep = AtomicReference("(not started)")
+    private val lastStep = AtomicReference<Step>(Step.NotStarted)
+
+    /** How far the test body got. A state, not a label with a sentinel meaning "none". */
+    private sealed interface Step {
+        data object NotStarted : Step
+
+        data class Reached(
+            val label: String,
+        ) : Step
+    }
+
     private val events = AtomicReference(emptyList<String>())
 
     /** Records the step the test body is about to attempt. Cheap enough to leave on always. */
     fun mark(step: String) {
-        lastStep.store(step)
+        lastStep.store(Step.Reached(step))
     }
 
     /**
@@ -198,7 +208,13 @@ class Http3LoopbackDiagnostics {
             (listOf(cause) + causeChain(cause)).filterIsInstance<QuicCloseException>().firstOrNull()?.let {
                 appendLine("typed QUIC reason: ${it.closeReason.describe()}")
             }
-            appendLine("last step reached: ${lastStep.load()}")
+            appendLine(
+                "last step reached: " +
+                    when (val step = lastStep.load()) {
+                        Step.NotStarted -> "(not started)"
+                        is Step.Reached -> step.label
+                    },
+            )
             // The typed violation behind an opaque application close code. `ApplicationError(514)` alone
             // is only "some QPACK decoder-stream error"; the violation names which of the four and its
             // operands, which is the difference between a hypothesis and a fix (#291).
