@@ -401,6 +401,27 @@ internal class SharedQuicheServer(
                             registry.deRouteDriver(existingDriver)
                         }
                     } else {
+                        // Nothing routes this DCID, so the only packet that may create a connection is
+                        // a fully conforming Initial (RFC 9000 §5.2.2: "Servers MUST drop incoming
+                        // packets under all other circumstances") carried in a datagram of at least
+                        // 1200 bytes (§14.1: "A server MUST discard an Initial packet that is carried
+                        // in a UDP datagram with a payload that is smaller"). quiche_accept checks
+                        // neither, so before #563 a stray short-header packet, a stale 1-RTT packet
+                        // after its connection closed, a Handshake packet or a runt Initial each became
+                        // a server connection and a driver that lived until the idle timeout — a cost
+                        // the §14.1 floor exists to deny an attacker, and a spurious PROTOCOL_VIOLATION
+                        // close in every trace someone reads to diagnose a real failure.
+                        val packetType = typeBuf[0].toInt() and 0xFF
+                        if (packetType != PACKET_TYPE_INITIAL) {
+                            serverRecorder?.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType))
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
+                        if (received < MIN_INITIAL_DATAGRAM_SIZE) {
+                            serverRecorder?.error(ServerDatagramDrop.RuntInitial(received, peer))
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
                         // Accept new connection — recvBuf ownership transfers inside.
                         val accepted = acceptNewConnection(recvBuf, received, peer)
                         if (accepted == null) {
@@ -479,8 +500,21 @@ internal class SharedQuicheServer(
         // 4-tuple the accept-time record below carries.
         val peerKey = api.decodePathKey(peerSockAddr.address)
 
-        // Feed the initial packet before the driver starts — safe, driver not yet running.
-        api.connRecv(conn, recvAddr, received, recvInfo)
+        // Feed the initial packet before the driver starts — safe, driver not yet running. quiche
+        // rejecting it (undecryptable, malformed past the header) means there is no connection to
+        // drive: release everything accept created and report the refusal, instead of starting a
+        // driver over a connection that can only ever idle out (#563).
+        val fed = api.connRecv(conn, recvAddr, received, recvInfo)
+        if (fed < 0) {
+            api.connFree(conn)
+            api.recvInfoFree(recvInfo)
+            api.sendInfoFree(sendInfo)
+            serverScid.freeNativeMemory()
+            peerSockAddr.free()
+            localSockAddr.free()
+            recvBuf.freeNativeMemory()
+            return null
+        }
         // The one datagram the connection's own recorder can never show: it is consumed here, before
         // the driver (and its recording channel wrap) exists. Recorded at the server level so a trace
         // that begins with STATE lines is preceded by the arrival that caused them (see serverRecorder).
@@ -556,6 +590,16 @@ internal class SharedQuicheServer(
 
     companion object {
         private const val MAX_TOKEN_LEN = 256
+
+        /**
+         * `quiche_header_info`'s packet type for an Initial. quiche's FFI writes the type as
+         * Initial = 1, Retry = 2, Handshake = 3, 0-RTT = 4, Short = 5, Version Negotiation = 6
+         * (`quiche/src/ffi.rs`, `quiche_header_info`); the header declares no names for them.
+         */
+        private const val PACKET_TYPE_INITIAL = 1
+
+        /** RFC 9000 §14.1: the smallest UDP payload a server may accept an Initial from. */
+        internal const val MIN_INITIAL_DATAGRAM_SIZE = 1200
     }
 }
 
@@ -584,6 +628,23 @@ internal sealed class ServerDatagramDrop(
         len: Int,
         peer: SocketAddress,
     ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and quiche_accept refused it")
+
+    /**
+     * No connection routes the DCID and the packet is not an Initial, so it cannot create one
+     * (RFC 9000 §5.2.2). [packetType] is `quiche_header_info`'s numbering: 2 Retry, 3 Handshake,
+     * 4 0-RTT, 5 Short, 6 Version Negotiation.
+     */
+    class NotAnInitial(
+        len: Int,
+        peer: SocketAddress,
+        val packetType: Int,
+    ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and packet type $packetType is not an Initial")
+
+    /** An Initial for a new connection carried in a datagram below the 1200-byte floor (RFC 9000 §14.1). */
+    class RuntInitial(
+        len: Int,
+        peer: SocketAddress,
+    ) : ServerDatagramDrop("$len B from $peer: an Initial for a new connection must arrive in a datagram of at least 1200 bytes")
 
     /** The DCID routed to a connection whose driver has already stopped taking packets. */
     class DriverGone(
