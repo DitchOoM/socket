@@ -35,24 +35,26 @@ class QuicLocalServerTests {
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
     /**
-     * The last step each peer reached, so a stalled exchange names *where* it stalled.
+     * Run [body] — a two-peer exchange built on [diag] — and, on ANY failure, replace the bare
+     * exception with one that carries the located failure, both ends' traces and the thread
+     * inventory (see [LoopbackPeerDiagnostics] for why each is needed). Printed AND folded into the
+     * exception: the job log shows the exception and the JNI→FFM re-run clobbers the test XML, so
+     * only the exception message reliably survives CI.
      *
-     * The tests below drive a client and a server handler from two `launch`ed coroutines and wait on a
-     * [CompletableDeferred] between them. Some of the calls those peers make are unbounded —
-     * `connections`, `acceptStream`, `openStream` — so a stall there throws nothing at all: the deferred
-     * is simply never completed and the only evidence is the awaiting side timing out, over a stack that
-     * names the await and nothing else. Recording the step before each call is what turns that into a
-     * located failure. Written from the peer coroutines, read from the test coroutine on timeout, hence
-     * `@Volatile`.
+     * Thrown as an `AssertionError` on purpose — a `TimeoutCancellationException` IS a
+     * `CancellationException`, and at the test boundary a cancellation is a failure.
      */
-    private class Steps {
-        @Volatile
-        var client: String = "not started"
-
-        @Volatile
-        var server: String = "not started"
-
-        override fun toString() = "client stalled at '$client', server at '$server'"
+    private suspend fun diagnosed(
+        diag: LoopbackPeerDiagnostics,
+        body: suspend () -> Unit,
+    ) {
+        try {
+            body()
+        } catch (t: Throwable) {
+            val report = diag.report(t)
+            println(report)
+            throw AssertionError(report, t)
+        }
     }
 
     /**
@@ -85,26 +87,33 @@ class QuicLocalServerTests {
     fun serverAcceptsConnection() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                withTimeout(15.seconds) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val handlerRan = CompletableDeferred<Unit>()
+                val diag = LoopbackPeerDiagnostics()
+                diagnosed(diag) {
+                    withTimeout(15.seconds) {
+                        withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = diag.serverOptions(testQuicOptions)) {
+                            val handlerRan = CompletableDeferred<Unit>()
 
-                        // Handler-immediate pattern; delay(N) in handler deadlocks driver
-                        // shutdown on CI (see QuicServerTestSuite.serverAcceptsConnection).
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                connections {
-                                    handlerRan.complete(Unit)
+                            // Handler-immediate pattern; delay(N) in handler deadlocks driver
+                            // shutdown on CI (see QuicServerTestSuite.serverAcceptsConnection).
+                            diag.serverStep = "connections"
+                            val serverJob =
+                                launch(Dispatchers.IO) {
+                                    connections {
+                                        diag.serverStep = "handler ran"
+                                        handlerRan.complete(Unit)
+                                    }
                                 }
-                            }
 
-                        try {
-                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                                // Empty.
+                            try {
+                                diag.clientStep = "connect"
+                                withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
+                                    diag.clientStep = "connected"
+                                }
+                                diag.clientStep = "awaiting the server handler"
+                                withTimeout(10.seconds) { handlerRan.await() }
+                            } finally {
+                                serverJob.cancel()
                             }
-                            withTimeout(10.seconds) { handlerRan.await() }
-                        } finally {
-                            serverJob.cancel()
                         }
                     }
                 }
@@ -115,71 +124,76 @@ class QuicLocalServerTests {
     fun echoSingleStream() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                withTimeout(15.seconds) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val echoResult = CompletableDeferred<String>()
-                        val steps = Steps()
+                val diag = LoopbackPeerDiagnostics()
+                diagnosed(diag) {
+                    withTimeout(15.seconds) {
+                        withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = diag.serverOptions(testQuicOptions)) {
+                            val echoResult = CompletableDeferred<String>()
 
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                reporting(echoResult, "server", { steps.server }) {
-                                    steps.server = "connections"
-                                    connections {
-                                        steps.server = "acceptStream"
-                                        val stream = acceptStream()
-                                        steps.server = "read"
-                                        // Scoped read (#538): echo zero-copy inside the block, and the
-                                        // read buffer goes back to the driver's pool on the way out.
-                                        stream.read(5.seconds) {
-                                            steps.server = "write"
-                                            stream.write(it, 5.seconds)
+                            val serverJob =
+                                launch(Dispatchers.IO) {
+                                    reporting(echoResult, "server", { diag.serverStep }) {
+                                        diag.serverStep = "connections"
+                                        connections {
+                                            diag.serverStep = "acceptStream"
+                                            val stream = acceptStream()
+                                            diag.serverStep = "read"
+                                            // Scoped read (#538): echo zero-copy inside the block, and the
+                                            // read buffer goes back to the driver's pool on the way out.
+                                            stream.read(5.seconds) {
+                                                diag.serverStep = "write"
+                                                stream.write(it, 5.seconds)
+                                            }
+                                            diag.serverStep = "close"
+                                            stream.close()
+                                            diag.serverStep = "echoed"
                                         }
-                                        steps.server = "close"
-                                        stream.close()
-                                        steps.server = "echoed"
                                     }
                                 }
-                            }
 
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                reporting(echoResult, "client", { steps.client }) {
-                                    steps.client = "connect"
-                                    withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                                        steps.client = "openStream"
-                                        val stream = openStream()
-                                        val sendBuf = BufferFactory.Default.allocate(11)
-                                        sendBuf.writeString("hello quic!", Charset.UTF8)
-                                        sendBuf.resetForRead()
-                                        steps.client = "write"
-                                        stream.write(sendBuf, 5.seconds)
+                            val clientJob =
+                                launch(Dispatchers.IO) {
+                                    reporting(echoResult, "client", { diag.clientStep }) {
+                                        diag.clientStep = "connect"
+                                        withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
+                                            diag.clientStep = "openStream"
+                                            val stream = openStream()
+                                            val sendBuf = BufferFactory.Default.allocate(11)
+                                            sendBuf.writeString("hello quic!", Charset.UTF8)
+                                            sendBuf.resetForRead()
+                                            diag.clientStep = "write"
+                                            stream.write(sendBuf, 5.seconds)
 
-                                        steps.client = "read"
-                                        val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                        if (response is ScopedRead.Data) {
-                                            echoResult.complete(response.value)
-                                        } else {
-                                            echoResult.complete("no_data")
+                                            diag.clientStep = "read"
+                                            val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                            if (response is ScopedRead.Data) {
+                                                echoResult.complete(response.value)
+                                            } else {
+                                                echoResult.complete("no_data")
+                                            }
+                                            diag.clientStep = "close"
+                                            stream.close()
                                         }
-                                        steps.client = "close"
-                                        stream.close()
                                     }
                                 }
-                            }
 
-                        try {
-                            val result =
-                                try {
-                                    withTimeout(10.seconds) { echoResult.await() }
-                                } catch (e: TimeoutCancellationException) {
-                                    // Neither peer reported anything, so both are parked in an unbounded
-                                    // call — the steps are the only evidence of which one.
-                                    throw AssertionError("echo never completed: $steps", e)
-                                }
-                            assertEquals("hello quic!", result)
-                        } finally {
-                            clientJob.cancel()
-                            serverJob.cancel()
+                            try {
+                                val result =
+                                    try {
+                                        withTimeout(10.seconds) { echoResult.await() }
+                                    } catch (e: TimeoutCancellationException) {
+                                        // Neither peer reported anything, so both are parked in an
+                                        // unbounded call — the steps are the only evidence of which one.
+                                        throw AssertionError(
+                                            "echo never completed: client stalled at '${diag.clientStep}', server at '${diag.serverStep}'",
+                                            e,
+                                        )
+                                    }
+                                assertEquals("hello quic!", result)
+                            } finally {
+                                clientJob.cancel()
+                                serverJob.cancel()
+                            }
                         }
                     }
                 }
@@ -210,87 +224,93 @@ class QuicLocalServerTests {
     fun replyBufferedWhenPeerClosesIsStillDelivered() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                withTimeout(30.seconds) {
-                    val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val echoResult = CompletableDeferred<String>()
-                        val steps = Steps()
+                val diag = LoopbackPeerDiagnostics()
+                diagnosed(diag) {
+                    withTimeout(30.seconds) {
+                        val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
+                        withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = diag.serverOptions(testQuicOptions)) {
+                            val echoResult = CompletableDeferred<String>()
 
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                reporting(echoResult, "server", { steps.server }) {
-                                    steps.server = "connections"
-                                    connections {
-                                        steps.server = "acceptStream"
-                                        val stream = acceptStream()
-                                        // Drain the request to the peer's FIN, echo it back, FIN our side.
-                                        val received = StringBuilder()
-                                        while (true) {
-                                            steps.server = "read(${received.length})"
-                                            val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                            if (r !is ScopedRead.Data) break
-                                            received.append(r.value)
+                            val serverJob =
+                                launch(Dispatchers.IO) {
+                                    reporting(echoResult, "server", { diag.serverStep }) {
+                                        diag.serverStep = "connections"
+                                        connections {
+                                            diag.serverStep = "acceptStream"
+                                            val stream = acceptStream()
+                                            // Drain the request to the peer's FIN, echo it back, FIN our side.
+                                            val received = StringBuilder()
+                                            while (true) {
+                                                diag.serverStep = "read(${received.length})"
+                                                val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                                if (r !is ScopedRead.Data) break
+                                                received.append(r.value)
+                                            }
+                                            val reply = BufferFactory.Default.allocate(received.length)
+                                            reply.writeString(received.toString(), Charset.UTF8)
+                                            reply.resetForRead()
+                                            diag.serverStep = "write"
+                                            stream.write(reply, 5.seconds)
+                                            diag.serverStep = "close"
+                                            stream.close()
+                                            diag.serverStep = "echoed"
+                                            // Returning from the handler closes the connection:
+                                            // CONNECTION_CLOSE reaches the client while its reply is still
+                                            // unread.
                                         }
-                                        val reply = BufferFactory.Default.allocate(received.length)
-                                        reply.writeString(received.toString(), Charset.UTF8)
-                                        reply.resetForRead()
-                                        steps.server = "write"
-                                        stream.write(reply, 5.seconds)
-                                        steps.server = "close"
-                                        stream.close()
-                                        steps.server = "echoed"
-                                        // Returning from the handler closes the connection: CONNECTION_CLOSE
-                                        // reaches the client while its reply is still unread.
                                     }
                                 }
-                            }
 
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                reporting(echoResult, "client", { steps.client }) {
-                                    steps.client = "connect"
-                                    withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                                        steps.client = "openStream"
-                                        val stream = openStream()
-                                        val sendBuf = BufferFactory.Default.allocate(4)
-                                        sendBuf.writeString("ping", Charset.UTF8)
-                                        sendBuf.resetForRead()
-                                        steps.client = "write"
-                                        stream.write(sendBuf, 5.seconds)
-                                        steps.client = "shutdownSend"
-                                        stream.shutdownSend()
+                            val clientJob =
+                                launch(Dispatchers.IO) {
+                                    reporting(echoResult, "client", { diag.clientStep }) {
+                                        diag.clientStep = "connect"
+                                        withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
+                                            diag.clientStep = "openStream"
+                                            val stream = openStream()
+                                            val sendBuf = BufferFactory.Default.allocate(4)
+                                            sendBuf.writeString("ping", Charset.UTF8)
+                                            sendBuf.resetForRead()
+                                            diag.clientStep = "write"
+                                            stream.write(sendBuf, 5.seconds)
+                                            diag.clientStep = "shutdownSend"
+                                            stream.shutdownSend()
 
-                                        // Outlast the draining period (3 × PTO, tens of ms) by a wide margin
-                                        // so the reply, the FIN and the CONNECTION_CLOSE have all been
-                                        // processed and the driver has torn the connection down before the
-                                        // first read is even issued.
-                                        steps.client = "draining delay"
-                                        delay(2.seconds)
+                                            // Outlast the draining period (3 × PTO, tens of ms) by a wide
+                                            // margin so the reply, the FIN and the CONNECTION_CLOSE have all
+                                            // been processed and the driver has torn the connection down
+                                            // before the first read is even issued.
+                                            diag.clientStep = "draining delay"
+                                            delay(2.seconds)
 
-                                        steps.client = "read"
-                                        val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                        if (response is ScopedRead.Data) {
-                                            echoResult.complete(response.value)
-                                        } else {
-                                            echoResult.complete("no_data:${response::class.simpleName}")
+                                            diag.clientStep = "read"
+                                            val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                            if (response is ScopedRead.Data) {
+                                                echoResult.complete(response.value)
+                                            } else {
+                                                echoResult.complete("no_data:${response::class.simpleName}")
+                                            }
+                                            diag.clientStep = "close"
+                                            stream.close()
                                         }
-                                        steps.client = "close"
-                                        stream.close()
                                     }
                                 }
-                            }
 
-                        try {
-                            val result =
-                                try {
-                                    withTimeout(15.seconds) { echoResult.await() }
-                                } catch (e: TimeoutCancellationException) {
-                                    throw AssertionError("reply never arrived: $steps", e)
-                                }
-                            assertEquals("ping", result)
-                        } finally {
-                            clientJob.cancel()
-                            serverJob.cancel()
+                            try {
+                                val result =
+                                    try {
+                                        withTimeout(15.seconds) { echoResult.await() }
+                                    } catch (e: TimeoutCancellationException) {
+                                        throw AssertionError(
+                                            "reply never arrived: client stalled at '${diag.clientStep}', server at '${diag.serverStep}'",
+                                            e,
+                                        )
+                                    }
+                                assertEquals("ping", result)
+                            } finally {
+                                clientJob.cancel()
+                                serverJob.cancel()
+                            }
                         }
                     }
                 }
