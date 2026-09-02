@@ -105,8 +105,19 @@ data class IoTuning(
      */
     val defaultBufferSize: Int = 8192,
     /**
-     * How long `CodecConnection.close()` lets its writer flush already-queued messages before closing
-     * the stream underneath it (#382).
+     * How long a teardown may block before it gives up and finishes anyway.
+     *
+     * Three call sites, all inside a `NonCancellable` teardown, which is what makes a bound
+     * mandatory rather than tidy: unbounded work there is UNKILLABLE, because the caller has already
+     * given up its ability to interrupt.
+     *  - `CodecConnection.close()` — lets its writer flush already-queued messages before closing the
+     *    stream underneath it (#382), and bounds the stream close itself.
+     *  - `CodecSender.close()` — bounds the sink close.
+     *  - `ReconnectingConnection.close()` — bounds the close of whatever the caller's `connect`
+     *    lambda returned. That is arbitrary user code, so this is the site where the bound matters
+     *    most; see ReconnectingConnectionCloseIsBoundedTests, whose control arm hangs without it.
+     *
+     * The drain semantics below describe the first of those, which is where the name comes from.
      *
      * Exists because `send` is a hand-off: without a drain, `close()` races ahead of a just-queued
      * goodbye frame and the common send-DISCONNECT-then-close shape silently loses it. Bounded rather
