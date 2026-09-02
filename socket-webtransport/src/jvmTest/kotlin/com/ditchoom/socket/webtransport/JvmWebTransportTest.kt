@@ -39,6 +39,35 @@ class JvmWebTransportTest : WebTransportTestSuite() {
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
 
     override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmWebTransportTest::class, block)
+
+    /**
+     * The OS's view of the port, by host OS: `lsof` + `netstat` on Darwin (process, family and Recv-Q
+     * per socket — the #450 shape is an `AF_INET` daemon under a dual-stack server), `ss` on Linux.
+     * Failure path only.
+     */
+    override suspend fun osSocketsOnPort(port: Int): String =
+        try {
+            val darwin = System.getProperty("os.name").orEmpty().contains("mac", ignoreCase = true)
+            val rows =
+                if (darwin) {
+                    shellLines("/usr/sbin/lsof", "-nP", "-iUDP:$port").map { "lsof    $it" } +
+                        shellLines("/usr/sbin/netstat", "-an", "-p", "udp")
+                            .filter { it.contains(".$port ") || it.endsWith(".$port") }
+                            .map { "netstat $it" }
+                } else {
+                    shellLines("ss", "-uapn").filter { it.contains(":$port ") }.map { "ss      $it" }
+                }
+            rows.joinToString("\n").ifEmpty { "<no socket holds udp/$port>" }
+        } catch (t: Throwable) {
+            "OS socket inventory unavailable: ${t::class.simpleName}: ${t.message}"
+        }
+
+    private fun shellLines(vararg command: String): List<String> {
+        val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+        val text = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        return text.lines().filter { it.isNotBlank() }
+    }
 }
 
 /**

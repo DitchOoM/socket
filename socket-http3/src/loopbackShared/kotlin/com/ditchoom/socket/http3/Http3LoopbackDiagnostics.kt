@@ -117,6 +117,39 @@ class Http3LoopbackDiagnostics {
         }
     }
 
+    /**
+     * A harness coroutine that died with an exception nothing caught.
+     *
+     * WHY: the harness server handles each stream in `scope.launch` under the connection's
+     * SupervisorJob, so an exception that escapes it never reaches the test body — it goes to the
+     * coroutine machinery's uncaught handler, and `kotlinx-coroutines-test` then fails the test at the
+     * END of `runTest`, after the body has already passed and `runHttp3LoopbackTest`'s catch has been
+     * skipped. That is how `malformedFrameSequenceFromServer_abortsConnection` failed twice on the
+     * API-29 lane on 2026-08-20 with the bare `QuicCloseException` and the job log saying
+     * `(no H3Loopback report …)`: the report machinery existed and was never reached. The launch now
+     * carries a handler that records here, and the runner checks this after a passing body.
+     */
+    private val uncaught = AtomicReference(emptyList<Pair<String, Throwable>>())
+
+    fun recordUncaught(
+        side: String,
+        failure: Throwable,
+    ) {
+        while (true) {
+            val current = uncaught.load()
+            val next =
+                if (current.size >= MAX_VIOLATIONS) {
+                    current.subList(1, current.size) + (side to failure)
+                } else {
+                    current + (side to failure)
+                }
+            if (uncaught.compareAndSet(current, next)) return
+        }
+    }
+
+    /** Whether any harness coroutine has died uncaught so far. Read by the runner after the body. */
+    val hasUncaught: Boolean get() = uncaught.load().isNotEmpty()
+
     /** Capture sink for the in-process server's connections (every accepted connection interleaves). */
     val serverSink: TraceSink = sinkTagged("S")
 
@@ -182,6 +215,13 @@ class Http3LoopbackDiagnostics {
             // Normal termination when a test asked the peer to abort; the typed reason is what says so.
             connectionCloses.load().forEach { (side, e) ->
                 appendLine("$side absorbed a connection close (server role ended): ${e.closeReason.describe()}")
+            }
+            uncaught.load().forEach { (side, t) ->
+                appendLine("$side harness coroutine died UNCAUGHT (never reached the test body): ${typeName(t)}: ${t.message}")
+                causeChain(t).forEach { appendLine("  caused by: ${typeName(it)}: ${it.message}") }
+                (listOf(t) + causeChain(t)).filterIsInstance<QuicCloseException>().firstOrNull()?.let {
+                    appendLine("  typed QUIC reason: ${it.closeReason.describe()}")
+                }
             }
             val captured = events.load()
             // Lines are in capture order, which is the comparable axis: each recorder stamps against

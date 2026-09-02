@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -139,8 +140,14 @@ internal class Http3LoopbackServer(
             qpackEncoderStream = scope.openUniStream().also { writeStreamType(it, Http3StreamType.QPACK_ENCODER) }
             qpackDecoderStream = scope.openUniStream().also { writeStreamType(it, Http3StreamType.QPACK_DECODER) }
         }
+        // The handler is the report's only route for an exception the arms below do not name: this
+        // launch runs under the connection's SupervisorJob, so anything that escapes it is *uncaught*
+        // — it never propagates to the test body, and the test fails at the end of runTest with a bare
+        // stack and no report (the 2026-08-20 API-29 shape). Recording it here is what lets the runner
+        // print the report for a body that passed.
+        val recordUncaught = CoroutineExceptionHandler { _, t -> diagnostics?.recordUncaught("S", t) }
         scope.streams().collect { stream ->
-            scope.launch {
+            scope.launch(recordUncaught) {
                 try {
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(scope, stream)
                 } catch (e: Http3StreamException) {

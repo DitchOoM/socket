@@ -159,6 +159,34 @@ internal object IoUringManager {
      */
     internal val pollerDispatchersCreated = AtomicInt(0)
 
+    /**
+     * Rings this manager has created and released over the process lifetime. `created - released`
+     * is the number alive right now, and is what turns an `io_uring_setup` `ENOMEM` from "the kernel
+     * said no" into a named leak or a named non-leak (#561): every ring is charged to the process
+     * until `io_uring_queue_exit`, so a count that grows across bind/close cycles is the defect, and a
+     * count of one at the failure is proof the budget was exhausted by something else.
+     */
+    internal val ringsCreated = AtomicInt(0)
+    internal val ringsReleased = AtomicInt(0)
+
+    /**
+     * This manager's state plus the host's, for a failure report — the ledger a resource error
+     * needs to be read as anything other than "try again". Failure path only.
+     */
+    internal fun diagnosticSnapshot(): String =
+        buildString {
+            appendLine("io_uring manager (socket-udp):")
+            appendLine(
+                "  rings: created=${ringsCreated.value} released=${ringsReleased.value} " +
+                    "live=${ringsCreated.value - ringsReleased.value} queueDepth=$queueDepth",
+            )
+            appendLine(
+                "  poller: started=${pollerStarted.value} sleeping=${pollerSleeping.value} " +
+                    "workersCreated=${pollerDispatchersCreated.value} activeSockets=${activeSocketCount.value}",
+            )
+            append(ioUringHostReport())
+        }
+
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private fun getOrCreatePollerDispatcher(): CloseableCoroutineDispatcher {
         pollerDispatcherRef.value?.let { return it }
@@ -205,6 +233,10 @@ internal object IoUringManager {
             )
 
         var lastError = 0
+        // Every attempt's errno, not just the last: the fallback ladder hides which flag set the
+        // kernel refused for which reason, and an ENOMEM on the bare attempt reads differently from
+        // an ENOMEM only under DEFER_TASKRUN.
+        val attempts = StringBuilder()
         for (flags in flagSets) {
             // Zero out params for each attempt
             memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
@@ -213,10 +245,12 @@ internal object IoUringManager {
             val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
             if (ret >= 0) {
                 nativeHeap.free(params)
+                ringsCreated.incrementAndGet()
                 ringRef.value = ptr
                 return ptr
             }
             lastError = -ret
+            attempts.append("flags=0x${flags.toString(16)} -> errno=$lastError (${strerror(lastError)?.toKString() ?: "?"}); ")
         }
 
         nativeHeap.free(params)
@@ -225,7 +259,8 @@ internal object IoUringManager {
         throw IoUringUnavailableException(
             "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
                 "This module requires Linux kernel 5.1+ with io_uring support. " +
-                "Check your kernel version with 'uname -r'.",
+                "Attempts: ${attempts.toString().trimEnd(' ', ';')}\n" +
+                diagnosticSnapshot(),
         )
     }
 
@@ -513,6 +548,7 @@ internal object IoUringManager {
             ptr?.let {
                 io_uring_queue_exit(it)
                 nativeHeap.free(it)
+                ringsReleased.incrementAndGet()
             }
 
             // Drain remaining channel requests so callers aren't left hanging

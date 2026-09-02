@@ -200,7 +200,7 @@ abstract class Http3LoopbackTestSuite {
         runHttp3LoopbackTest {
             wrapTestBody {
                 val server =
-                    Http3LoopbackServer(connectionOptions) { request ->
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) { request ->
                         assertEquals("GET", request.method)
                         assertEquals("/hello", request.path)
                         Http3LoopbackServer.Response(
@@ -246,7 +246,7 @@ abstract class Http3LoopbackTestSuite {
         runHttp3LoopbackTest {
             wrapTestBody {
                 val server =
-                    Http3LoopbackServer(connectionOptions) { request ->
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) { request ->
                         // Echo the request body back with a 201 — exercises the request DATA path
                         // on the server read side and the response DATA path on the client read side.
                         Http3LoopbackServer.Response(status = 201, body = "echo:${request.body}")
@@ -302,13 +302,14 @@ abstract class Http3LoopbackTestSuite {
                 // (RFC 9114 §4.1). Over a real QUIC connection the client must detect it and abort
                 // the connection with H3_FRAME_UNEXPECTED.
                 val server =
-                    Http3LoopbackServer(connectionOptions) {
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) {
                         Http3LoopbackServer.Response(status = 200, body = "unreachable", dataBeforeHeaders = true)
                     }
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
                     try {
+                        diagnostics.mark("server up; dialing")
                         val code =
                             withHttp3Connection(
                                 "localhost",
@@ -317,10 +318,13 @@ abstract class Http3LoopbackTestSuite {
                                 connectionOptions = connectionOptions,
                                 timeout = 15.seconds.scaled,
                             ) {
+                                diagnostics.registerConnection("C", this)
+                                diagnostics.mark("connected; sending the request the server will answer malformed")
                                 val e =
                                     assertFailsWith<Http3StreamException> {
                                         request(Http3Request(method = "GET", authority = "localhost", path = "/"))
                                     }
+                                diagnostics.mark("client raised ${e.violation}")
                                 e.errorCode
                             }
                         assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, code)
@@ -352,7 +356,7 @@ abstract class Http3LoopbackTestSuite {
                 // rather than one in N.
                 val windowBytes = 16 * 1024L
                 val server =
-                    Http3LoopbackServer(connectionOptions) {
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) {
                         Http3LoopbackServer.Response(
                             status = 200,
                             body = "u".repeat((windowBytes * 4).toInt()),
@@ -410,7 +414,7 @@ abstract class Http3LoopbackTestSuite {
                 // the client resets that one stream with H3_MESSAGE_ERROR but keeps the connection,
                 // so a follow-up request to "/good" on the SAME connection still succeeds.
                 val server =
-                    Http3LoopbackServer(connectionOptions) { request ->
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) { request ->
                         if (request.path == "/bad") {
                             Http3LoopbackServer.Response(status = 200, body = "x", omitStatus = true)
                         } else {
@@ -465,7 +469,7 @@ abstract class Http3LoopbackTestSuite {
                 // references them on later requests — exercising encoder + decoder, both directions, over
                 // real QUIC. Decoding correctly across the repeats is the proof the dynamic path works.
                 val server =
-                    Http3LoopbackServer(connectionOptions, qpackCapacity = 4096) { request ->
+                    Http3LoopbackServer(connectionOptions, qpackCapacity = 4096, diagnostics = diagnostics) { request ->
                         val echoed = request.headers.firstOrNull { it.name == "x-client" }?.value
                         Http3LoopbackServer.Response(
                             status = 200,
@@ -532,6 +536,7 @@ abstract class Http3LoopbackTestSuite {
                 val server =
                     Http3LoopbackServer(
                         connectionOptions,
+                        diagnostics = diagnostics,
                         serverPushes = { request ->
                             if (request.path == "/index.html") {
                                 listOf(
@@ -739,6 +744,7 @@ abstract class Http3LoopbackTestSuite {
                 val server =
                     Http3LoopbackServer(
                         connectionOptions,
+                        diagnostics = diagnostics,
                         serverPushes = { request ->
                             listOf(
                                 Http3LoopbackServer.Push(
@@ -944,7 +950,11 @@ abstract class Http3LoopbackTestSuite {
             wrapTestBody {
                 // The server opens its control stream + SETTINGS first thing; assert the client's
                 // peer-stream router decodes them. Validates the server→client control direction.
-                val server = Http3LoopbackServer(connectionOptions) { Http3LoopbackServer.Response(status = 200, body = "ok") }
+                val server =
+                    Http3LoopbackServer(
+                        connectionOptions,
+                        diagnostics = diagnostics,
+                    ) { Http3LoopbackServer.Response(status = 200, body = "ok") }
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
@@ -1157,6 +1167,7 @@ abstract class Http3LoopbackTestSuite {
                     onWebTransport = { serverIds.trySend(accept().sessionId) },
                     onRequest = { response.send(404) },
                 ) {
+                    diagnostics.mark("server up; dialing")
                     val (a, b) =
                         withHttp3Connection(
                             "localhost",
@@ -1166,9 +1177,14 @@ abstract class Http3LoopbackTestSuite {
                             15.seconds.scaled,
                             webTransport = WebTransportOptions(maxSessions = 4),
                         ) {
+                            diagnostics.registerConnection("C", this)
+                            diagnostics.mark("connected; awaiting peer SETTINGS")
                             withTimeout(5.seconds.scaled) { peerSettings() }
+                            diagnostics.mark("CONNECT /a")
                             val s1 = connectWebTransport(authority = "localhost", path = "/a")
+                            diagnostics.mark("CONNECT /b")
                             val s2 = connectWebTransport(authority = "localhost", path = "/b")
+                            diagnostics.mark("both sessions up")
                             s1.sessionId to s2.sessionId
                         }
                     assertNotEquals(a, b, "two sessions on one connection must have distinct ids")
@@ -1570,6 +1586,7 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
+                    diagnostics.mark("server up; dialing")
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1578,12 +1595,21 @@ abstract class Http3LoopbackTestSuite {
                         15.seconds.scaled,
                         webTransport = WebTransportOptions(maxSessions = 4),
                     ) {
+                        // Registered so a session that closed because the CONNECTION errored says so
+                        // in the report (the 2026-08-27 API-35 failure of this test carried only the
+                        // assertion text and `(not started)`).
+                        diagnostics.registerConnection("C", this)
+                        diagnostics.mark("connected; awaiting peer SETTINGS")
                         withTimeout(5.seconds.scaled) { peerSettings() }
+                        diagnostics.mark("CONNECT /wt")
                         val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        diagnostics.mark("session ${session.sessionId} up; draining")
                         session.drain()
                         assertFalse(session.isClosed, "draining our own session must not close it")
                         // Let the server observe our drain and close back; we don't close first.
+                        diagnostics.mark("drained; awaiting the server's close")
                         withTimeout(5.seconds.scaled) { session.awaitClosed() }
+                        diagnostics.mark("session closed by the server")
                     }
                     assertTrue(
                         withTimeout(5.seconds.scaled) { serverObservedWhileOpen.await() },
@@ -2085,6 +2111,14 @@ private fun Http3LoopbackTestSuite.runHttp3LoopbackTest(
         withContext(Dispatchers.Default) {
             try {
                 withTimeout(timeout) { block() }
+                // A body that passed can still be a failed test: a harness coroutine under a
+                // SupervisorJob that died uncaught fails runTest at its END, after this try, with a
+                // bare stack — the 2026-08-20 API-29 shape, where the report existed and was never
+                // printed. The harness records those (Http3LoopbackDiagnostics.recordUncaught), so
+                // fail HERE, through the report, before runTest's collector gets to.
+                if (diagnostics.hasUncaught) {
+                    throw AssertionError("the test body passed, but a harness coroutine died uncaught — see the report")
+                }
             } catch (t: Throwable) {
                 val report = diagnostics.report(t)
                 // Emitted AND folded into the exception, because those two land in different places and

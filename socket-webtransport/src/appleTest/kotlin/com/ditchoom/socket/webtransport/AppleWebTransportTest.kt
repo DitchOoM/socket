@@ -15,6 +15,13 @@ import com.ditchoom.socket.testkit.fixtures.TestCerts
 import com.ditchoom.socket.testkit.fixtures.locateTestCerts
 import com.ditchoom.socket.testkit.skip.recordSkip
 import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.toKString
+import kotlinx.cinterop.usePinned
+import platform.posix.errno
+import platform.posix.fgets
+import platform.posix.pclose
+import platform.posix.popen
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -68,6 +75,40 @@ class AppleWebTransportTest : WebTransportTestSuite() {
             is TestCerts.Available -> block()
         }
     }
+
+    /**
+     * Darwin's view of the port: `lsof` names every process holding it (and the family of each
+     * socket — the #450 mechanism was an `AF_INET` daemon under a dual-stack `AF_INET6` server on one
+     * port number), `netstat` adds each socket's Recv-Q (bytes delivered but not yet read, which
+     * would put a datagram in the server's buffer with its loop asleep). Failure path only.
+     */
+    override suspend fun osSocketsOnPort(port: Int): String =
+        shellLines("/usr/sbin/lsof -nP -iUDP:$port 2>&1")
+            .map { "lsof    $it" }
+            .plus(
+                shellLines(
+                    "/usr/sbin/netstat -an -p udp 2>&1",
+                ).filter { it.contains(".$port ") || it.endsWith(".$port") }.map { "netstat $it" },
+            ).joinToString("\n")
+            .ifEmpty { "<no socket holds udp/$port>" }
+}
+
+/** Run [command] through `popen` and return its output lines. Diagnostics only — never on a happy path. */
+private fun shellLines(command: String): List<String> {
+    val fp = popen(command, "r") ?: return listOf("popen failed: errno=$errno")
+    val out = StringBuilder()
+    try {
+        // Test code: the ByteArray discipline applies to production source sets only.
+        val chunk = ByteArray(4096)
+        chunk.usePinned { pinned ->
+            while (fgets(pinned.addressOf(0), chunk.size, fp) != null) {
+                out.append(pinned.addressOf(0).toKString())
+            }
+        }
+    } finally {
+        pclose(fp)
+    }
+    return out.lines().filter { it.isNotBlank() }
 }
 
 /**

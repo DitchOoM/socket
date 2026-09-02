@@ -433,7 +433,7 @@ class LoopbackHandshakeBindChurnTests {
                                     // reading it — and only a fresh datagram from outside the
                                     // connection tells them apart.
                                     val before = counters.headerInfoCalls
-                                    val threads = threadInventory()
+                                    val threads = jvmThreadInventory()
                                     val sockets = socketsOnPort(serverPort)
                                     val probe = probeServerSocket(serverPort)
                                     failures +=
@@ -462,35 +462,6 @@ class LoopbackHandshakeBindChurnTests {
             attempts.count { it is Attempt.Established },
             "handshakes that did not establish:\n" + failures.joinToString("\n"),
         )
-    }
-
-    /**
-     * What the JVM's threads were doing when a handshake failed.
-     *
-     * `Dispatchers.IO` admits at most `kotlinx.coroutines.io.parallelism` (64 by default) *concurrent*
-     * tasks, and `NioDatagramChannelCore.receive` parks `Selector.select()` inside
-     * `runInterruptible(Dispatchers.IO)` — one admission held for as long as the receive is parked,
-     * which for a QUIC socket is "until a datagram arrives". A server whose `receive` is queued behind
-     * that limit never reads its socket at all, which is exactly the observed shape: deaf from birth,
-     * to its own client and to an unrelated probe alike. So the count of threads actually sitting in a
-     * selector is the measurement that decides it.
-     */
-    private fun threadInventory(): String {
-        val stacks = Thread.getAllStackTraces()
-        val inSelect =
-            stacks.count { (_, frames) ->
-                frames.any { it.className.startsWith("sun.nio.ch") && it.methodName.contains("select", ignoreCase = true) }
-            }
-        val interesting =
-            stacks.entries
-                .filter { (_, frames) ->
-                    frames.any { it.className.startsWith("sun.nio.ch") || it.className.startsWith("com.ditchoom") }
-                }.joinToString("\n") { (t, frames) ->
-                    "      [${t.name} ${t.state}] " + frames.take(6).joinToString(" <- ") { "${it.className}.${it.methodName}" }
-                }
-        return "total=${stacks.size} inSelect=$inSelect ioParallelism=" +
-            (System.getProperty("kotlinx.coroutines.io.parallelism") ?: "<default 64>") +
-            "\n$interesting"
     }
 
     /**

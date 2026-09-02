@@ -853,6 +853,20 @@ jobs:
       # linux arches staged, exactly as when the explicit `Build multi-arch quic-echo fat jar` step
       # ran first in the monolith. That step now lives in `link`, which is where the uploaded
       # quic-echo-docker-context comes from.
+      # What the kernel is willing to give io_uring on this runner, printed BEFORE the tests so a
+      # ring-setup failure (#561: `io_uring_setup` -> ENOMEM, twice, on unrelated PRs) can be read
+      # against the budget it ran under instead of a guess. The failure message itself now carries
+      # the same facts from inside the process (IoUringManager.diagnosticSnapshot), plus the ring
+      # ledger; this is the outside view, and it is here on green runs too so a drift in the runner
+      # image shows up as a diff between runs rather than as a mystery.
+      - name: io_uring environment (kernel, memlock, memory)
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "ulimit -l (memlock, KiB): $(ulimit -l)   ulimit -n (fds): $(ulimit -n)"
+          echo "io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'absent (kernel < 6.6)')"
+          grep -E '^(MemTotal|MemAvailable|Mlocked|Committed_AS)' /proc/meminfo || true
+          echo "nproc: $(nproc)"
+
       - name: Run checks and tests
         timeout-minutes: 45
         env:
@@ -1834,6 +1848,20 @@ jobs:
 
       - name: Bring up test harness (with quic-echo)
         run: bash test-harness/compose-up-retry.sh echo http tls toxiproxy netem-blackhole rst quic-echo
+
+      # What the kernel is willing to give io_uring on this runner, printed BEFORE the tests so a
+      # ring-setup failure (#561: `io_uring_setup` -> ENOMEM, twice, on unrelated PRs) can be read
+      # against the budget it ran under instead of a guess. The failure message itself now carries
+      # the same facts from inside the process (IoUringManager.diagnosticSnapshot), plus the ring
+      # ledger; this is the outside view, and it is here on green runs too so a drift in the runner
+      # image shows up as a diff between runs rather than as a mystery.
+      - name: io_uring environment (kernel, memlock, memory)
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "ulimit -l (memlock, KiB): $(ulimit -l)   ulimit -n (fds): $(ulimit -n)"
+          echo "io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'absent (kernel < 6.6)')"
+          grep -E '^(MemTotal|MemAvailable|Mlocked|Committed_AS)' /proc/meminfo || true
+          echo "nproc: $(nproc)"
 
       - name: Run socket-quic-quiche native tests (quiche cinterop)
         run: |
