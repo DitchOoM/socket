@@ -154,6 +154,7 @@ internal suspend fun buildLinuxQuicConnection(
             // [channelFactory], so the primary path's sockaddr and a migration path's cannot diverge.
             val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
+            progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
 
             // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
             val scidBuf = generateScid(bufferFactory, tuning.random)
@@ -170,10 +171,9 @@ internal suspend fun buildLinuxQuicConnection(
                     peerSockAddr.length.convert(),
                     config,
                 ) ?: run {
+                    // The sockaddr encodings and the channel are the SockAddrsPinned arm's to release
+                    // (#544); only what that stage does not know about is freed here.
                     scidBuf.freeNativeMemory()
-                    peerSockAddr.free()
-                    localSockAddr.free()
-                    runCatching { channel.close() }
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
                 }
@@ -239,6 +239,9 @@ internal suspend fun buildLinuxQuicConnection(
                     },
                 )
             quicConn.start()
+            // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here
+            // on owes the channel and the scope, and must not free them a second time.
+            progress = ConnectProgress.DriverStarted(udpChannel)
             quicConn.awaitEstablished(timeout)
             // Connection owns teardown via onRelease now — hand ownership over before the pin check so
             // the failure `finally` releases nothing; a pin mismatch tears down via quicConn.close().
@@ -266,6 +269,18 @@ internal suspend fun buildLinuxQuicConnection(
             // not cover it either, deliberately — it tears down non-primary migration path channels, but
             // the primary one belongs to the connection.
             is ConnectProgress.ChannelOpen -> {
+                runCatching { reached.channel.close() }
+                parentScope.cancel()
+            }
+            // Encoded and unowned: no driver exists to free the two pinned sockaddrs (#544).
+            is ConnectProgress.SockAddrsPinned -> {
+                reached.peer.free()
+                reached.local.free()
+                runCatching { reached.channel.close() }
+                parentScope.cancel()
+            }
+            // The driver owns the encodings and frees them from its cleanup when the scope is cancelled.
+            is ConnectProgress.DriverStarted -> {
                 runCatching { reached.channel.close() }
                 parentScope.cancel()
             }

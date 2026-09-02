@@ -164,6 +164,7 @@ internal suspend fun buildJvmQuicConnection(
         // the same instance so a divergence between them is unrepresentable.
         val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
         val localSockAddr = codec.encodeToNative(localAddress, bufferFactory)
+        progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
 
         val conn =
             try {
@@ -254,6 +255,9 @@ internal suspend fun buildJvmQuicConnection(
                 },
             )
         quicConnection.start()
+        // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here on
+        // owes the channel, the config and the scope, and must not free them a second time.
+        progress = ConnectProgress.DriverStarted(udpChannel)
         quicConnection.awaitEstablished(timeout)
         // The connection now owns its full teardown (config + scopes + the UDP channel) via onRelease,
         // so the `finally` below must release nothing. A verification failure past this point tears the
@@ -284,6 +288,20 @@ internal suspend fun buildJvmQuicConnection(
             // does not cover it either, deliberately — it tears down non-primary migration path channels,
             // but the primary one belongs to the connection.
             is ConnectProgress.ChannelOpen -> {
+                runCatching { reached.channel.close() }
+                api.configFree(config)
+                parentScope.cancel()
+            }
+            // Encoded and unowned: no driver exists to free the two pinned sockaddrs (#544).
+            is ConnectProgress.SockAddrsPinned -> {
+                reached.peer.free()
+                reached.local.free()
+                runCatching { reached.channel.close() }
+                api.configFree(config)
+                parentScope.cancel()
+            }
+            // The driver owns the encodings and frees them from its cleanup when the scope is cancelled.
+            is ConnectProgress.DriverStarted -> {
                 runCatching { reached.channel.close() }
                 api.configFree(config)
                 parentScope.cancel()
