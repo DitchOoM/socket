@@ -12,6 +12,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.udp.SocketAddressCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -123,6 +124,26 @@ internal class SharedQuicheServer(
 
     @Volatile
     private var closed = false
+
+    /**
+     * The server-level half of trace capture: what no *connection's* recorder can ever see.
+     *
+     * A connection's recorder starts when its driver does, and the driver's channel wrap records every
+     * datagram after that — so three things are structurally invisible to a per-connection trace: the
+     * Initial that created the connection (fed to quiche in [acceptNewConnection] before the driver
+     * exists), a datagram `quiche_header_info` rejected, and a datagram routed to a driver that has
+     * already stopped. An empty server trace therefore used to have three readings — nothing arrived,
+     * something arrived and was rejected, something arrived and was refused — and #367 / #292 / #450
+     * were each unactionable for exactly that reason (#367's diagnosis needed a `QuicheApi` spy on the
+     * receive loop to count what the trace could not). This records those three at the receive loop,
+     * typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so the next such report says which.
+     *
+     * Same [QuicheDriverTuning.recorderFactory] every accepted connection uses, so with the single-sink
+     * [com.ditchoom.socket.quic.trace.QuicTraceCapture] the lines interleave with the connections' own
+     * in capture order; with a per-connection factory the server gets a sink of its own. Null when
+     * capture is off, and then every record site below is a null check and nothing else.
+     */
+    private val serverRecorder: QuicTraceRecorder? = tuning.recorderFactory()
 
     private val receiveJob = scope.launch(serverReceiveDispatcher) { receiveLoop() }
 
@@ -330,6 +351,7 @@ internal class SharedQuicheServer(
                             tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                         )
                     if (rc < 0) {
+                        serverRecorder?.error(ServerDatagramDrop.Unparseable(received, peer))
                         recvBuf.freeNativeMemory()
                         continue@loop
                     }
@@ -373,6 +395,7 @@ internal class SharedQuicheServer(
                         if (sendResult.isFailure) {
                             // Not delivered → onRecvInfoConsumed won't fire; release the ref here.
                             cached.inFlight.decrementAndGet()
+                            serverRecorder?.error(ServerDatagramDrop.DriverGone(received, peer))
                             recvBuf.freeNativeMemory()
                             // Remove ALL entries for this dead driver, not just the one we hit.
                             registry.deRouteDriver(existingDriver)
@@ -380,7 +403,9 @@ internal class SharedQuicheServer(
                     } else {
                         // Accept new connection — recvBuf ownership transfers inside.
                         val accepted = acceptNewConnection(recvBuf, received, peer)
-                        if (accepted != null) {
+                        if (accepted == null) {
+                            serverRecorder?.error(ServerDatagramDrop.AcceptRefused(received, peer))
+                        } else {
                             val (driver, serverScidKey) = accepted
                             registry.routeDriver(serverScidKey, driver)
                             registry.routeDriver(dcidKey, driver)
@@ -450,9 +475,16 @@ internal class SharedQuicheServer(
         val recvInfo =
             api.recvInfoNew(peerSockAddr.address, peerSockAddr.length, localSockAddr.address, localSockAddr.length)
         val sendInfo = api.sendInfoNew()
+        // This peer's PathKey: what quiche echoes as sendInfo.to for the un-migrated path, and the
+        // 4-tuple the accept-time record below carries.
+        val peerKey = api.decodePathKey(peerSockAddr.address)
 
         // Feed the initial packet before the driver starts — safe, driver not yet running.
         api.connRecv(conn, recvAddr, received, recvInfo)
+        // The one datagram the connection's own recorder can never show: it is consumed here, before
+        // the driver (and its recording channel wrap) exists. Recorded at the server level so a trace
+        // that begins with STATE lines is preceded by the arrival that caused them (see serverRecorder).
+        serverRecorder?.datagram(out = false, buffer = recvBuf, len = received, path = peerKey)
         recvBuf.freeNativeMemory()
 
         // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
@@ -461,7 +493,7 @@ internal class SharedQuicheServer(
             ServerConnectionUdpChannel(
                 channel = channel,
                 fixedPeer = peer,
-                fixedPeerKey = api.decodePathKey(peerSockAddr.address),
+                fixedPeerKey = peerKey,
                 peerFor = peers::get,
             )
         // Self-reference for onSourceIds: the driver doesn't exist when we build the callback, so
@@ -525,4 +557,37 @@ internal class SharedQuicheServer(
     companion object {
         private const val MAX_TOKEN_LEN = 256
     }
+}
+
+/**
+ * A datagram the server's receive loop dequeued and could not hand to any connection — recorded into
+ * the server-level trace (`ERROR` line), never thrown.
+ *
+ * A `Throwable` because that is what the trace format's `ERROR` line carries: the **qualified** class
+ * name plus a message, so the reason stays typed and retraceable (never a bare string), exactly as
+ * every other recorded error in this module. The message names the datagram's size and source; the
+ * subclass names which of the three exits it took. Together with the accept-time `DGRAM_IN` the
+ * receive loop also records, they make an empty server trace mean one thing only: nothing was
+ * dequeued from the socket at all.
+ */
+internal sealed class ServerDatagramDrop(
+    message: String,
+) : Exception(message) {
+    /** `quiche_header_info` rejected the datagram — not a parseable QUIC packet (or a version we do not speak). */
+    class Unparseable(
+        len: Int,
+        peer: SocketAddress,
+    ) : ServerDatagramDrop("$len B from $peer: quiche_header_info rejected the packet")
+
+    /** No connection routes the DCID and `quiche_accept` would not create one for it. */
+    class AcceptRefused(
+        len: Int,
+        peer: SocketAddress,
+    ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and quiche_accept refused it")
+
+    /** The DCID routed to a connection whose driver has already stopped taking packets. */
+    class DriverGone(
+        len: Int,
+        peer: SocketAddress,
+    ) : ServerDatagramDrop("$len B from $peer: routed to a connection whose driver has stopped")
 }

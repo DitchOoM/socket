@@ -374,12 +374,26 @@ class JvmQuicTraceCaptureTests {
                         // the path-isolation check. (Server sinks record DGRAM_OUT only — inbound
                         // datagrams reach a server driver through the central demux loop, which bypasses
                         // the per-driver recording channel; that's orthogonal to per-connection routing.)
-                        val perConn = snapshotSinks(sinks)
-                        assertTrue(perConn.isNotEmpty(), "server capture minted no sinks at all")
-                        perConn.forEachIndexed { i, s ->
-                            assertTrue(s.isNotEmpty(), "sink #$i captured nothing: $perConn")
+                        val minted = snapshotSinks(sinks)
+                        assertTrue(minted.isNotEmpty(), "server capture minted no sinks at all")
+                        minted.forEachIndexed { i, s ->
+                            assertTrue(s.isNotEmpty(), "sink #$i captured nothing: $minted")
                             assertTrue(s.all { it.startsWith("v1 ") }, "sink #$i must be a versioned trace: $s")
                         }
+
+                        // The FIRST sink is the receive loop's own (`SharedQuicheServer.serverRecorder`),
+                        // minted at construction before any client can dial. It is the one place the
+                        // accept-time Initial of every connection is recorded — the datagram that
+                        // creates a connection is consumed before that connection's driver exists —
+                        // so by design it carries every peer's path, and it is exactly the sink whose
+                        // per-connection isolation is NOT expected. It holds nothing but those inbound
+                        // records and typed drops: no STATE, no DGRAM_OUT.
+                        val receiveLoop = minted.first()
+                        assertTrue(
+                            receiveLoop.all { it.contains(" DGRAM_IN ") || it.contains(" ERROR ") },
+                            "the receive loop's sink must carry only accept-time DGRAM_IN and typed drops: $receiveLoop",
+                        )
+                        val perConn = minted.drop(1)
 
                         // peer PathKey -> indices of sinks it appears on.
                         val pathToSinks = mutableMapOf<String, MutableSet<Int>>()
@@ -395,6 +409,14 @@ class JvmQuicTraceCaptureTests {
                         pathToSinks.forEach { (path, idxs) ->
                             assertEquals(1, idxs.size, "client $path appears on multiple sinks $idxs (interleaved/split)")
                         }
+                        // Every connection that got its own sink began as an Initial the receive loop
+                        // recorded — the server-level half of the capture is wired, and complete.
+                        val acceptedPaths = receiveLoop.mapNotNull(::datagramPathKey).toSet()
+                        assertTrue(
+                            acceptedPaths.containsAll(pathToSinks.keys),
+                            "the receive loop recorded accept-time datagrams for $acceptedPaths but connections " +
+                                "exist for ${pathToSinks.keys}: the server-level record missed an Initial",
+                        )
                         val established = establishedSinks(perConn)
                         assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
                     }

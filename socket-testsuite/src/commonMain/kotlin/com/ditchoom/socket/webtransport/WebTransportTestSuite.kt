@@ -19,20 +19,26 @@ import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
 
@@ -97,6 +103,119 @@ abstract class WebTransportTestSuite {
      */
     protected val clientTraceSink: TraceSink get() = diagnostics.clientSink
 
+    /**
+     * Every socket the OS currently holds on UDP [port], read from *outside* this process's view of
+     * its own sockets — `lsof`/`netstat` on Darwin, `ss`/`/proc/net/udp*` on Linux — as the failure
+     * report's last section. Platform subclasses override; the default says the platform did not.
+     *
+     * WHY it is asked of the OS and not inferred: #367's mechanism was a server that was open, healthy
+     * and parked in `select()` while an unrelated daemon owned the IPv4 half of its port — a fact that
+     * exists only in the kernel's socket table. Called on the failure path only, while the failed
+     * test's server is still bound, so the listing shows the port as the client saw it.
+     */
+    protected open suspend fun osSocketsOnPort(port: Int): String = "(no OS socket inventory on this platform)"
+
+    /**
+     * Run [body] against the server bound on [port], and if it fails, take the post-mortem **before**
+     * the server is torn down: a probe datagram from an unrelated socket per address family, and the
+     * OS's socket table for the port. Both go into [WebTransportDiagnostics.report].
+     *
+     * The probe is the discriminator #367 asked for. The server-level trace now records every datagram
+     * its receive loop dequeues and cannot route (see `ServerDatagramDrop` in `:socket-quic-quiche`),
+     * so a deliberately unparseable datagram sent at the port after the failure either shows up there —
+     * the socket and its loop are alive and the client's datagrams went somewhere else — or does not,
+     * and the server itself is deaf. One probe per family, because a dual-stack wildcard bind can be
+     * deaf on one family and fine on the other (the #450 shape).
+     *
+     * Runs under [NonCancellable]: the failure this catches is most often the runner's own
+     * `withTimeout`, which has already cancelled this coroutine, and a post-mortem that cannot suspend
+     * would be no post-mortem. Bounded on its own so a wedged server cannot turn a 30 s failure into a
+     * hang.
+     */
+    private suspend fun <T> diagnosed(
+        port: Int,
+        body: suspend () -> T,
+    ): T {
+        diagnostics.serverBound(port)
+        return try {
+            body()
+        } catch (t: Throwable) {
+            withContext(NonCancellable) {
+                diagnostics.postMortem(
+                    withTimeoutOrNull(POST_MORTEM_BUDGET) { postMortem(port) }
+                        ?: "post-mortem on udp/$port did not complete within $POST_MORTEM_BUDGET",
+                )
+            }
+            throw t
+        }
+    }
+
+    private suspend fun postMortem(port: Int): String =
+        buildString {
+            appendLine("post-mortem on udp/$port, taken while the server was still bound:")
+            for (host in listOf("127.0.0.1", "::1")) {
+                val before = diagnostics.serverDropCount
+                val sent = probeServerPort(host, port)
+                val after = awaitServerDropRise(before)
+                val verdict =
+                    when {
+                        !sent.startsWith("sent") -> "no verdict (the probe itself failed)"
+                        after > before -> "the server's socket and receive loop are ALIVE on this family"
+                        else -> "the server never dequeued it: DEAF on this family (or the loop is wedged)"
+                    }
+                appendLine("  probe $host -> $sent; server-level drops $before -> $after: $verdict")
+            }
+            appendLine("  OS sockets on udp/$port:")
+            append(osSocketsOnPort(port).trimEnd().prependIndent("    "))
+        }
+
+    /**
+     * One datagram at [host]:[port] from a fresh, unrelated socket, shaped so `quiche_header_info`
+     * rejects it (a long header claiming a 255-byte DCID) — so it can only ever be recorded as
+     * `ServerDatagramDrop.Unparseable`, never mistaken for a connection attempt.
+     */
+    private suspend fun probeServerPort(
+        host: String,
+        port: Int,
+    ): String =
+        try {
+            val probe = UdpSocket.connect(remoteHost = host, remotePort = port, receiveBufferSize = 256)
+            try {
+                val payload = BufferFactory.deterministic().allocate(PROBE_BYTES)
+                payload.writeByte(0xC0.toByte()) // long header, fixed bit
+                payload.writeByte(0)
+                payload.writeByte(0)
+                payload.writeByte(0)
+                payload.writeByte(1) // version 1
+                payload.writeByte(0xFF.toByte()) // DCID length 255 > 20: InvalidPacket
+                repeat(PROBE_BYTES - 6) { payload.writeByte(0) }
+                payload.resetForRead()
+                probe.send(payload)
+                "sent $PROBE_BYTES B from ${probe.localAddress}"
+            } finally {
+                probe.close()
+            }
+        } catch (t: Throwable) {
+            "probe FAILED: ${t::class.simpleName}: ${t.message}"
+        }
+
+    /** Poll for the receive loop to record the probe; a healthy loop does so within a millisecond. */
+    private suspend fun awaitServerDropRise(before: Int): Int {
+        val deadline = PROBE_SETTLE_POLLS
+        repeat(deadline) {
+            if (diagnostics.serverDropCount > before) return diagnostics.serverDropCount
+            delay(PROBE_SETTLE_POLL_INTERVAL)
+        }
+        return diagnostics.serverDropCount
+    }
+
+    private companion object {
+        val POST_MORTEM_BUDGET = 6.seconds
+        const val PROBE_BYTES = 32
+        const val PROBE_SETTLE_POLLS = 40
+        val PROBE_SETTLE_POLL_INTERVAL = 25.milliseconds
+    }
+
     // Datagrams enabled on the server so WebTransport datagrams (RFC 9297) are negotiable; the neutral
     // client's connectMultiplexed/connect already enable them client-side. verifyPeer=false because the
     // loopback cert is self-signed; the suite is about WebTransport, not cert validation.
@@ -134,28 +253,41 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    val session = openSingleSession("https://localhost:$port/wt")
-                    try {
-                        assertEquals("echo:hello", session.roundTripBidi("hello"))
+                    diagnosed(port) {
+                        val session = openSingleSession("https://localhost:$port/wt")
+                        try {
+                            assertEquals("echo:hello", session.roundTripBidi("hello"))
 
-                        // The diagnostics are only ever read on a failure, so nothing else in this suite
-                        // would notice them going quiet — a subclass that stopped passing the sink into
-                        // its client config, or a capture that never reaches the dialling engine on some
-                        // platform, would leave every future failure report saying "0 events" and reading
-                        // exactly like "the client sent nothing". That is the reading the client trace was
-                        // added to rule out, so it is asserted on the one path known to have sent packets.
-                        assertTrue(
-                            diagnostics.clientEventCount > 0,
-                            "client QUIC trace is empty after a completed round trip: the capture is not " +
-                                "wired on this platform, so a failure report here cannot tell a client that " +
-                                "sent nothing from one that sent into the void",
-                        )
-                        assertTrue(
-                            diagnostics.serverEventCount > 0,
-                            "server QUIC trace is empty after a completed round trip",
-                        )
-                    } finally {
-                        session.close()
+                            // The diagnostics are only ever read on a failure, so nothing else in this
+                            // suite would notice them going quiet — a subclass that stopped passing the
+                            // sink into its client config, or a capture that never reaches the dialling
+                            // engine on some platform, would leave every future failure report saying
+                            // "0 events" and reading exactly like "the client sent nothing". That is the
+                            // reading the client trace was added to rule out, so it is asserted on the
+                            // one path known to have sent packets.
+                            assertTrue(
+                                diagnostics.clientEventCount > 0,
+                                "client QUIC trace is empty after a completed round trip: the capture is not " +
+                                    "wired on this platform, so a failure report here cannot tell a client that " +
+                                    "sent nothing from one that sent into the void",
+                            )
+                            assertTrue(
+                                diagnostics.serverEventCount > 0,
+                                "server QUIC trace is empty after a completed round trip",
+                            )
+                            // The server-level record is asserted the same way: the receive loop records
+                            // the Initial that created this connection before the driver exists, so a
+                            // server ring that does not START with that DGRAM_IN means the server half
+                            // of the capture is not wired, and the next "empty server trace" would be
+                            // back to the three readings #367 was filed on.
+                            assertTrue(
+                                diagnostics.serverRingStartsWithDatagramIn,
+                                "the server's receive loop did not record the accept-time datagram of a " +
+                                    "completed round trip: the server-level capture is not wired on this platform",
+                            )
+                        } finally {
+                            session.close()
+                        }
                     }
                 }
             }
@@ -176,22 +308,24 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    assertTrue(
-                        webTransportSupport() is WebTransportSupport.Multiplexed,
-                        "native webTransportSupport() must be Multiplexed (the v6 type-gated capability)",
-                    )
-                    val held = openMultiplexed("https://localhost:$port/")
-                    try {
-                        val a = held.openSession("/a")
-                        val b = held.openSession("/b")
-                        // Both sessions ride the SINGLE held HTTP/3 connection; each round-trips its own
-                        // bidi stream independently — the Phase-4 DONE bar.
-                        assertEquals("echo:from-a", a.roundTripBidi("from-a"))
-                        assertEquals("echo:from-b", b.roundTripBidi("from-b"))
-                        a.close()
-                        b.close()
-                    } finally {
-                        held.close()
+                    diagnosed(port) {
+                        assertTrue(
+                            webTransportSupport() is WebTransportSupport.Multiplexed,
+                            "native webTransportSupport() must be Multiplexed (the v6 type-gated capability)",
+                        )
+                        val held = openMultiplexed("https://localhost:$port/")
+                        try {
+                            val a = held.openSession("/a")
+                            val b = held.openSession("/b")
+                            // Both sessions ride the SINGLE held HTTP/3 connection; each round-trips its
+                            // own bidi stream independently — the Phase-4 DONE bar.
+                            assertEquals("echo:from-a", a.roundTripBidi("from-a"))
+                            assertEquals("echo:from-b", b.roundTripBidi("from-b"))
+                            a.close()
+                            b.close()
+                        } finally {
+                            held.close()
+                        }
                     }
                 }
             }
@@ -221,29 +355,37 @@ abstract class WebTransportTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    val session = openSingleSession("https://localhost:$port/wt")
-                    try {
-                        val observed =
-                            withTimeout(5.seconds) {
-                                val stream = session.openBidiStream()
-                                stream.write(textBuffer("hello"))
-                                // Keep writing until the peer's STOP_SENDING surfaces as the NEUTRAL
-                                // WebTransportStreamException — the same type + 32-bit code the browser
-                                // backend raises (this is the cross-backend exception-parity guard).
-                                var code: UInt? = null
-                                while (code == null) {
-                                    try {
-                                        stream.write(textBuffer("x"))
-                                        delay(25)
-                                    } catch (e: WebTransportStreamException) {
-                                        code = e.errorCode
+                    diagnosed(port) {
+                        diagnostics.mark("dialing")
+                        val session = openSingleSession("https://localhost:$port/wt")
+                        try {
+                            diagnostics.mark("connected; opening bidi stream")
+                            val observed =
+                                withTimeout(5.seconds) {
+                                    val stream = session.openBidiStream()
+                                    diagnostics.mark("first write")
+                                    stream.write(textBuffer("hello"))
+                                    // Keep writing until the peer's STOP_SENDING surfaces as the NEUTRAL
+                                    // WebTransportStreamException — the same type + 32-bit code the
+                                    // browser backend raises (this is the cross-backend exception-parity
+                                    // guard).
+                                    diagnostics.mark("writing until the peer's reset surfaces")
+                                    var code: UInt? = null
+                                    while (code == null) {
+                                        try {
+                                            stream.write(textBuffer("x"))
+                                            delay(25)
+                                        } catch (e: WebTransportStreamException) {
+                                            code = e.errorCode
+                                        }
                                     }
+                                    code
                                 }
-                                code
-                            }
-                        assertEquals(wtCode, observed)
-                    } finally {
-                        session.close()
+                            diagnostics.mark("reset observed")
+                            assertEquals(wtCode, observed)
+                        } finally {
+                            session.close()
+                        }
                     }
                 }
             }
@@ -262,14 +404,16 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    assertTrue(webTransportSupport() is WebTransportSupport.Multiplexed)
-                    val held = openMultiplexed("https://localhost:$port/")
-                    val session = held.openSession("/a")
-                    assertEquals("echo:ping", session.roundTripBidi("ping"))
-                    // close() cancels the held scope (tears down the connection + every session); a second
-                    // close() must be a no-op, not an error.
-                    held.close()
-                    held.close()
+                    diagnosed(port) {
+                        assertTrue(webTransportSupport() is WebTransportSupport.Multiplexed)
+                        val held = openMultiplexed("https://localhost:$port/")
+                        val session = held.openSession("/a")
+                        assertEquals("echo:ping", session.roundTripBidi("ping"))
+                        // close() cancels the held scope (tears down the connection + every session); a
+                        // second close() must be a no-op, not an error.
+                        held.close()
+                        held.close()
+                    }
                 }
             }
         }
@@ -289,27 +433,31 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    diagnostics.mark("server bound; dialing first")
-                    // Two separate connect() calls to the SAME authority. On native each dials a DEDICATED
-                    // HTTP/3 connection — WebTransportOptions.allowPooling is a documented no-op here (never
-                    // mapped in WebTransportSupportHttp3.connectInternal); transparent pooling is browser-only.
-                    // Proof they are not pooled onto one shared connection: in the held-lifetime model
-                    // session.close() tears down THAT session's own connection, so closing the first must
-                    // leave the second fully usable. (If they shared one pooled connection, the second
-                    // round-trip below would fail after the first close.)
-                    val first = openSingleSession("https://localhost:$port/wt")
-                    diagnostics.mark("first connected; dialing second")
-                    val second = openSingleSession("https://localhost:$port/wt")
-                    try {
-                        assertEquals("echo:one", first.roundTripBidi("one", diagnostics))
-                        diagnostics.mark("first round-trip ok; closing first")
-                        first.close()
-                        diagnostics.mark("first closed; round-tripping second")
-                        assertEquals("echo:two", second.roundTripBidi("two", diagnostics))
-                        diagnostics.mark("both round-trips ok")
-                    } finally {
-                        first.close()
-                        second.close()
+                    diagnosed(port) {
+                        diagnostics.mark("server bound; dialing first")
+                        // Two separate connect() calls to the SAME authority. On native each dials a
+                        // DEDICATED HTTP/3 connection — WebTransportOptions.allowPooling is a documented
+                        // no-op here (never mapped in WebTransportSupportHttp3.connectInternal);
+                        // transparent pooling is browser-only. Proof they are not pooled onto one shared
+                        // connection: in the held-lifetime model session.close() tears down THAT
+                        // session's own connection, so closing the first must leave the second fully
+                        // usable. (If they shared one pooled connection, the second round-trip below
+                        // would fail after the first close.)
+                        val first = openSingleSession("https://localhost:$port/wt")
+                        diagnostics.mark("first connected; dialing second")
+                        val second = openSingleSession("https://localhost:$port/wt")
+                        try {
+                            assertEquals("echo:one", first.roundTripBidi("one", diagnostics))
+                            diagnostics.mark("first round-trip ok; closing first")
+                            first.close()
+                            diagnostics.mark("first closed; round-tripping second")
+                            assertEquals("echo:two", second.roundTripBidi("two", diagnostics))
+                            diagnostics.mark("both round-trips ok")
+                        } finally {
+                            diagnostics.mark("closing both")
+                            first.close()
+                            second.close()
+                        }
                     }
                 }
             }
@@ -370,10 +518,20 @@ private fun textBuffer(s: String): PlatformBuffer =
 /**
  * Wall-clock-timed runner on a real dispatcher (no virtual time), mirroring the QUIC suites' runQuicTest.
  *
- * On ANY failure it prints [WebTransportDiagnostics.report] before rethrowing, so a failure carries the
- * step it reached and the server's QUIC trace instead of a bare `Timed out waiting for 30000 ms`. That
- * output lands in the test XML's `system-out`, which CI already uploads (`test-reports-linux`), so a
- * rare CI-only failure is diagnosable from its FIRST occurrence rather than needing a reproduction.
+ * On ANY failure it emits [WebTransportDiagnostics.report] — the step reached, both ends' QUIC traces,
+ * and the post-mortem taken while the server was still bound — so a failure carries all of that
+ * instead of a bare `Timed out waiting for 30000 ms`, and a rare CI-only failure is diagnosable from
+ * its FIRST occurrence rather than needing a reproduction.
+ *
+ * Printed AND folded into the thrown exception, because the two land in different places and only
+ * one of them survives every lane: stdout reaches the test XML's `system-out` (and the job log on the
+ * standalone-`.kexe` Apple lane), but a CI job log shows the *exception*, and the JVM test XML is
+ * clobbered outright by the JNI→FFM re-run. #450's report existed in the XML and nobody could read it
+ * — the same lesson `Http3LoopbackTestSuite` and `withTracedQuicConnection` already apply.
+ *
+ * Thrown as an `AssertionError` rather than the original: a `TimeoutCancellationException` IS a
+ * `CancellationException`, and rethrowing one here lets the surrounding machinery treat a real failure
+ * as an ordinary cancellation. The original stays as the cause.
  */
 private fun WebTransportTestSuite.runWebTransportTest(
     timeout: Duration = 30.seconds,
@@ -384,8 +542,9 @@ private fun WebTransportTestSuite.runWebTransportTest(
             try {
                 withTimeout(timeout) { block() }
             } catch (t: Throwable) {
-                println(diagnostics.report(t))
-                throw t
+                val report = diagnostics.report(t)
+                println(report)
+                throw AssertionError(report, t)
             }
         }
     }
@@ -409,18 +568,46 @@ class WebTransportDiagnostics {
     private val lastStep = AtomicReference("(not started)")
     private val serverEvents = AtomicReference(emptyList<String>())
     private val clientEvents = AtomicReference(emptyList<String>())
+    private val boundPort = AtomicInt(0)
+    private val postMortemReport = AtomicReference("(no post-mortem: the failure happened outside the server's lifetime)")
+
+    /**
+     * Per-side datagram tallies, kept as plain atomic increments at sink time so the summary line of
+     * the report — "client sent N, server received M" — is a number rather than something the reader
+     * has to count off a 250-line ring that may have already dropped the lines that matter.
+     */
+    private val client = SideCounters()
+    private val server = SideCounters()
 
     /** Records the step the test body is about to attempt. Cheap enough to leave on always. */
     fun mark(step: String) {
         lastStep.store(step)
     }
 
+    /** The port the test's server bound — where the post-mortem probes go. */
+    fun serverBound(port: Int) {
+        boundPort.store(port)
+    }
+
+    val serverPort: Int get() = boundPort.load()
+
+    /** The post-mortem the suite took while the server was still bound; part of [report]. */
+    fun postMortem(text: String) {
+        postMortemReport.store(text)
+    }
+
     /**
      * The server-side capture sink. Bounded to [MAX_EVENTS] most-recent lines: a stalled connection can
      * emit steadily (timer wakes, path polls) and the TAIL is what shows where progress stopped, so an
      * unbounded buffer would only risk memory for older, less useful lines.
+     *
+     * Since the server-level record (`SharedQuicheServer.serverRecorder`), the server ring also carries
+     * what no connection's recorder could: the accept-time `DGRAM_IN` for every Initial the receive
+     * loop turned into a connection, and a typed `ERROR … ServerDatagramDrop.*` for every datagram it
+     * dequeued and could not route. So an empty server ring now means one thing only — nothing was
+     * dequeued from the socket at all — instead of the three readings #367 was filed on.
      */
-    val sink: TraceSink = ringSink(serverEvents)
+    val sink: TraceSink = ringSink(serverEvents, server)
 
     /**
      * The client-side capture sink, for the dialling connection.
@@ -437,17 +624,51 @@ class WebTransportDiagnostics {
      * `localhost` that resolved to `::1` against a server bound v4-only would show itself. No client
      * `DGRAM_OUT` at all puts it before the wire, in the engine or the dial.
      */
-    val clientSink: TraceSink = ringSink(clientEvents)
+    val clientSink: TraceSink = ringSink(clientEvents, client)
 
     /** How many lines each side has recorded. Read by the suite to prove the capture is live. */
     val clientEventCount: Int get() = clientEvents.load().size
     val serverEventCount: Int get() = serverEvents.load().size
 
+    /**
+     * Datagrams the server's receive loop dequeued and could not route (`ServerDatagramDrop`). The
+     * post-mortem reads it across a deliberately unparseable probe: a rise proves the socket and its
+     * loop are alive.
+     */
+    val serverDropCount: Int get() = server.drops.load()
+
+    /**
+     * Whether the server ring's very first line is a `DGRAM_IN` — which it is if and only if the
+     * server-level record is wired: the receive loop records the Initial that creates a connection
+     * *before* the connection's driver (and its `STATE` collector) exists, so with the record in place
+     * a fresh server's first captured event is always that datagram, and without it the first event is
+     * the new driver's `STATE Handshaking`. Asserted live by the suite on a completed round trip, like
+     * the two event counts above, so a future "0 server events" can be trusted to mean "nothing was
+     * dequeued" rather than "the server half of the capture came unwired".
+     */
+    val serverRingStartsWithDatagramIn: Boolean get() = server.firstEvent.load() == FIRST_EVENT_DGRAM_IN
+
     fun report(cause: Throwable): String =
         buildString {
             appendLine("=== WebTransport failure diagnostics ===")
             appendLine("cause: ${cause::class.simpleName}: ${cause.message}")
+            var next = cause.cause
+            var depth = 0
+            while (next != null && depth++ < MAX_CAUSE_DEPTH) {
+                appendLine("  caused by: ${next::class.simpleName}: ${next.message}")
+                next = next.cause
+            }
             appendLine("last step reached: ${lastStep.load()}")
+            appendLine("server port: ${serverPort.takeIf { it != 0 } ?: "(never bound)"}")
+            // The summary the ring cannot give once it has wrapped. "sent N, received 0" on one side
+            // beside "received N" on the other is the whole #367 question answered in one line.
+            appendLine(
+                "datagrams: client sent ${client.out.load()} / received ${client.inn.load()}; " +
+                    "server sent ${server.out.load()} / received ${server.inn.load()}; " +
+                    "server-level drops ${server.drops.load()}; " +
+                    "server ring starts with ${server.firstEvent.load().ifEmpty { "(nothing)" }}",
+            )
+            appendLine(postMortemReport.load())
             appendTrace("client", clientEvents.load())
             appendTrace("server", serverEvents.load())
             appendLine("=== end diagnostics ===")
@@ -461,12 +682,43 @@ class WebTransportDiagnostics {
         captured.forEach { appendLine("  $it") }
     }
 
+    private class SideCounters {
+        val out = AtomicInt(0)
+        val inn = AtomicInt(0)
+        val drops = AtomicInt(0)
+
+        /** The kind of the first event this side ever recorded; empty until then. Set once, by CAS. */
+        val firstEvent = AtomicReference("")
+    }
+
     /**
      * A bounded most-recent-[MAX_EVENTS] ring over [events], CAS-appended because both sinks are written
-     * from driver loops on arbitrary threads.
+     * from driver loops on arbitrary threads. [counters] is bumped per event kind before the line is
+     * formatted, so the tallies are exact even after the ring has wrapped.
      */
-    private fun ringSink(events: AtomicReference<List<String>>): TraceSink =
+    private fun ringSink(
+        events: AtomicReference<List<String>>,
+        counters: SideCounters,
+    ): TraceSink =
         TraceSink { event: TraceEvent ->
+            val kind =
+                when (event) {
+                    is TraceEvent.DgramOut -> {
+                        counters.out.incrementAndFetch()
+                        "DGRAM_OUT"
+                    }
+                    is TraceEvent.DgramIn -> {
+                        counters.inn.incrementAndFetch()
+                        FIRST_EVENT_DGRAM_IN
+                    }
+                    is TraceEvent.Error -> {
+                        if (event.type.contains(SERVER_DROP_TYPE)) counters.drops.incrementAndFetch()
+                        "ERROR"
+                    }
+                    is TraceEvent.State -> "STATE"
+                    else -> event::class.simpleName ?: "?"
+                }
+            counters.firstEvent.compareAndSet("", kind)
             // Truncated: a DGRAM line carries the full packet hex (~2400 chars for a 1200-byte
             // datagram), and hundreds of those would bury the report in CI. The prefix keeps everything
             // that localises a stall — timestamp, kind, direction, size, 4-tuple — and STATE /
@@ -485,5 +737,10 @@ class WebTransportDiagnostics {
     private companion object {
         const val MAX_EVENTS = 250
         const val MAX_LINE = 180
+        const val MAX_CAUSE_DEPTH = 6
+
+        /** The qualified-name fragment every `ServerDatagramDrop` subclass carries on its ERROR line. */
+        const val SERVER_DROP_TYPE = "ServerDatagramDrop"
+        const val FIRST_EVENT_DGRAM_IN = "DGRAM_IN"
     }
 }
