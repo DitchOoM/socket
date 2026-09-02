@@ -25,8 +25,18 @@ import java.util.concurrent.TimeUnit
 class NetworkControlServer(
     private val port: Int = 0,
     private val adbSerial: String? = null,
+    /**
+     * How a privileged device command is run. A seam, because every interesting state of this class
+     * is one `adb` cannot be asked to produce on demand — an unrooted device, a wrong serial, adb
+     * missing — and #389 is exactly what an untestable decision costs: five migration tests passed
+     * against a healthy network for months.
+     */
+    private val shell: DeviceShell = DeviceShell.adb(adbSerial),
 ) {
-    private val serverSocket = ServerSocket(port)
+    // Lazy: constructing a server must not bind a port. NetworkControlServerCapabilityTests builds
+    // one purely to drive `dispatch`, and a socket opened in the constructor would be a real resource
+    // held by a unit test that never calls run().
+    private val serverSocket by lazy { ServerSocket(port) }
     private val appliedModifications = ConcurrentLinkedQueue<String>()
     private val scheduler =
         Executors.newSingleThreadScheduledExecutor { r ->
@@ -83,34 +93,81 @@ class NetworkControlServer(
         }
     }
 
+    /**
+     * Run [shellCommand] and answer for it: [NetCtrlResponse.Ok] only when it actually ran.
+     *
+     * This is the heart of #389. Every impairment used to call `adb(...)`, ignore what came back, and
+     * return `Ok` unconditionally — so on an unrooted device `su: inaccessible or not found` was
+     * printed as "non-fatal" and the caller was told the network had been impaired. A response that
+     * cannot say "no" is not a response.
+     */
+    private fun applying(vararg shellCommands: String): NetCtrlResponse {
+        for (shellCommand in shellCommands) {
+            when (val outcome = shell.run(shellCommand)) {
+                is ShellOutcome.Ran -> Unit
+                is ShellOutcome.Failed ->
+                    return NetCtrlResponse.Error(
+                        "`$shellCommand` failed (exit ${outcome.exitCode}): ${outcome.output.ifEmpty { "<no output>" }}",
+                    )
+            }
+        }
+        return NetCtrlResponse.Ok()
+    }
+
+    /**
+     * Whether this host can run privileged commands on the device, decided once and remembered.
+     *
+     * `su 0 id` is the question the impairments are really asking, and it is asked directly rather
+     * than inferred from an impairment's exit code — an `iptables` rule can fail for reasons that
+     * have nothing to do with root, and conflating the two would make the capability answer wrong in
+     * both directions.
+     */
+    private val impairmentCapability: NetCtrlResponse by lazy {
+        when (val outcome = shell.run("id")) {
+            is ShellOutcome.Ran -> NetCtrlResponse.ImpairmentAvailable()
+            is ShellOutcome.Failed ->
+                NetCtrlResponse.ImpairmentUnavailable(
+                    "privileged device commands are unavailable: `su 0 id` exited ${outcome.exitCode}" +
+                        " (${outcome.output.ifEmpty { "<no output>" }}). Impairment needs a rooted device;" +
+                        " iptables/tc/airplane-mode cannot be applied on this one.",
+                )
+        }
+    }
+
+    /**
+     * Drive one command without a socket — the seam [NetworkControlServerCapabilityTests] uses.
+     *
+     * Named for what it is rather than widening [dispatch]: the tests need to assert what the server
+     * *answers*, and the answer is the whole of #389.
+     */
+    internal fun dispatchForTest(command: NetCtrlCommand): NetCtrlResponse = dispatch(command)
+
+    /** The undo commands currently tracked for cleanup, oldest first. */
+    internal fun trackedForTest(): List<String> = appliedModifications.toList()
+
     private fun dispatch(command: NetCtrlCommand): NetCtrlResponse =
         when (command) {
-            is NetCtrlCommand.BlockUdp -> {
-                adb("iptables -A OUTPUT -p udp -j DROP")
-                track("iptables -D OUTPUT -p udp -j DROP")
-                NetCtrlResponse.Ok()
-            }
-            is NetCtrlCommand.UnblockUdp -> {
-                adb("iptables -D OUTPUT -p udp -j DROP")
-                untrack("iptables -D OUTPUT -p udp -j DROP")
-                NetCtrlResponse.Ok()
-            }
-            is NetCtrlCommand.AddLatency -> {
-                adb("tc qdisc add dev eth0 root netem delay ${command.ms}ms")
-                track("tc qdisc del dev eth0 root")
-                NetCtrlResponse.Ok()
-            }
-            is NetCtrlCommand.RemoveLatency -> {
-                adb("tc qdisc del dev eth0 root")
-                untrack("tc qdisc del dev eth0 root")
-                NetCtrlResponse.Ok()
-            }
-            is NetCtrlCommand.AirplaneOn -> {
-                adb("settings put global airplane_mode_on 1")
-                adb("am broadcast -a android.intent.action.AIRPLANE_MODE")
-                track("settings put global airplane_mode_on 0")
-                NetCtrlResponse.Ok()
-            }
+            is NetCtrlCommand.BlockUdp ->
+                applying("iptables -A OUTPUT -p udp -j DROP")
+                    .alsoTrackingOnSuccess("iptables -D OUTPUT -p udp -j DROP")
+            is NetCtrlCommand.UnblockUdp ->
+                applying("iptables -D OUTPUT -p udp -j DROP")
+                    .alsoUntrackingOnSuccess("iptables -D OUTPUT -p udp -j DROP")
+            is NetCtrlCommand.AddLatency ->
+                onEgressInterface { dev ->
+                    applying("tc qdisc add dev $dev root netem delay ${command.ms}ms")
+                        .alsoTrackingOnSuccess("tc qdisc del dev $dev root")
+                }
+            is NetCtrlCommand.RemoveLatency ->
+                onEgressInterface { dev ->
+                    applying("tc qdisc del dev $dev root")
+                        .alsoUntrackingOnSuccess("tc qdisc del dev $dev root")
+                }
+            is NetCtrlCommand.AirplaneOn ->
+                applying(
+                    "settings put global airplane_mode_on 1",
+                    "am broadcast -a android.intent.action.AIRPLANE_MODE",
+                ).alsoTrackingOnSuccess("settings put global airplane_mode_on 0")
             is NetCtrlCommand.AirplaneOff -> {
                 airplaneOff()
                 NetCtrlResponse.Ok()
@@ -129,7 +186,71 @@ class NetworkControlServer(
             is NetCtrlCommand.Ping -> {
                 NetCtrlResponse.Ok()
             }
+            is NetCtrlCommand.QueryImpairment -> impairmentCapability
         }
+
+    /**
+     * Which device interface an impairment applies to, decided once and remembered.
+     *
+     * `eth0` was hardcoded, and no emulator image this suite runs on has one: the API-29 lane routes
+     * through `radio0`, so `tc qdisc add dev eth0` fails with `Cannot find device "eth0"` (#554).
+     * That was invisible until #389 made the server answer for what it did — before, the failure was
+     * logged "non-fatal" and reported `Ok`, which is the same vacuous pass #389 exists to remove. The
+     * red is the fix working; the interface name was the remaining half.
+     *
+     * Asked of the device rather than guessed, because the answer differs per image and per API level
+     * and a wrong constant fails in exactly the way that is hardest to see. `ip route get` names the
+     * interface the device would really use to reach the harness — which is the one that has to be
+     * impaired for the test to mean anything. A router-less device answers [Undiscoverable] and every
+     * latency impairment becomes an [NetCtrlResponse.Error] naming it, rather than a `tc` command
+     * against a device that does not exist.
+     */
+    private sealed interface EgressInterface {
+        data class Named(
+            val name: String,
+        ) : EgressInterface
+
+        data class Undiscoverable(
+            val detail: String,
+        ) : EgressInterface
+    }
+
+    private val egressInterface: EgressInterface by lazy {
+        when (val outcome = shell.run(EGRESS_ROUTE_QUERY)) {
+            is ShellOutcome.Failed ->
+                EgressInterface.Undiscoverable(
+                    "`$EGRESS_ROUTE_QUERY` failed (exit ${outcome.exitCode}): " +
+                        "${outcome.output.ifEmpty { "<no output>" }}. Without the egress interface a latency " +
+                        "impairment cannot be applied to the interface the device actually uses.",
+                )
+            is ShellOutcome.Ran ->
+                parseEgressInterface(outcome.output)?.let(EgressInterface::Named)
+                    ?: EgressInterface.Undiscoverable(
+                        "`$EGRESS_ROUTE_QUERY` named no interface (no `dev <name>` in " +
+                            "${outcome.output.ifEmpty { "<no output>" }}), so there is nothing to apply `tc` to.",
+                    )
+        }
+    }
+
+    /** Run [block] against the discovered interface, or answer why there is none. */
+    private fun onEgressInterface(block: (String) -> NetCtrlResponse): NetCtrlResponse =
+        when (val iface = egressInterface) {
+            is EgressInterface.Named -> block(iface.name)
+            is EgressInterface.Undiscoverable -> NetCtrlResponse.Error(iface.detail)
+        }
+
+    /** Record the undo for a modification that actually applied — and only then. */
+    private fun NetCtrlResponse.alsoTrackingOnSuccess(reverseCommand: String): NetCtrlResponse =
+        also { if (it is NetCtrlResponse.Ok) track(reverseCommand) }
+
+    /**
+     * Forget an undo whose removal actually applied — and only then.
+     *
+     * Untracking on a failed removal would drop the cleanup for a rule still installed on the device,
+     * leaving it behind for every later test on that emulator.
+     */
+    private fun NetCtrlResponse.alsoUntrackingOnSuccess(reverseCommand: String): NetCtrlResponse =
+        also { if (it is NetCtrlResponse.Ok) untrack(reverseCommand) }
 
     private fun airplaneOff() {
         adb("settings put global airplane_mode_on 0")
@@ -213,19 +334,19 @@ class NetworkControlServer(
             addAll(args)
         }
 
+    /**
+     * Run [shellCommand] on the device, ignoring how it went.
+     *
+     * The remaining callers are the ones where there is genuinely nothing to report to: cleanup on a
+     * shutdown hook, and the scheduled airplane-mode recovery, which fires long after the caller's
+     * connection is gone. Anything a client is waiting on goes through [applying] instead.
+     */
     private fun adb(shellCommand: String) {
-        val result =
-            ProcessBuilder(adbCommand("shell", "su", "0", shellCommand))
-                .redirectErrorStream(true)
-                .start()
-        val output =
-            result.inputStream
-                .bufferedReader()
-                .readText()
-                .trim()
-        val exitCode = result.waitFor()
-        if (output.isNotEmpty()) println("[net-ctrl]   adb: $output")
-        if (exitCode != 0) println("[net-ctrl]   adb exit=$exitCode (non-fatal)")
+        when (val outcome = shell.run(shellCommand)) {
+            is ShellOutcome.Ran -> if (outcome.output.isNotEmpty()) println("[net-ctrl]   adb: ${outcome.output}")
+            is ShellOutcome.Failed ->
+                println("[net-ctrl]   adb exit=${outcome.exitCode} (nobody is waiting on this one): ${outcome.output}")
+        }
     }
 
     private fun track(reverseCommand: String) {
@@ -248,6 +369,37 @@ class NetworkControlServer(
                 println("[net-ctrl]   cleanup failed: ${e.message}")
             }
         }
+    }
+
+    internal companion object {
+        /**
+         * Asks which interface the device would use to reach the outside world.
+         *
+         * `ip route get` and not `ip route show default`: the emulator can carry more than one
+         * default route (`radio0` plus a VPN or a second radio), and `get` resolves the choice the
+         * kernel would actually make instead of leaving the caller to pick a line. The destination is
+         * only a routing probe — nothing is sent to it.
+         */
+        internal const val EGRESS_ROUTE_QUERY = "ip route get 8.8.8.8"
+
+        /**
+         * Pull the interface name out of `ip route` output: the token after `dev`.
+         *
+         * Tolerates the field ordering differing across images (`... dev radio0 src 10.0.2.16 uid 0`
+         * vs `... dev wlan0 table 1021 src ...`) by keying on the `dev` marker rather than a column
+         * index. Returns null when no line names one, which the caller turns into a typed
+         * [EgressInterface.Undiscoverable] rather than a guess.
+         */
+        internal fun parseEgressInterface(routeOutput: String): String? =
+            routeOutput
+                .lineSequence()
+                .mapNotNull { line ->
+                    val tokens = line.trim().split(WHITESPACE)
+                    val marker = tokens.indexOf("dev")
+                    if (marker < 0) null else tokens.getOrNull(marker + 1)?.takeIf { it.isNotBlank() }
+                }.firstOrNull()
+
+        private val WHITESPACE = Regex("\\s+")
     }
 }
 

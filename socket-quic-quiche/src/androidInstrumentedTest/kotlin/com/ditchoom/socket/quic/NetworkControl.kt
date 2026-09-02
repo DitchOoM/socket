@@ -50,6 +50,18 @@ internal class NetworkControl(
             e
         }
 
+    /**
+     * Ask the host whether it can actually impair this device's network (#389).
+     *
+     * Distinct from [probe], which answers "the control server is up". Every impairment runs as
+     * `adb shell su 0 …`, and on a device without root each of those fails; the server used to log
+     * that as non-fatal and answer `Ok`, so five migration tests passed against a completely healthy
+     * network. Returns the host's own answer — [NetCtrlResponse.ImpairmentAvailable] or
+     * [NetCtrlResponse.ImpairmentUnavailable] carrying the reason — so a caller's skip can name the
+     * missing capability instead of saying "not available".
+     */
+    fun queryImpairment(): NetCtrlResponse = sendCommand(NetCtrlCommand.QueryImpairment())
+
     fun blockUdp() {
         sendCommand(NetCtrlCommand.BlockUdp())
     }

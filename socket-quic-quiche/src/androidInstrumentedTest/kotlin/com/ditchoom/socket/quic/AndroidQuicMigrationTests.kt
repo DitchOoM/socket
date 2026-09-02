@@ -4,10 +4,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.socket.quic.netctrl.NetCtrlResponse
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -54,6 +60,32 @@ class AndroidQuicMigrationTests {
         networkControl = client
         val failure = client.probe()
         if (failure != null) ctrl.skipUnanswered(AndroidQuicMigrationTests::class, failure)
+
+        // The server answering is not the server being ABLE to impair anything (#389). Every
+        // impairment runs as `adb shell su 0 …`; on a device without root each fails, and the server
+        // used to log that as non-fatal and reply Ok — so all five of these tests passed on a
+        // physical SM-F956U1 with no UDP blocked, no latency added and airplane mode never toggled.
+        // A vacuous pass is worse than a skip: a skip is at least countable.
+        //
+        // HostCannotProvideIt on purpose: a lane cannot root a handset, so this must not turn a
+        // SOCKET_REQUIRE_ALL_TESTS=1 run red — it must be *counted*, and the reason must name the
+        // capability rather than the symptom.
+        when (val capability = client.queryImpairment()) {
+            is NetCtrlResponse.ImpairmentAvailable -> Unit
+            is NetCtrlResponse.ImpairmentUnavailable -> {
+                recordSkip(
+                    AndroidQuicMigrationTests::class,
+                    SkipReason.HostBehaviourDiffers(capability.why),
+                    SkipGate.HostCannotProvideIt("a rooted device (`su 0`) for iptables/tc/airplane-mode impairment"),
+                )
+                assumeTrue(capability.why, false)
+            }
+            else ->
+                fail(
+                    "the control server answered QueryImpairment with $capability — it can only be " +
+                        "ImpairmentAvailable or ImpairmentUnavailable, so this is a host/device version skew",
+                )
+        }
     }
 
     @After
