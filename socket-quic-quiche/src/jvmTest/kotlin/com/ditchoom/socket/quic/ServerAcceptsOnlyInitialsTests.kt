@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
+import kotlin.reflect.KClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -67,12 +68,43 @@ class ServerAcceptsOnlyInitialsTests {
         val events: MutableList<TraceEvent> = Collections.synchronizedList(mutableListOf())
         val sink = TraceSink { events += it }
 
+        /**
+         * The typed drops the receive loop recorded. A trace `ERROR` line carries the throwable's
+         * qualified class name (the v1 wire format, chosen so an obfuscated trace retraces against
+         * R8's mapping), so the match is against the sealed hierarchy's own name, not a literal.
+         */
         fun drops(): List<TraceEvent.Error> =
-            synchronized(events) { events.filterIsInstance<TraceEvent.Error>().filter { "ServerDatagramDrop" in it.type } }
+            synchronized(events) {
+                events.filterIsInstance<TraceEvent.Error>().filter { it.type.startsWith(SERVER_DROP_PREFIX) }
+            }
 
         fun acceptTimeInitials(): Int = synchronized(events) { events.count { it is TraceEvent.DgramIn } }
 
         fun connectionStates(): Int = synchronized(events) { events.count { it is TraceEvent.State } }
+    }
+
+    /**
+     * The drop a crafted datagram must produce — exhaustive, so a case cannot say "some drop" and a
+     * type expectation cannot be an absent value.
+     */
+    private sealed interface ExpectedDrop {
+        /** The sealed member the trace line must name (by its qualified class name, the v1 wire form). */
+        val type: KClass<out ServerDatagramDrop>
+
+        /** What the drop's message must say — the one place the typed payload survives the wire. */
+        val messageCarries: String
+
+        data class NotAnInitial(
+            val packetType: QuicPacketType,
+        ) : ExpectedDrop {
+            override val type = ServerDatagramDrop.NotAnInitial::class
+            override val messageCarries = "a $packetType packet cannot create one"
+        }
+
+        data object RuntInitial : ExpectedDrop {
+            override val type = ServerDatagramDrop.RuntInitial::class
+            override val messageCarries = "at least 1200 bytes"
+        }
     }
 
     /**
@@ -81,17 +113,16 @@ class ServerAcceptsOnlyInitialsTests {
      */
     @Test
     fun aShortHeaderPacketForNoConnectionIsDroppedNotAccepted() =
-        assertDropped(shortHeaderPacket(), expectedDrop = "NotAnInitial", expectedType = PACKET_TYPE_SHORT)
+        assertDropped(shortHeaderPacket(), ExpectedDrop.NotAnInitial(QuicPacketType.Short))
 
     /** A Handshake-type long header: a client cannot send one before a server response (§5.2.2). */
     @Test
     fun aHandshakePacketForNoConnectionIsDroppedNotAccepted() =
-        assertDropped(longHeaderPacket(typeBits = 0b10, size = 1200), expectedDrop = "NotAnInitial", expectedType = PACKET_TYPE_HANDSHAKE)
+        assertDropped(longHeaderPacket(typeBits = 0b10, size = 1200), ExpectedDrop.NotAnInitial(QuicPacketType.Handshake))
 
     /** An Initial in a 300-byte datagram: parseable, well-formed, and below the §14.1 floor. */
     @Test
-    fun aRuntInitialIsDroppedNotAccepted() =
-        assertDropped(longHeaderPacket(typeBits = 0b00, size = 300), expectedDrop = "RuntInitial", expectedType = null)
+    fun aRuntInitialIsDroppedNotAccepted() = assertDropped(longHeaderPacket(typeBits = 0b00, size = 300), ExpectedDrop.RuntInitial)
 
     @Test
     fun aRealClientStillEstablishesAndItsInitialIsTheOneAcceptTimeDatagram() =
@@ -110,15 +141,18 @@ class ServerAcceptsOnlyInitialsTests {
                 }
                 assertTrue(record.acceptTimeInitials() >= 1, "the real client's Initial must be recorded at accept: ${record.events}")
                 assertTrue(record.connectionStates() >= 1, "the real client must have produced a connection: ${record.events}")
-                val unexpected = record.drops().filter { "NotAnInitial" in it.type || "RuntInitial" in it.type }
+                val unexpected =
+                    record.drops().filter {
+                        it.type == ServerDatagramDrop.NotAnInitial::class.qualifiedName ||
+                            it.type == ServerDatagramDrop.RuntInitial::class.qualifiedName
+                    }
                 assertEquals(emptyList(), unexpected, "a conforming handshake must not trip the #563 checks")
             }
         }
 
     private fun assertDropped(
         datagram: ByteArray,
-        expectedDrop: String,
-        expectedType: Int?,
+        expected: ExpectedDrop,
     ) = runBlocking(Dispatchers.IO) {
         skipOnMissingNativeLib(ServerAcceptsOnlyInitialsTests::class) {
             val record = ServerRecord()
@@ -142,20 +176,19 @@ class ServerAcceptsOnlyInitialsTests {
                                 while (record.drops().isEmpty()) delay(POLL)
                                 record.drops().single()
                             } ?: fail(
-                                "the server recorded no drop for a ${datagram.size}-byte $expectedDrop-shaped datagram " +
+                                "the server recorded no drop for a ${datagram.size}-byte ${expected.type.simpleName}-shaped datagram " +
                                     "(#563): it was either accepted as a connection or silently discarded. " +
                                     "Recorded: ${record.events}",
                             )
-                        assertTrue(
-                            expectedDrop in drop.type,
-                            "expected the drop to be typed $expectedDrop, got ${drop.type}: ${drop.message}",
+                        assertEquals(
+                            expected.type.qualifiedName,
+                            drop.type,
+                            "expected the drop to be typed ${expected.type.simpleName}: ${drop.message}",
                         )
-                        if (expectedType != null) {
-                            assertTrue(
-                                "packet type $expectedType " in drop.message,
-                                "the drop must name quiche's packet type $expectedType: ${drop.message}",
-                            )
-                        }
+                        assertTrue(
+                            expected.messageCarries in drop.message,
+                            "the drop must say '${expected.messageCarries}': ${drop.message}",
+                        )
                         assertEquals(0, record.acceptTimeInitials(), "no accept-time datagram may be recorded: ${record.events}")
                         assertEquals(0, record.connectionStates(), "no connection may have been created: ${record.events}")
                     } finally {
@@ -195,9 +228,8 @@ class ServerAcceptsOnlyInitialsTests {
     }
 
     private companion object {
-        /** quiche_header_info's numbering (quiche/src/ffi.rs). */
-        const val PACKET_TYPE_HANDSHAKE = 3
-        const val PACKET_TYPE_SHORT = 5
+        /** Every member of the sealed drop hierarchy is nested in it, so its qualified name is their prefix. */
+        val SERVER_DROP_PREFIX = ServerDatagramDrop::class.qualifiedName!! + "."
 
         val DROP_WAIT = 5.seconds
         val POLL = 10.milliseconds

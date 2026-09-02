@@ -411,8 +411,8 @@ internal class SharedQuicheServer(
                         // a server connection and a driver that lived until the idle timeout — a cost
                         // the §14.1 floor exists to deny an attacker, and a spurious PROTOCOL_VIOLATION
                         // close in every trace someone reads to diagnose a real failure.
-                        val packetType = typeBuf[0].toInt() and 0xFF
-                        if (packetType != PACKET_TYPE_INITIAL) {
+                        val packetType = QuicPacketType.fromQuiche(typeBuf[0].toInt() and 0xFF)
+                        if (packetType !is QuicPacketType.Initial) {
                             serverRecorder?.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType))
                             recvBuf.freeNativeMemory()
                             continue@loop
@@ -423,14 +423,13 @@ internal class SharedQuicheServer(
                             continue@loop
                         }
                         // Accept new connection — recvBuf ownership transfers inside.
-                        val accepted = acceptNewConnection(recvBuf, received, peer)
-                        if (accepted == null) {
-                            serverRecorder?.error(ServerDatagramDrop.AcceptRefused(received, peer))
-                        } else {
-                            val (driver, serverScidKey) = accepted
-                            registry.routeDriver(serverScidKey, driver)
-                            registry.routeDriver(dcidKey, driver)
-                            registry.acceptedDrivers.trySend(AcceptedConnection(driver, peer))
+                        when (val outcome = acceptNewConnection(recvBuf, received, peer)) {
+                            is AcceptOutcome.Refused -> serverRecorder?.error(outcome.drop)
+                            is AcceptOutcome.Accepted -> {
+                                registry.routeDriver(outcome.serverScidKey, outcome.driver)
+                                registry.routeDriver(dcidKey, outcome.driver)
+                                registry.acceptedDrivers.trySend(AcceptedConnection(outcome.driver, peer))
+                            }
                         }
                     }
                 }
@@ -455,7 +454,7 @@ internal class SharedQuicheServer(
         recvBuf: PlatformBuffer,
         received: Int,
         peer: SocketAddress,
-    ): Pair<QuicheDriver, ConnectionIdKey>? {
+    ): AcceptOutcome {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val serverScid = generateScid(bufferFactory, tuning.random)
@@ -482,7 +481,7 @@ internal class SharedQuicheServer(
                 peerSockAddr.free()
                 localSockAddr.free()
                 recvBuf.freeNativeMemory()
-                return null
+                return AcceptOutcome.Refused(ServerDatagramDrop.AcceptRefused(received, peer))
             }
 
         if (conn.handle == 0L) {
@@ -490,7 +489,7 @@ internal class SharedQuicheServer(
             peerSockAddr.free()
             localSockAddr.free()
             recvBuf.freeNativeMemory()
-            return null
+            return AcceptOutcome.Refused(ServerDatagramDrop.AcceptRefused(received, peer))
         }
 
         val recvInfo =
@@ -513,7 +512,7 @@ internal class SharedQuicheServer(
             peerSockAddr.free()
             localSockAddr.free()
             recvBuf.freeNativeMemory()
-            return null
+            return AcceptOutcome.Refused(ServerDatagramDrop.InitialRejected(received, peer, fed))
         }
         // The one datagram the connection's own recorder can never show: it is consumed here, before
         // the driver (and its recording channel wrap) exists. Recorded at the server level so a trace
@@ -585,22 +584,32 @@ internal class SharedQuicheServer(
 
         val scidKey = ConnectionIdKey.from(serverScid, offset = 0, length = QUIC_MAX_CONN_ID_LEN)
         serverScid.freeNativeMemory()
-        return driver to scidKey
+        return AcceptOutcome.Accepted(driver, scidKey)
     }
 
     companion object {
         private const val MAX_TOKEN_LEN = 256
 
-        /**
-         * `quiche_header_info`'s packet type for an Initial. quiche's FFI writes the type as
-         * Initial = 1, Retry = 2, Handshake = 3, 0-RTT = 4, Short = 5, Version Negotiation = 6
-         * (`quiche/src/ffi.rs`, `quiche_header_info`); the header declares no names for them.
-         */
-        private const val PACKET_TYPE_INITIAL = 1
-
         /** RFC 9000 §14.1: the smallest UDP payload a server may accept an Initial from. */
         internal const val MIN_INITIAL_DATAGRAM_SIZE = 1200
     }
+}
+
+/**
+ * What [SharedQuicheServer.acceptNewConnection] did with the Initial it was handed: exhaustive, so a
+ * refusal cannot be a bare `null` that collapses "quiche would not create the connection" and
+ * "quiche created it and then rejected the packet" into one, and the receive loop records exactly
+ * the [ServerDatagramDrop] that happened.
+ */
+internal sealed interface AcceptOutcome {
+    data class Accepted(
+        val driver: QuicheDriver,
+        val serverScidKey: ConnectionIdKey,
+    ) : AcceptOutcome
+
+    data class Refused(
+        val drop: ServerDatagramDrop,
+    ) : AcceptOutcome
 }
 
 /**
@@ -630,15 +639,25 @@ internal sealed class ServerDatagramDrop(
     ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and quiche_accept refused it")
 
     /**
+     * `quiche_accept` created the connection but `quiche_conn_recv` rejected the Initial that was
+     * fed to it ([rc] is quiche's negative result) — undecryptable, or malformed past the header — so
+     * the connection was released rather than driven.
+     */
+    class InitialRejected(
+        len: Int,
+        peer: SocketAddress,
+        val rc: Int,
+    ) : ServerDatagramDrop("$len B from $peer: quiche_conn_recv rejected the Initial (rc=$rc)")
+
+    /**
      * No connection routes the DCID and the packet is not an Initial, so it cannot create one
-     * (RFC 9000 §5.2.2). [packetType] is `quiche_header_info`'s numbering: 2 Retry, 3 Handshake,
-     * 4 0-RTT, 5 Short, 6 Version Negotiation.
+     * (RFC 9000 §5.2.2).
      */
     class NotAnInitial(
         len: Int,
         peer: SocketAddress,
-        val packetType: Int,
-    ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and packet type $packetType is not an Initial")
+        val type: QuicPacketType,
+    ) : ServerDatagramDrop("$len B from $peer: no connection routes its DCID and a $type packet cannot create one")
 
     /** An Initial for a new connection carried in a datagram below the 1200-byte floor (RFC 9000 §14.1). */
     class RuntInitial(
