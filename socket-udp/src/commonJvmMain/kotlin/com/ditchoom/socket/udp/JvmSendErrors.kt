@@ -148,7 +148,7 @@ private fun byStrerrorPhrase(
  * The `strerror` text of every errno `sendErrnoToError` maps to [DatagramSendError.Unreachable], as
  * Darwin, glibc and bionic render it.
  */
-private val UNREACHABLE_PHRASES =
+internal val UNREACHABLE_PHRASES =
     listOf(
         // EHOSTUNREACH — on the write0 path only; send0 names it NoRouteToHostException.
         "No route to host",

@@ -28,11 +28,3 @@ import platform.posix.AF_INET6
  */
 @ExperimentalDatagramApi
 val appleSockAddrLayout: SockAddrLayout = SockAddrLayout(hasLenByte = true, afInet = AF_INET, afInet6 = AF_INET6)
-
-/**
- * A `connect()` fault surfaced by the NWConnection state handler (terminal failed/cancelled). Public so
- * a consumer in another module (e.g. `:socket-quic-quiche`'s Apple datapath) can catch and map it.
- */
-class UdpConnectException(
-    message: String,
-) : RuntimeException(message)
