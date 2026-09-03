@@ -8,6 +8,8 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -214,6 +216,19 @@ internal class UdpSocketChannelFactory(
      */
     internal suspend fun routeSourceAddress(): RouteSource {
         if (localEndpointSupport != LocalEndpointSupport.Bindable) return RouteSource.PlatformAssigned
+        // One probe alive at a time, process-wide (#547). Every probe binds unnamed — it has to, it
+        // is learning the address it would otherwise name — and every probe aims at the same
+        // `peer.host:routeProbePort`, so two alive at once can draw the same ephemeral port and form
+        // the same 4-tuple; the second connect then fails EADDRINUSE and, since #523, fails the open.
+        // Measured at 4–5 lost per 32 000 with 64 threads. A probe sends nothing and lives for
+        // microseconds, so serialising them costs nothing measurable and removes the collision
+        // instead of retrying past it: socket 1 is closed before socket 2 binds, and the kernel is
+        // free to hand the same port out again with nothing in the way. Process-wide rather than
+        // per-factory because the ephemeral range is per host, not per connection.
+        return routeProbeGate.withLock { probeRouteSource() }
+    }
+
+    private suspend fun probeRouteSource(): RouteSource {
         val probe =
             try {
                 openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
@@ -254,6 +269,13 @@ internal class UdpSocketChannelFactory(
 
         /** RFC 862 echo — used only when [peer] is itself on [ROUTE_PROBE_PORT]. */
         const val ROUTE_PROBE_PORT_ALT = 7
+
+        /**
+         * Serialises every route probe in the process — see [routeSourceAddress]. Held only across
+         * the probe's open, `getsockname` and close; never across a path's own open, which draws
+         * against a different destination port (#483) and cannot collide with a probe.
+         */
+        val routeProbeGate = Mutex()
     }
 }
 
