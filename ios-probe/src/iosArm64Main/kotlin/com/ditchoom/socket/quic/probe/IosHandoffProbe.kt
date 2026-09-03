@@ -35,6 +35,21 @@ import kotlin.concurrent.Volatile
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.value
+import platform.UIKit.UIDevice
+import platform.UIKit.UIDeviceBatteryState
+import platform.darwin.KERN_SUCCESS
+import platform.darwin.MACH_TASK_BASIC_INFO
+import platform.darwin.mach_msg_type_number_tVar
+import platform.darwin.mach_task_basic_info
+import platform.darwin.mach_task_self_
+import platform.darwin.task_info
 
 /**
  * The iOS half of the real-handoff rig — the Apple counterpart of `DeviceHandoffProbe`.
@@ -149,8 +164,20 @@ object IosHandoffProbe {
         val totals = MigrationTotals()
         var attempt = 0
 
+        // A heartbeat once a minute whatever the connection is doing: residency (locUpdates), the
+        // process's resident memory, and the battery — the trend line a multi-day log needs, and the
+        // one line that says the probe was alive at 03:00 even while the network was gone.
+        val heartbeat =
+            GlobalScope.launch(Dispatchers.Default) {
+                while (NSDate().timeIntervalSince1970 < deadline) {
+                    delay(HEARTBEAT_INTERVAL_MS)
+                    log.emit("HEARTBEAT attempt=$attempt locUpdates=$locUpdates ${residentMemory()} ${battery()}")
+                }
+            }
+        var retryDelayMs = RECONNECT_MIN_MS
         while (NSDate().timeIntervalSince1970 < deadline) {
             attempt++
+            val attemptStarted = NSDate().timeIntervalSince1970
             log.emit("CONNECT-ATTEMPT n=$attempt")
             // Per CONNECTION, not per walk: a reconnect negotiates a brand-new CID pool, so a pool
             // exhausted on the previous connection says nothing about this one.
@@ -166,8 +193,10 @@ object IosHandoffProbe {
                     // Everything received must be an exact, in-order PREFIX of everything sent. Late
                     // delivery keeps that true; bytes destroyed by a timed-out read break it
                     // permanently, because the stream then resumes past the hole.
-                    val sentAll = StringBuilder()
-                    val recvAll = StringBuilder()
+                    // Kept as the bytes sent but NOT YET echoed, not as two ever-growing histories:
+                    // `sentAll.startsWith(recvAll)` on every echo is O(total) per echo and O(total²)
+                    // over a run — fine for a 2 h walk, fatal for a 72 h one (millions of echoes).
+                    val pendingSent = StringBuilder()
                     var integrityBroken = false
 
                     // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
@@ -210,19 +239,25 @@ object IosHandoffProbe {
                             } finally {
                                 out.freeIfNeeded()
                             }
-                            sentAll.append(payload)
+                            pendingSent.append(payload)
                             val resp = stream.read(readTimeoutMs.milliseconds) { it.readString(it.remaining(), Charset.UTF8) }
                             val rtt = ((NSDate().timeIntervalSince1970 - sentAt) * 1000).toLong()
                             if (resp is ScopedRead.Data) {
                                 val echoed = resp.value
-                                recvAll.append(echoed)
-                                val intact = sentAll.startsWith(recvAll)
-                                val pending = sentAll.length - recvAll.length
+                                val intact =
+                                    echoed.length <= pendingSent.length &&
+                                        pendingSent.regionMatches(0, echoed, 0, echoed.length)
+                                if (intact) pendingSent.deleteRange(0, echoed.length)
+                                val pending = pendingSent.length
                                 log.emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
                                 if (!intact && !integrityBroken) {
                                     integrityBroken = true
-                                    val at = recvAll.indices.firstOrNull { it >= sentAll.length || sentAll[it] != recvAll[it] } ?: 0
-                                    log.emit("STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at")
+                                    val at = echoed.indices.firstOrNull { it >= pendingSent.length || pendingSent[it] != echoed[it] } ?: 0
+                                    log.emit(
+                                        "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
+                                            "expected=[${pendingSent.substring(0, minOf(pendingSent.length, at + 24))}] " +
+                                            "recv=[${echoed.substring(0, minOf(echoed.length, at + 24))}]",
+                                    )
                                     statusLine = "⚠ STREAM INTEGRITY BROKEN at byte $at"
                                 }
                             } else {
@@ -256,10 +291,16 @@ object IosHandoffProbe {
             ledger.report("connection=$attempt")
             totals.absorb(ledger)
             if (NSDate().timeIntervalSince1970 < deadline) {
-                log.emit("RECONNECTING in 3s")
-                delay(3_000)
+                // Back off while attempts die young — a flight in airplane mode is hours of "no
+                // route", and a fixed 3 s retry would be thousands of connects for nothing. A
+                // connection that lived resets the delay, so the retry after a real handoff is prompt.
+                val livedMs = ((NSDate().timeIntervalSince1970 - attemptStarted) * 1000).toLong()
+                retryDelayMs = if (livedMs < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
+                log.emit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${livedMs}ms)")
+                delay(retryDelayMs)
             }
         }
+        heartbeat.cancel()
 
         totals.report(log::emit)
         log.emit("DONE attempts=$attempt log=${logPath()}")
@@ -451,3 +492,39 @@ private class MigrationTotals {
         )
     }
 }
+
+private const val HEARTBEAT_INTERVAL_MS = 60_000L
+private const val RECONNECT_MIN_MS = 3_000L
+private const val RECONNECT_MAX_MS = 60_000L
+
+/** An attempt that ended sooner than this did not get a usable connection; back off before the next. */
+private const val SHORT_LIVED_MS = 30_000L
+
+/** This process's resident set, from Mach, so a leak shows as a trend across heartbeats. */
+@OptIn(ExperimentalForeignApi::class)
+private fun residentMemory(): String =
+    runCatching {
+        memScoped {
+            val info = alloc<mach_task_basic_info>()
+            val count = alloc<mach_msg_type_number_tVar>()
+            count.value = (sizeOf<mach_task_basic_info>() / sizeOf<IntVar>()).toUInt()
+            val rc = task_info(mach_task_self_, MACH_TASK_BASIC_INFO.toUInt(), info.ptr.reinterpret(), count.ptr)
+            if (rc == KERN_SUCCESS) "rss=${info.resident_size / 1024u}kB vsz=${info.virtual_size / (1024u * 1024u)}MB" else "rss=unreadable(kern=$rc)"
+        }
+    }.getOrElse { "rss=unreadable(${it::class.simpleName})" }
+
+/** Battery level and state; monitoring is switched on once, on first use. */
+private fun battery(): String =
+    runCatching {
+        val device = UIDevice.currentDevice
+        if (!device.batteryMonitoringEnabled) device.batteryMonitoringEnabled = true
+        val level = (device.batteryLevel * 100).toInt()
+        val state =
+            when (device.batteryState) {
+                UIDeviceBatteryState.UIDeviceBatteryStateCharging -> "charging"
+                UIDeviceBatteryState.UIDeviceBatteryStateFull -> "full"
+                UIDeviceBatteryState.UIDeviceBatteryStateUnplugged -> "unplugged"
+                else -> "unknown"
+            }
+        "battery=$level% $state"
+    }.getOrElse { "battery=unreadable(${it::class.simpleName})" }

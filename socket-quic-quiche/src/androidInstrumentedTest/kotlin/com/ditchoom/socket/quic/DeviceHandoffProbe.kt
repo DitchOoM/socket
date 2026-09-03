@@ -4,6 +4,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -14,6 +19,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
@@ -147,8 +153,21 @@ class DeviceHandoffProbe {
         val totals = MigrationTotals()
 
         runBlocking(Dispatchers.IO) {
+            // A heartbeat once a minute, whatever the connection is doing: the process's own memory
+            // (the #538 walk died of a native leak nothing logged until the OOM), the battery, and the
+            // transport the device is on. Over a multi-day run this is the trend line the echo lines
+            // cannot give, and the one line a reader can grep to see the probe was alive at 03:00.
+            val heartbeat =
+                launch {
+                    while (isActive && System.currentTimeMillis() < deadline) {
+                        delay(HEARTBEAT_INTERVAL_MS)
+                        emit("HEARTBEAT attempt=$attempt ${processMemory()} ${battery(ctx)} ${transport(ctx)}")
+                    }
+                }
+            var retryDelayMs = RECONNECT_MIN_MS
             while (System.currentTimeMillis() < deadline) {
                 attempt++
+                val attemptStarted = System.currentTimeMillis()
                 emit("CONNECT-ATTEMPT n=$attempt")
                 if (attempt > 1) status.onEnded("reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
@@ -177,8 +196,14 @@ class DeviceHandoffProbe {
                         // in-order PREFIX of everything sent. Late delivery keeps that true; bytes
                         // destroyed by a timed-out read (the #393 defect) break it permanently, because
                         // the stream then resumes past the hole.
-                        val sentAll = StringBuilder()
-                        val recvAll = StringBuilder()
+                        //
+                        // Kept as the bytes sent but NOT YET echoed, not as two ever-growing histories.
+                        // The first version held `sentAll`/`recvAll` and asked `sentAll.startsWith(recvAll)`
+                        // on every echo: O(total) per echo, O(total²) over a run — fine for a 2.6 h walk,
+                        // fatal for a 72 h one (2.6M echoes at a 100 ms cadence would spend hours of CPU
+                        // per echo by the end, and hold ~30 MB of history per connection). Comparing the
+                        // echo against the head of the pending window is the same invariant in O(echo).
+                        val pendingSent = StringBuilder()
                         var integrityBroken = false
 
                         // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
@@ -218,7 +243,7 @@ class DeviceHandoffProbe {
                                 } finally {
                                     out.freeIfNeeded()
                                 }
-                                sentAll.append(payload)
+                                pendingSent.append(payload)
                                 // Scoped read (#538): the echoed bytes are decoded inside the block and
                                 // the buffer is released on the way out. This loop used to take the
                                 // transferring read and drop the buffer — 45 382 times, on the walk that
@@ -229,29 +254,31 @@ class DeviceHandoffProbe {
                                 val rtt = System.currentTimeMillis() - sentAt
                                 if (resp is ScopedRead.Data) {
                                     val echoed = resp.value
-                                    recvAll.append(echoed)
-                                    val intact = sentAll.startsWith(recvAll)
-                                    val pending = sentAll.length - recvAll.length
+                                    // Intact iff the echo is exactly the head of what is still owed.
+                                    val intact =
+                                        echoed.length <= pendingSent.length &&
+                                            pendingSent.regionMatches(0, echoed, 0, echoed.length)
+                                    if (intact) pendingSent.delete(0, echoed.length)
+                                    val pending = pendingSent.length
                                     emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
                                     status.onEcho(gotData = true, intactNow = intact, pendingBytes = pending)
                                     if (!intact && !integrityBroken) {
                                         integrityBroken = true
-                                        // The whole point of the run. Capture both sides at the divergence.
-                                        val at = recvAll.indices.firstOrNull { it >= sentAll.length || sentAll[it] != recvAll[it] } ?: 0
+                                        // The whole point of the run. Capture both sides at the divergence:
+                                        // the first byte of the echo that differs from the head of the
+                                        // pending window (or the echo running past it).
+                                        val at =
+                                            echoed.indices.firstOrNull { it >= pendingSent.length || pendingSent[it] != echoed[it] } ?: 0
                                         status.onBroken(at)
                                         emit(
                                             "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
-                                                "sent=[${sentAll.substring(maxOf(0, at - 24), minOf(sentAll.length, at + 24))}] " +
-                                                "recv=[${recvAll.substring(maxOf(0, at - 24), minOf(recvAll.length, at + 24))}]",
+                                                "expected=[${pendingSent.substring(0, minOf(pendingSent.length, at + 24))}] " +
+                                                "recv=[${echoed.substring(0, minOf(echoed.length, at + 24))}]",
                                         )
                                     }
                                 } else {
                                     emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
-                                    status.onEcho(
-                                        gotData = false,
-                                        intactNow = sentAll.startsWith(recvAll),
-                                        pendingBytes = sentAll.length - recvAll.length,
-                                    )
+                                    status.onEcho(gotData = false, intactNow = !integrityBroken, pendingBytes = pendingSent.length)
                                 }
                             } catch (e: Throwable) {
                                 // The interesting case. Record and keep going — the connection may still
@@ -267,11 +294,7 @@ class DeviceHandoffProbe {
                                 // `timeouts=0 intact=yes` against a server that had been dead the whole
                                 // time. With a sub-RTT deadline this is the COMMON case during a handoff,
                                 // which is exactly when the operator is reading it.
-                                status.onEcho(
-                                    gotData = false,
-                                    intactNow = sentAll.startsWith(recvAll),
-                                    pendingBytes = sentAll.length - recvAll.length,
-                                )
+                                status.onEcho(gotData = false, intactNow = !integrityBroken, pendingBytes = pendingSent.length)
                                 // ...unless it is DEAD, in which case "keep going" means spinning this
                                 // loop against a closed connection for the rest of the run. Measured: a
                                 // connection that idle-timed out at t=178s produced an unbroken wall of
@@ -300,10 +323,17 @@ class DeviceHandoffProbe {
                 ledger.report("connection=$attempt")
                 totals.absorb(ledger)
                 if (System.currentTimeMillis() < deadline) {
-                    emit("RECONNECTING in 3s")
-                    delay(3_000)
+                    // Back off while attempts die young — a flight in airplane mode is hours of
+                    // "network unreachable", and a fixed 3 s retry would be thousands of connects (each
+                    // a socket, a quiche config and two log lines) for nothing. A connection that lived
+                    // resets the delay, so the first retry after a real handoff is still prompt.
+                    val lived = System.currentTimeMillis() - attemptStarted
+                    retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
+                    emit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
+                    delay(retryDelayMs)
                 }
             }
+            heartbeat.cancel()
         }
 
         if (wakeLock.isHeld) wakeLock.release()
@@ -377,7 +407,7 @@ private class ProbeStatus(
             migrations++
             sinceMove = 0
         }
-        post()
+        post(force = true)
     }
 
     @Synchronized
@@ -398,17 +428,28 @@ private class ProbeStatus(
     fun onBroken(atByte: Int) {
         broken = "byte $atByte"
         intact = false
-        post()
+        post(force = true)
     }
 
     @Synchronized
     fun onEnded(reason: String) {
         path = reason
-        post()
+        post(force = true)
     }
 
-    private fun post() {
+    private var lastPostedAt = 0L
+
+    /**
+     * Repost the shade. Echo-driven updates are rate-limited to one per second: at a 100 ms cadence
+     * the first version posted ten notifications a second for the whole run, which the system
+     * quietly throttles and which a 72 h run has no business doing. A path change, a break or an
+     * end is posted at once — those are what the operator is looking for.
+     */
+    private fun post(force: Boolean = false) {
         if (!usable) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastPostedAt < STATUS_MIN_INTERVAL_MS) return
+        lastPostedAt = now
         val title =
             when {
                 broken != null -> "⚠ STREAM INTEGRITY BROKEN at $broken"
@@ -623,3 +664,47 @@ private class MigrationTotals {
         )
     }
 }
+
+private const val HEARTBEAT_INTERVAL_MS = 60_000L
+private const val RECONNECT_MIN_MS = 3_000L
+private const val RECONNECT_MAX_MS = 60_000L
+
+/** An attempt that ended sooner than this did not get a usable connection; back off before the next. */
+private const val SHORT_LIVED_MS = 30_000L
+private const val STATUS_MIN_INTERVAL_MS = 1_000L
+
+/** `VmRSS`/`VmSize` of this process, straight from `/proc`, so a leak shows as a trend across heartbeats. */
+private fun processMemory(): String =
+    runCatching {
+        val wanted = setOf("VmRSS", "VmSize", "VmHWM", "Threads")
+        File("/proc/self/status")
+            .readLines()
+            .filter { line -> wanted.any { line.startsWith("$it:") } }
+            .joinToString(" ") { it.replace(Regex("\\s+"), "") }
+    }.getOrElse { "mem=unreadable(${it::class.simpleName})" }
+
+/** Battery level and whether the device is on power — the two facts that decide whether 72 h is possible. */
+private fun battery(ctx: Context): String =
+    runCatching {
+        val intent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return "battery=unknown"
+        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+        val pct = if (level >= 0 && scale > 0) (100L * level / scale) else -1
+        "battery=$pct% plugged=${if (plugged != 0) "yes" else "no"}"
+    }.getOrElse { "battery=unreadable(${it::class.simpleName})" }
+
+/** The transport of the active network (Wi-Fi, cellular, none), as the OS sees it right now. */
+private fun transport(ctx: Context): String =
+    runCatching {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return "net=none"
+        val kind =
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                else -> "other"
+            }
+        "net=$kind validated=${caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
+    }.getOrElse { "net=unreadable(${it::class.simpleName})" }
