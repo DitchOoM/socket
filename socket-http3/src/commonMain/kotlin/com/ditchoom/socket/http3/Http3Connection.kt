@@ -217,8 +217,10 @@ class Http3Connection private constructor(
     /**
      * The first fatal connection-level protocol error detected on a critical stream (the peer's
      * control stream — RFC 9114 §8), or null if none. Carries the [Http3ErrorCode] the endpoint
-     * would put on a CONNECTION_CLOSE. Once non-null the connection is unusable; callers should stop
-     * issuing [request]s. See [awaitConnectionError] to suspend until one occurs.
+     * would put on a CONNECTION_CLOSE. Once non-null the connection is unusable: a [request] or
+     * [connectWebTransport] issued after it fails with this very exception (#537), so a caller that
+     * did not check first still learns the recorded reason rather than a transport close. See
+     * [awaitConnectionError] to suspend until one occurs.
      */
     val connectionError: Http3StreamException? get() = connectionErrorOrNull
 
@@ -350,6 +352,20 @@ class Http3Connection private constructor(
         return session
     }
 
+    /**
+     * Refuse to open a stream on a connection this endpoint has already aborted (#537).
+     *
+     * The mirror of the arm #529 gave the server. Once [abortConnection] has recorded a violation the
+     * connection is unusable, and a fresh [request] or [connectWebTransport] used to try anyway: the
+     * transport is closing underneath it, so it failed — but *untyped and late*, as a
+     * `QuicCloseException` from the stream open, rather than with the violation this endpoint already
+     * holds. Failing with [connectionError] itself is what lets a caller tell "the peer sent a
+     * malformed QPACK instruction" from "the network went away".
+     */
+    private fun refuseIfAborted() {
+        connectionErrorOrNull?.let { throw it }
+    }
+
     /** Open a client bidi stream and write an Extended CONNECT HEADERS frame (`:protocol` included). */
     private suspend fun openExtendedConnectStream(
         protocol: String,
@@ -357,6 +373,7 @@ class Http3Connection private constructor(
         path: String,
         headers: List<QpackHeaderField>,
     ): QuicByteStream {
+        refuseIfAborted()
         val stream = scope.openStream()
         // Extended CONNECT (RFC 9220 §4): :method=CONNECT, :protocol, plus :scheme/:authority/:path.
         val fields =
@@ -427,6 +444,7 @@ class Http3Connection private constructor(
         path: String,
         headers: List<QpackHeaderField>,
     ): QuicByteStream {
+        refuseIfAborted()
         val stream = scope.openStream()
         val fields =
             buildList {

@@ -41,6 +41,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -328,6 +329,61 @@ abstract class Http3LoopbackTestSuite {
                                 e.errorCode
                             }
                         assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, code)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * #537: once this endpoint has aborted the connection over a violation, a further request fails
+     * with **that violation**, not with whatever the closing transport happens to say.
+     *
+     * The mirror of #529's server arm. The first request trips H3_FRAME_UNEXPECTED (DATA before
+     * HEADERS) and aborts the connection; the second must fail with the same typed
+     * [Http3StreamException] the connection recorded — RED on `main`, where it surfaced as a
+     * `QuicCloseException` from the stream open, or as `NoError` once the peer's close had landed.
+     */
+    @Test
+    fun requestAfterTheClientAbortedTheConnection_failsWithTheRecordedViolation() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val server =
+                    Http3LoopbackServer(connectionOptions, diagnostics = diagnostics) {
+                        Http3LoopbackServer.Response(status = 200, body = "unreachable", dataBeforeHeaders = true)
+                    }
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    try {
+                        diagnostics.mark("server up; dialing")
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            quicOptions = clientQuicOptions,
+                            connectionOptions = connectionOptions,
+                            timeout = 15.seconds.scaled,
+                        ) {
+                            diagnostics.registerConnection("C", this)
+                            diagnostics.mark("first request: the server answers malformed")
+                            val first =
+                                assertFailsWith<Http3StreamException> {
+                                    request(Http3Request(method = "GET", authority = "localhost", path = "/"))
+                                }
+                            assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, first.errorCode)
+                            val recorded = connectionError ?: fail("the violation must have aborted the connection: $first")
+                            diagnostics.mark("connection aborted with ${recorded.violation}; issuing a second request")
+                            val second =
+                                assertFailsWith<Http3StreamException>(
+                                    "a request on a connection this endpoint aborted must fail with the recorded " +
+                                        "violation, not with the transport's close (#537)",
+                                ) {
+                                    request(Http3Request(method = "GET", authority = "localhost", path = "/again"))
+                                }
+                            assertEquals(recorded.violation, second.violation, "the second request must carry the recorded violation")
+                            assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, second.errorCode)
+                            diagnostics.mark("second request refused with the recorded violation")
+                        }
                     } finally {
                         serverJob.cancel()
                     }
