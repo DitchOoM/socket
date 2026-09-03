@@ -93,20 +93,33 @@ actual object UdpSocket {
         bufferFactory: BufferFactory,
     ): ConnectedDatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
-        val fd = openDatagramSocket(peer.family)
+        // Every refusal on the way to a connected socket is reported typed, with the errno read at the
+        // failing call (#534): this path used to throw one IllegalStateException("connect to … failed")
+        // with the errno discarded, which made a sealed reason unconstructible on Linux.
+        val fd = socket(if (peer.family == AddressFamily.IPv6) AF_INET6 else AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        if (fd < 0) throw UdpConnectException(connectErrnoToError())
         // NO SO_REUSEADDR here — see [reuseAddrIsMulticastOnly].
         // Bind the local endpoint only when one was named (else the kernel auto-binds on connect).
         if (localHost != null || localPort != 0) {
             val wildcard = if (peer.family == AddressFamily.IPv6) WILDCARD_V6 else WILDCARD_V4
             val local = LinuxSocketAddressResolver.resolve(localHost ?: wildcard, localPort) as LinuxSocketAddress
-            bindTo(fd, local)
+            memScoped {
+                val addr = alloc<sockaddr_storage>()
+                val len = local.writeSockaddr(addr)
+                if (socket_bind(fd, addr.ptr.reinterpret(), len) != 0) {
+                    val error = connectErrnoToError()
+                    close(fd)
+                    throw UdpConnectException(error)
+                }
+            }
         }
         memScoped {
             val addr = alloc<sockaddr_storage>()
             val len = peer.writeSockaddr(addr)
             if (socket_connect(fd, addr.ptr.reinterpret(), len) != 0) {
+                val error = connectErrnoToError()
                 close(fd)
-                throw IllegalStateException("connect to ${peer.host}:${peer.port} failed")
+                throw UdpConnectException(error)
             }
         }
         // Connected contract: localAddress is the typed maybe-known state — a failing getsockname

@@ -61,7 +61,8 @@ actual object UdpSocket {
         // peer. The socket family follows the resolved remote, so a v6 peer opens a udp6 socket.
         val peer = resolve(remoteHost, remotePort)
         return createDgramSocket(if (peer.family == AddressFamily.IPv6) UDP6 else UDP4).closedIfSetupFails {
-            awaitBind(this, localPort, localHost)
+            // A refusal at the bind step of a connect is a refused connect (#534): typed the same way.
+            awaitBind(this, localPort, localHost) { UdpConnectException(nodeConnectError(it)) }
             awaitConnect(this, peer.port, peer.host)
             ConnectedNodeDatagramChannel(this, peer)
         }
@@ -162,9 +163,12 @@ private suspend fun awaitBind(
     socket: DgramSocket,
     port: Int,
     address: String?,
+    // The bind is the first step of `connect` as well as the whole of `bind`, and the two report a
+    // refusal differently: `connect` types it (#534), `bind` keeps its own exception.
+    refusal: (error: Any?) -> Throwable = { UdpBindException(it.toString()) },
 ) = suspendCancellableCoroutine { cont ->
     socket.on("error") { error ->
-        if (!cont.isCompleted) cont.resumeWithException(UdpBindException(error.toString()))
+        if (!cont.isCompleted) cont.resumeWithException(refusal(error))
     }
     val onBound: () -> Unit = {
         if (!cont.isCompleted) {
@@ -182,7 +186,7 @@ private suspend fun awaitConnect(
     address: String,
 ) = suspendCancellableCoroutine { cont ->
     socket.on("error") { error ->
-        if (!cont.isCompleted) cont.resumeWithException(UdpBindException(error.toString()))
+        if (!cont.isCompleted) cont.resumeWithException(UdpConnectException(nodeConnectError(error)))
     }
     socket.connect(port, address) {
         if (!cont.isCompleted) {
@@ -192,7 +196,28 @@ private suspend fun awaitConnect(
     }
 }
 
-/** A `dgram` bind/connect fault surfaced on the socket's `error` event. */
+/**
+ * Classify a `dgram` connect fault onto [UdpConnectError] by the errno *name* Node reports (#534) —
+ * the same table as [connectErrnoToError] on the POSIX backends, by name rather than number, so a
+ * consumer's branch on the member is the same on every backend. An unrecognised name keeps the
+ * original error as [UdpConnectError.Transport]'s cause rather than flattening it into a message.
+ */
+private fun nodeConnectError(error: Any?): UdpConnectError =
+    when (error.asDynamic().code as? String) {
+        "EADDRINUSE" -> UdpConnectError.AddressInUse(ERRNO_NOT_SURFACED)
+        "EADDRNOTAVAIL" -> UdpConnectError.LocalAddressUnavailable(ERRNO_NOT_SURFACED)
+        "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN", "EAFNOSUPPORT" -> UdpConnectError.Unreachable(ERRNO_NOT_SURFACED)
+        "EACCES", "EPERM" -> UdpConnectError.NotPermitted(ERRNO_NOT_SURFACED)
+        "EMFILE", "ENFILE", "ENOBUFS", "ENOMEM" -> UdpConnectError.SocketUnavailable(ERRNO_NOT_SURFACED)
+        else -> UdpConnectError.Transport(NodeConnectFailure(error.toString()))
+    }
+
+/** Carrier for a `dgram` connect error that is not one of the recognised POSIX conditions. */
+internal class NodeConnectFailure(
+    message: String,
+) : RuntimeException(message)
+
+/** A `dgram` bind fault surfaced on the socket's `error` event. */
 internal class UdpBindException(
     message: String,
 ) : RuntimeException(message)

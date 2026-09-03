@@ -112,7 +112,9 @@ actual object UdpSocket {
         // the quiche NW client path, which does not bind a specific local address).
         val conn =
             nw_udp_create(remoteHost, remotePort.toString())
-                ?: throw UdpConnectException("nw_udp_create($remoteHost:$remotePort) failed")
+                // NW would not create the connection at all: no error object exists yet, so the
+                // reason is the one thing this can be — the platform declined to make a socket.
+                ?: throw UdpConnectException(UdpConnectError.SocketUnavailable(ERRNO_NOT_SURFACED))
         try {
             // Await NW readiness cancellably: a caller's withTimeout (e.g. the QUIC connect timeout) then
             // actually interrupts a stuck connect, and invokeOnCancellation cancels the NWConnection so a
@@ -120,7 +122,7 @@ actual object UdpSocket {
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
                 var resumed = false
-                nw_udp_set_state_handler(conn) { state, _, _, desc ->
+                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _ ->
                     if (resumed) return@nw_udp_set_state_handler
                     when (state) {
                         STATE_READY -> {
@@ -129,11 +131,12 @@ actual object UdpSocket {
                         }
                         STATE_FAILED, STATE_CANCELLED -> {
                             resumed = true
+                            // Typed in NW's own (domain, code) namespace (#534): domain 1 is POSIX and
+                            // the code is then the errno, so a consumer can branch on it exactly as it
+                            // would on a Linux errno. A `cancelled` state with no error is NW reporting
+                            // that the connection went away before it was ready.
                             continuation.resumeWithException(
-                                UdpConnectException(
-                                    desc ?: "NW UDP connection to $remoteHost:$remotePort " +
-                                        (if (state == STATE_FAILED) "failed" else "cancelled"),
-                                ),
+                                UdpConnectException(UdpConnectError.PlatformError(errorDomain, errorCode)),
                             )
                         }
                         else -> {}

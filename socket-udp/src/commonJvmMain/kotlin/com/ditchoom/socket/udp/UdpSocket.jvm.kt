@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import java.io.IOException
 import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
@@ -83,15 +84,22 @@ actual object UdpSocket {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
         val peer = resolve(remoteHost, remotePort)
-        return NioChannel.open().closedIfSetupFails {
-            configureBlocking(false)
-            bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
-            connect(peer.toInetSocketAddress())
-            // Connected mode reports the typed maybe-known LocalAddress (no fail-fast contract here).
-            val local =
-                (localAddress as? InetSocketAddress)
-                    ?.let { LocalAddress.of(InternedJvmSocketAddress(it)) } ?: LocalAddress.Unknown
-            ConnectedNioDatagramChannel(this, peer, local, receiveBufferSize, bufferFactory)
+        // A refusal anywhere on the way — open, bind, connect — reports typed (#534): the JDK's own
+        // BindException / NoRouteToHostException / SocketException phrase is classified onto
+        // UdpConnectError and kept as the cause, so a caller can branch on the reason on every backend.
+        return try {
+            NioChannel.open().closedIfSetupFails {
+                configureBlocking(false)
+                bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
+                connect(peer.toInetSocketAddress())
+                // Connected mode reports the typed maybe-known LocalAddress (no fail-fast contract here).
+                val local =
+                    (localAddress as? InetSocketAddress)
+                        ?.let { LocalAddress.of(InternedJvmSocketAddress(it)) } ?: LocalAddress.Unknown
+                ConnectedNioDatagramChannel(this, peer, local, receiveBufferSize, bufferFactory)
+            }
+        } catch (e: IOException) {
+            throw UdpConnectException(jvmConnectErrorOf(e), e)
         }
     }
 
