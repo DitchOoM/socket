@@ -19,7 +19,7 @@ say "POST_NOTIFICATIONS" "${notif:+granted}${notif:-NOT granted (adb shell pm gr
 wl=$(adbs shell dumpsys deviceidle whitelist 2>/dev/null | grep -c "$PKG")
 say "doze whitelist" "$([ "$wl" -gt 0 ] && echo yes || echo "NO (run ./doze.sh)")"
 [ "$wl" -gt 0 ] || fail=1
-bat=$(adbs shell dumpsys battery 2>/dev/null | grep -E "level|AC powered|USB powered" | tr -s ' ' | tr '\n' ' ')
+bat=$(adbs shell dumpsys battery 2>/dev/null | head -14 | grep -E "^ *(level|AC powered|USB powered)" | tr -s ' ' | tr '\n' ' ')
 say "battery" "$bat"
 old=$(adbs shell ls -la "$DEVICE_LOG" 2>/dev/null | awk '{print $5" bytes "$6" "$7" "$8}')
 say "previous log on device" "${old:-none}"

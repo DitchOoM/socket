@@ -37,7 +37,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Defaults match the Android probe so the two recordings can be read side by side.
     var host: String = "178.156.248.95"
     var port: Int32 = 44433
-    var minutes: Int32 = 120
+    var minutes: Int32 = 4500
 
     override init() {
         super.init()
@@ -60,7 +60,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
             port: port,
             minutes: minutes,
             readTimeoutMs: 400,
-            echoIntervalMs: 100
+            echoIntervalMs: 250
         )
 
         ticker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
