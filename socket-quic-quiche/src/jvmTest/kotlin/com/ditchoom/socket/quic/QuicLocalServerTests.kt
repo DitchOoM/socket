@@ -73,13 +73,13 @@ class QuicLocalServerTests {
     private suspend fun <T> reporting(
         result: CompletableDeferred<T>,
         peer: String,
-        stepOf: () -> String,
+        stepOf: () -> PeerStep,
         block: suspend () -> Unit,
     ) {
         try {
             block()
         } catch (t: Throwable) {
-            result.completeExceptionally(IllegalStateException("$peer failed at '${stepOf()}'", t))
+            result.completeExceptionally(IllegalStateException("$peer failed at ${stepOf()}", t))
         }
     }
 
@@ -95,21 +95,21 @@ class QuicLocalServerTests {
 
                             // Handler-immediate pattern; delay(N) in handler deadlocks driver
                             // shutdown on CI (see QuicServerTestSuite.serverAcceptsConnection).
-                            diag.serverStep = "connections"
+                            diag.serverStep = PeerStep.Reached("connections")
                             val serverJob =
                                 launch(Dispatchers.IO) {
                                     connections {
-                                        diag.serverStep = "handler ran"
+                                        diag.serverStep = PeerStep.Reached("handler ran")
                                         handlerRan.complete(Unit)
                                     }
                                 }
 
                             try {
-                                diag.clientStep = "connect"
+                                diag.clientStep = PeerStep.Reached("connect")
                                 withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
-                                    diag.clientStep = "connected"
+                                    diag.clientStep = PeerStep.Reached("connected")
                                 }
-                                diag.clientStep = "awaiting the server handler"
+                                diag.clientStep = PeerStep.Reached("awaiting the server handler")
                                 withTimeout(10.seconds) { handlerRan.await() }
                             } finally {
                                 serverJob.cancel()
@@ -133,20 +133,20 @@ class QuicLocalServerTests {
                             val serverJob =
                                 launch(Dispatchers.IO) {
                                     reporting(echoResult, "server", { diag.serverStep }) {
-                                        diag.serverStep = "connections"
+                                        diag.serverStep = PeerStep.Reached("connections")
                                         connections {
-                                            diag.serverStep = "acceptStream"
+                                            diag.serverStep = PeerStep.Reached("acceptStream")
                                             val stream = acceptStream()
-                                            diag.serverStep = "read"
+                                            diag.serverStep = PeerStep.Reached("read")
                                             // Scoped read (#538): echo zero-copy inside the block, and the
                                             // read buffer goes back to the driver's pool on the way out.
                                             stream.read(5.seconds) {
-                                                diag.serverStep = "write"
+                                                diag.serverStep = PeerStep.Reached("write")
                                                 stream.write(it, 5.seconds)
                                             }
-                                            diag.serverStep = "close"
+                                            diag.serverStep = PeerStep.Reached("close")
                                             stream.close()
-                                            diag.serverStep = "echoed"
+                                            diag.serverStep = PeerStep.Reached("echoed")
                                         }
                                     }
                                 }
@@ -154,24 +154,24 @@ class QuicLocalServerTests {
                             val clientJob =
                                 launch(Dispatchers.IO) {
                                     reporting(echoResult, "client", { diag.clientStep }) {
-                                        diag.clientStep = "connect"
+                                        diag.clientStep = PeerStep.Reached("connect")
                                         withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
-                                            diag.clientStep = "openStream"
+                                            diag.clientStep = PeerStep.Reached("openStream")
                                             val stream = openStream()
                                             val sendBuf = BufferFactory.Default.allocate(11)
                                             sendBuf.writeString("hello quic!", Charset.UTF8)
                                             sendBuf.resetForRead()
-                                            diag.clientStep = "write"
+                                            diag.clientStep = PeerStep.Reached("write")
                                             stream.write(sendBuf, 5.seconds)
 
-                                            diag.clientStep = "read"
+                                            diag.clientStep = PeerStep.Reached("read")
                                             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                             if (response is ScopedRead.Data) {
                                                 echoResult.complete(response.value)
                                             } else {
                                                 echoResult.complete("no_data")
                                             }
-                                            diag.clientStep = "close"
+                                            diag.clientStep = PeerStep.Reached("close")
                                             stream.close()
                                         }
                                     }
@@ -185,7 +185,7 @@ class QuicLocalServerTests {
                                         // Neither peer reported anything, so both are parked in an
                                         // unbounded call — the steps are the only evidence of which one.
                                         throw AssertionError(
-                                            "echo never completed: client stalled at '${diag.clientStep}', server at '${diag.serverStep}'",
+                                            "echo never completed: client stalled at ${diag.clientStep}, server at ${diag.serverStep}",
                                             e,
                                         )
                                     }
@@ -234,14 +234,14 @@ class QuicLocalServerTests {
                             val serverJob =
                                 launch(Dispatchers.IO) {
                                     reporting(echoResult, "server", { diag.serverStep }) {
-                                        diag.serverStep = "connections"
+                                        diag.serverStep = PeerStep.Reached("connections")
                                         connections {
-                                            diag.serverStep = "acceptStream"
+                                            diag.serverStep = PeerStep.Reached("acceptStream")
                                             val stream = acceptStream()
                                             // Drain the request to the peer's FIN, echo it back, FIN our side.
                                             val received = StringBuilder()
                                             while (true) {
-                                                diag.serverStep = "read(${received.length})"
+                                                diag.serverStep = PeerStep.Reached("read(${received.length})")
                                                 val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                                 if (r !is ScopedRead.Data) break
                                                 received.append(r.value)
@@ -249,11 +249,11 @@ class QuicLocalServerTests {
                                             val reply = BufferFactory.Default.allocate(received.length)
                                             reply.writeString(received.toString(), Charset.UTF8)
                                             reply.resetForRead()
-                                            diag.serverStep = "write"
+                                            diag.serverStep = PeerStep.Reached("write")
                                             stream.write(reply, 5.seconds)
-                                            diag.serverStep = "close"
+                                            diag.serverStep = PeerStep.Reached("close")
                                             stream.close()
-                                            diag.serverStep = "echoed"
+                                            diag.serverStep = PeerStep.Reached("echoed")
                                             // Returning from the handler closes the connection:
                                             // CONNECTION_CLOSE reaches the client while its reply is still
                                             // unread.
@@ -264,33 +264,33 @@ class QuicLocalServerTests {
                             val clientJob =
                                 launch(Dispatchers.IO) {
                                     reporting(echoResult, "client", { diag.clientStep }) {
-                                        diag.clientStep = "connect"
+                                        diag.clientStep = PeerStep.Reached("connect")
                                         withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
-                                            diag.clientStep = "openStream"
+                                            diag.clientStep = PeerStep.Reached("openStream")
                                             val stream = openStream()
                                             val sendBuf = BufferFactory.Default.allocate(4)
                                             sendBuf.writeString("ping", Charset.UTF8)
                                             sendBuf.resetForRead()
-                                            diag.clientStep = "write"
+                                            diag.clientStep = PeerStep.Reached("write")
                                             stream.write(sendBuf, 5.seconds)
-                                            diag.clientStep = "shutdownSend"
+                                            diag.clientStep = PeerStep.Reached("shutdownSend")
                                             stream.shutdownSend()
 
                                             // Outlast the draining period (3 × PTO, tens of ms) by a wide
                                             // margin so the reply, the FIN and the CONNECTION_CLOSE have all
                                             // been processed and the driver has torn the connection down
                                             // before the first read is even issued.
-                                            diag.clientStep = "draining delay"
+                                            diag.clientStep = PeerStep.Reached("draining delay")
                                             delay(2.seconds)
 
-                                            diag.clientStep = "read"
+                                            diag.clientStep = PeerStep.Reached("read")
                                             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                             if (response is ScopedRead.Data) {
                                                 echoResult.complete(response.value)
                                             } else {
                                                 echoResult.complete("no_data:${response::class.simpleName}")
                                             }
-                                            diag.clientStep = "close"
+                                            diag.clientStep = PeerStep.Reached("close")
                                             stream.close()
                                         }
                                     }
@@ -302,7 +302,7 @@ class QuicLocalServerTests {
                                         withTimeout(15.seconds) { echoResult.await() }
                                     } catch (e: TimeoutCancellationException) {
                                         throw AssertionError(
-                                            "reply never arrived: client stalled at '${diag.clientStep}', server at '${diag.serverStep}'",
+                                            "reply never arrived: client stalled at ${diag.clientStep}, server at ${diag.serverStep}",
                                             e,
                                         )
                                     }

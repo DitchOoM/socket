@@ -31,10 +31,10 @@ class LoopbackPeerDiagnostics {
      * evidence of which call it was.
      */
     @Volatile
-    var clientStep: String = "not started"
+    var clientStep: PeerStep = PeerStep.NotStarted
 
     @Volatile
-    var serverStep: String = "not started"
+    var serverStep: PeerStep = PeerStep.NotStarted
 
     private val events = AtomicReference(emptyList<String>())
 
@@ -83,7 +83,7 @@ class LoopbackPeerDiagnostics {
                 appendLine("  caused by: ${next::class.simpleName}: ${next.message}")
                 next = next.cause
             }
-            appendLine("client stalled at '$clientStep', server at '$serverStep'")
+            appendLine("client stalled at $clientStep, server at $serverStep")
             appendLine("threads: ${jvmThreadInventory()}")
             val captured = events.get()
             // Capture order, not timestamp order: each recorder stamps against its OWN clock origin, so
@@ -97,5 +97,21 @@ class LoopbackPeerDiagnostics {
         const val MAX_EVENTS = 250
         const val MAX_LINE = 180
         const val MAX_CAUSE_DEPTH = 6
+    }
+}
+
+/**
+ * How far a peer got. A state, not a label with a sentinel meaning "none": a peer that never ran
+ * and a peer that stalled at a step named "not started" are different facts.
+ */
+sealed interface PeerStep {
+    data object NotStarted : PeerStep {
+        override fun toString() = "(not started)"
+    }
+
+    data class Reached(
+        val label: String,
+    ) : PeerStep {
+        override fun toString() = "'$label'"
     }
 }
