@@ -52,13 +52,17 @@ for t, b in mig_fail:
 ok = [(t, b) for t, b in events if b.startswith("ECHO-OK")]
 fail = [(t, b) for t, b in events if b.startswith("ECHO-FAIL")]
 nodata = [t for t, b in events if b.startswith("ECHO-NO-DATA")]
-rtts = [int(m.group(1)) for _, b in ok for m in [re.search(r"rtt=(\d+)ms", b)] if m]
+# An echo that arrives one payload behind (pending == got, after a deadline miss) makes every later
+# read return the PREVIOUS echo at once, so its rtt reads ~0 and says nothing about the path. Only
+# in-sync echoes (pending=0B) carry a real round trip.
+in_sync = [b for _, b in ok if re.search(r"pending=0B", b)]
+rtts = [int(m.group(1)) for b in in_sync for m in [re.search(r"rtt=(\d+)ms", b)] if m]
 gaps = [(ok[i][0] - ok[i - 1][0], ok[i][0]) for i in range(1, len(ok))]
 worst = sorted(gaps, reverse=True)[:5]
-print(f"\nechoes: ok={len(ok)} fail={len(fail)} no-data={len(nodata)}")
+print(f"\nechoes: ok={len(ok)} fail={len(fail)} no-data={len(nodata)} in-sync={len(in_sync)} one-behind={len(ok) - len(in_sync)}")
 if rtts:
     rtts.sort()
-    print(f"  rtt p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
+    print(f"  rtt (in-sync only) p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
 print("  longest gaps between ok echoes:", ", ".join(f"{g / 1000:.1f}s at t+{at / 1000:.0f}s" for g, at in worst))
 errs = Counter(re.search(r"err=(\S+)", b).group(1) for _, b in fail if re.search(r"err=(\S+)", b))
 print("  fail kinds:", dict(errs))
