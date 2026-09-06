@@ -1,15 +1,21 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.SocketAddressCodec
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.net.InetSocketAddress
+import kotlin.concurrent.Volatile
 import kotlin.random.Random
 import kotlin.time.Duration
 
@@ -66,14 +72,15 @@ internal class MultiPathPipe(
     private val scope: CoroutineScope,
     private val api: QuicheApi,
     private val bufferFactory: BufferFactory,
+    private val codec: SocketAddressCodec,
 ) {
     private val rng = Random(seed)
-    private val lock = Any()
+    private val lock = SynchronizedObject()
 
     /** One datagram as the server sees it: the bytes plus the client local address that sent them. */
     internal class ServerDatagram(
         val bytes: ByteArray,
-        val from: InetSocketAddress,
+        val from: SocketAddress,
     )
 
     private val toServer = Channel<ServerDatagram>(Channel.UNLIMITED)
@@ -90,8 +97,8 @@ internal class MultiPathPipe(
     }
 
     internal inner class Path(
-        val local: InetSocketAddress,
-        val sockAddr: NativeSockAddr,
+        val local: SocketAddress,
+        val sockAddr: EncodedSockAddr,
         val key: PathKey,
         impairment: PathImpairment,
     ) {
@@ -104,12 +111,12 @@ internal class MultiPathPipe(
     }
 
     private val pathsByKey = LinkedHashMap<PathKey, Path>()
-    private val pathsByAddr = LinkedHashMap<InetSocketAddress, Path>()
+    private val pathsByAddr = LinkedHashMap<SocketAddress, Path>()
 
     /** Every path opened so far, in open order — path 0 is the primary. */
     fun paths(): List<Path> = synchronized(lock) { pathsByAddr.values.toList() }
 
-    fun pathAt(local: InetSocketAddress): Path = synchronized(lock) { requireNotNull(pathsByAddr[local]) { "no path at $local" } }
+    fun pathAt(local: SocketAddress): Path = synchronized(lock) { requireNotNull(pathsByAddr[local]) { "no path at $local" } }
 
     /**
      * Register a client-side local endpoint. The pinned sockaddr is what the driver decodes into the
@@ -118,10 +125,10 @@ internal class MultiPathPipe(
      * disagree.
      */
     fun openPath(
-        local: InetSocketAddress,
+        local: SocketAddress,
         impairment: PathImpairment = PathImpairment(),
     ): Path {
-        val sockAddr = local.toNativeSockAddr(bufferFactory)
+        val sockAddr = codec.encodeToNative(local, bufferFactory)
         val key = api.decodePathKey(sockAddr.address)
         val path = Path(local, sockAddr, key, impairment)
         synchronized(lock) {
@@ -134,7 +141,7 @@ internal class MultiPathPipe(
 
     /** Change a live path's impairment — how a test kills or heals a path mid-connection. */
     fun impair(
-        local: InetSocketAddress,
+        local: SocketAddress,
         impairment: PathImpairment,
     ) {
         pathAt(local).impairment = impairment
@@ -214,13 +221,12 @@ internal class MultiPathPipe(
         buffer: PlatformBuffer,
         len: Int,
     ): ByteArray {
-        val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-        bb.clear()
-        bb.limit(len)
+        // Read absolutely over [0, len): quiche writes this buffer through its native address and never
+        // moves the position, so resetForRead() would flip to an empty window (limit=0).
+        buffer.position(0)
+        buffer.setLimit(len)
         // Test-only: the pipe stands in for the wire, and a wire copy is what it models.
-        val copy = ByteArray(len)
-        bb.get(copy)
-        return copy
+        return buffer.readByteArray(len)
     }
 
     private inner class ClientEndpoint(
@@ -235,9 +241,8 @@ internal class MultiPathPipe(
                     // driver's reader loop instead of waiting to be cancelled.
                     awaitCancellation()
                 }
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            bb.clear()
-            bb.put(datagram)
+            buffer.resetForWrite()
+            buffer.writeBytes(datagram)
             return datagram.size
         }
 

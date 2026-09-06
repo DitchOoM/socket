@@ -1,13 +1,15 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.unwrapFully
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -65,7 +67,7 @@ internal class ImpairedPipe(
     private val scope: CoroutineScope,
 ) {
     private val rng = Random(config.seed)
-    private val lock = Any()
+    private val lock = SynchronizedObject()
 
     @Volatile
     var blackhole: Boolean = false
@@ -148,9 +150,8 @@ internal class ImpairedPipe(
                     // reader — returning/throwing here would busy-spin the reader loop.
                     awaitCancellation()
                 }
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            bb.clear()
-            bb.put(datagram)
+            buffer.resetForWrite()
+            buffer.writeBytes(datagram)
             return datagram.size
         }
 
@@ -159,11 +160,12 @@ internal class ImpairedPipe(
             len: Int,
             dest: PathKey?,
         ): SendOutcome {
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            bb.clear()
-            bb.limit(len)
-            val copy = ByteArray(len)
-            bb.get(copy)
+            // Read absolutely over [0, len): quiche writes this buffer through its native address and
+            // never moves the position, so resetForRead() would flip to an empty window (limit=0).
+            buffer.position(0)
+            buffer.setLimit(len)
+            // Test-only ByteArray: the pipe stands in for the wire, and a wire copy is what it models.
+            val copy = buffer.readByteArray(len)
 
             var deliverPrimary = false
             var deliverDuplicate = false

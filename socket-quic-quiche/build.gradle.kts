@@ -3531,6 +3531,12 @@ kotlin {
                 // wrapper subclasses live in this module's per-platform test source sets; the shared
                 // suites they extend live here.
                 implementation(project(":socket-testsuite"))
+                // The migration/impairment sims hold a seeded RNG and their decision traces behind one
+                // monitor. `kotlin.synchronized` is JVM-only, and these suites now compile for Apple and
+                // Linux too, so the monitor comes from atomicfu — the multiplatform `SynchronizedObject`
+                // (a real monitor on JVM, a pthread mutex on K/N). Test scope only; no production code
+                // takes this dependency.
+                implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
             }
         }
         val commonJvmMain by creating {

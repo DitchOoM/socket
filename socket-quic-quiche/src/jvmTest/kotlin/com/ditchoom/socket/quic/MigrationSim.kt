@@ -7,11 +7,13 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
+import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -25,7 +27,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
-import java.net.InetSocketAddress
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -60,6 +61,12 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
 private const val CLIENT_PORT_BASE = 42100
+
+/**
+ * How many probe endpoints past [CLIENT_PORT_BASE] the sim pre-resolves. A scenario that exhausts the
+ * pool fails loudly in [PipeUdpChannelFactory.openPath] rather than silently resolving on the hot path.
+ */
+private const val CLIENT_PORT_POOL = 64
 private const val SERVER_PORT = 42002
 
 /**
@@ -115,7 +122,7 @@ internal class MigrationSimScope(
     private val factory: PipeUdpChannelFactory,
 ) {
     /** Local endpoints the client has bound, in open order. Index 0 is the primary. */
-    fun clientPaths(): List<InetSocketAddress> = factory.opened()
+    fun clientPaths(): List<SocketAddress> = factory.opened()
 
     /**
      * Ask the client to migrate to a fresh local endpoint, as an application calling
@@ -273,25 +280,39 @@ internal class SimClientQuicConnection(
 internal class PipeUdpChannelFactory(
     private val pipe: MultiPathPipe,
     private val impairmentFor: (Int) -> PathImpairment,
+    /**
+     * Every local endpoint this factory can hand out, resolved **before** the sim starts and looked up
+     * here without suspending.
+     *
+     * ⚠️ Resolution must not happen on this path. `UdpSocket.resolve` is a suspend function, and
+     * [openPath] is called by the driver mid-migration: suspending here leaves the test scheduler with
+     * no runnable task, so `runTest` advances virtual time to the next deadline and the probe retry
+     * cadence these suites measure collapses to a single attempt. Pre-resolving keeps [openPath]
+     * synchronous in effect, which is what the pre-#556 `InetSocketAddress` constructor was.
+     */
+    private val localAddresses: Map<Int, SocketAddress>,
     override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable,
 ) : UdpChannelFactory {
-    private val paths = mutableListOf<InetSocketAddress>()
+    private val paths = mutableListOf<SocketAddress>()
 
-    fun opened(): List<InetSocketAddress> = paths.toList()
+    fun opened(): List<SocketAddress> = paths.toList()
 
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
     ): NewPath {
         val index = paths.size + 1 // +1: the primary was opened by the harness, not through here
-        val local = InetSocketAddress("127.0.0.1", if (localPort != 0) localPort else CLIENT_PORT_BASE + index)
+        val port = if (localPort != 0) localPort else CLIENT_PORT_BASE + index
+        val local =
+            localAddresses[port]
+                ?: error("no pre-resolved local endpoint for port $port; widen CLIENT_PORT_POOL in withMigrationSim")
         val path = pipe.openPath(local, impairmentFor(index))
         paths += local
         return NewPath(
             channel = path.channel,
             localSockAddrAddress = path.sockAddr.address,
             localSockAddrLength = path.sockAddr.length,
-            localEndpoint = QuicLocalEndpoint(local.hostString, local.port),
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
             // The pipe owns every path's sockaddr and frees them all in close(); releasing here would
             // free memory the pipe's own teardown still walks.
             release = {},
@@ -438,6 +459,7 @@ internal suspend fun <R> withMigrationSim(
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
     clock: SimClockChoice = SimClockChoice.Virtual,
+    codec: SocketAddressCodec = SocketAddressCodec(hostOsSockAddrLayout()),
     block: suspend MigrationSimScope.() -> R,
 ): R {
     // First, before loadQuicheApi(): an incoherent clock fails here, typed, with nothing to tear down.
@@ -448,15 +470,22 @@ internal suspend fun <R> withMigrationSim(
     val clientRandom = Random(seed xor 0x434C49454E54L) // "CLIENT"
     val serverRandom = Random(seed xor 0x534552564552L) // "SERVER"
 
-    val primaryLocal = InetSocketAddress("127.0.0.1", CLIENT_PORT_BASE)
-    val serverAddr = InetSocketAddress("127.0.0.1", SERVER_PORT)
+    // Resolve every address the sim can use up front — see PipeUdpChannelFactory.localAddresses for
+    // why resolution must never happen once the driver is running.
+    val clientAddresses =
+        (0..CLIENT_PORT_POOL).associate { i ->
+            (CLIENT_PORT_BASE + i) to
+                UdpSocket.resolve("127.0.0.1", CLIENT_PORT_BASE + i)
+        }
+    val primaryLocal = clientAddresses.getValue(CLIENT_PORT_BASE)
+    val serverAddr = UdpSocket.resolve("127.0.0.1", SERVER_PORT)
 
     return coroutineScope {
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
-        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory)
+        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
-        val factory = PipeUdpChannelFactory(pipe, probeImpairment)
+        val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -485,7 +514,7 @@ internal suspend fun <R> withMigrationSim(
         serverNameBuf.writeByte(0)
         serverNameBuf.resetForRead()
         val clientScid = generateScid(bufferFactory, clientRandom)
-        val clientPeerSock = serverAddr.toNativeSockAddr(bufferFactory)
+        val clientPeerSock = codec.encodeToNative(serverAddr, bufferFactory)
         val clientConn =
             try {
                 api.connect(
@@ -509,7 +538,7 @@ internal suspend fun <R> withMigrationSim(
 
         // --- server connection (eager accept: quiche_accept never reads the Initial) ---
         val serverScid = generateScid(bufferFactory, serverRandom)
-        val serverLocalSock = serverAddr.toNativeSockAddr(bufferFactory)
+        val serverLocalSock = codec.encodeToNative(serverAddr, bufferFactory)
         val serverConn =
             try {
                 api.accept(
@@ -580,7 +609,7 @@ internal suspend fun <R> withMigrationSim(
         // Per-source recv_info cache, exactly SharedQuicheServer's shape: quiche must be told the real
         // origin of every datagram, or a probe from a new client address looks like the old path and no
         // migration is ever recognised.
-        val serverRecvInfos = HashMap<InetSocketAddress, QuicheRecvInfo>()
+        val serverRecvInfos = HashMap<SocketAddress, QuicheRecvInfo>()
         val serverIngress = mutableListOf<ServerIngress>()
         val pump =
             simScope.launch {
@@ -593,9 +622,8 @@ internal suspend fun <R> withMigrationSim(
                         }
                     serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(datagram.bytes), serverAudit.retiredScidsSeen)
                     val buf = bufferFactory.allocate(datagram.bytes.size)
-                    val bb = (buf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-                    bb.clear()
-                    bb.put(datagram.bytes)
+                    buf.resetForWrite()
+                    buf.writeBytes(datagram.bytes)
                     serverDriver.commands.send(QuicheCmd.RecvPacket(buf, datagram.bytes.size, PacketSource.FromServerSocket(info) {}))
                 }
             }
