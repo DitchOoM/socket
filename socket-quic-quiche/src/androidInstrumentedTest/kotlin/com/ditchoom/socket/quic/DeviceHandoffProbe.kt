@@ -123,7 +123,10 @@ class DeviceHandoffProbe {
 
         // Bounded on purpose — see [RingTraceSink]. A packet-level trace of a multi-day walk is tens
         // of gigabytes; what a post-mortem needs is the last few hundred events before it stopped.
-        val ring = RingTraceSink(RING_CAPACITY)
+        val ring =
+            RingTraceSink(
+                RING_CAPACITY,
+            ) { emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
 
         val options =
             QuicOptions(
@@ -724,6 +727,16 @@ private var loopTicks: Int = 0
  */
 private class RingTraceSink(
     private val capacity: Int,
+    /**
+     * Called the instant a stall is recorded, not when the ring is dumped.
+     *
+     * Without this the most interesting event in the run is the one thing the log cannot show. A
+     * stall the driver *recovers from* never trips the silence watchdog — the loop is running again
+     * within seconds — so the ring holding the evidence is never dumped, and the recovery reads as
+     * one more ordinary reconnect among hundreds. The whole point of this run is to catch the fix
+     * working, which means the stall has to announce itself when it happens.
+     */
+    private val onStall: (String) -> Unit,
 ) : TraceSink {
     private val slots = arrayOfNulls<String>(capacity)
     private var next = 0
@@ -733,9 +746,11 @@ private class RingTraceSink(
     override fun emit(event: TraceEvent) {
         // Rendered on arrival: the encoding is what a post-mortem reads, and holding the objects
         // would keep their buffers alive for the life of the ring.
-        slots[next] = event.toString()
+        val rendered = event.toString()
+        slots[next] = rendered
         next = (next + 1) % capacity
         if (filled < capacity) filled++
+        if (event is TraceEvent.Error && event.type.contains("SendStalled")) onStall(rendered)
     }
 
     @Synchronized
