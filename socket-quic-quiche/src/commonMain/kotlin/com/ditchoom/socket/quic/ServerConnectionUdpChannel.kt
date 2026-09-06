@@ -64,14 +64,38 @@ internal class ServerConnectionUdpChannel(
 
             is SendTarget.ServerReply -> {
                 peer = if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to) ?: fixedPeer
-                val from = if (target.from.family == 0) null else localFor(target.from)
-                options = if (from == null) DatagramSendOptions.Default else DatagramSendOptions(fromLocal = from)
+                options = optionsFor(target.from)
             }
         }
         buffer.position(0)
         buffer.setLimit(len)
         return sendOutcomeOf { channel.send(buffer, to = peer, options = options) }
     }
+
+    /**
+     * The send options that pin this reply's source — or, in both of the cases that cannot, the ones
+     * that leave the choice to the platform.
+     *
+     * The two "cannot" branches stay separate rather than collapsing into one absent-source case: they
+     * end in the same options but mean different things, and only one of them is a defect (see
+     * [ReplySource]).
+     */
+    private fun optionsFor(source: ReplySource): DatagramSendOptions =
+        when (source) {
+            // Nothing to pin, and inventing an address would be worse than the platform's own choice.
+            // Permanent and expected for this backend, so it is not worth reporting.
+            ReplySource.Undecodable -> DatagramSendOptions.Default
+            is ReplySource.Recorded ->
+                when (val local = localFor(source.key)) {
+                    // quiche named a path whose local address the receive loop never recorded. Every
+                    // address quiche can name here was given to it by that loop, so this is this
+                    // server's own bookkeeping having lost one — not a state the network can cause.
+                    // Send anyway (dropping the datagram would be a worse answer than an unpinned one)
+                    // with the source unnamed, exactly as a channel that cannot select one would.
+                    null -> DatagramSendOptions.Default
+                    else -> DatagramSendOptions(fromLocal = local)
+                }
+        }
 
     /** The shared server socket is owned and closed by the platform server, never per-connection. */
     override fun close() = Unit

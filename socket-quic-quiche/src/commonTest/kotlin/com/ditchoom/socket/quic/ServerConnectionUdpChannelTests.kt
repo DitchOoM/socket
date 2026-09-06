@@ -54,7 +54,7 @@ class ServerConnectionUdpChannelTests {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = aliasKey))
+            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = ReplySource.Recorded(aliasKey)))
 
             val (to, options) = socket.sent.single()
             assertSame(peer, to, "the destination is the connection's own peer")
@@ -68,7 +68,7 @@ class ServerConnectionUdpChannelTests {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = migratedKey, from = loopbackKey))
+            channel.send(payload(), LEN, SendTarget.ServerReply(to = migratedKey, from = ReplySource.Recorded(loopbackKey)))
 
             val (to, options) = socket.sent.single()
             assertSame(migratedPeer, to, "a migrated peer's reply goes to its new source address")
@@ -76,9 +76,8 @@ class ServerConnectionUdpChannelTests {
         }
 
     /**
-     * A backend that decodes no egress address reports `family == 0`. That is a *known-absent* source,
-     * not a wrong one — naming nothing and letting the platform choose is the only honest answer, and is
-     * the behaviour every backend had before #556.
+     * [ReplySource.Undecodable] — a backend that decodes no egress address at all. Naming nothing and
+     * letting the platform choose is the only honest answer, and is what every backend did before #556.
      */
     @Test
     fun anUndecodableSourceLeavesTheChoiceToThePlatform() =
@@ -86,20 +85,23 @@ class ServerConnectionUdpChannelTests {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = PathKey(0, 0, 0L, 0L)))
+            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = ReplySource.Undecodable))
 
             val options = socket.sent.single().second
             assertNull(options.fromLocal, "an absent source must not be invented")
         }
 
-    /** A source the receive loop never recorded is a miss, and a miss is not a licence to guess. */
+    /**
+     * A [ReplySource.Recorded] key the receive loop cannot resolve is this server's own bookkeeping
+     * having lost an address — distinct from [ReplySource.Undecodable], and still not a licence to guess.
+     */
     @Test
     fun anUnknownSourceKeyIsAMissRatherThanAGuess() =
         runTest {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = key(4, 9999, 99)))
+            channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = ReplySource.Recorded(key(4, 9999, 99))))
 
             val options = socket.sent.single().second
             assertNull(options.fromLocal, "an unresolvable source must not fall back to another address")
@@ -115,7 +117,7 @@ class ServerConnectionUdpChannelTests {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = key(4, 1, 200), from = aliasKey))
+            channel.send(payload(), LEN, SendTarget.ServerReply(to = key(4, 1, 200), from = ReplySource.Recorded(aliasKey)))
 
             val (to, _) = socket.sent.single()
             assertSame(peer, to, "an unresolvable destination falls back to the fixed peer")

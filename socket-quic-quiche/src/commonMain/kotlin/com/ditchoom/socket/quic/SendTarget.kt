@@ -33,13 +33,35 @@ sealed interface SendTarget {
      * and Linux disagree about which address the kernel picks — Darwin matches the destination, Linux
      * the primary — which is why the identical server passes on one and is deaf on the other.
      *
-     * [from] may carry `family == 0`: a backend that decodes no egress address at all (the test
-     * doubles, and any channel whose [QuicheApi] leaves the sockaddr accessors unbound). That is a
-     * *known-absent* source rather than a wrong one — the channel then lets the platform choose, which
-     * is the pre-#556 behaviour and the only answer available to it.
+     * [from] is a [ReplySource] rather than a bare [PathKey] because "quiche named no source" is a real
+     * state that must not be spelled as a sentinel — see that type.
      */
     data class ServerReply(
         val to: PathKey,
-        val from: PathKey,
+        val from: ReplySource,
     ) : SendTarget
+}
+
+/**
+ * What quiche said about the local address a server reply must leave from.
+ *
+ * Exists because the alternative is a sentinel: `decodePathKey` answers `PathKey(family = 0, …)` for a
+ * backend that decodes no egress address (a test double, or any channel whose [QuicheApi] leaves the
+ * sockaddr accessors unbound), and branching on `family == 0` would spread that magic number across
+ * every server egress channel. It is converted **once**, at the driver's boundary with quiche, and the
+ * rest of the code gets an exhaustive `when`.
+ *
+ * Keeping the two cases apart also keeps them *diagnosable*, which is why they are not collapsed into
+ * one "no source" case even though both end up sending with the platform's own choice: [Undecodable] is
+ * expected and permanent for that backend, whereas a [Recorded] key the receive loop cannot resolve is
+ * a bug in this server's own bookkeeping.
+ */
+sealed interface ReplySource {
+    /** quiche named a local address for this path; [key] is its decoded [PathKey]. */
+    data class Recorded(
+        val key: PathKey,
+    ) : ReplySource
+
+    /** This backend decodes no egress address at all, so there is nothing to pin. */
+    data object Undecodable : ReplySource
 }

@@ -1452,7 +1452,12 @@ class QuicheDriver(
                 if (isServer) {
                     SendTarget.ServerReply(
                         to = api.decodePathKey(api.sendInfoToAddr(sendInfo)),
-                        from = api.decodePathKey(api.sendInfoFromAddr(sendInfo)),
+                        // The one place quiche's "no egress address" sentinel is read. Converting it
+                        // here means no egress channel ever branches on a magic family number.
+                        from =
+                            api.decodePathKey(api.sendInfoFromAddr(sendInfo)).let { key ->
+                                if (key.family == 0) ReplySource.Undecodable else ReplySource.Recorded(key)
+                            },
                     )
                 } else {
                     SendTarget.ConnectedPeer
