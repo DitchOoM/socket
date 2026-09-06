@@ -364,7 +364,7 @@ class HandshakeIdleTimeoutSimTests {
         }
 
     /** QUIC v1 long header, packet type Initial: form=1, fixed=1, type=00 (RFC 9000 §17.2.2). */
-    private fun ImpairedPipe.Observation.isInitial(): Boolean = (bytes[0].toInt() and 0xf0) == 0xc0
+    private fun ImpairedPipe.Observation.isInitial(): Boolean = (firstByte.toInt() and 0xf0) == 0xc0
 
     /**
      * **What seed 4 actually is — and, decisively, what it is not.**

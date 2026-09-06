@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -184,7 +185,8 @@ internal suspend fun <R> withSemanticSim(
     return coroutineScope {
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
-        val pipe = ImpairedPipe(impairment, simScope)
+        val ledger = DatagramLedger(bufferFactory)
+        val pipe = ImpairedPipe(impairment, simScope, ledger)
 
         // --- server config (mirrors buildJvmQuicServer) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -319,29 +321,40 @@ internal suspend fun <R> withSemanticSim(
 
         val client = DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 42002), simScope)
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 42001), simScope)
-        try {
-            withTimeout(establishTimeout) {
-                when (gate) {
-                    EstablishmentGate.ClientAndServer -> {
-                        clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                        serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+        val result =
+            try {
+                withTimeout(establishTimeout) {
+                    when (gate) {
+                        EstablishmentGate.ClientAndServer -> {
+                            clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                            serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                        }
+                        EstablishmentGate.ClientOnly -> clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                        EstablishmentGate.None -> Unit
                     }
-                    EstablishmentGate.ClientOnly -> clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                    EstablishmentGate.None -> Unit
+                }
+                SemanticSimScope(client, server, clientDriver, serverDriver, pipe, driverClock).block()
+            } finally {
+                withContext(NonCancellable) {
+                    // close() sends QuicheCmd.Close then destroy()-joins the driver, whose cleanup()
+                    // frees conn/recvInfo/sendInfo and fires onCleanup (sockaddr release).
+                    runCatching { client.close() }
+                    runCatching { server.close() }
+                    // cancelAndJoin, not cancel: reader loops and in-flight impairment delay coroutines
+                    // free the datagrams they own as they are cancelled, and the leak check below would
+                    // otherwise race that.
+                    simJob.cancelAndJoin()
+                    pipe.close()
+                    api.configFree(clientCfg)
+                    api.configFree(serverCfg)
                 }
             }
-            SemanticSimScope(client, server, clientDriver, serverDriver, pipe, driverClock).block()
-        } finally {
-            withContext(NonCancellable) {
-                // close() sends QuicheCmd.Close then destroy()-joins the driver, whose cleanup()
-                // frees conn/recvInfo/sendInfo and fires onCleanup (sockaddr release).
-                runCatching { client.close() }
-                runCatching { server.close() }
-                simJob.cancel() // reader loops + any in-flight impairment delay coroutines
-                pipe.close()
-                api.configFree(clientCfg)
-                api.configFree(serverCfg)
-            }
+        // Success path only, so a real failure is never masked by a leak report. This is the ONLY
+        // consumer of ImpairedPipe, and the duplicate-delivery capture site is reachable from nowhere
+        // else — without this assertion that accounting is exercised by nothing at all.
+        check(ledger.outstanding() == 0) {
+            "the sim pipe leaked ${ledger.outstanding()} native datagram buffer(s): ${ledger.summary()}"
         }
+        result
     }
 }

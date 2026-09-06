@@ -1,13 +1,16 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.unwrapFully
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -63,9 +66,10 @@ internal class ImpairmentConfig(
 internal class ImpairedPipe(
     private val config: ImpairmentConfig,
     private val scope: CoroutineScope,
+    private val ledger: DatagramLedger,
 ) {
     private val rng = Random(config.seed)
-    private val lock = Any()
+    private val lock = SynchronizedObject()
 
     @Volatile
     var blackhole: Boolean = false
@@ -111,7 +115,12 @@ internal class ImpairedPipe(
         val dropped: Boolean,
         val seededDrop: Boolean,
         val atMs: Long,
-        val bytes: ByteArray,
+        /**
+         * The datagram's first byte — enough to classify the packet type (RFC 9000 §17.2), which is
+         * all any consumer ever read off the old `bytes` array. Keeping a byte instead of a per-
+         * datagram copy keeps the diagnostic trace off the allocation path entirely.
+         */
+        val firstByte: Byte,
     )
 
     private val observationTrace = ArrayList<Observation>()
@@ -121,8 +130,10 @@ internal class ImpairedPipe(
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun virtualNowMs(): Long = scope.coroutineContext[kotlinx.coroutines.test.TestCoroutineScheduler]?.currentTime ?: -1L
 
-    private val toServer = Channel<ByteArray>(Channel.UNLIMITED)
-    private val toClient = Channel<ByteArray>(Channel.UNLIMITED)
+    // onUndeliveredElement: a datagram the channel accepted but no receiver ever got (a reader
+    // cancelled while suspended in receive()) still has to be freed by somebody.
+    private val toServer = Channel<PipeDatagram>(Channel.UNLIMITED) { ledger.release(it) }
+    private val toClient = Channel<PipeDatagram>(Channel.UNLIMITED) { ledger.release(it) }
 
     val clientEndpoint: UdpChannel = Endpoint(inbound = toClient, outbound = toServer, stats = clientStats, side = "C")
     val serverEndpoint: UdpChannel = Endpoint(inbound = toServer, outbound = toClient, stats = serverStats, side = "S")
@@ -130,11 +141,23 @@ internal class ImpairedPipe(
     fun close() {
         toServer.close()
         toClient.close()
+        // Anything still queued was captured and will never be delivered; free it here or it is a leak
+        // the ledger will (correctly) report against this pipe.
+        drain(toServer)
+        drain(toClient)
+    }
+
+    private fun drain(channel: Channel<PipeDatagram>) {
+        while (true) {
+            val result = channel.tryReceive()
+            val datagram = result.getOrNull() ?: return
+            ledger.release(datagram)
+        }
     }
 
     private inner class Endpoint(
-        private val inbound: Channel<ByteArray>,
-        private val outbound: Channel<ByteArray>,
+        private val inbound: Channel<PipeDatagram>,
+        private val outbound: Channel<PipeDatagram>,
         private val stats: SideStats,
         private val side: String,
     ) : UdpChannel {
@@ -148,10 +171,12 @@ internal class ImpairedPipe(
                     // reader — returning/throwing here would busy-spin the reader loop.
                     awaitCancellation()
                 }
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            bb.clear()
-            bb.put(datagram)
-            return datagram.size
+            buffer.resetForWrite()
+            buffer.write(datagram.readable())
+            val length = datagram.length
+            // The receiver has its own copy now; the pipe's is done.
+            ledger.release(datagram)
+            return length
         }
 
         override suspend fun send(
@@ -159,12 +184,6 @@ internal class ImpairedPipe(
             len: Int,
             target: SendTarget,
         ): SendOutcome {
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            bb.clear()
-            bb.limit(len)
-            val copy = ByteArray(len)
-            bb.get(copy)
-
             var deliverPrimary = false
             var deliverDuplicate = false
             var deliveryDelay = Duration.ZERO
@@ -190,7 +209,7 @@ internal class ImpairedPipe(
                     }
                 val duplicated = !dropped && dupRoll < config.duplicateProb
                 decisionTrace.add(Decision(dropped, duplicated, reorderSlots))
-                observationTrace.add(Observation(index, side, len, dropped, seededDrop, virtualNowMs(), copy))
+                observationTrace.add(Observation(index, side, len, dropped, seededDrop, virtualNowMs(), firstByteOf(buffer, len)))
                 if (dropped) {
                     stats.dropped++
                     return@synchronized
@@ -200,8 +219,11 @@ internal class ImpairedPipe(
                 if (duplicated) stats.duplicated++
                 deliveryDelay = config.latency + config.jitter * jitterFraction + reorderSlots.milliseconds
             }
-            if (deliverPrimary) deliver(copy, deliveryDelay)
-            if (deliverDuplicate) deliver(copy.copyOf(), deliveryDelay + 1.milliseconds)
+            // Captured only now: a dropped or blackholed datagram allocates nothing, which keeps the
+            // ledger counting real deliveries and the seeded sequence independent of allocation. A
+            // duplicate is a SECOND capture — each copy is freed by whoever receives it.
+            if (deliverPrimary) deliver(ledger.capture(buffer, len, "impaired-$side"), deliveryDelay)
+            if (deliverDuplicate) deliver(ledger.capture(buffer, len, "impaired-$side-dup"), deliveryDelay + 1.milliseconds)
             // Impairment models the WIRE: a dropped or blackholed datagram left this endpoint
             // successfully and vanished in transit. That is deliberately NOT a send failure — the
             // distinction is the whole point of SendOutcome, and conflating them here would make the
@@ -210,19 +232,33 @@ internal class ImpairedPipe(
         }
 
         private fun deliver(
-            bytes: ByteArray,
+            datagram: PipeDatagram,
             after: Duration,
         ) {
             stats.enqueued++
             if (after <= Duration.ZERO) {
                 // Synchronous enqueue keeps the zero-delay pipe strictly FIFO.
-                outbound.trySend(bytes)
+                enqueue(datagram)
             } else {
-                scope.launch {
-                    delay(after)
-                    outbound.trySend(bytes)
+                scope.launch(start = CoroutineStart.ATOMIC) {
+                    // ATOMIC, not the default start: a coroutine launched into an ALREADY-cancelled
+                    // scope never runs its body at all, so a plain launch would strand the datagram it
+                    // owns with no catch ever firing. ATOMIC guarantees the body begins, `delay` then
+                    // throws immediately, and the datagram is freed.
+                    try {
+                        delay(after)
+                    } catch (t: Throwable) {
+                        ledger.release(datagram)
+                        throw t
+                    }
+                    enqueue(datagram)
                 }
             }
+        }
+
+        /** A closed pipe accepts nothing, so a refused datagram is freed rather than leaked. */
+        private fun enqueue(datagram: PipeDatagram) {
+            if (outbound.trySend(datagram).isFailure) ledger.release(datagram)
         }
 
         override fun close() {

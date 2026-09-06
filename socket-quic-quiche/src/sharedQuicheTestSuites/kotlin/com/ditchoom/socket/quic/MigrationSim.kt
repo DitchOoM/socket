@@ -4,19 +4,22 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
+import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -24,8 +27,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.io.File
-import java.net.InetSocketAddress
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -52,7 +53,7 @@ import kotlin.time.Duration.Companion.seconds
  * Note the deliberate asymmetry with the probe-path default ([PathImpairment] with no latency): a new
  * path faster than the one being left IS the #445 overtake window, so the default scenario exercises
  * that too. A test that needs a specific relationship states both, as
- * [MigrationSimTests.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
+ * [MigrationSimTestSuite.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
  */
 internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 
@@ -60,6 +61,12 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
 private const val CLIENT_PORT_BASE = 42100
+
+/**
+ * How many probe endpoints past [CLIENT_PORT_BASE] the sim pre-resolves. A scenario that exhausts the
+ * pool fails loudly in [PipeUdpChannelFactory.openPath] rather than silently resolving on the hot path.
+ */
+private const val CLIENT_PORT_POOL = 64
 private const val SERVER_PORT = 42002
 
 /**
@@ -115,7 +122,7 @@ internal class MigrationSimScope(
     private val factory: PipeUdpChannelFactory,
 ) {
     /** Local endpoints the client has bound, in open order. Index 0 is the primary. */
-    fun clientPaths(): List<InetSocketAddress> = factory.opened()
+    fun clientPaths(): List<SocketAddress> = factory.opened()
 
     /**
      * Ask the client to migrate to a fresh local endpoint, as an application calling
@@ -184,7 +191,7 @@ internal class MigrationSimScope(
                 if (len <= 0 || len > QUIC_MAX_CONN_ID_LEN) {
                     null
                 } else {
-                    buf.readByteArray(len).joinToString("") { b -> "%02x".format(b) }
+                    buf.readByteArray(len).joinToString("") { b -> hexByte(b) }
                 }
             }
         } finally {
@@ -273,25 +280,39 @@ internal class SimClientQuicConnection(
 internal class PipeUdpChannelFactory(
     private val pipe: MultiPathPipe,
     private val impairmentFor: (Int) -> PathImpairment,
+    /**
+     * Every local endpoint this factory can hand out, resolved **before** the sim starts and looked up
+     * here without suspending.
+     *
+     * ⚠️ Resolution must not happen on this path. `UdpSocket.resolve` is a suspend function, and
+     * [openPath] is called by the driver mid-migration: suspending here leaves the test scheduler with
+     * no runnable task, so `runTest` advances virtual time to the next deadline and the probe retry
+     * cadence these suites measure collapses to a single attempt. Pre-resolving keeps [openPath]
+     * synchronous in effect, which is what the pre-#556 `InetSocketAddress` constructor was.
+     */
+    private val localAddresses: Map<Int, SocketAddress>,
     override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable,
 ) : UdpChannelFactory {
-    private val paths = mutableListOf<InetSocketAddress>()
+    private val paths = mutableListOf<SocketAddress>()
 
-    fun opened(): List<InetSocketAddress> = paths.toList()
+    fun opened(): List<SocketAddress> = paths.toList()
 
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
     ): NewPath {
         val index = paths.size + 1 // +1: the primary was opened by the harness, not through here
-        val local = InetSocketAddress("127.0.0.1", if (localPort != 0) localPort else CLIENT_PORT_BASE + index)
+        val port = if (localPort != 0) localPort else CLIENT_PORT_BASE + index
+        val local =
+            localAddresses[port]
+                ?: error("no pre-resolved local endpoint for port $port; widen CLIENT_PORT_POOL in withMigrationSim")
         val path = pipe.openPath(local, impairmentFor(index))
         paths += local
         return NewPath(
             channel = path.channel,
             localSockAddrAddress = path.sockAddr.address,
             localSockAddrLength = path.sockAddr.length,
-            localEndpoint = QuicLocalEndpoint(local.hostString, local.port),
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
             // The pipe owns every path's sockaddr and frees them all in close(); releasing here would
             // free memory the pipe's own teardown still walks.
             release = {},
@@ -322,10 +343,25 @@ internal class ServerIngress(
  * carries no CID length, so the reader must already know it — every source CID this server issues is
  * [QUIC_MAX_CONN_ID_LEN] bytes (`generateScid`). Same decode as `HoldbackDatagramChannel`.
  */
-internal fun shortHeaderDcidHex(bytes: ByteArray): String? {
-    if (bytes.size < 1 + QUIC_MAX_CONN_ID_LEN) return null
-    if (bytes[0].toInt() and 0x80 != 0) return null // long header — its DCID is length-prefixed instead
-    return bytes.copyOfRange(1, 1 + QUIC_MAX_CONN_ID_LEN).joinToString("") { "%02x".format(it) }
+internal fun shortHeaderDcidHex(datagram: PipeDatagram): String? {
+    if (datagram.length < 1 + QUIC_MAX_CONN_ID_LEN) return null
+    val buffer = datagram.readable()
+    if (buffer.readByte().toInt() and 0x80 != 0) return null // long header — DCID is length-prefixed instead
+    val hex = StringBuilder(QUIC_MAX_CONN_ID_LEN * 2)
+    repeat(QUIC_MAX_CONN_ID_LEN) {
+        val b = buffer.readByte().toInt() and 0xFF
+        hex.append(HEX_DIGITS[b shr 4]).append(HEX_DIGITS[b and 0x0F])
+    }
+    return hex.toString()
+}
+
+/** `String.format` is JVM-only; these suites compile for Apple and Linux too. */
+private const val HEX_DIGITS = "0123456789abcdef"
+
+/** One byte as two lowercase hex digits, without `String.format`. */
+private fun hexByte(b: Byte): String {
+    val v = b.toInt() and 0xFF
+    return "${HEX_DIGITS[v shr 4]}${HEX_DIGITS[v and 0x0F]}"
 }
 
 /**
@@ -382,11 +418,23 @@ internal class CidAuditQuicheApi(
         }
 }
 
-private fun migrationSimCertPath(name: String): String {
-    val url =
-        MultiPathPipe::class.java.classLoader.getResource("certs/$name")
-            ?: error("Test cert not found: certs/$name")
-    return File(url.toURI()).absolutePath
+/**
+ * A path written into native memory as a NUL-terminated C string, for quiche's `*_from_pem_file` calls.
+ *
+ * A test-local twin of `commonJvmWithQuicServer`'s `writeNullTerminatedString`: that one is `internal`
+ * to `commonJvmMain` and its Apple/Linux counterparts are `private`, so none of the three is reachable
+ * from a source set that compiles for all of them. Named distinctly so the JVM compilation, which does
+ * see the `commonJvmMain` one, has no ambiguity.
+ */
+internal fun simNullTerminated(
+    path: String,
+    factory: BufferFactory,
+): PlatformBuffer {
+    val buf = factory.allocate(path.length + 1)
+    buf.writeString(path, Charset.UTF8)
+    buf.writeByte(0)
+    buf.resetForRead()
+    return buf
 }
 
 /**
@@ -420,6 +468,24 @@ internal fun migrationSimOptions(
     )
 
 /**
+ * Everything about a migration-sim run that is decided by the platform rather than the scenario: which
+ * `libquiche` binding to drive, where this target's test certificates are, and the C `sockaddr` layout
+ * its OS uses.
+ *
+ * It is a parameter rather than something the sim discovers, because every way of discovering it is
+ * platform-specific: `loadQuicheApi()` exists only on JVM/Android, the certificate fixtures are found
+ * by classpath on the JVM and by filesystem probe on Kotlin/Native (and can be legitimately absent on a
+ * simulator — see #359), and the sockaddr layout differs by OS. A per-platform test subclass supplies
+ * one, exactly as [RetiredCidInFlightPacketTestSuite] takes its `testTlsConfig`/`platformQuicheApi`.
+ */
+internal class MigrationSimEnv(
+    val api: QuicheApi,
+    val certChainPath: String,
+    val privKeyPath: String,
+    val codec: SocketAddressCodec,
+)
+
+/**
  * Establish a real client/server quiche pair over a [MultiPathPipe] on the calling `runTest` scheduler's
  * virtual time and run [block] against it. Everything is torn down before returning.
  *
@@ -432,6 +498,7 @@ internal fun migrationSimOptions(
  * real dispatcher — or asking for [SimClockChoice.Wall] under `runTest` — fails at construction (#497).
  */
 internal suspend fun <R> withMigrationSim(
+    env: MigrationSimEnv,
     seed: Long,
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
@@ -440,23 +507,33 @@ internal suspend fun <R> withMigrationSim(
     clock: SimClockChoice = SimClockChoice.Virtual,
     block: suspend MigrationSimScope.() -> R,
 ): R {
-    // First, before loadQuicheApi(): an incoherent clock fails here, typed, with nothing to tear down.
+    // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
+    // to tear down.
     val driverClock = clock.resolve()
-    val api = loadQuicheApi()
+    val api = env.api
+    val codec = env.codec
     val bufferFactory = BufferFactory.network()
 
     val clientRandom = Random(seed xor 0x434C49454E54L) // "CLIENT"
     val serverRandom = Random(seed xor 0x534552564552L) // "SERVER"
 
-    val primaryLocal = InetSocketAddress("127.0.0.1", CLIENT_PORT_BASE)
-    val serverAddr = InetSocketAddress("127.0.0.1", SERVER_PORT)
+    // Resolve every address the sim can use up front — see PipeUdpChannelFactory.localAddresses for
+    // why resolution must never happen once the driver is running.
+    val clientAddresses =
+        (0..CLIENT_PORT_POOL).associate { i ->
+            (CLIENT_PORT_BASE + i) to
+                UdpSocket.resolve("127.0.0.1", CLIENT_PORT_BASE + i)
+        }
+    val primaryLocal = clientAddresses.getValue(CLIENT_PORT_BASE)
+    val serverAddr = UdpSocket.resolve("127.0.0.1", SERVER_PORT)
 
     return coroutineScope {
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
-        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory)
+        val ledger = DatagramLedger(bufferFactory)
+        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
-        val factory = PipeUdpChannelFactory(pipe, probeImpairment)
+        val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -465,14 +542,14 @@ internal suspend fun <R> withMigrationSim(
             val alpn = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, cfg))
+            applyQuicOptions(quicOptions, SimQuicConfigCalls(api, cfg))
         }
-        writeNullTerminatedString(migrationSimCertPath("cert.crt"), bufferFactory).let { buf ->
+        simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             val rc = api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
             buf.freeNativeMemory()
             check(rc == 0) { "Failed to load cert chain: $rc" }
         }
-        writeNullTerminatedString(migrationSimCertPath("cert.key"), bufferFactory).let { buf ->
+        simNullTerminated(env.privKeyPath, bufferFactory).let { buf ->
             val rc = api.configLoadPrivKeyFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
             buf.freeNativeMemory()
             check(rc == 0) { "Failed to load private key: $rc" }
@@ -485,7 +562,7 @@ internal suspend fun <R> withMigrationSim(
         serverNameBuf.writeByte(0)
         serverNameBuf.resetForRead()
         val clientScid = generateScid(bufferFactory, clientRandom)
-        val clientPeerSock = serverAddr.toNativeSockAddr(bufferFactory)
+        val clientPeerSock = codec.encodeToNative(serverAddr, bufferFactory)
         val clientConn =
             try {
                 api.connect(
@@ -509,7 +586,7 @@ internal suspend fun <R> withMigrationSim(
 
         // --- server connection (eager accept: quiche_accept never reads the Initial) ---
         val serverScid = generateScid(bufferFactory, serverRandom)
-        val serverLocalSock = serverAddr.toNativeSockAddr(bufferFactory)
+        val serverLocalSock = codec.encodeToNative(serverAddr, bufferFactory)
         val serverConn =
             try {
                 api.accept(
@@ -580,23 +657,38 @@ internal suspend fun <R> withMigrationSim(
         // Per-source recv_info cache, exactly SharedQuicheServer's shape: quiche must be told the real
         // origin of every datagram, or a probe from a new client address looks like the old path and no
         // migration is ever recognised.
-        val serverRecvInfos = HashMap<InetSocketAddress, QuicheRecvInfo>()
+        val serverRecvInfos = HashMap<SocketAddress, QuicheRecvInfo>()
         val serverIngress = mutableListOf<ServerIngress>()
         val pump =
             simScope.launch {
                 while (true) {
                     val datagram = pipe.receiveAtServer()
-                    val info =
-                        serverRecvInfos.getOrPut(datagram.from) {
-                            val from = pipe.pathAt(datagram.from).sockAddr
-                            api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
-                        }
-                    serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(datagram.bytes), serverAudit.retiredScidsSeen)
-                    val buf = bufferFactory.allocate(datagram.bytes.size)
-                    val bb = (buf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-                    bb.clear()
-                    bb.put(datagram.bytes)
-                    serverDriver.commands.send(QuicheCmd.RecvPacket(buf, datagram.bytes.size, PacketSource.FromServerSocket(info) {}))
+                    // Once this datagram leaves the channel the pump is its ONLY owner, and every exit
+                    // from here — a throw building the recv_info, a cancelled `send`, a closed command
+                    // channel — has to free it. A `finally` on a handoff flag covers all of them at once;
+                    // enumerating the escapes one at a time is what left exactly one buffer stranded per
+                    // run, and a pump that dies inside a SupervisorJob dies silently, so the leak was the
+                    // only evidence it had happened at all.
+                    val owned = datagram.datagram
+                    var handedOff = false
+                    try {
+                        val info =
+                            serverRecvInfos.getOrPut(datagram.from) {
+                                val from = pipe.pathAt(datagram.from).sockAddr
+                                api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
+                            }
+                        serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(owned), serverAudit.retiredScidsSeen)
+                        // The pipe's buffer goes straight to the driver — no second copy. RecvPacket frees
+                        // it (execute and failCommand both do), so ownership TRANSFERS rather than being
+                        // released here.
+                        serverDriver.commands.send(
+                            QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromServerSocket(info) {}),
+                        )
+                        ledger.transfer(owned)
+                        handedOff = true
+                    } finally {
+                        if (!handedOff) ledger.release(owned)
+                    }
                 }
             }
 
@@ -609,39 +701,50 @@ internal suspend fun <R> withMigrationSim(
                 DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
             )
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
-        try {
-            withTimeout(establishTimeout) {
-                clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+        val result =
+            try {
+                withTimeout(establishTimeout) {
+                    clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                    serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                }
+                // The production entry point, called exactly where the three `QuicheEngine.connect()`
+                // actuals call it: after the handshake, on the resolved monitor, once per connection. A
+                // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so
+                // the manual scenarios below are unaffected and the branch under test is the shipped one.
+                wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
+                MigrationSimScope(
+                    client,
+                    server,
+                    clientDriver,
+                    serverDriver,
+                    pipe,
+                    api,
+                    clientConn,
+                    serverConn,
+                    clientAudit,
+                    serverAudit,
+                    serverIngress,
+                    factory,
+                ).block()
+            } finally {
+                withContext(NonCancellable) {
+                    pump.cancel()
+                    // cancelAndJoin, not cancel: in-flight datagrams free themselves as their delivery
+                    // coroutine is cancelled, and the leak check below would otherwise race that.
+                    simJob.cancelAndJoin()
+                    pipe.close()
+                    serverRecvInfos.values.forEach { api.recvInfoFree(it) }
+                    api.configFree(clientCfg)
+                    api.configFree(serverCfg)
+                }
             }
-            // The production entry point, called exactly where the three `QuicheEngine.connect()`
-            // actuals call it: after the handshake, on the resolved monitor, once per connection. A
-            // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so the
-            // manual scenarios below are unaffected and the branch under test is the shipped one.
-            wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
-            MigrationSimScope(
-                client,
-                server,
-                clientDriver,
-                serverDriver,
-                pipe,
-                api,
-                clientConn,
-                serverConn,
-                clientAudit,
-                serverAudit,
-                serverIngress,
-                factory,
-            ).block()
-        } finally {
-            withContext(NonCancellable) {
-                pump.cancel()
-                simJob.cancel()
-                pipe.close()
-                serverRecvInfos.values.forEach { api.recvInfoFree(it) }
-                api.configFree(clientCfg)
-                api.configFree(serverCfg)
-            }
+        // Only on the success path: an exception above propagates from the `try` and must not be masked
+        // by a leak report. `pipe.close()` has drained every queue by now, so anything still outstanding
+        // was captured and then neither delivered, dropped, drained nor handed to a driver — a leak in
+        // the harness itself, which is exactly what a harness that hunts leaks must not have.
+        check(ledger.outstanding() == 0) {
+            "the sim pipe leaked ${ledger.outstanding()} native datagram buffer(s): ${ledger.summary()}"
         }
+        result
     }
 }
