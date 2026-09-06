@@ -32,7 +32,7 @@ class StubUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         sendCount++
         // [sendBehavior] keeps its throwing shape so existing tests read unchanged; the conversion to

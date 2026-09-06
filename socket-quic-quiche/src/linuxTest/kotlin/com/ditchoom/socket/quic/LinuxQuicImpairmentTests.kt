@@ -171,7 +171,7 @@ class LinuxQuicImpairmentTests : QuicImpairmentTestSuite() {
             }
         }
 
-        private val c2sPump = DirectionPump(ImpairDirection.ClientToServer) { b, n -> upstreamChannel.send(b, n, dest = null) }
+        private val c2sPump = DirectionPump(ImpairDirection.ClientToServer) { b, n -> upstreamChannel.send(b, n, SendTarget.ConnectedPeer) }
         private val s2cPump =
             DirectionPump(ImpairDirection.ServerToClient) { b, n ->
                 if (clientAddrLen.value > 0) {

@@ -86,7 +86,7 @@ class PathRetirementTests {
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome {
             sendCount++
             return SendOutcome.Sent

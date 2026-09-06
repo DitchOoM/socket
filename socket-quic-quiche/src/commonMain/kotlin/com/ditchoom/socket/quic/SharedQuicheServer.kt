@@ -51,7 +51,7 @@ internal class AcceptedConnection(
  *
  * Everything here is platform-independent; the genuine per-platform differences are hidden behind three
  * seams so this class can be common: [serverReceiveDispatcher] (IO vs Default), [writeNativeSizeT] /
- * [readNativeSizeT] (direct `ByteBuffer` vs cinterop), and [PeerPathTable] (concurrent vs copy-on-write
+ * [readNativeSizeT] (direct `ByteBuffer` vs cinterop), and [PathAddressTable] (concurrent vs copy-on-write
  * map). The sockaddr [codec] and [QuicheApi] are ordinary constructor arguments the build functions fill
  * in per platform. This replaced three near-identical `JvmQuicServer` / `LinuxQuicServer` /
  * `AppleQuicServer` copies of the receive loop — the routing bookkeeping is now fix-once.
@@ -106,21 +106,43 @@ internal class SharedQuicheServer(
     private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
 
     /** Connection-lifecycle bookkeeping shared with the platform build functions (see [ServerConnectionRegistry]). */
-    private val registry = ServerConnectionRegistry<SocketAddress>(api)
+    private val registry = ServerConnectionRegistry<ServerPathPair>(api)
 
     /**
      * PathKey→peer resolution for the egress channels (sendInfo.to → real send target, no address
      * reconstruction — RFC §4). Written only by the receive loop (cache miss / evict) plus the close
      * sweep after the loop has joined; read by driver egress coroutines. Entries are removed when their
-     * recv_info cache entry is freed. The concurrency primitive is a per-platform seam ([PeerPathTable]).
+     * recv_info cache entry is freed. The concurrency primitive is a per-platform seam ([PathAddressTable]).
      */
-    private val peers = PeerPathTable()
+    private val peers = PathAddressTable()
+
+    /**
+     * PathKey→local resolution for the egress channels (`sendInfo.from` → the address to send *from*),
+     * the #556 half of [peers]. Populated from each datagram's own [com.ditchoom.buffer.flow.Datagram.localAddress],
+     * so it holds exactly the local addresses clients have actually been seen to address — never a
+     * wildcard, which is the address the kernel would otherwise be left to resolve on its own.
+     *
+     * Naturally bounded by the host's address count (unlike [peers], which a spraying peer can grow),
+     * so entries are never evicted; both tables are cleared by the close sweep.
+     */
+    private val locals = PathAddressTable()
 
     /** Prompt-wake for the receive loop on a routing-table change (connection close / spare SCID). */
     private val wakeups = Channel<Unit>(Channel.CONFLATED)
 
-    /** The shared recv_info `to` sockaddr (the server's fixed local addr), encoded lazily; freed in close(). */
-    private var serverLocalSockAddr: EncodedSockAddr? = null
+    /**
+     * The encoded `recv_info.to` sockaddr per local address a datagram has arrived on, built lazily and
+     * freed in close().
+     *
+     * Was a single field holding the server's *bound* address — which on a wildcard bind is `0.0.0.0`,
+     * and telling quiche that every datagram arrived at the wildcard is precisely #556: quiche then
+     * echoes the wildcard back as `send_info.from` and the reply leaves from whichever address the
+     * kernel picks. Keyed by the real arrival address instead, so a multi-homed or aliased host keeps
+     * one entry per address it is actually addressed on.
+     *
+     * Receive-loop only, like the recv_info cache it feeds.
+     */
+    private val localSockAddrs = mutableMapOf<SocketAddress, EncodedSockAddr>()
 
     @Volatile
     private var closed = false
@@ -246,8 +268,8 @@ internal class SharedQuicheServer(
         // registry. Destroy+join EVERY live driver (a superset of the routing table) before freeing the
         // per-source recv_info cache — the #179 UAF invariant.
         registry.reapAllDriversAndFreeRecvInfoCache()
-        serverLocalSockAddr?.free()
-        serverLocalSockAddr = null
+        localSockAddrs.values.forEach { it.free() }
+        localSockAddrs.clear()
         // Drivers have drained — safe to free cached recv buffers. A release after this point would
         // silently repopulate the pool (benign), which is why it follows the destroy loop.
         recvBufPool.clear()
@@ -321,6 +343,16 @@ internal class SharedQuicheServer(
                     }
 
                     val peer = datagram.peer
+                    // The local address this datagram actually arrived on — the value quiche must be
+                    // given as recv_info.to, and which it echoes back as send_info.from when it replies.
+                    //
+                    // A channel without DatagramCapabilities.localAddressReceive reports
+                    // LocalAddress.Unknown; the server's bound address is then the only answer available.
+                    // That fallback is exact for a channel bound to one address and WRONG for a wildcard
+                    // bind (it yields 0.0.0.0) — which is why #556's fix is not complete until each
+                    // platform's receive path reports the arrival address (steps 2 and 3). Until it does,
+                    // this reproduces the pre-#556 behaviour rather than inventing an address.
+                    val localAddr = datagram.localAddress.orNull() ?: localAddress
                     // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
                     // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
                     // the driver, which frees it back to the pool after quiche_conn_recv.
@@ -364,21 +396,29 @@ internal class SharedQuicheServer(
                         // The per-source recv_info lets quiche see the real datagram origin so a migrated
                         // client's new source is recognised as a new path (passive migration). Hold an
                         // in-flight ref so the cache can't evict+free it while the driver has it queued.
+                        // Keyed by (peer, local), not by peer alone: the same client addressing two of
+                        // this host's local addresses is two paths to quiche, and one cache entry for
+                        // both would hand the second path the first one's `to` — re-creating #556 from
+                        // inside the cache even once the platform reports arrival addresses correctly.
+                        val recvKey = ServerPathPair(peer = peer, local = localAddr)
                         val cached =
-                            registry.lookupRecvInfo(peer) ?: run {
-                                // Cache miss: build a recv_info from = the datagram's source, to = the
-                                // server's fixed local addr (encoded once, kept in serverLocalSockAddr).
+                            registry.lookupRecvInfo(recvKey) ?: run {
+                                // Cache miss: build a recv_info with from = the datagram's source and
+                                // to = the address it arrived on (encoded once per local address).
                                 val local =
-                                    serverLocalSockAddr ?: codec.encodeToNative(localAddress, bufferFactory).also {
-                                        serverLocalSockAddr = it
-                                    }
+                                    localSockAddrs.getOrPut(localAddr) { codec.encodeToNative(localAddr, bufferFactory) }
                                 val from = codec.encodeToNative(peer, bufferFactory)
                                 val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
                                 // Record this source's PathKey→peer so a reply quiche routes here
                                 // (sendInfo.to) resolves to the real send target; removed on cache free.
                                 val fromKey = api.decodePathKey(from.address)
                                 peers.put(fromKey, peer)
-                                registry.putRecvInfo(peer, info) {
+                                // And the mirror: PathKey→local, so the same reply's sendInfo.from
+                                // resolves to the address it must leave from (#556). Not removed with
+                                // the recv_info — a local address outlives any one peer's cache entry,
+                                // and re-adding it on every miss would be the only effect.
+                                locals.put(api.decodePathKey(local.address), localAddr)
+                                registry.putRecvInfo(recvKey, info) {
                                     from.free()
                                     peers.remove(fromKey)
                                 }
@@ -423,7 +463,7 @@ internal class SharedQuicheServer(
                             continue@loop
                         }
                         // Accept new connection — recvBuf ownership transfers inside.
-                        when (val outcome = acceptNewConnection(recvBuf, received, peer)) {
+                        when (val outcome = acceptNewConnection(recvBuf, received, peer, localAddr)) {
                             is AcceptOutcome.Refused -> serverRecorder?.error(outcome.drop)
                             is AcceptOutcome.Accepted -> {
                                 registry.routeDriver(outcome.serverScidKey, outcome.driver)
@@ -454,6 +494,7 @@ internal class SharedQuicheServer(
         recvBuf: PlatformBuffer,
         received: Int,
         peer: SocketAddress,
+        localAddr: SocketAddress,
     ): AcceptOutcome {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
@@ -461,7 +502,11 @@ internal class SharedQuicheServer(
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
-        val localSockAddr = codec.encodeToNative(localAddress, bufferFactory)
+        // The address the Initial arrived on, not the address the server bound. On a wildcard bind the
+        // two differ and only the former is a source the client will accept a reply from (#556); this
+        // connection's whole recv_info/send_info lineage starts here, so getting it wrong here is not
+        // recoverable later.
+        val localSockAddr = codec.encodeToNative(localAddr, bufferFactory)
 
         val conn =
             try {
@@ -498,6 +543,11 @@ internal class SharedQuicheServer(
         // This peer's PathKey: what quiche echoes as sendInfo.to for the un-migrated path, and the
         // 4-tuple the accept-time record below carries.
         val peerKey = api.decodePathKey(peerSockAddr.address)
+        // ...and the mirror for the local side, so this connection's very first reply already resolves
+        // its sendInfo.from. The receive loop populates `locals` on a recv_info cache miss, but an
+        // accepted connection's Initial is consumed here instead, so without this the handshake's own
+        // replies would be the one exchange that could not pin its source.
+        locals.put(api.decodePathKey(localSockAddr.address), localAddr)
 
         // Feed the initial packet before the driver starts — safe, driver not yet running. quiche
         // rejecting it (undecryptable, malformed past the header) means there is no connection to
@@ -528,6 +578,7 @@ internal class SharedQuicheServer(
                 fixedPeer = peer,
                 fixedPeerKey = peerKey,
                 peerFor = peers::get,
+                localFor = locals::get,
             )
         // Self-reference for onSourceIds: the driver doesn't exist when we build the callback, so
         // capture it via this holder, set right after construction.

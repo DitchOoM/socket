@@ -68,7 +68,7 @@ internal actual fun readNativeSizeT(buf: PlatformBuffer): Int {
     return bb.getLong(0).toInt()
 }
 
-internal actual class PeerPathTable actual constructor() {
+internal actual class PathAddressTable actual constructor() {
     // Concurrent: written on the receive loop (insert/evict) + the post-join close sweep, read by
     // driver egress coroutines. Matches the pre-refactor JvmQuicServer.peersByPathKey.
     private val map = ConcurrentHashMap<PathKey, SocketAddress>()

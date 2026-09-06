@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.RealDriverClock
 import com.ditchoom.socket.quic.SendOutcome
+import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
@@ -317,16 +318,17 @@ private class RecordingUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         // A send now reports its failure instead of raising it, so the recorder branches on the
         // outcome rather than catching. DatagramSendException is constructed only on the failure
         // path, purely to give the recorder the Throwable its trace format takes — the structured
         // reason stays the typed DatagramSendError carried by the outcome.
-        val outcome = delegate.send(buffer, len, dest)
+        val outcome = delegate.send(buffer, len, target)
         return when (outcome) {
             is SendOutcome.Sent -> {
-                recorder.datagram(out = true, buffer = buffer, len = len, path = dest ?: path)
+                val destination = (target as? SendTarget.ServerReply)?.to ?: path
+                recorder.datagram(out = true, buffer = buffer, len = len, path = destination)
                 outcome
             }
             is SendOutcome.Failed -> {

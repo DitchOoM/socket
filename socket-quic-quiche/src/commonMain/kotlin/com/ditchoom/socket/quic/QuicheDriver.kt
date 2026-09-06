@@ -1440,11 +1440,28 @@ class QuicheDriver(
                         entry.channel
                     }
                 }
-            // Server egress follows the peer: send to the destination quiche chose (sendInfo.to) so
-            // a migrated client's new source receives replies. Clients leave this null and rely on
-            // their connected/path sockets. NioUdpChannel caches the reconstruction (steady state
-            // targets one address), so the non-migrating server path stays allocation-free.
-            val dest = if (isServer) api.decodePathKey(api.sendInfoToAddr(sendInfo)) else null
+            // Server egress follows the peer and pins its own source: send to the destination quiche
+            // chose (sendInfo.to) so a migrated client's new source receives replies, and leave from the
+            // local address quiche recorded for that path (sendInfo.from) so a wildcard-bound server does
+            // not answer from whichever address the kernel prefers (#556). The two are read together and
+            // carried together — a reply that names one and not the other is what this type removes.
+            // Clients send to their connected/path sockets and name neither. NioUdpChannel caches the
+            // destination reconstruction (steady state targets one address), so the non-migrating server
+            // path stays allocation-free.
+            val sendTarget =
+                if (isServer) {
+                    SendTarget.ServerReply(
+                        to = api.decodePathKey(api.sendInfoToAddr(sendInfo)),
+                        // The one place quiche's "no egress address" sentinel is read. Converting it
+                        // here means no egress channel ever branches on a magic family number.
+                        from =
+                            api.decodePathKey(api.sendInfoFromAddr(sendInfo)).let { key ->
+                                if (key.family == 0) ReplySource.Undecodable else ReplySource.Recorded(key)
+                            },
+                    )
+                } else {
+                    SendTarget.ConnectedPeer
+                }
             // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
             // a backend that throws outside that contract. It normalises into the type — it does not
             // decide policy. That decision is the exhaustive `when` below, which is what makes adding
@@ -1463,7 +1480,7 @@ class QuicheDriver(
                     // every queued stream command. The connection then cannot die, so nothing
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
-                    clock.withBound(sendStallBound) { channel.send(udpSendBuf, written, dest) }
+                    clock.withBound(sendStallBound) { channel.send(udpSendBuf, written, sendTarget) }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce

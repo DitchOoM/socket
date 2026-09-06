@@ -182,7 +182,7 @@ internal class ImpairedPipe(
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome {
             var deliverPrimary = false
             var deliverDuplicate = false

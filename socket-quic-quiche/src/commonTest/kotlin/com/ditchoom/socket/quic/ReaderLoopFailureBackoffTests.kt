@@ -53,7 +53,7 @@ class ReaderLoopFailureBackoffTests {
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome = sendOutcomeOf { }
 
         override fun close() = Unit
