@@ -133,10 +133,19 @@ class AutoMigrationReactorTests {
         activeConnectionIdLimit = cidLimit,
     )
 
+    /**
+     * The driver's #574 data-plane signal, scriptable. A real [QuicheDriver] derives this from the
+     * active path's `quiche_path_stats`; here a test sets it directly, which is what makes "the path
+     * died and the platform said nothing" expressible with no backend at all — the same shape as
+     * [SimNetworkMonitor] on the other trigger.
+     */
+    private fun livenessFlow() = MutableStateFlow<PathLiveness>(PathLiveness.Answering)
+
     private fun runReactor(
         monitor: NetworkMonitor,
         policy: MigrationPolicy = MigrationPolicy.Automatic,
         migrateResult: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", 51234)),
+        pathLiveness: MutableStateFlow<PathLiveness> = livenessFlow(),
         // Receiver, not just a parameter, so a test can advance the virtual clock. Every assertion in
         // this file used to be driven by a fresh `setNetworkId`, which is exactly the blind spot #453
         // lived in: the one thing no test could express was *time passing with no further input*.
@@ -144,7 +153,7 @@ class AutoMigrationReactorTests {
     ) = runTest {
         val connection = RecordingQuicConnection(UnconfinedTestDispatcher(testScheduler), migrateResult)
         try {
-            wireAutoMigration(options(monitor, policy), connection, monitor)
+            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness)
             body(connection)
         } finally {
             connection.stop()
@@ -601,6 +610,145 @@ class AutoMigrationReactorTests {
                 secondWindow >= 1,
                 "the reactor asked $secondWindow time(s) in the second $observationWindow — it has " +
                     "effectively given up, so a link that becomes reachable later is never taken",
+            )
+        }
+    }
+
+    /**
+     * **#574 — the path stopped answering and the platform never said a word.**
+     *
+     * This is the field condition the 71h Android walk measured three times: `ConnectivityManager` kept
+     * reporting `net=wifi validated=true` for 11.5s / 11.5s / 11.9s after the Wi-Fi path had stopped
+     * carrying anything, and the reactor — whose only input was that signal — did nothing for the whole
+     * lag. Here the monitor is set once and **never touched again**, exactly as a device standing still
+     * on a link the platform still believes in; the only thing that changes is the connection's own
+     * evidence.
+     *
+     * Note what makes this a real test rather than a restatement: it does not assert that the reactor
+     * *observed* the signal, it asserts that a migration happened with no network event in existence to
+     * cause one. There is no second `setNetworkId` anywhere in it.
+     */
+    @Test
+    fun aSilentPathMigratesWithNoNetworkEventAtAll() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        runReactor(monitor, pathLiveness = liveness) { conn ->
+            assertEquals(0, conn.migrateCount, "the connect-time baseline is not a handoff")
+            liveness.value = PathLiveness.Silent
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the path we are on stopped answering and nothing migrated. The platform's signal is " +
+                    "the only trigger, so the connection sits on a dead path for as long as the " +
+                    "platform takes to notice — 11.5s, measured (#574)",
+            )
+        }
+    }
+
+    /**
+     * A data-plane migration names no new link, so it must leave the recorded attachment alone.
+     *
+     * Get this wrong and the damage is silent and later. Clearing the record is the dangerous
+     * direction: the next genuine handoff is then read as the connect-time baseline and swallowed,
+     * which is #574's outage arriving by another route — so that is what the second assertion pins,
+     * and the third pins that the data-plane trigger is still armed on the far side of it.
+     */
+    @Test
+    fun aSilentPathMigrationLeavesTheAttachmentWhereItWas() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        runReactor(monitor, pathLiveness = liveness) { conn ->
+            liveness.value = PathLiveness.Silent
+            assertEquals(1, conn.migrateCount)
+
+            monitor.setNetworkId(cellular)
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "a genuine handoff after a data-plane migration must still migrate. If the move had " +
+                    "cleared the recorded attachment, this link would read as the connect-time " +
+                    "baseline and be swallowed — #574's outage again, by another route",
+            )
+            liveness.value = PathLiveness.Answering
+            liveness.value = PathLiveness.Silent
+            assertEquals(
+                3,
+                conn.migrateCount,
+                "and the data-plane trigger is still live after a control-plane handoff",
+            )
+        }
+    }
+
+    /**
+     * **The evidence has to still be true when the reactor gets to it.**
+     *
+     * `migrate()` suspends for the whole path move, so a data-plane trigger raised *during* one is
+     * delivered afterwards — and by then the move it was queued behind may be the very thing that
+     * answered it. The reactor therefore re-reads `pathLiveness.value` instead of acting on the queued
+     * emission. Without that, a handoff onto a link whose old path was already dark buys a second,
+     * pointless migration every time.
+     *
+     * Both arms run the identical script and differ only in whether the path is still dark when the
+     * gate opens, so the assertion is about the re-read and nothing else.
+     */
+    @Test
+    fun silentEvidenceRaisedDuringAMigrationIsRecheckedNotReplayed() {
+        // Settled by the migration itself: nothing further is owed.
+        val settledMonitor = SimNetworkMonitor.on(wifi)
+        val settled = livenessFlow()
+        runReactor(settledMonitor, pathLiveness = settled) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            settledMonitor.setNetworkId(cellular) // migration #1 starts and parks
+            settled.value = PathLiveness.Silent // …the old path is dark while we move off it
+            settled.value = PathLiveness.Answering // …and the move fixed it
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the queued data-plane trigger was replayed against a path that is answering again, " +
+                    "so every handoff away from a dead link costs a second, pointless migration",
+            )
+        }
+
+        // Still dark when the gate opens: the evidence stands, and so does the migration.
+        val darkMonitor = SimNetworkMonitor.on(wifi)
+        val dark = livenessFlow()
+        runReactor(darkMonitor, pathLiveness = dark) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            darkMonitor.setNetworkId(cellular)
+            dark.value = PathLiveness.Silent
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "the path is still not answering after the move, which is exactly when a data-plane " +
+                    "trigger must fire — the re-read has become a way of ignoring it",
+            )
+        }
+    }
+
+    /**
+     * A path that is answering is not a trigger, however often it says so. The guard against the
+     * data-plane signal degenerating into "migrate whenever the driver samples".
+     */
+    @Test
+    fun anAnsweringPathIsNeverATrigger() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        runReactor(monitor, pathLiveness = liveness) { conn ->
+            repeat(5) {
+                liveness.value = PathLiveness.Silent
+                liveness.value = PathLiveness.Answering
+            }
+            assertEquals(
+                5,
+                conn.migrateCount,
+                "each episode of silence is one trigger and a path coming back is none, so five " +
+                    "episodes are five migrations",
             )
         }
     }

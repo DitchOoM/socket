@@ -47,8 +47,10 @@ object QuicheEngine : QuicEngine {
             )
         observation.collectInto(connection)
         wireClientConnectivityTap(quicOptions, recorder, connection, monitor)
-        // Auto-migration (QuicOptions.migration, Automatic by default): re-home on link change.
-        wireAutoMigration(quicOptions, connection, monitor)
+        // Auto-migration (QuicOptions.migration, Automatic by default): re-home on a link change, or
+        // on the connection's own evidence that the path it is on has stopped answering (#574) — the
+        // driver's `pathLiveness`, which is why this is wired here and not from inside the reactor.
+        wireAutoMigration(quicOptions, connection, monitor, connection.quicheDriver.pathLiveness)
         return connection
     }
 

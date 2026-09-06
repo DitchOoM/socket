@@ -6,10 +6,12 @@ import com.ditchoom.socket.networkId
 import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
@@ -18,10 +20,11 @@ import kotlin.time.Duration.Companion.seconds
 
 /*
  * Turns the public migration policy (QuicOptions.migration, Automatic by default) into a live reactor on
- * the client connection: a NetworkMonitor's path changes become QuicScope.migrate() calls, so a
- * Wi-Fi↔cellular handoff re-homes the QUIC connection with no caller code. The mirror of
- * TraceCaptureWiring's wireClientConnectivityTap — same one-hop shape, wired from the three QuicheEngine
- * actuals' connect() paths (never bind(): a server has no local client path).
+ * the client connection: a NetworkMonitor's path changes — and the connection's own evidence that the
+ * path it is on has stopped answering — become QuicScope.migrate() calls, so a Wi-Fi↔cellular handoff
+ * re-homes the QUIC connection with no caller code. The mirror of TraceCaptureWiring's
+ * wireClientConnectivityTap — same one-hop shape, wired from the three QuicheEngine actuals' connect()
+ * paths (never bind(): a server has no local client path).
  */
 
 /**
@@ -43,10 +46,82 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
     }
 
 /**
- * Under [MigrationPolicy.Automatic], launch a child of [connection] that watches [monitor]'s
- * identity-keyed path changes and actively migrates ([QuicScope.migrate] to
- * [MigrationTarget.FreshLocalEndpoint] — a fresh platform-chosen local endpoint) on each change to a new
- * link. The collector is a child of the connection scope, so it stops when the connection closes.
+ * A link the monitor can name, or the absence of one — used both for what the reactor believes it is
+ * attached to and for what the monitor is reporting right now.
+ *
+ * The attachment was a `NetworkId?` local whose KDoc argued the nullable was acceptable: "a local in
+ * one function that nothing outside observes". #574 made that argument stop holding. The value is now
+ * read by a second trigger that fires with **no link change to name**, and by
+ * [awaitRetrySlot] to decide what would count as news — so "the monitor has named no routable link"
+ * has to be a state the compiler can see rather than a `null` explained in prose.
+ *
+ * [NetworkId.Unidentified] is not the sentinel either: that is a link the monitor **saw** and could
+ * not name, which the pipeline below already drops, and reusing it would conflate "no link" with
+ * "a nameless one".
+ */
+private sealed interface ObservedLink {
+    /**
+     * No routable, identified link is being reported. At connect that means the baseline has yet to
+     * arrive; later it means the monitor has stopped naming one (a captive portal, a suspended radio).
+     */
+    data object None : ObservedLink
+
+    /** The link, as the monitor named it. */
+    data class Link(
+        val id: NetworkId,
+    ) : ObservedLink
+}
+
+/**
+ * The link the monitor is reporting **now**, under exactly the filters the trigger pipeline applies —
+ * one definition, so "what woke us" and "what is true" can never be filtered differently.
+ */
+private val NetworkMonitor.observedLink: ObservedLink
+    get() =
+        state.value.let { current ->
+            if (current.canRouteOffLink && current.networkId != NetworkId.Unidentified) {
+                ObservedLink.Link(current.networkId)
+            } else {
+                ObservedLink.None
+            }
+        }
+
+/**
+ * Whether [id] is news to a retry predicated on this link — the predicate [awaitRetrySlot] abandons a
+ * backoff on.
+ *
+ * [ObservedLink.None] answers `false` for everything, and only a **data-plane** retry can ask from
+ * there (a control-plane one is predicated on the link it is moving onto, which by construction is a
+ * [ObservedLink.Link]). That is the right answer for it: the reactor has been told of no link at all,
+ * so there is no link it is failing to reach, and each retry already asks the platform for whatever
+ * its current default interface is.
+ */
+private fun ObservedLink.isNewsComparedTo(id: NetworkId): Boolean = this is ObservedLink.Link && this.id != id
+
+/**
+ * Why the reactor woke. Two sources, one sequential collector — see [wireAutoMigration]'s "two
+ * triggers, one lane".
+ *
+ * Neither case carries the fact that produced it, deliberately. An emission can sit in the merge
+ * behind a migration that takes seconds, so a payload here would be a snapshot of a world that has
+ * moved on — and acting on it is how a queue of flaps becomes a queue of migrations. These are
+ * wake-ups; the facts are re-read from [NetworkMonitor.observedLink] and [PathLiveness] at the moment
+ * of use.
+ */
+private sealed interface MigrationTrigger {
+    /** The platform named a different link (the control plane). */
+    data object LinkChanged : MigrationTrigger
+
+    /** The path we are on stopped answering, whatever the platform says about it (the data plane). */
+    data object PathStoppedAnswering : MigrationTrigger
+}
+
+/**
+ * Under [MigrationPolicy.Automatic], launch a child of [connection] that watches for the two events
+ * that mean this connection should move — [monitor]'s identity-keyed path changes, and [pathLiveness]
+ * reporting that the path we are on has stopped answering — and actively migrates
+ * ([QuicScope.migrate] to [MigrationTarget.FreshLocalEndpoint], a fresh platform-chosen local endpoint)
+ * on each. The collector is a child of the connection scope, so it stops when the connection closes.
  *
  * ## The pipeline, line by line — the reasoning is the load-bearing part
  *
@@ -66,7 +141,7 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * **`distinctUntilChanged()`** — the dedupe that stops Android's ~1s `Pending`→`Confirmed` window on one
  * Wi-Fi network from reading as a handoff (RFC_NETWORK_REACHABILITY §5, `isTransient`).
  *
- * **`attachedTo`, not `drop(1)`** — the first identified link is the connect-time baseline, same
+ * **[ObservedLink], not `drop(1)`** — the first identified link is the connect-time baseline, same
  * contract as before, but *recorded* rather than discarded. That record is what makes the two decisions
  * below possible: a flap that returns to the link we are already on is free, and a link we failed to
  * migrate onto is not mistaken for the one we live on.
@@ -74,8 +149,30 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * **`Impossible` cancels; `Failed` is retried on a decaying backoff** —
  * [MigrationResult.Unmoved.Impossible] is by definition the family where every later call answers the
  * same, whatever the network does, so the observer stops. A [MigrationResult.Unmoved.Failed] attempt
- * leaves `attachedTo` alone and is re-attempted in place, because the emission that would otherwise be
+ * leaves the attachment alone and is re-attempted in place, because the emission that would otherwise be
  * the next new information **never arrives** (#453, and see [retryableWithoutNewInformation]).
+ *
+ * ## Two triggers, one lane (#574)
+ *
+ * The control-plane signal is not always right, and when it is wrong it is wrong for a long time.
+ * Measured on the 71h Android walk: every real Wi-Fi→cellular handoff spent **11.5s / 11.5s / 11.9s**
+ * — 17 consecutive failed echoes each — on a path carrying nothing while `ConnectivityManager` still
+ * reported `net=wifi validated=true`; the migration that eventually followed took 338ms–1954ms. iOS
+ * reports the same handoff in ~1s. So the outage was ~12.5s of which QUIC was under two, and the
+ * difference was entirely *which* signal the connection was waiting for. [PathLiveness] is the second
+ * one, and [SILENT_PATH_PTO_THRESHOLD] carries the argument for why it cannot re-open #385.
+ *
+ * The two sources are `merge`d into a **single sequential collector** rather than given a coroutine
+ * each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is
+ * what makes "one migration at a time" a property of the shape instead of a lock. Two collectors would
+ * race each other into [MigrationResult.Unmoved.Failed.AlreadyInProgress] and then both retry.
+ *
+ * A [MigrationTrigger.PathStoppedAnswering] is re-checked against `pathLiveness.value` before it is
+ * acted on, because a merged emission can be **queued behind a migration that was already in flight** —
+ * and the fact it carries may have been settled by that very migration. Re-reading is what keeps
+ * "the path was dark a second ago" from becoming a second, pointless move. (The driver publishing one
+ * transition per episode, and publishing [PathLiveness.Answering] synchronously with the switch, is the
+ * other half of that; neither alone is enough.)
  *
  * ## Why a failed attempt cannot wait for the next network event (#453)
  *
@@ -109,9 +206,13 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
  * failed), so a second migration cannot start while one is in flight and the rate is bounded by path
- * validation rather than by a guessed constant. While this collector is suspended the upstream
- * `StateFlow` conflates: intermediate flaps are dropped and it resumes on whichever link is current
- * *then*. Coalescing is therefore already present, keyed to the real cost of the operation. A quiet
+ * validation rather than by a guessed constant. While this collector is suspended, flaps coalesce: the
+ * wake-ups queue, but they carry no facts, so the first one delivered resolves against whichever link
+ * is current *then* and each one behind it finds the reactor already attached to it. Coalescing is
+ * therefore still present and still keyed to the real cost of the operation — but as of #574 it is a
+ * property of **re-reading**, not of `StateFlow` conflation, because `merge` buffers where a single
+ * `StateFlow` collector conflated. `AutoMigrationReactorTests.changesDuringAnInFlightMigrationCoalesce`
+ * is the test that caught the difference and is what pins it. A quiet
  * period on top could only refuse a genuine handoff arriving inside the window — leaving the
  * connection on a dead path for the remainder of it, which is precisely the outage active migration
  * exists to prevent. The retry backoff is the opposite of such a window and must stay that way: it is
@@ -119,12 +220,16 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
  * new information and the collector is about to be handed it.
  *
  * No-op unless [QuicOptions.migration] is [MigrationPolicy.Automatic], and a genuine no-op — nothing is
- * even launched — for [NetworkMonitor.AlwaysAvailable], whose network identity never changes.
+ * even launched — for [NetworkMonitor.AlwaysAvailable], whose network identity never changes. Note that
+ * the short-circuit is on the *monitor*, not on the whole reactor: it stands because that monitor is
+ * the one platforms install when they cannot observe the network at all (Android without a Context,
+ * Wasm), and those are exactly the platforms with no migration backend to trigger.
  */
 internal fun wireAutoMigration(
     quicOptions: QuicOptions,
     connection: QuicConnection,
     monitor: NetworkMonitor,
+    pathLiveness: StateFlow<PathLiveness>,
 ) {
     when (quicOptions.migration) {
         MigrationPolicy.Forbidden, MigrationPolicy.Manual -> return
@@ -134,47 +239,66 @@ internal fun wireAutoMigration(
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
     connection.launch {
-        // `null` here means "the baseline emission has not arrived yet" — and it stays a nullable on
-        // purpose, against this campaign's usual rule. It is a local in one function that nothing outside
-        // observes; `NetworkId.Unidentified` would be an actively *wrong* sentinel (it is a link the
-        // monitor saw but could not name, which the filter above already drops); and a sealed wrapper for
-        // a three-line local is noise, not precision.
-        var attachedTo: NetworkId? = null
-        monitor.state
-            .filter { it.canRouteOffLink }
-            .map { it.networkId }
-            .filter { it != NetworkId.Unidentified }
-            .distinctUntilChanged()
-            .collect { id ->
-                if (attachedTo == null) {
-                    // The first identified link is the connect-time baseline, not a change.
-                    attachedTo = id
-                    return@collect
+        var attachedTo: ObservedLink = ObservedLink.None
+        merge(
+            monitor.state
+                .filter { it.canRouteOffLink }
+                .map { it.networkId }
+                .filter { it != NetworkId.Unidentified }
+                .distinctUntilChanged()
+                .map { MigrationTrigger.LinkChanged },
+            pathLiveness
+                .filter { it is PathLiveness.Silent }
+                .map { MigrationTrigger.PathStoppedAnswering },
+        ).collect { trigger ->
+            // What `attachedTo` becomes if the move succeeds — and what makes a backoff stale. A
+            // data-plane trigger changes neither: we are moving to a fresh local endpoint on the link
+            // we were already told we are on.
+            val attachOnSuccess =
+                when (trigger) {
+                    MigrationTrigger.LinkChanged -> {
+                        // Re-read, never the emission's own payload: see [MigrationTrigger].
+                        val now = monitor.observedLink
+                        if (attachedTo == ObservedLink.None) {
+                            // The first identified link is the connect-time baseline, not a change.
+                            attachedTo = now
+                            return@collect
+                        }
+                        // Nothing routable to move onto any more, or a flap that came home: both free.
+                        if (now == ObservedLink.None || now == attachedTo) return@collect
+                        now
+                    }
+
+                    MigrationTrigger.PathStoppedAnswering -> {
+                        // Re-read: this emission may have been queued behind a migration that has
+                        // since answered the very question it is asking. See "two triggers, one lane".
+                        if (pathLiveness.value !is PathLiveness.Silent) return@collect
+                        attachedTo
+                    }
                 }
-                if (id == attachedTo) return@collect // a flap that came home costs nothing
-                var attempt = 1
-                while (true) {
-                    when (val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)) {
-                        is MigrationResult.Succeeded -> {
-                            attachedTo = id
-                            return@collect
-                        }
+            var attempt = 1
+            while (true) {
+                when (val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)) {
+                    is MigrationResult.Succeeded -> {
+                        attachedTo = attachOnSuccess
+                        return@collect
+                    }
 
-                        is MigrationResult.Unmoved.Impossible -> {
-                            cancel()
-                            return@collect
-                        }
+                    is MigrationResult.Unmoved.Impossible -> {
+                        cancel()
+                        return@collect
+                    }
 
-                        // Not this time — and do NOT claim the link we failed to reach. Whether "not
-                        // this time" is worth saying again is the leaf's own answer, never a default.
-                        is MigrationResult.Unmoved.Failed -> {
-                            if (!result.retryableWithoutNewInformation()) return@collect
-                            if (!awaitRetrySlot(monitor, id, backoffBeforeAttempt(attempt))) return@collect
-                            attempt++
-                        }
+                    // Not this time — and do NOT claim the link we failed to reach. Whether "not
+                    // this time" is worth saying again is the leaf's own answer, never a default.
+                    is MigrationResult.Unmoved.Failed -> {
+                        if (!result.retryableWithoutNewInformation()) return@collect
+                        if (!awaitRetrySlot(monitor, attachOnSuccess, backoffBeforeAttempt(attempt))) return@collect
+                        attempt++
                     }
                 }
             }
+        }
     }
 }
 
@@ -225,8 +349,10 @@ private val RETRY_BACKOFF_CEILING = 60.seconds
 private const val BACKOFF_SHIFT_CAP = 20
 
 /**
- * Wait out [backoff] before re-attempting a migration onto [attempting], and report whether the retry
- * is still the right thing to do.
+ * Wait out [backoff] before re-attempting a migration, and report whether the retry is still the right
+ * thing to do. [attempting] is what the attempt is predicated on: the link being moved onto for a
+ * control-plane handoff, or — for a data-plane one, which names no new link — the link the connection
+ * was already told it is on.
  *
  * Returns `true` when the backoff elapsed with no better idea available — retry. Returns `false` when
  * a *different* routable, identified link appeared first, which makes this retry stale: that link is
@@ -236,19 +362,23 @@ private const val BACKOFF_SHIFT_CAP = 20
  * deliberately does not have — a genuine handoff arriving mid-backoff is acted on at once rather than
  * waiting it out.
  *
+ * [ObservedLink.None] — only a data-plane retry can be predicated on it — abandons nothing, for the
+ * reason [isNewsComparedTo] gives: there is no link being failed to reach, so no link report is a
+ * better idea than the retry already in hand.
+ *
  * The filters mirror the main pipeline exactly: a link the monitor cannot name, or says traffic will
  * not cross, is not a reason to abandon the retry.
  */
 private suspend fun awaitRetrySlot(
     monitor: NetworkMonitor,
-    attempting: NetworkId,
+    attempting: ObservedLink,
     backoff: Duration,
 ): Boolean =
     withTimeoutOrNull(backoff) {
         monitor.state
             .filter { it.canRouteOffLink }
             .map { it.networkId }
-            .first { it != NetworkId.Unidentified && it != attempting }
+            .first { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it) }
     } == null
 
 /**
