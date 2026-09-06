@@ -111,7 +111,7 @@ class LinuxQuicPassiveMigrationTests : QuicPassiveMigrationTestSuite() {
                         memcpy(clientAddr.ptr, r.peerAddr, r.peerAddrLen.convert())
                         clientAddrLen.value = r.peerAddrLen.toInt() // publish after the copy
                     }
-                    IoUringUdpChannel(upstreamFd.value).send(buf, r.bytesReceived, dest = null)
+                    IoUringUdpChannel(upstreamFd.value).send(buf, r.bytesReceived, SendTarget.ConnectedPeer)
                 }
             } finally {
                 buf.freeNativeMemory()
