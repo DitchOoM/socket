@@ -468,18 +468,6 @@ internal fun migrationSimOptions(
     )
 
 /**
- * Establish a real client/server quiche pair over a [MultiPathPipe] on the calling `runTest` scheduler's
- * virtual time and run [block] against it. Everything is torn down before returning.
- *
- * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
- * each path the driver opens afterwards (argument is the 1-based probe index).
- *
- * [clock] defaults to [SimClockChoice.Virtual] rather than the calling dispatcher's clock because this
- * harness exists for virtual time (see the class KDoc: 7.168s of §8.2.4 budget in 0ms of wall); it is
- * resolved against the calling dispatcher before anything native is allocated, so calling this from a
- * real dispatcher — or asking for [SimClockChoice.Wall] under `runTest` — fails at construction (#497).
- */
-/**
  * Everything about a migration-sim run that is decided by the platform rather than the scenario: which
  * `libquiche` binding to drive, where this target's test certificates are, and the C `sockaddr` layout
  * its OS uses.
@@ -497,6 +485,18 @@ internal class MigrationSimEnv(
     val codec: SocketAddressCodec,
 )
 
+/**
+ * Establish a real client/server quiche pair over a [MultiPathPipe] on the calling `runTest` scheduler's
+ * virtual time and run [block] against it. Everything is torn down before returning.
+ *
+ * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
+ * each path the driver opens afterwards (argument is the 1-based probe index).
+ *
+ * [clock] defaults to [SimClockChoice.Virtual] rather than the calling dispatcher's clock because this
+ * harness exists for virtual time (see the class KDoc: 7.168s of §8.2.4 budget in 0ms of wall); it is
+ * resolved against the calling dispatcher before anything native is allocated, so calling this from a
+ * real dispatcher — or asking for [SimClockChoice.Wall] under `runTest` — fails at construction (#497).
+ */
 internal suspend fun <R> withMigrationSim(
     env: MigrationSimEnv,
     seed: Long,

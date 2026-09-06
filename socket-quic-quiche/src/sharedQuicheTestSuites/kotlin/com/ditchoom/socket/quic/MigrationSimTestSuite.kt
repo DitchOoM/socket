@@ -809,7 +809,7 @@ abstract class MigrationSimTestSuite {
                 // lesson #445 learned when a loopback burst survived patched and unpatched alike.
                 for (latency in POOL_RECOVERY_LATENCIES) {
                     withMigrationSim(
-                    simEnv(),
+                        simEnv(),
                         seed = 45_900L,
                         quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
                         primaryImpairment = PathImpairment(latency = latency),
