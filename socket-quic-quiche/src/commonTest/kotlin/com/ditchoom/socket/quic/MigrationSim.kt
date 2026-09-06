@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -13,7 +14,6 @@ import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
-import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.io.File
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -54,7 +53,7 @@ import kotlin.time.Duration.Companion.seconds
  * Note the deliberate asymmetry with the probe-path default ([PathImpairment] with no latency): a new
  * path faster than the one being left IS the #445 overtake window, so the default scenario exercises
  * that too. A test that needs a specific relationship states both, as
- * [MigrationSimTests.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
+ * [MigrationSimTestSuite.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
  */
 internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 
@@ -192,7 +191,7 @@ internal class MigrationSimScope(
                 if (len <= 0 || len > QUIC_MAX_CONN_ID_LEN) {
                     null
                 } else {
-                    buf.readByteArray(len).joinToString("") { b -> "%02x".format(b) }
+                    buf.readByteArray(len).joinToString("") { b -> hexByte(b) }
                 }
             }
         } finally {
@@ -359,6 +358,12 @@ internal fun shortHeaderDcidHex(datagram: PipeDatagram): String? {
 /** `String.format` is JVM-only; these suites compile for Apple and Linux too. */
 private const val HEX_DIGITS = "0123456789abcdef"
 
+/** One byte as two lowercase hex digits, without `String.format`. */
+private fun hexByte(b: Byte): String {
+    val v = b.toInt() and 0xFF
+    return "${HEX_DIGITS[v shr 4]}${HEX_DIGITS[v and 0x0F]}"
+}
+
 /**
  * Records the connection-ID calls each side makes, so a scenario can assert on the *mechanism*
  * ("the abandon retired the id it held") rather than only on the aggregate `available_dcids` count,
@@ -413,11 +418,23 @@ internal class CidAuditQuicheApi(
         }
 }
 
-private fun migrationSimCertPath(name: String): String {
-    val url =
-        MultiPathPipe::class.java.classLoader.getResource("certs/$name")
-            ?: error("Test cert not found: certs/$name")
-    return File(url.toURI()).absolutePath
+/**
+ * A path written into native memory as a NUL-terminated C string, for quiche's `*_from_pem_file` calls.
+ *
+ * A test-local twin of `commonJvmWithQuicServer`'s `writeNullTerminatedString`: that one is `internal`
+ * to `commonJvmMain` and its Apple/Linux counterparts are `private`, so none of the three is reachable
+ * from a source set that compiles for all of them. Named distinctly so the JVM compilation, which does
+ * see the `commonJvmMain` one, has no ambiguity.
+ */
+internal fun simNullTerminated(
+    path: String,
+    factory: BufferFactory,
+): PlatformBuffer {
+    val buf = factory.allocate(path.length + 1)
+    buf.writeString(path, Charset.UTF8)
+    buf.writeByte(0)
+    buf.resetForRead()
+    return buf
 }
 
 /**
@@ -462,19 +479,39 @@ internal fun migrationSimOptions(
  * resolved against the calling dispatcher before anything native is allocated, so calling this from a
  * real dispatcher — or asking for [SimClockChoice.Wall] under `runTest` — fails at construction (#497).
  */
+/**
+ * Everything about a migration-sim run that is decided by the platform rather than the scenario: which
+ * `libquiche` binding to drive, where this target's test certificates are, and the C `sockaddr` layout
+ * its OS uses.
+ *
+ * It is a parameter rather than something the sim discovers, because every way of discovering it is
+ * platform-specific: `loadQuicheApi()` exists only on JVM/Android, the certificate fixtures are found
+ * by classpath on the JVM and by filesystem probe on Kotlin/Native (and can be legitimately absent on a
+ * simulator — see #359), and the sockaddr layout differs by OS. A per-platform test subclass supplies
+ * one, exactly as [RetiredCidInFlightPacketTestSuite] takes its `testTlsConfig`/`platformQuicheApi`.
+ */
+internal class MigrationSimEnv(
+    val api: QuicheApi,
+    val certChainPath: String,
+    val privKeyPath: String,
+    val codec: SocketAddressCodec,
+)
+
 internal suspend fun <R> withMigrationSim(
+    env: MigrationSimEnv,
     seed: Long,
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
     clock: SimClockChoice = SimClockChoice.Virtual,
-    codec: SocketAddressCodec = SocketAddressCodec(hostOsSockAddrLayout()),
     block: suspend MigrationSimScope.() -> R,
 ): R {
-    // First, before loadQuicheApi(): an incoherent clock fails here, typed, with nothing to tear down.
+    // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
+    // to tear down.
     val driverClock = clock.resolve()
-    val api = loadQuicheApi()
+    val api = env.api
+    val codec = env.codec
     val bufferFactory = BufferFactory.network()
 
     val clientRandom = Random(seed xor 0x434C49454E54L) // "CLIENT"
@@ -505,14 +542,14 @@ internal suspend fun <R> withMigrationSim(
             val alpn = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, cfg))
+            applyQuicOptions(quicOptions, SimQuicConfigCalls(api, cfg))
         }
-        writeNullTerminatedString(migrationSimCertPath("cert.crt"), bufferFactory).let { buf ->
+        simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             val rc = api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
             buf.freeNativeMemory()
             check(rc == 0) { "Failed to load cert chain: $rc" }
         }
-        writeNullTerminatedString(migrationSimCertPath("cert.key"), bufferFactory).let { buf ->
+        simNullTerminated(env.privKeyPath, bufferFactory).let { buf ->
             val rc = api.configLoadPrivKeyFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
             buf.freeNativeMemory()
             check(rc == 0) { "Failed to load private key: $rc" }

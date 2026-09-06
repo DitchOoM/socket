@@ -28,12 +28,27 @@ import kotlin.time.Duration.Companion.seconds
  * found on a phone. See [withMigrationSim] for how the harness is built, and
  * `PathValidationVirtualClockTests` for the measurement that makes it tractable.
  */
-class MigrationSimTests {
+abstract class MigrationSimTestSuite {
+    /**
+     * The platform's `libquiche` binding, certificate fixtures and `sockaddr` layout — see
+     * [MigrationSimEnv]. Each member names its own; defaulting it would mean naming one platform's
+     * binding in code that compiles for all of them.
+     */
+    internal abstract fun simEnv(): MigrationSimEnv
+
+    /**
+     * Same hook as every other suite here: a JVM/Android member turns a missing native into a typed
+     * skip, while the Kotlin/Native members fix their binding at compile time through cinterop and
+     * leave this the default pass-through — on those platforms these tests always run.
+     */
+    protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
+
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
         runTest {
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 917_324L,
                     // The asymmetry that matters for #445: the path being left is slower than the one
                     // being joined, so the new path's packets can overtake the old path's in-flight ones.
@@ -58,8 +73,6 @@ class MigrationSimTests {
                             "a migration that reports success but never uses the path is not a migration",
                     )
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -90,8 +103,9 @@ class MigrationSimTests {
     @Test
     fun anAbandonedProbeRetiresTheConnectionIdItHeld() =
         runTest {
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 77_001L,
                     probeImpairment = { PathImpairment(blackhole = true) },
                 ) {
@@ -123,8 +137,6 @@ class MigrationSimTests {
                     val (seq, rc) = clientAudit.retireCalls.single()
                     assertEquals(0, rc, "quiche refused the retirement of dcid seq $seq (rc=$rc)")
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -158,8 +170,9 @@ class MigrationSimTests {
         runTest {
             // The sim's equivalent of the real suite's drop/allow switch — see the KDoc.
             var blackholeProbes = true
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 88_202L,
                     probeImpairment = { PathImpairment(blackhole = blackholeProbes) },
                 ) {
@@ -236,8 +249,6 @@ class MigrationSimTests {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -275,8 +286,9 @@ class MigrationSimTests {
     @Test
     fun aMigrationStrandsInFlightPacketsBearingTheRetiredCid() =
         runTest {
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 31_337L,
                     primaryImpairment = PathImpairment(latency = 40.milliseconds),
                     probeImpairment = { PathImpairment(latency = 10.milliseconds) },
@@ -353,8 +365,6 @@ class MigrationSimTests {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -401,8 +411,9 @@ class MigrationSimTests {
     fun aLostProbeIsRetriedUntilTheConnectionRehomes() =
         runTest {
             val monitor = SimNetworkMonitor.on(WIFI)
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 45_301L,
                     quicOptions =
                         migrationSimOptions(
@@ -491,8 +502,6 @@ class MigrationSimTests {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -522,8 +531,9 @@ class MigrationSimTests {
     fun aHandoffOntoALinkThatNeverAnswersBacksOffWithoutGivingUp() =
         runTest {
             val monitor = SimNetworkMonitor.on(WIFI)
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 45_302L,
                     quicOptions = quietHandoffOptions(monitor),
                     probeImpairment = { PathImpairment(blackhole = true) },
@@ -597,8 +607,6 @@ class MigrationSimTests {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -625,8 +633,9 @@ class MigrationSimTests {
     fun everyRetryInTheBudgetReachesTheNetwork() =
         runTest {
             val monitor = SimNetworkMonitor.on(WIFI)
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 45_303L,
                     quicOptions =
                         migrationSimOptions(
@@ -675,8 +684,6 @@ class MigrationSimTests {
                             "two ceilings have crossed and the surplus can never reach the network",
                     )
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -712,6 +719,7 @@ class MigrationSimTests {
                 val monitor = SimNetworkMonitor.on(WIFI)
                 var arm = Arm(-1, false)
                 withMigrationSim(
+                    simEnv(),
                     seed = 45_304L,
                     quicOptions =
                         migrationSimOptions(
@@ -736,7 +744,7 @@ class MigrationSimTests {
                 return arm
             }
 
-            try {
+            wrapTestBody {
                 val short = runArm(SHORT_IDLE_WINDOW)
                 val long = runArm(LONG_IDLE_WINDOW)
 
@@ -757,8 +765,6 @@ class MigrationSimTests {
                     short.attempts >= 2,
                     "even the short window must fit a retry, or this is #453 again: ${short.attempts}",
                 )
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -791,7 +797,7 @@ class MigrationSimTests {
     @Test
     fun anAbandonedProbeGivesItsConnectionIdBackToThePool() =
         runTest {
-            try {
+            wrapTestBody {
                 // ⚠️ SWEPT OVER RTT, and that is the point. The first cut of this test ran only on the
                 // sim's default zero-latency path and passed against a fix that was purely timing —
                 // quiche re-arms `request_validation()` from the abandoned path's own loss timer
@@ -803,6 +809,7 @@ class MigrationSimTests {
                 // lesson #445 learned when a loopback burst survived patched and unpatched alike.
                 for (latency in POOL_RECOVERY_LATENCIES) {
                     withMigrationSim(
+                    simEnv(),
                         seed = 45_900L,
                         quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
                         primaryImpairment = PathImpairment(latency = latency),
@@ -842,8 +849,6 @@ class MigrationSimTests {
                         )
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
