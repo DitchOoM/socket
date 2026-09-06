@@ -10,6 +10,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -172,11 +174,165 @@ class IdleTimeoutTerminationTests {
             }
         }
 
+    /**
+     * **The field test.** Every send *parks* — the connection must still be reaped by the idle timer.
+     *
+     * [theIdleTimerTerminatesAConnectionWhoseSendsAllFail] establishes that a connection whose sends
+     * all *fail* is reaped. That is the case this suite was written for, and it is green. It leaves a
+     * hole: it proves the idle timer arbitrates when the loop is still *running*. A send that never
+     * returns takes the loop itself out, and with it every timer the loop is responsible for arming —
+     * so the mechanism the suite exists to guarantee is not merely late, it is gone.
+     *
+     * The hole is not hypothetical. A 72-hour two-device walk (2026-09-03) recorded an iOS client
+     * that echoed at full cadence — 338 echoes, 47 ms RTT, stream integrity intact — and then emitted
+     * **nothing at all for 48.6 hours**: no read timeout, no send failure, no idle timeout, no
+     * reconnect, while a heartbeat coroutine on a different dispatcher kept logging every 60 s. Seven
+     * earlier connections in the same run died of `local: IdleTimeout` exactly as this suite says they
+     * should, which is what rules out "the idle timer is broken in general" and points at the one
+     * thing that was different about the last connection: its datapath stopped answering instead of
+     * erroring. `flushOutgoing` awaits `channel.send(...)` inline on the driver loop with no bound
+     * (`QuicheDriver.flushOutgoing`), so a parked send parks the loop.
+     *
+     * A connection that hangs forever is strictly worse than one that dies: a death reconnects, and
+     * the walk's own log shows the reconnect path working nine times. This one stranded the client
+     * for two days.
+     */
+    @Test
+    fun theIdleTimerTerminatesAConnectionWhoseSendsNeverReturn() =
+        runTest {
+            val api = StubQuicheApi()
+            api.established = true
+            api.connTimeout = 1.seconds
+            // Same staging as the sibling: phase 1 is a timer fire that only drives a flush, so the
+            // wedged send is observed on its own before any close is attributable to it.
+            api.closeOnTimeout = false
+
+            val wedged = WedgedUdpChannel()
+
+            val driver = createTestDriver(api, udpChannel = wedged)
+            driver.start(this)
+            try {
+                runCurrent()
+
+                // A timer fire is what reaches afterCommand() -> flushOutgoing(), i.e. how a
+                // retransmit or keepalive actually attempts a send.
+                api.connSendOnce = 1200
+                testScheduler.advanceTimeBy(1.seconds)
+                runCurrent()
+
+                // Anti-vacuity: without an attempted send the driver was never parked and everything
+                // below would pass on a connection that simply never tried to transmit.
+                assertTrue(
+                    wedged.sendCount > 0,
+                    "no send was attempted, so the loop was never parked and this test proved nothing",
+                )
+
+                // Now give the protocol's own mechanism every chance: quiche's idle timeout expires,
+                // and we advance far past it rather than by exactly one interval, so a merely-late
+                // reap still counts as a pass.
+                api.closeOnTimeout = true
+                testScheduler.advanceTimeBy(60.seconds)
+                runCurrent()
+
+                val state = driver.state.value
+                assertIs<QuicConnectionState.Closed>(
+                    state,
+                    "a connection whose sends never return was never reaped (state=$state) after 60s of " +
+                        "a 1s idle timeout. The send parked the driver loop inline in flushOutgoing, so " +
+                        "no further timer was ever armed and the connection cannot die — the 48.6-hour " +
+                        "hang recorded on the 2026-09-03 walk. A dead path must terminate the connection " +
+                        "so the caller can reconnect; hanging forever strands it instead.",
+                )
+                assertEquals(
+                    QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                    state.reason,
+                    "a connection wedged by an unanswered datapath must report the idle timeout that " +
+                        "reaped it, not some other cause",
+                )
+            } finally {
+                // Unwind: nothing in production completes this, so the driver would otherwise hold the
+                // test scope open and the real assertion above would be reported as a leaked coroutine.
+                wedged.release()
+                driver.commands.close()
+            }
+        }
+
+    /**
+     * The stall bound rides the **virtual** clock, so a simulation can reach it for free.
+     *
+     * Worth pinning because the bound is the one driver timer that does *not* go through
+     * [DriverClock]: it is a plain `withTimeoutOrNull` in `flushOutgoing`, which resolves against
+     * whatever dispatcher the loop runs on. Under the `driverContext = EmptyCoroutineContext` seam
+     * that is the `kotlinx-coroutines-test` scheduler, so it shares one time source with everything
+     * else the driver does — and this test is what says so, rather than the reader having to trace
+     * `withTimeoutOrNull` to its dispatcher.
+     *
+     * The assertion discriminates: a wall-clock bound would not fire at all under `advanceTimeBy`,
+     * and a bound that ignored its parameter would fire at the wrong offset. Advancing to one
+     * millisecond *short* of the bound and then past it pins both ends. The whole test costs
+     * microseconds of wall clock for a multi-second bound, which is the property being claimed.
+     */
+    @Test
+    fun theSendStallBoundIsDrivenByTheVirtualClock() =
+        runTest {
+            val api = StubQuicheApi()
+            api.established = true
+            api.connTimeout = 1.seconds
+            api.closeOnTimeout = false
+
+            // Deliberately NOT the default, so this also proves the seam is threaded rather than the
+            // driver quietly using a hardcoded value.
+            val bound = 2.seconds
+            val wedged = WedgedUdpChannel()
+            val driver = createTestDriver(api, udpChannel = wedged, sendStallBound = bound)
+            driver.start(this)
+            try {
+                runCurrent()
+
+                // The timer fire drives the flush, and the send parks inside it at exactly this instant.
+                api.connSendOnce = 1200
+                testScheduler.advanceTimeBy(1.seconds)
+                runCurrent()
+                assertTrue(
+                    wedged.sendCount > 0,
+                    "no send was attempted, so nothing was ever parked and this test proved nothing",
+                )
+                assertEquals(
+                    0,
+                    wedged.closeCount,
+                    "the stall bound fired the instant the send parked — it is not waiting at all",
+                )
+
+                testScheduler.advanceTimeBy(bound - 1.milliseconds)
+                runCurrent()
+                assertEquals(
+                    0,
+                    wedged.closeCount,
+                    "the stall bound fired 1ms EARLY: it is not honouring the duration it was given",
+                )
+
+                testScheduler.advanceTimeBy(2.milliseconds)
+                runCurrent()
+                assertEquals(
+                    1,
+                    wedged.closeCount,
+                    "the stall bound did not fire 1ms after its own duration of virtual time. Either it " +
+                        "resolves against the wall clock — in which case no simulation can ever reach " +
+                        "this branch, and the driver has two time sources instead of the one SimClock " +
+                        "exists to guarantee — or it is not reading its parameter.",
+                )
+            } finally {
+                wedged.release()
+                driver.commands.close()
+            }
+        }
+
     private fun createTestDriver(
         api: StubQuicheApi = StubQuicheApi(),
         udpChannel: UdpChannel = StubUdpChannel(),
         clock: DriverClock = RealDriverClock,
         driverContext: CoroutineContext = EmptyCoroutineContext,
+        sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
     ): QuicheDriver =
         QuicheDriver(
             // Test double: never exercises a path move.
@@ -191,5 +347,6 @@ class IdleTimeoutTerminationTests {
             isServer = false,
             clock = clock,
             driverContext = driverContext,
+            sendStallBound = sendStallBound,
         )
 }

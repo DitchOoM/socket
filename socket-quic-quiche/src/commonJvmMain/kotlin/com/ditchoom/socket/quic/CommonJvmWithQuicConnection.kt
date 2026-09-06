@@ -212,6 +212,7 @@ internal suspend fun buildJvmQuicConnection(
                 streamWritePolicy = resolveStreamWritePolicy(quicOptions),
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
+                sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
                 networkObservation = tuning.networkObservation,

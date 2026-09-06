@@ -14,6 +14,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.SendStalledException
 import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
@@ -96,6 +97,11 @@ class QuicheDriver(
      * scheduler. See RFC_DETERMINISTIC_SIMULATION.md §3.1.
      */
     private val driverContext: CoroutineContext = Dispatchers.Default,
+    /**
+     * Liveness backstop on one `UdpChannel.send` — see [flushOutgoing] for what it prevents and
+     * [DEFAULT_SEND_STALL_BOUND] for why it is this size and not derived from another timeout.
+     */
+    private val sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
     /**
      * Entropy for the stateless-reset tokens minted by [issueSpareCids]. Defaults to
      * [Random.Default]; the simulation harness injects a seeded instance so every token (and, via
@@ -1447,7 +1453,18 @@ class QuicheDriver(
             // the parent scope, the original defect this site was written to fix.
             val outcome =
                 try {
-                    channel.send(udpSendBuf, written, dest)
+                    // Bounded, because the driver loop's liveness must not be an external promise.
+                    // `send` is the one call this loop makes into platform code that can suspend
+                    // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
+                    // Network.framework awaits a handler on a serial queue, and a completion that
+                    // never arrives is indistinguishable from one that has not arrived yet. Unbounded,
+                    // that parks the loop itself — and with it every timer the loop arms, including
+                    // the idle timer RFC 9000 SS10 makes responsible for reaping a dead connection, and
+                    // every queued stream command. The connection then cannot die, so nothing
+                    // reconnects: measured in the field as 48.6 hours of total silence from a client
+                    // that had been echoing at full cadence a moment earlier.
+                    clock.withBound(sendStallBound) { channel.send(udpSendBuf, written, dest) }
+                        ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
                 } catch (untyped: Exception) {
@@ -1470,6 +1487,29 @@ class QuicheDriver(
                     // send afterwards killed the connection before the new path could be validated.
                     // Termination is left to quiche's idle timer, which reports the truthful
                     // QuicError.IdleTimeout (pinned by IdleTimeoutTerminationTests).
+                    return
+                }
+                is SendOutcome.Stalled -> {
+                    // Close this socket before anything else. The timeout above cancelled our *wait*,
+                    // not the platform operation, and that operation was handed the raw address of
+                    // [udpSendBuf] — the one buffer every datagram reuses. Leaving it outstanding
+                    // would let a late completion read memory the next flush has already overwritten,
+                    // which is the send-path use-after-free class of #366/#401 reintroduced by the fix
+                    // for a hang. Closing the socket is what ends the operation and releases the
+                    // reference; it is also the honest verdict, since a channel that did not answer is
+                    // one this driver can no longer reason about.
+                    channel.close()
+                    // Record it. A stall is the one send outcome the recording UdpChannel decorator
+                    // cannot see — the bound wraps the call to it, so a stalled send never returns
+                    // through it — and a failure mode that appears in no trace is precisely how the
+                    // field hang stayed undiagnosable for 48 hours. Emitting it here is what makes a
+                    // future stall visible in the replayable record instead of as a gap in it.
+                    recorder?.error(SendStalledException(sendStallBound))
+                    // Then behave exactly as SendOutcome.Failed: stop draining, do NOT end the
+                    // connection. A stall is not one of RFC 9000 SS10's three terminations either, and
+                    // pre-empting the idle timer here would report a cause we have not established.
+                    // With the loop live again the timer fires, the connection closes as
+                    // ByLocal(IdleTimeout), and the caller reconnects.
                     return
                 }
             }

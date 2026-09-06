@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.udp.DatagramSendError
 import com.ditchoom.socket.udp.DatagramSendException
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration
 
 /**
  * What happened to one outbound datagram: it went, or it did not and here is the typed reason.
@@ -44,6 +45,25 @@ sealed interface SendOutcome {
      */
     data class Failed(
         val error: DatagramSendError,
+    ) : SendOutcome
+
+    /**
+     * The send did not answer within [after] — the platform neither transmitted nor reported.
+     *
+     * Its own member rather than a [Failed] carrying some stand-in [DatagramSendError], because it is
+     * not the same claim. Every `DatagramSendError` is a verdict the platform *returned*; this is the
+     * absence of a verdict, and the two want opposite handling. A `Failed` path may well be fine on
+     * the next attempt — `WouldBlock` explicitly is — whereas a channel that did not answer at all is
+     * one the driver can no longer reason about, and reusing it risks a second unbounded wait.
+     *
+     * Folding it into `Failed(WouldBlock)` would also be a lie in the direction that hides the defect:
+     * `WouldBlock` means a backend waited and gave up *inside* its own budget, i.e. it returned.
+     *
+     * Recorded by `QuicheDriver.flushOutgoing`, never by a backend — a backend cannot observe its own
+     * failure to return. See that call site for why the bound exists at all.
+     */
+    data class Stalled(
+        val after: Duration,
     ) : SendOutcome
 }
 

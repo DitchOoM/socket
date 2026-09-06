@@ -1,7 +1,10 @@
 package com.ditchoom.socket.quic
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.SelectBuilder
+import kotlinx.coroutines.selects.select
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 
@@ -40,6 +43,9 @@ internal class ManualDriverClock : DriverClock {
      *  [advance] waits for the *post-fire* re-arm to know the branch fully ran. */
     private val rearmed = Channel<Unit>(Channel.UNLIMITED)
 
+    /** RENDEZVOUS: a send blocks until the driver is parked inside [withBound] and takes the stall. */
+    private val stalls = Channel<Unit>(Channel.RENDEZVOUS)
+
     /** Set once the driver's very first arm token (emitted before any fire) has been consumed. */
     private var initialArmConsumed = false
 
@@ -58,6 +64,41 @@ internal class ManualDriverClock : DriverClock {
         // selecting on the rendezvous yields the loop's "a timer fired" sentinel (null) when advance() fires.
         rearmed.trySend(Unit)
         with(builder) { ticks.onReceive { null } }
+    }
+
+    /**
+     * Runs [block] until it finishes **or** the test fires [stall], ignoring [wait] — for the same
+     * reason [armTimeout] ignores it: in this tier the test decides when time passes, and a real
+     * `withTimeoutOrNull` here would be a live multi-second wall-clock timer inside a suite whose whole
+     * claim is that it has none.
+     *
+     * Ignoring [wait] must not mean losing the backstop, though. The driver's send bound is what keeps
+     * a wedged datapath from parking the whole loop; a clock that quietly dropped it would let a
+     * Tier-1 test hang on exactly the defect the bound exists to prevent. So it stays firable by hand,
+     * like the timer — [stall] is to [withBound] what [advance] is to [armTimeout].
+     */
+    override suspend fun <T> withBound(
+        wait: Duration,
+        block: suspend () -> T,
+    ): T? =
+        coroutineScope {
+            val work = async { block() }
+            select {
+                work.onAwait { it }
+                stalls.onReceive {
+                    work.cancel()
+                    null
+                }
+            }
+        }
+
+    /**
+     * Fire the send bound the driver is currently waiting under, as [withBound] would have on a real
+     * clock. RENDEZVOUS like [advance]'s tick, so this suspends until the driver is genuinely parked
+     * inside a send — a test cannot fire a bound that is not being awaited and get a false pass.
+     */
+    suspend fun stall() {
+        stalls.send(Unit)
     }
 
     /**
@@ -97,6 +138,13 @@ internal class ManualDriverClock : DriverClock {
      * Fire the armed timer **without** waiting for a re-arm — for a fire that *terminates* the loop (e.g. an
      * idle-close), after which the driver never parks again. Synchronise on the observable terminal effect
      * instead (e.g. `driver.state.first { it is Closed }`), not on a re-arm that will never come.
+     *
+     * ⚠️ Still awaits the **tick** handoff, which is a rendezvous: it resumes only once the driver's timer
+     * branch reaches its next suspension point. If that branch parks — the shape a wedged send produces,
+     * where the branch suspends inside [withBound] and stays there — this call deadlocks against the very
+     * condition the test is setting up. Fire it from its own coroutine in that case
+     * (`val firing = async { clock.fireExpectingNoRearm(d) }`) and synchronise on the effect.
+     * Measured while writing `SendStallBoundTests`: inline hangs, detached does not.
      */
     suspend fun fireExpectingNoRearm(by: Duration) {
         consumeInitialArm()
