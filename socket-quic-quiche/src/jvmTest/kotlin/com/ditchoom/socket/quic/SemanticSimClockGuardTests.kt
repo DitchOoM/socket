@@ -24,6 +24,8 @@ import kotlin.time.Duration.Companion.seconds
  * wrapped in `skipOnMissingNativeLib`; a lane without libquiche must still see them pass.
  */
 class SemanticSimClockGuardTests {
+    private val env = jvmMigrationSimEnv()
+
     @Test
     fun aSemanticSimAskedForTheWallClockUnderRunTestFailsAtConstruction() =
         runTest {
@@ -40,7 +42,7 @@ class SemanticSimClockGuardTests {
     fun aMigrationSimAskedForTheWallClockUnderRunTestFailsAtConstruction() =
         runTest {
             assertFailsWith<IncoherentSimClockException> {
-                withMigrationSim(seed = 1L, clock = SimClockChoice.Wall) {
+                withMigrationSim(env, seed = 1L, clock = SimClockChoice.Wall) {
                     fail("the block must never run: the sim must refuse to be built")
                 }
             }
@@ -52,7 +54,7 @@ class SemanticSimClockGuardTests {
             // Its default is Virtual: this harness exists for virtual time, and on a real dispatcher
             // nothing would ever advance the scheduler it pinned quiche to.
             assertFailsWith<IncoherentSimClockException> {
-                withMigrationSim(seed = 1L) {
+                withMigrationSim(env, seed = 1L) {
                     fail("the block must never run: the sim must refuse to be built")
                 }
             }
