@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -343,11 +344,20 @@ internal class ServerIngress(
  * carries no CID length, so the reader must already know it — every source CID this server issues is
  * [QUIC_MAX_CONN_ID_LEN] bytes (`generateScid`). Same decode as `HoldbackDatagramChannel`.
  */
-internal fun shortHeaderDcidHex(bytes: ByteArray): String? {
-    if (bytes.size < 1 + QUIC_MAX_CONN_ID_LEN) return null
-    if (bytes[0].toInt() and 0x80 != 0) return null // long header — its DCID is length-prefixed instead
-    return bytes.copyOfRange(1, 1 + QUIC_MAX_CONN_ID_LEN).joinToString("") { "%02x".format(it) }
+internal fun shortHeaderDcidHex(datagram: PipeDatagram): String? {
+    if (datagram.length < 1 + QUIC_MAX_CONN_ID_LEN) return null
+    val buffer = datagram.readable()
+    if (buffer.readByte().toInt() and 0x80 != 0) return null // long header — DCID is length-prefixed instead
+    val hex = StringBuilder(QUIC_MAX_CONN_ID_LEN * 2)
+    repeat(QUIC_MAX_CONN_ID_LEN) {
+        val b = buffer.readByte().toInt() and 0xFF
+        hex.append(HEX_DIGITS[b shr 4]).append(HEX_DIGITS[b and 0x0F])
+    }
+    return hex.toString()
 }
+
+/** `String.format` is JVM-only; these suites compile for Apple and Linux too. */
+private const val HEX_DIGITS = "0123456789abcdef"
 
 /**
  * Records the connection-ID calls each side makes, so a scenario can assert on the *mechanism*
@@ -483,7 +493,8 @@ internal suspend fun <R> withMigrationSim(
     return coroutineScope {
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
-        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec)
+        val ledger = DatagramLedger(bufferFactory)
+        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
         val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
 
@@ -615,16 +626,32 @@ internal suspend fun <R> withMigrationSim(
             simScope.launch {
                 while (true) {
                     val datagram = pipe.receiveAtServer()
-                    val info =
-                        serverRecvInfos.getOrPut(datagram.from) {
-                            val from = pipe.pathAt(datagram.from).sockAddr
-                            api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
-                        }
-                    serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(datagram.bytes), serverAudit.retiredScidsSeen)
-                    val buf = bufferFactory.allocate(datagram.bytes.size)
-                    buf.resetForWrite()
-                    buf.writeBytes(datagram.bytes)
-                    serverDriver.commands.send(QuicheCmd.RecvPacket(buf, datagram.bytes.size, PacketSource.FromServerSocket(info) {}))
+                    // Once this datagram leaves the channel the pump is its ONLY owner, and every exit
+                    // from here — a throw building the recv_info, a cancelled `send`, a closed command
+                    // channel — has to free it. A `finally` on a handoff flag covers all of them at once;
+                    // enumerating the escapes one at a time is what left exactly one buffer stranded per
+                    // run, and a pump that dies inside a SupervisorJob dies silently, so the leak was the
+                    // only evidence it had happened at all.
+                    val owned = datagram.datagram
+                    var handedOff = false
+                    try {
+                        val info =
+                            serverRecvInfos.getOrPut(datagram.from) {
+                                val from = pipe.pathAt(datagram.from).sockAddr
+                                api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
+                            }
+                        serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(owned), serverAudit.retiredScidsSeen)
+                        // The pipe's buffer goes straight to the driver — no second copy. RecvPacket frees
+                        // it (execute and failCommand both do), so ownership TRANSFERS rather than being
+                        // released here.
+                        serverDriver.commands.send(
+                            QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromServerSocket(info) {}),
+                        )
+                        ledger.transfer(owned)
+                        handedOff = true
+                    } finally {
+                        if (!handedOff) ledger.release(owned)
+                    }
                 }
             }
 
@@ -637,39 +664,50 @@ internal suspend fun <R> withMigrationSim(
                 DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
             )
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
-        try {
-            withTimeout(establishTimeout) {
-                clientDriver.state.first { it !is QuicConnectionState.Handshaking }
-                serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+        val result =
+            try {
+                withTimeout(establishTimeout) {
+                    clientDriver.state.first { it !is QuicConnectionState.Handshaking }
+                    serverDriver.state.first { it !is QuicConnectionState.Handshaking }
+                }
+                // The production entry point, called exactly where the three `QuicheEngine.connect()`
+                // actuals call it: after the handshake, on the resolved monitor, once per connection. A
+                // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so
+                // the manual scenarios below are unaffected and the branch under test is the shipped one.
+                wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
+                MigrationSimScope(
+                    client,
+                    server,
+                    clientDriver,
+                    serverDriver,
+                    pipe,
+                    api,
+                    clientConn,
+                    serverConn,
+                    clientAudit,
+                    serverAudit,
+                    serverIngress,
+                    factory,
+                ).block()
+            } finally {
+                withContext(NonCancellable) {
+                    pump.cancel()
+                    // cancelAndJoin, not cancel: in-flight datagrams free themselves as their delivery
+                    // coroutine is cancelled, and the leak check below would otherwise race that.
+                    simJob.cancelAndJoin()
+                    pipe.close()
+                    serverRecvInfos.values.forEach { api.recvInfoFree(it) }
+                    api.configFree(clientCfg)
+                    api.configFree(serverCfg)
+                }
             }
-            // The production entry point, called exactly where the three `QuicheEngine.connect()`
-            // actuals call it: after the handshake, on the resolved monitor, once per connection. A
-            // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so the
-            // manual scenarios below are unaffected and the branch under test is the shipped one.
-            wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
-            MigrationSimScope(
-                client,
-                server,
-                clientDriver,
-                serverDriver,
-                pipe,
-                api,
-                clientConn,
-                serverConn,
-                clientAudit,
-                serverAudit,
-                serverIngress,
-                factory,
-            ).block()
-        } finally {
-            withContext(NonCancellable) {
-                pump.cancel()
-                simJob.cancel()
-                pipe.close()
-                serverRecvInfos.values.forEach { api.recvInfoFree(it) }
-                api.configFree(clientCfg)
-                api.configFree(serverCfg)
-            }
+        // Only on the success path: an exception above propagates from the `try` and must not be masked
+        // by a leak report. `pipe.close()` has drained every queue by now, so anything still outstanding
+        // was captured and then neither delivered, dropped, drained nor handed to a driver — a leak in
+        // the harness itself, which is exactly what a harness that hunts leaks must not have.
+        check(ledger.outstanding() == 0) {
+            "the sim pipe leaked ${ledger.outstanding()} native datagram buffer(s): ${ledger.summary()}"
         }
+        result
     }
 }

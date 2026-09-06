@@ -184,7 +184,8 @@ internal suspend fun <R> withSemanticSim(
     return coroutineScope {
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
-        val pipe = ImpairedPipe(impairment, simScope)
+        val ledger = DatagramLedger(bufferFactory)
+        val pipe = ImpairedPipe(impairment, simScope, ledger)
 
         // --- server config (mirrors buildJvmQuicServer) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)

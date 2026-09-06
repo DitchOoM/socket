@@ -10,6 +10,7 @@ import com.ditchoom.socket.udp.SocketAddressCodec
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -73,17 +74,21 @@ internal class MultiPathPipe(
     private val api: QuicheApi,
     private val bufferFactory: BufferFactory,
     private val codec: SocketAddressCodec,
+    private val ledger: DatagramLedger,
 ) {
     private val rng = Random(seed)
     private val lock = SynchronizedObject()
 
-    /** One datagram as the server sees it: the bytes plus the client local address that sent them. */
+    /** One datagram as the server sees it: the payload plus the client local address that sent them. */
     internal class ServerDatagram(
-        val bytes: ByteArray,
+        val datagram: PipeDatagram,
         val from: SocketAddress,
     )
 
-    private val toServer = Channel<ServerDatagram>(Channel.UNLIMITED)
+    // onUndeliveredElement is the seam for a datagram the channel accepted but no receiver ever got —
+    // the server pump cancelled while suspended in receive() is the case that actually bites, and it
+    // leaks exactly one datagram per run without this.
+    private val toServer = Channel<ServerDatagram>(Channel.UNLIMITED) { ledger.release(it.datagram) }
 
     /** Per-path counters, so a test can assert *which* path carried what rather than a pipe total. */
     internal class PathStats {
@@ -105,7 +110,7 @@ internal class MultiPathPipe(
         @Volatile var impairment: PathImpairment = impairment
 
         val stats = PathStats()
-        val inbound = Channel<ByteArray>(Channel.UNLIMITED)
+        val inbound = Channel<PipeDatagram>(Channel.UNLIMITED) { ledger.release(it) }
 
         val channel: UdpChannel = ClientEndpoint(this)
     }
@@ -171,9 +176,19 @@ internal class MultiPathPipe(
 
     fun close() {
         toServer.close()
+        // Whatever is still queued was captured and will never be delivered; free it here or it is a
+        // leak the ledger will (correctly) report against this pipe.
+        while (true) {
+            val queued = toServer.tryReceive().getOrNull() ?: break
+            ledger.release(queued.datagram)
+        }
         synchronized(lock) {
             pathsByAddr.values.forEach {
                 it.inbound.close()
+                while (true) {
+                    val queued = it.inbound.tryReceive().getOrNull() ?: break
+                    ledger.release(queued)
+                }
                 it.sockAddr.free()
             }
             pathsByAddr.clear()
@@ -188,8 +203,10 @@ internal class MultiPathPipe(
      */
     private fun schedule(
         path: Path,
-        bytes: ByteArray,
-        deliver: (ByteArray) -> Unit,
+        source: PlatformBuffer,
+        len: Int,
+        origin: String,
+        deliver: (PipeDatagram) -> Unit,
     ) {
         val impairment = path.impairment
         var delay = Duration.ZERO
@@ -207,26 +224,26 @@ internal class MultiPathPipe(
             }
             delay = impairment.latency + impairment.jitter * jitterFraction
         }
+        // Captured only now: a dropped or blackholed datagram allocates nothing, which keeps the ledger
+        // counting real deliveries and the seeded sequence independent of allocation.
+        val datagram = ledger.capture(source, len, origin)
         if (delay <= Duration.ZERO) {
-            deliver(bytes)
+            deliver(datagram)
         } else {
-            scope.launch {
-                delay(delay)
-                deliver(bytes)
+            scope.launch(start = CoroutineStart.ATOMIC) {
+                // ATOMIC, not the default start: a coroutine launched into an ALREADY-cancelled scope
+                // never runs its body at all, so a plain launch would strand the datagram it owns with
+                // no catch ever firing — exactly one buffer per run, at teardown. ATOMIC guarantees the
+                // body begins, `delay` then throws immediately, and the datagram is freed.
+                try {
+                    delay(delay)
+                } catch (t: Throwable) {
+                    ledger.release(datagram)
+                    throw t
+                }
+                deliver(datagram)
             }
         }
-    }
-
-    private fun copyOf(
-        buffer: PlatformBuffer,
-        len: Int,
-    ): ByteArray {
-        // Read absolutely over [0, len): quiche writes this buffer through its native address and never
-        // moves the position, so resetForRead() would flip to an empty window (limit=0).
-        buffer.position(0)
-        buffer.setLimit(len)
-        // Test-only: the pipe stands in for the wire, and a wire copy is what it models.
-        return buffer.readByteArray(len)
     }
 
     private inner class ClientEndpoint(
@@ -242,8 +259,11 @@ internal class MultiPathPipe(
                     awaitCancellation()
                 }
             buffer.resetForWrite()
-            buffer.writeBytes(datagram)
-            return datagram.size
+            buffer.write(datagram.readable())
+            val length = datagram.length
+            // The receiver has its own copy now; the pipe's is done.
+            ledger.release(datagram)
+            return length
         }
 
         override suspend fun send(
@@ -251,9 +271,11 @@ internal class MultiPathPipe(
             len: Int,
             dest: PathKey?,
         ): SendOutcome {
-            val copy = copyOf(buffer, len)
             path.stats.sentToServer++
-            schedule(path, copy) { toServer.trySend(ServerDatagram(it, path.local)) }
+            schedule(path, buffer, len, "client->server@${path.local.port}") {
+                // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
+                if (toServer.trySend(ServerDatagram(it, path.local)).isFailure) ledger.release(it)
+            }
             // A datagram lost on the wire still LEFT this endpoint. Same contract ImpairedPipe states:
             // impairment models the wire, not a send failure, and conflating them would make these
             // suites assert the wrong thing.
@@ -279,11 +301,13 @@ internal class MultiPathPipe(
             len: Int,
             dest: PathKey?,
         ): SendOutcome {
-            val copy = copyOf(buffer, len)
             val path = synchronized(lock) { dest?.let { pathsByKey[it] } ?: pathsByAddr.values.firstOrNull() }
             if (path == null) return SendOutcome.Sent // replied to an address the sim never opened
             path.stats.sentToClient++
-            schedule(path, copy) { path.inbound.trySend(it) }
+            schedule(path, buffer, len, "server->client@${path.local.port}") {
+                // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
+                if (path.inbound.trySend(it).isFailure) ledger.release(it)
+            }
             return SendOutcome.Sent
         }
 
