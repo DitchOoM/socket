@@ -201,7 +201,7 @@ internal suspend fun buildLinuxQuicConnection(
                     streamWritePolicy = resolveStreamWritePolicy(quicOptions),
                     clock = tuning.clock,
                     driverContext = tuning.driverContext,
-                sendStallBound = tuning.sendStallBound,
+                    sendStallBound = tuning.sendStallBound,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
                     networkObservation = tuning.networkObservation,
