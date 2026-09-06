@@ -22,10 +22,11 @@ import com.ditchoom.buffer.flow.SocketAddress
  * `OsError(errno=99)` — `EADDRNOTAVAIL`, the source address not being assignable for a group on that
  * interface — on `iosSimulatorArm64` and in a container with no IPv6 interface.
  *
- * [DatagramSendError.TooLarge] and [DatagramSendError.WouldBlock] deliberately still throw: these
- * payloads are a dozen bytes onto an idle socket, so either one would be a defect in this module's size
- * accounting or backpressure handling rather than a fact about the host. Everything else is the OS
- * declining, including [DatagramSendError.Transport] — which on the JVM is the residue `jvmSendErrorOf`
+ * [DatagramSendError.TooLarge], [DatagramSendError.WouldBlock] and
+ * [DatagramSendError.SourceAddressUnavailable] deliberately still throw: these payloads are a dozen
+ * bytes onto an idle socket and this helper names no source address at all, so any of the three would
+ * be a defect in this module's size accounting, backpressure handling or send options rather than a
+ * fact about the host. Everything else is the OS declining, including [DatagramSendError.Transport] — which on the JVM is the residue `jvmSendErrorOf`
  * could not classify (#457 narrowed the rest to real members, but NIO surfaces no errno, so an
  * unrecognized refusal stays raw) — and treating any of them as fatal would make every host without
  * routable multicast fail a test that is explicitly conditional on having one.
@@ -49,6 +50,7 @@ internal suspend fun MulticastDatagramChannel.sendForMulticastE2e(
             -> "the OS refused the send — ${error.describe()}"
             is DatagramSendError.TooLarge,
             DatagramSendError.WouldBlock,
+            is DatagramSendError.SourceAddressUnavailable,
             -> throw e
         }
     }

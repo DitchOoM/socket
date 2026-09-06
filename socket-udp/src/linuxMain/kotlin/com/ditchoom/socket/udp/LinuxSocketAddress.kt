@@ -55,6 +55,17 @@ internal class LinuxSocketAddress(
     override val family: AddressFamily,
     val hi: Long,
     val lo: Long,
+    /**
+     * `sin6_scope_id`: the index of the interface this IPv6 address is scoped to, or 0 for none.
+     *
+     * Not decoration. `fe80::/10` is only an address *on an interface* — the same bits can name a
+     * different host on every link a machine is attached to — and the kernel refuses to use one as a
+     * source, or even to bind it, without knowing which (`EINVAL` from both `ip6_datagram_send_ctl`
+     * and `inet6_bind`, measured). So a link-local address that lost its scope on the way through this
+     * library is not a slightly-degraded address, it is an unusable one, and the whole reply path for
+     * a server whose only addresses are link-local depends on it surviving. Always 0 for IPv4.
+     */
+    val scopeId: Int = 0,
 ) : SocketAddress,
     PackedSocketAddress {
     override val packedHi: Long get() = hi
@@ -63,17 +74,30 @@ internal class LinuxSocketAddress(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is LinuxSocketAddress) return false
-        return port == other.port && family == other.family && hi == other.hi && lo == other.lo
+        return port == other.port &&
+            family == other.family &&
+            hi == other.hi &&
+            lo == other.lo &&
+            scopeId == other.scopeId
     }
 
     override fun hashCode(): Int {
         var h = (hi xor lo).hashCode()
         h = 31 * h + port
         h = 31 * h + family.ordinal
+        h = 31 * h + scopeId
         return h
     }
 
-    override fun toString(): String = if (family == AddressFamily.IPv6) "[$host]:$port" else "$host:$port"
+    // %scope is the RFC 4007 zone notation, and it is part of the address: two link-locals that differ
+    // only by interface are different endpoints, so a rendering that dropped it would print two
+    // unequal addresses identically.
+    override fun toString(): String =
+        when {
+            family != AddressFamily.IPv6 -> "$host:$port"
+            scopeId != 0 -> "[$host%$scopeId]:$port"
+            else -> "[$host]:$port"
+        }
 }
 
 /**
@@ -92,7 +116,7 @@ val linuxSockAddrLayout: SockAddrLayout = SockAddrLayout(hasLenByte = false, afI
  */
 @ExperimentalDatagramApi
 internal fun SocketAddress.writeSockaddr(storage: sockaddr_storage): socklen_t {
-    val linux = this as? LinuxSocketAddress ?: parseNumericHost(host, port)
+    val linux = asLinuxAddress()
     val bytes = storage.ptr.reinterpret<ByteVar>()
     // zero the whole storage so unwritten trailing fields (flowinfo, scope_id) are 0
     for (i in 0 until sizeOf<sockaddr_storage>().toInt()) bytes[i] = 0
@@ -113,10 +137,30 @@ internal fun SocketAddress.writeSockaddr(storage: sockaddr_storage): socklen_t {
             // offset 4..7 sin6_flowinfo = 0 (already zeroed)
             for (i in 0 until 8) bytes[8 + i] = ((linux.hi shr (56 - 8 * i)) and 0xFF).toByte()
             for (i in 0 until 8) bytes[16 + i] = ((linux.lo shr (56 - 8 * i)) and 0xFF).toByte()
+            // sin6_scope_id at offset 24, in HOST byte order (unlike the port and address above) —
+            // it is an interface index, not something that travels on the wire. 0 stays 0.
+            for (i in 0 until 4) bytes[24 + i] = ((linux.scopeId ushr (8 * i)) and 0xFF).toByte()
             sizeOf<sockaddr_in6>().convert()
         }
     }
 }
+
+/**
+ * [this] as a [LinuxSocketAddress] — itself when it already is one, and otherwise re-parsed from its
+ * numeric [SocketAddress.host] (a buffer-flow literal that reached a real socket).
+ *
+ * Lifted out of [writeSockaddr] because the send-side source pin needs the same normalization without
+ * materializing a sockaddr at all: it reads the packed address bits straight into an `IP_PKTINFO`
+ * control message. Two normalizations that could disagree about the same address — one deciding a
+ * literal is IPv4 and the other IPv6, say — would put the destination and the source of one datagram
+ * in different families, which is the class of bug #556 is about.
+ *
+ * Throws [IllegalArgumentException] for a host that is not a numeric literal, exactly as a destination
+ * address does: a [SocketAddress] in this library is a *resolved* endpoint, so an unresolved one is a
+ * caller error rather than a network condition, and it is not reported as a send failure.
+ */
+@ExperimentalDatagramApi
+internal fun SocketAddress.asLinuxAddress(): LinuxSocketAddress = this as? LinuxSocketAddress ?: parseNumericHost(host, port)
 
 /**
  * Decode a kernel-filled `sockaddr` (from `recvmsg`/`getsockname`) into a [LinuxSocketAddress],
@@ -140,7 +184,13 @@ internal fun sockaddrToLinuxSocketAddress(addr: CPointer<sockaddr>): LinuxSocket
             var lo = 0L
             for (i in 0 until 8) hi = (hi shl 8) or (bytes[8 + i].toLong() and 0xFF)
             for (i in 0 until 8) lo = (lo shl 8) or (bytes[16 + i].toLong() and 0xFF)
-            LinuxSocketAddress(inetNtop(addr, AF_INET6, addrOffset = 8), port, AddressFamily.IPv6, hi, lo)
+            // sin6_scope_id (host order). Every caller passes a sockaddr_storage or a getaddrinfo
+            // sockaddr_in6, both of which are at least 28 bytes, so offset 24 is in bounds whenever
+            // the family says IPv6. The kernel fills it for a link-local peer, and getaddrinfo fills
+            // it for a `fe80::1%eth0` literal, so both arrive here already scoped.
+            var scope = 0
+            for (i in 0 until 4) scope = scope or ((bytes[24 + i].toInt() and 0xFF) shl (8 * i))
+            LinuxSocketAddress(inetNtop(addr, AF_INET6, addrOffset = 8), port, AddressFamily.IPv6, hi, lo, scope)
         }
         else -> null
     }

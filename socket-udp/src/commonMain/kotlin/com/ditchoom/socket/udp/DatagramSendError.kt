@@ -52,6 +52,12 @@ package com.ditchoom.socket.udp
  *   `strerror` text, which is all the JDK leaves of them.
  * - [PortUnreachable] — `ECONNREFUSED` everywhere; `PortUnreachableException` on JVM/Android.
  * - [NotPermitted] — `EACCES`; `"Permission denied"` on JVM/Android.
+ * - [SourceAddressUnavailable] — **the Linux io_uring backend only**, the one that reads
+ *   `DatagramSendOptions.fromLocal`. Two of its reasons are decided before the syscall (a source in
+ *   the wrong address family, an unscoped IPv6 link-local) and two after one failed (an address no
+ *   interface holds, or a failure this backend could not attribute). Unconstructible on the other
+ *   four *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect = false` never
+ *   reads `fromLocal` at all, so it has nothing to refuse — rather than by the omission #457 recorded.
  * - [WouldBlock] — `EAGAIN`, `EWOULDBLOCK`, `ENOBUFS`; on JVM/Android the send budget running out, and
  *   `"No buffer space available"`.
  * - [OsError] — every other errno on the three POSIX backends. **Never on JVM/Android or Node**: NIO
@@ -108,6 +114,31 @@ sealed interface DatagramSendError {
         val errno: Int,
     ) : DatagramSendError
 
+    /**
+     * The send named a source address through `DatagramSendOptions.fromLocal` that this socket could
+     * not leave from, so nothing was transmitted.
+     *
+     * Its own member because both alternatives lie. The kernel has no errno meaning "that source is
+     * not mine" — Linux answers a non-local IPv4 `IP_PKTINFO` with `ENETUNREACH` and a non-local IPv6
+     * `IPV6_PKTINFO` with `EINVAL` — so passing the raw code through would tell a consumer the
+     * *destination* is unreachable, which is exactly the signal a migration trigger branches on, or
+     * bury the reason in [OsError]. Quietly sending unpinned instead would be worse still: #556 exists
+     * because a reply leaving from the wrong local address is dropped by a `connect()`ed client, so an
+     * unnoticed fallback to the kernel's choice reintroduces the defect the caller asked to prevent.
+     *
+     * Nothing was sent. A caller that would rather transmit from any source than not at all retries
+     * without `fromLocal`; that choice is the caller's, which is the point of reporting it.
+     *
+     * A **wildcard** source is not this. `0.0.0.0` / `::` name no address, so they are read as the
+     * absence of a request and the platform chooses, exactly as an unset `fromLocal` does — a decision,
+     * not a silent no-op reported as an honoured request.
+     */
+    data class SourceAddressUnavailable(
+        /** The numeric host of the refused `fromLocal` — a diagnostic. Branch on [reason]. */
+        val requestedHost: String,
+        val reason: SourceAddressRejection,
+    ) : DatagramSendError
+
     /** The socket could not accept the datagram before the backend stopped waiting. Transient. */
     data object WouldBlock : DatagramSendError
 
@@ -142,10 +173,84 @@ sealed interface DatagramSendError {
             is Unreachable -> "destination unreachable${errnoSuffix(errno)}"
             is PortUnreachable -> "peer answered ICMP port unreachable"
             is NotPermitted -> "send not permitted${errnoSuffix(errno)}"
+            is SourceAddressUnavailable -> "cannot send from '$requestedHost': ${reason.describe()}"
             is WouldBlock -> "socket could not accept the datagram before the send deadline"
             is OsError -> "send failed (errno=$errno)"
             is PlatformError -> "send failed (domain=$domain, code=$code)"
             is Transport -> "send failed: $cause"
+        }
+}
+
+/**
+ * Why a source address a send named could not be used — the reason inside
+ * [DatagramSendError.SourceAddressUnavailable].
+ *
+ * Two members, told apart by *who* refused: this library, before any syscall, or the kernel
+ * afterwards. They stay apart because only one of them can be caused by the host changing under a
+ * running process. An interface losing its address is a fact about the network and can happen to a
+ * server that was correct a second ago; a source in the wrong address family could never have worked
+ * and is a caller naming something impossible.
+ */
+sealed interface SourceAddressRejection {
+    /**
+     * The named source is not in this socket's address family — an IPv4 literal on an `AF_INET6`
+     * socket, or an IPv6 one on `AF_INET`.
+     *
+     * Refused here rather than handed to the kernel, because the kernel does **not** refuse it: an
+     * `IPV6_PKTINFO` control message on an `AF_INET` socket is silently skipped and the datagram
+     * leaves from whichever address routing preferred (measured, Linux 6.18). Passing it down would
+     * therefore be indistinguishable, from the caller's side, from having honoured the request — the
+     * precise shape of the #556 defect.
+     */
+    data object WrongFamily : SourceAddressRejection
+
+    /**
+     * An IPv6 link-local source (`fe80::/10`) that carries no interface index.
+     *
+     * `fe80::1` is not one address, it is one address *per link* — the same bits name a different host
+     * on every interface a machine has — so the kernel refuses to send from one, or even to bind one,
+     * without being told which (`EINVAL` from both, measured). Its own member rather than [NotAssigned]
+     * because that would state the opposite of the truth: the host may hold this address perfectly
+     * well, and what is missing is the scope, which the caller can supply.
+     */
+    data object UnscopedLinkLocal : SourceAddressRejection
+
+    /**
+     * No interface on this host holds the named address, so the kernel could not build a route out of
+     * it. [errno] is what `sendmsg` reported — `ENETUNREACH` for IPv4, `EINVAL` for IPv6 on Linux —
+     * and is a diagnostic only: the member is the contract, the number is not.
+     *
+     * Only stated when the backend positively established it. When it could not, the answer is
+     * [Undetermined] rather than this one on the balance of probability.
+     */
+    data class NotAssigned(
+        val errno: Int,
+    ) : SourceAddressRejection
+
+    /**
+     * The kernel refused a send that named this source, and the backend could not establish whether
+     * the source is why: [sendErrno] is what `sendmsg` said, [probeErrno] why the locality check could
+     * not answer (the process out of descriptors, ephemeral ports exhausted, a scope the probe could
+     * not bind).
+     *
+     * Exists so that "I do not know" has somewhere to go. Folding it into [NotAssigned] would publish
+     * a claim about the host that was never checked, and folding it into the raw errno would publish
+     * [DatagramSendError.Unreachable] — the verdict a migration trigger and an ICE agent branch on —
+     * about a peer that may be perfectly reachable. Both were real defects here; this member is what
+     * removed the need to choose between them.
+     */
+    data class Undetermined(
+        val sendErrno: Int,
+        val probeErrno: Int,
+    ) : SourceAddressRejection
+
+    /** Human-readable rendering, for [DatagramSendError.describe]. Display only. */
+    fun describe(): String =
+        when (this) {
+            WrongFamily -> "it is not this socket's address family"
+            UnscopedLinkLocal -> "an IPv6 link-local source needs the interface it is scoped to"
+            is NotAssigned -> "no interface on this host holds it (errno=$errno)"
+            is Undetermined -> "the send failed (errno=$sendErrno) and the source could not be checked (errno=$probeErrno)"
         }
 }
 
