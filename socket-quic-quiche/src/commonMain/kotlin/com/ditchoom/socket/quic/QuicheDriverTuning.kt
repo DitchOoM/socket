@@ -7,6 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -57,4 +59,36 @@ internal class QuicheDriverTuning(
      * [QuicConnectionState.Closed] — see `QuicheDriver.transitionToClosed`.
      */
     val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
+    /**
+     * How long `QuicheDriver.flushOutgoing` waits for one `UdpChannel.send` before calling the path
+     * stalled and closing it. Default [DEFAULT_SEND_STALL_BOUND].
+     *
+     * It is a seam for the same reason the others are: a simulation that wants to *reach* the stall
+     * branch should not have to burn five seconds of the scheduler's budget to do it. Production
+     * never sets it.
+     */
+    val sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
 )
+
+/**
+ * The default liveness backstop on one `UdpChannel.send` (see [QuicheDriverTuning.sendStallBound]).
+ *
+ * ## Why five seconds, and why it is not derived from any other timeout
+ *
+ * This bound measures **local platform responsiveness**, not anything about the network, so relating
+ * it to a network timer would be a category error: a send hands a datagram to the kernel or to
+ * Network.framework and is answered without waiting for the peer, so RTT, PTO and the peer's
+ * transport parameters say nothing about how long one should take. NIO's send is synchronous;
+ * io_uring and Network.framework answer in microseconds to milliseconds. Five seconds is roughly a
+ * thousandfold headroom over any of them, which is the point — this can only fire on a platform that
+ * has genuinely stopped answering, never on one that is merely loaded.
+ *
+ * The tempting derivation — scale it from the connection's idle timeout — is the wrong one twice
+ * over. The idle timer is precisely what an unbounded send prevents from ever running, so a bound
+ * expressed in terms of it inherits the failure it exists to break; and a connection configured with
+ * a short idle timeout would get a bound tight enough to reap healthy paths under load.
+ *
+ * The cost of a false stall is bounded and recoverable — one closed socket, one reconnect — which is
+ * what lets the value be generous rather than tuned.
+ */
+internal val DEFAULT_SEND_STALL_BOUND = 5.seconds

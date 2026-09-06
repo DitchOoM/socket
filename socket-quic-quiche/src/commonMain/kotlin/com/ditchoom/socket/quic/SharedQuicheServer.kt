@@ -547,6 +547,7 @@ internal class SharedQuicheServer(
                 streamWritePolicy = streamWritePolicy,
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
+                sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
                 // RFC 9000 §9 active migration is a client-only capability — in QUIC v1 only clients

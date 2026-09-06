@@ -333,8 +333,26 @@ private class RecordingUdpChannel(
                 recorder.error(DatagramSendException(outcome.error))
                 outcome
             }
+            is SendOutcome.Stalled -> {
+                // Unreachable through this decorator: the bound lives in `QuicheDriver.flushOutgoing`
+                // and wraps the call to *this* send, so a stalled send never returns through here —
+                // the driver records it directly. The branch exists because the outcome is exhaustive
+                // by design: a future site that bounds a send *below* the driver is made to decide
+                // what the trace says rather than inheriting silence from an `else`.
+                recorder.error(SendStalledException(outcome.after))
+                outcome
+            }
         }
     }
 
     override fun close() = delegate.close()
 }
+
+/**
+ * A send that never answered, rendered as a [Throwable] purely so the trace format — which carries
+ * errors as throwables — can record one. Never thrown, and never a control-flow signal: the
+ * structured value stays [SendOutcome.Stalled].
+ */
+internal class SendStalledException(
+    after: Duration,
+) : RuntimeException("send did not answer within $after")

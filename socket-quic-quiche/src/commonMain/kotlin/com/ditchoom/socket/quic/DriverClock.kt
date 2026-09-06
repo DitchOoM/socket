@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import kotlinx.coroutines.selects.SelectBuilder
 import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -11,8 +12,13 @@ import kotlin.time.TimeSource
  * both deterministically **without** giving up the real `Dispatchers.Default` I/O the reactive loop
  * relies on:
  *
- *  - [markNow] — the monotonic mark the keepalive deadline is measured from (`lastActivity`); and
- *  - [armTimeout] — the `select` clause that wakes the loop when the next quiche/keepalive timer is due.
+ *  - [markNow] — the monotonic mark the keepalive deadline is measured from (`lastActivity`);
+ *  - [armTimeout] — the `select` clause that wakes the loop when the next quiche/keepalive timer is due; and
+ *  - [withBound] — the liveness backstop on one `UdpChannel.send`.
+ *
+ * All three must be here, not merely the two that model protocol timing. A bound written as a bare
+ * `withTimeoutOrNull` resolves against whatever dispatcher the loop happens to run on, which silently
+ * reintroduces the wall clock in the Tier-1 tier this seam exists to keep free of it.
  *
  * Production uses [RealDriverClock]: monotonic time and `onTimeout`, i.e. exactly the behaviour the
  * driver had before the seam existed. A test clock can return a controllable [TimeMark] and replace the
@@ -34,6 +40,24 @@ interface DriverClock {
         builder: SelectBuilder<QuicheCmd?>,
         wait: Duration,
     )
+
+    /**
+     * Run [block] under a liveness bound of [wait], yielding `null` if it did not finish in time.
+     *
+     * Used for exactly one thing: the `UdpChannel.send` in `QuicheDriver.flushOutgoing`, whose
+     * unbounded form parked the whole driver loop (and with it every timer this interface arms) when a
+     * platform stopped answering. Unlike [armTimeout] this is a *backstop*, not protocol timing — it
+     * should never fire on a working system — but it belongs on the same clock as everything else, or
+     * a "deterministic" test still carries a hidden multi-second wall-clock timer.
+     *
+     * The default is production behaviour, so [RealDriverClock] needs no override, and a virtual-time
+     * clock whose driver runs on the test scheduler (`driverContext = EmptyCoroutineContext`) gets
+     * virtual behaviour for free — pinned by `theSendStallBoundIsDrivenByTheVirtualClock`.
+     */
+    suspend fun <T> withBound(
+        wait: Duration,
+        block: suspend () -> T,
+    ): T? = withTimeoutOrNull(wait) { block() }
 
     /**
      * The time to push into quiche's C library **immediately before** each connection operation, so
