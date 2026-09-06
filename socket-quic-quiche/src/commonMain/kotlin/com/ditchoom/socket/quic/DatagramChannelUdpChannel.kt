@@ -29,9 +29,9 @@ import kotlinx.coroutines.awaitCancellation
  * miss allocates ~1350 bytes, not the 64 KB UDP ceiling, and matches the pool's buffer size.
  *
  * ## Destination
- * The client is a *connected* channel: the driver only supplies a non-null [PathKey] `dest` on the
+ * The client is a *connected* channel: the driver only supplies a [SendTarget.ServerReply] on the
  * **server** egress path, so this adapter always sends to the channel's fixed peer (the connected
- * send has no destination parameter) and ignores `dest`, exactly as the old connected
+ * send has no destination parameter) and ignores [SendTarget], exactly as the old connected
  * `NioUdpChannel`/`IoUringUdpChannel` clients did. The server egress adapter is a separate type (per
  * platform), because turning a `PathKey` back into a packed `SocketAddress` needs platform machinery
  * this connected client never touches.
@@ -82,10 +82,11 @@ internal class DatagramChannelUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         // Present exactly [0, len) as the datagram window; the channel's send slices it non-destructively,
-        // so the driver's reused send buffer is safe. `dest` is always null here (connected client).
+        // so the driver's reused send buffer is safe. [target] is always [SendTarget.ConnectedPeer]
+        // here (connected client), so there is nothing to route and nothing to pin.
         buffer.position(0)
         buffer.setLimit(len)
         return sendOutcomeOf { channel.send(buffer) }

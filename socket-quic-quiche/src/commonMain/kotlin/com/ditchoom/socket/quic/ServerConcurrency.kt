@@ -67,14 +67,37 @@ internal expect fun writeNativeSizeT(
 internal expect fun readNativeSizeT(buf: PlatformBuffer): Int
 
 /**
- * Per-source `PathKey → peer` map the server's egress channels consult to resolve `sendInfo.to` back
- * to a real send target without reconstructing an address from the opaque [PathKey] (RFC §4). Written
- * only on the receive loop (cache-miss insert, LRU-evict remove) plus the post-join close sweep — never
- * two writers at once — but read concurrently by driver egress coroutines. `ConcurrentHashMap` on the
- * JVM; copy-on-write over `AtomicReference<Map>` on Kotlin/Native (no `java.util.concurrent`), the same
- * split as [LiveDriverLedger].
+ * The identity of one server-side path: which client address a datagram came **from**, and which of
+ * this host's local addresses it arrived **at**.
+ *
+ * The key of the shared server's per-source `recv_info` cache. Keying that cache on the peer alone was
+ * #556's other half: a client addressing two of a multi-homed host's addresses is two distinct paths to
+ * quiche, and a single cache entry would give the second path the first one's `recv_info.to` — so
+ * quiche would echo the wrong `send_info.from` and the reply would leave from an address that client
+ * never addressed.
+ *
+ * Both halves are always known: a channel that cannot report an arrival address falls back to the
+ * server's bound address, so there is no absent state to model here.
  */
-internal expect class PeerPathTable() {
+internal data class ServerPathPair(
+    val peer: SocketAddress,
+    val local: SocketAddress,
+)
+
+/**
+ * A `PathKey → SocketAddress` map the server's egress channels consult to turn one of quiche's opaque
+ * [PathKey]s back into a real address, without reconstructing it (RFC §4). The server keeps two:
+ *
+ *  - **peers** — `sendInfo.to` → the client address to send to, so replies follow a migrated peer; and
+ *  - **locals** — `sendInfo.from` → the local address to send *from*, so a wildcard-bound server pins
+ *    its own reply source instead of letting the kernel choose (#556).
+ *
+ * Both are written only on the receive loop (cache-miss insert, LRU-evict remove) plus the post-join
+ * close sweep — never two writers at once — but read concurrently by driver egress coroutines.
+ * `ConcurrentHashMap` on the JVM; copy-on-write over `AtomicReference<Map>` on Kotlin/Native (no
+ * `java.util.concurrent`), the same split as [LiveDriverLedger].
+ */
+internal expect class PathAddressTable() {
     fun put(
         key: PathKey,
         peer: SocketAddress,

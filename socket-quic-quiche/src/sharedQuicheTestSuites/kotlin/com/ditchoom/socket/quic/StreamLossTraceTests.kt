@@ -69,7 +69,7 @@ class StreamLossTraceTests {
                     override suspend fun send(
                         buffer: PlatformBuffer,
                         len: Int,
-                        dest: PathKey?,
+                        target: SendTarget,
                     ): SendOutcome = SendOutcome.Sent
 
                     override fun close() {}

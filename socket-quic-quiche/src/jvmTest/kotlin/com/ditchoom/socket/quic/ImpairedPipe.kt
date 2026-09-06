@@ -157,7 +157,7 @@ internal class ImpairedPipe(
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome {
             val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
             bb.clear()

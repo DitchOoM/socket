@@ -438,7 +438,7 @@ class ReactiveDriverTests {
                     override suspend fun send(
                         buffer: PlatformBuffer,
                         len: Int,
-                        dest: PathKey?,
+                        target: SendTarget,
                     ): SendOutcome {
                         udpGate.await()
                         return SendOutcome.Sent
@@ -994,7 +994,7 @@ class ReactiveDriverTests {
                 override suspend fun send(
                     buffer: PlatformBuffer,
                     len: Int,
-                    dest: PathKey?,
+                    target: SendTarget,
                 ): SendOutcome {
                     udpGate.await()
                     return SendOutcome.Sent

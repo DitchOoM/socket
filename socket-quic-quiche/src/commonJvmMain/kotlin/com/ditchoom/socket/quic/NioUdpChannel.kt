@@ -67,24 +67,26 @@ internal class NioUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.clear()
         bb.limit(len)
-        val target =
-            if (dest != null) {
-                if (dest != lastDestKey) {
-                    lastDestAddr = dest.toInetSocketAddress()
-                    lastDestKey = dest
+        val to =
+            when (target) {
+                SendTarget.ConnectedPeer -> peerAddr
+                is SendTarget.ServerReply -> {
+                    val dest = target.to
+                    if (dest != lastDestKey) {
+                        lastDestAddr = dest.toInetSocketAddress()
+                        lastDestKey = dest
+                    }
+                    lastDestAddr ?: peerAddr
                 }
-                lastDestAddr ?: peerAddr
-            } else {
-                peerAddr
             }
         return sendOutcomeOf {
-            if (target != null) {
-                channel.send(bb, target)
+            if (to != null) {
+                channel.send(bb, to)
             } else {
                 channel.write(bb)
             }

@@ -154,9 +154,9 @@ internal class MultiPathPipe(
 
     /**
      * The server's egress. quiche fills `send_info.to` with the client address it is replying to and
-     * [QuicheDriver.flushOutgoing] passes that through as [UdpChannel.send]'s `dest`, so routing a reply
+     * [QuicheDriver.flushOutgoing] passes that through as [SendTarget.ServerReply.to], so routing a reply
      * back to the right client path is a map lookup — the sim's stand-in for a real UDP socket's
-     * destination address. A `dest` naming no known path is dropped rather than broadcast: that is a
+     * destination address. A destination naming no known path is dropped rather than broadcast: that is a
      * server replying to somewhere the sim never opened, and silently delivering it anyway would hide
      * exactly the routing bug this harness exists to find.
      */
@@ -244,7 +244,7 @@ internal class MultiPathPipe(
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome {
             val copy = copyOf(buffer, len)
             path.stats.sentToServer++
@@ -272,10 +272,11 @@ internal class MultiPathPipe(
         override suspend fun send(
             buffer: PlatformBuffer,
             len: Int,
-            dest: PathKey?,
+            target: SendTarget,
         ): SendOutcome {
             val copy = copyOf(buffer, len)
-            val path = synchronized(lock) { dest?.let { pathsByKey[it] } ?: pathsByAddr.values.firstOrNull() }
+            val to = (target as? SendTarget.ServerReply)?.to
+            val path = synchronized(lock) { to?.let { pathsByKey[it] } ?: pathsByAddr.values.firstOrNull() }
             if (path == null) return SendOutcome.Sent // replied to an address the sim never opened
             path.stats.sentToClient++
             schedule(path, copy) { path.inbound.trySend(it) }

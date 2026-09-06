@@ -33,7 +33,7 @@ class WedgedUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         sendCount++
         gate.await()

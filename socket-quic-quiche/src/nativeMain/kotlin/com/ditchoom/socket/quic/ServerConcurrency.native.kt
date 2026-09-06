@@ -78,7 +78,7 @@ internal actual fun readNativeSizeT(buf: PlatformBuffer): Int =
         .value
         .toInt()
 
-internal actual class PeerPathTable actual constructor() {
+internal actual class PathAddressTable actual constructor() {
     // Copy-on-write over AtomicReference (K/N has no java.util.concurrent). Single-writer (receive loop
     // + post-join close sweep), so the CAS never really contends; readers see a consistent snapshot.
     private val ref = AtomicReference<Map<PathKey, SocketAddress>>(emptyMap())

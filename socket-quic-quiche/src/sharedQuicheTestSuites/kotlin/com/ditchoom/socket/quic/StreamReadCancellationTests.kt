@@ -100,7 +100,7 @@ class StreamReadCancellationTests {
                 override suspend fun send(
                     buffer: PlatformBuffer,
                     len: Int,
-                    dest: PathKey?,
+                    target: SendTarget,
                 ): SendOutcome {
                     udpGate.await()
                     return SendOutcome.Sent

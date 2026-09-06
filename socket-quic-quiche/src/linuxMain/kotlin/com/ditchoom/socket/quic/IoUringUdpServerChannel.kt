@@ -279,8 +279,8 @@ internal class IoUringServerConnectionUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
-    ): SendOutcome = sendOutcomeOf { transmit(buffer, len, dest) }
+        target: SendTarget,
+    ): SendOutcome = sendOutcomeOf { transmit(buffer, len, target) }
 
     /**
      * The throwing send, kept separate so [send] is a one-line boundary crossing. Split rather than
@@ -290,10 +290,17 @@ internal class IoUringServerConnectionUdpChannel(
     private suspend fun transmit(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ) {
-        // [dest] is quiche's sendInfo.to: after a peer migrates, replies must follow it to its new
-        // source. Reconstruct that sockaddr (cached) and send there; with no dest, use the fixed peer.
+        // A [SendTarget.ServerReply] carries quiche's sendInfo.to: after a peer migrates, replies must
+        // follow it to its new source. Reconstruct that sockaddr (cached) and send there; otherwise use
+        // the fixed peer.
+        //
+        // Its `from` (sendInfo.from) is deliberately NOT honoured here — this legacy proxy channel
+        // sends through a single `serverChannel` fd with no per-send source control, so #556's reply
+        // pinning belongs to the io_uring cmsg work (step 2), not to this class. The shared
+        // ServerConnectionUdpChannel is what the Linux server actually runs.
+        val dest = (target as? SendTarget.ServerReply)?.to
         if (dest != null && dest.family != 0) {
             if (dest != lastDestKey) {
                 lastDestBuf?.freeNativeMemory()

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.sim
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SendOutcome
+import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.channels.Channel
@@ -67,7 +68,7 @@ internal class TimelineUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-        dest: PathKey?,
+        target: SendTarget,
     ): SendOutcome {
         nextSendError?.let {
             nextSendError = null
