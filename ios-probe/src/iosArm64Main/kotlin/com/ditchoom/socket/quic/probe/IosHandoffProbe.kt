@@ -13,6 +13,9 @@ import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -85,6 +88,17 @@ object IosHandoffProbe {
     private var locUpdates: Int = 0
 
     /**
+     * Bumped once per echo-loop iteration, whatever the outcome — OK, no-data, or failure.
+     *
+     * The walk that motivated this recorded 48.6 hours in which this loop produced **nothing at all**:
+     * not an echo, not a timeout, not an error. Every existing counter measured what the loop *did*,
+     * so a loop that did nothing was indistinguishable from one that was never asked to. This one
+     * measures that it *ran*, which is what the heartbeat compares against to notice its own silence.
+     */
+    @Volatile
+    private var loopTicks: Int = 0
+
+    /**
      * Called by the host app on every CoreLocation fix.
      *
      * This is the residency proof, not telemetry. A coroutine `delay` does not keep iOS from
@@ -149,10 +163,18 @@ object IosHandoffProbe {
                 "readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs",
         )
 
+        // Bounded on purpose. A packet-level trace of a 72-hour walk is tens of gigabytes — every
+        // datagram is hex-encoded — so persisting it is out of the question and the naive "just turn
+        // tracing on" is not a fix. A ring keeps only what a post-mortem actually needs: the last few
+        // hundred events before the moment it stopped. Memory is bounded by capacity, and the encode
+        // cost at this cadence is ~8 datagrams a second, which is nothing next to the radio.
+        val ring = RingTraceSink(RING_CAPACITY)
+
         val options =
             QuicOptions(
                 alpnProtocols = listOf("test"),
                 verifyPeer = false,
+                trace = QuicTraceCapture(ring),
                 // Long enough that a dead path is not immediately reaped, short enough that the walk
                 // shows a death rather than a hang. Keepalive keeps an idle connection honest.
                 idleTimeout = 30.seconds,
@@ -169,9 +191,39 @@ object IosHandoffProbe {
         // one line that says the probe was alive at 03:00 even while the network was gone.
         val heartbeat =
             GlobalScope.launch(Dispatchers.Default) {
+                var lastTicks = -1
+                var quietHeartbeats = 0
+                var dumped = false
                 while (NSDate().timeIntervalSince1970 < deadline) {
                     delay(HEARTBEAT_INTERVAL_MS)
                     log.emit("HEARTBEAT attempt=$attempt locUpdates=$locUpdates ${residentMemory()} ${battery()}")
+
+                    // The silence watchdog. A heartbeat that only says "the process is alive" is what
+                    // let a wedged echo loop look healthy for two days: the process WAS alive, and
+                    // that was the least interesting true thing about it. Comparing [loopTicks]
+                    // against the previous heartbeat asks the question that actually matters — is the
+                    // loop still going round? — and answers it in the recording rather than leaving it
+                    // to be inferred, months later, from the absence of lines.
+                    val ticks = loopTicks
+                    if (ticks == lastTicks) {
+                        quietHeartbeats++
+                        if (quietHeartbeats >= QUIET_HEARTBEATS_BEFORE_ALARM && !dumped) {
+                            dumped = true
+                            log.emit(
+                                "STALL-SUSPECTED loopTicks=$ticks unchanged for " +
+                                    "${quietHeartbeats * (HEARTBEAT_INTERVAL_MS / 1000)}s attempt=$attempt — " +
+                                    "the echo loop is not running. Dumping the last ${ring.size()} trace events.",
+                            )
+                            ring.drain().forEach { log.emit("STALL-TRACE $it") }
+                            log.emit("STALL-TRACE-END")
+                            statusLine = "\u26a0 STALL SUSPECTED — echo loop has not run"
+                        }
+                    } else {
+                        if (dumped) log.emit("STALL-RECOVERED loopTicks=$ticks after ${quietHeartbeats} quiet heartbeat(s)")
+                        lastTicks = ticks
+                        quietHeartbeats = 0
+                        dumped = false
+                    }
                 }
             }
         var retryDelayMs = RECONNECT_MIN_MS
@@ -217,6 +269,9 @@ object IosHandoffProbe {
                         }
 
                         seq++
+                        // Before anything that can park, so a loop wedged *inside* an iteration still
+                        // shows the tick that proves it got that far.
+                        loopTicks++
                         // Periodic residency heartbeat: locUpdates==0 after the screen locks means
                         // the walk is being recorded by a process iOS has stopped scheduling, and
                         // every gap in the log below is an artefact rather than a network event.
@@ -305,6 +360,39 @@ object IosHandoffProbe {
         totals.report(log::emit)
         log.emit("DONE attempts=$attempt log=${logPath()}")
         statusLine = "done — ${totals.attempts} migration attempt(s), ${totals.succeeded} succeeded"
+    }
+}
+
+/**
+ * The last [capacity] trace events, and nothing older.
+ *
+ * Exists because the walk's recording could not answer the one question it was there to answer. When
+ * the probe froze, the log's final line was an ordinary successful echo — the transport-level detail
+ * of what happened next was never captured anywhere, so the failure had to be reconstructed from its
+ * own absence. A ring is the shape that fits a multi-day run: unbounded capture is gigabytes, and
+ * capture that starts *after* something goes wrong has already missed it.
+ */
+private class RingTraceSink(
+    private val capacity: Int,
+) : TraceSink {
+    private val slots = arrayOfNulls<String>(capacity)
+    private var next = 0
+    private var filled = 0
+
+    override fun emit(event: TraceEvent) {
+        // Rendered on arrival: the event's own encoding is what a post-mortem reads, and holding the
+        // objects would keep their buffers alive for the life of the ring.
+        slots[next] = event.toString()
+        next = (next + 1) % capacity
+        if (filled < capacity) filled++
+    }
+
+    fun size(): Int = filled
+
+    /** Oldest first, so the dump reads forwards into the moment things stopped. */
+    fun drain(): List<String> {
+        val start = if (filled < capacity) 0 else next
+        return (0 until filled).mapNotNull { slots[(start + it) % capacity] }
     }
 }
 
@@ -494,6 +582,23 @@ private class MigrationTotals {
 }
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
+
+/**
+ * How many trace events the post-mortem ring keeps. At this cadence roughly the last minute of
+ * transport activity — enough to show what the datapath was doing as it stopped, without holding
+ * megabytes of hex for a run measured in days.
+ */
+private const val RING_CAPACITY = 256
+
+/**
+ * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall.
+ *
+ * Two, i.e. ~2 minutes: long enough that a reconnect backoff (capped at 60s) or a dead radio in an
+ * elevator cannot trip it, short enough that a multi-day run is not spent unaware. The alarm is not
+ * fatal — the probe keeps recording either way, because a false alarm that costs one log line is a
+ * far better trade than a real one that costs another 72-hour walk.
+ */
+private const val QUIET_HEARTBEATS_BEFORE_ALARM = 2
 private const val RECONNECT_MIN_MS = 3_000L
 private const val RECONNECT_MAX_MS = 60_000L
 

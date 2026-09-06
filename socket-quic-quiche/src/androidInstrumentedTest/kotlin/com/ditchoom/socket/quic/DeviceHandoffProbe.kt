@@ -17,6 +17,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -118,10 +121,15 @@ class DeviceHandoffProbe {
                 "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
         )
 
+        // Bounded on purpose — see [RingTraceSink]. A packet-level trace of a multi-day walk is tens
+        // of gigabytes; what a post-mortem needs is the last few hundred events before it stopped.
+        val ring = RingTraceSink(RING_CAPACITY)
+
         val options =
             QuicOptions(
                 alpnProtocols = listOf("test"),
                 verifyPeer = false,
+                trace = QuicTraceCapture(ring),
                 // Long enough that a dead path is not immediately reaped, short enough that the walk
                 // shows a death rather than a hang. Keepalive keeps an idle connection honest.
                 idleTimeout = 30.seconds,
@@ -159,9 +167,37 @@ class DeviceHandoffProbe {
             // cannot give, and the one line a reader can grep to see the probe was alive at 03:00.
             val heartbeat =
                 launch {
+                    var lastTicks = -1
+                    var quietHeartbeats = 0
+                    var dumped = false
                     while (isActive && System.currentTimeMillis() < deadline) {
                         delay(HEARTBEAT_INTERVAL_MS)
                         emit("HEARTBEAT attempt=$attempt ${processMemory()} ${battery(ctx)} ${transport(ctx)}")
+
+                        // The silence watchdog. "The process is alive" was the least interesting true
+                        // thing about the iOS walk that wedged for 48.6 hours — its heartbeat kept
+                        // logging the whole time. [loopTicks] answers the question that matters: is the
+                        // echo loop still going round? The same wedge is reachable here, so the same
+                        // alarm belongs here.
+                        val ticks = loopTicks
+                        if (ticks == lastTicks) {
+                            quietHeartbeats++
+                            if (quietHeartbeats >= QUIET_HEARTBEATS_BEFORE_ALARM && !dumped) {
+                                dumped = true
+                                emit(
+                                    "STALL-SUSPECTED loopTicks=$ticks unchanged for " +
+                                        "${quietHeartbeats * (HEARTBEAT_INTERVAL_MS / 1000)}s attempt=$attempt — " +
+                                        "the echo loop is not running. Dumping the last ${ring.size()} trace events.",
+                                )
+                                ring.drain().forEach { emit("STALL-TRACE $it") }
+                                emit("STALL-TRACE-END")
+                            }
+                        } else {
+                            if (dumped) emit("STALL-RECOVERED loopTicks=$ticks after $quietHeartbeats quiet heartbeat(s)")
+                            lastTicks = ticks
+                            quietHeartbeats = 0
+                            dumped = false
+                        }
                     }
                 }
             var retryDelayMs = RECONNECT_MIN_MS
@@ -229,6 +265,9 @@ class DeviceHandoffProbe {
                             }
 
                             seq++
+                            // Before anything that can park, so a loop wedged *inside* an iteration
+                            // still shows the tick proving it got that far.
+                            loopTicks++
                             val sentAt = System.currentTimeMillis()
                             // Delimited so payload boundaries stay visible in a coalesced read.
                             val payload = "probe-$seq;"
@@ -664,6 +703,62 @@ private class MigrationTotals {
         )
     }
 }
+
+/**
+ * Bumped once per echo-loop iteration, whatever the outcome.
+ *
+ * Every other counter here measures what the loop *did*, which makes a loop that did nothing
+ * indistinguishable from one that was never asked to — the ambiguity that cost two days on the
+ * 2026-09-03 walk. This one measures that it *ran*.
+ */
+@Volatile
+private var loopTicks: Int = 0
+
+/**
+ * The last [capacity] trace events, and nothing older.
+ *
+ * The walk's recording could not answer the question it existed to answer: when the probe froze, the
+ * final line was an ordinary successful echo and the transport-level detail of what happened next was
+ * captured nowhere. A ring is the shape that fits a multi-day run — unbounded capture is gigabytes,
+ * and capture that starts after something goes wrong has already missed it.
+ */
+private class RingTraceSink(
+    private val capacity: Int,
+) : TraceSink {
+    private val slots = arrayOfNulls<String>(capacity)
+    private var next = 0
+    private var filled = 0
+
+    @Synchronized
+    override fun emit(event: TraceEvent) {
+        // Rendered on arrival: the encoding is what a post-mortem reads, and holding the objects
+        // would keep their buffers alive for the life of the ring.
+        slots[next] = event.toString()
+        next = (next + 1) % capacity
+        if (filled < capacity) filled++
+    }
+
+    @Synchronized
+    fun size(): Int = filled
+
+    /** Oldest first, so the dump reads forwards into the moment things stopped. */
+    @Synchronized
+    fun drain(): List<String> {
+        val start = if (filled < capacity) 0 else next
+        return (0 until filled).mapNotNull { slots[(start + it) % capacity] }
+    }
+}
+
+/** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
+private const val RING_CAPACITY = 256
+
+/**
+ * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall. Two (~2
+ * minutes): past any reconnect backoff (capped at 60s) or a dead radio in a lift, well short of a
+ * multi-day run spent unaware. Not fatal — a false alarm costs one log line, a missed real one costs
+ * another 72-hour walk.
+ */
+private const val QUIET_HEARTBEATS_BEFORE_ALARM = 2
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
 private const val RECONNECT_MIN_MS = 3_000L
