@@ -1862,10 +1862,26 @@ class QuicheDriver(
     }
 
     /**
+     * Whether this is the first bind for a migration or the one retry a stale-path collision earns.
+     *
+     * A named pair rather than a `Boolean` parameter: the two are not "on/off", they are "the caller
+     * asked to migrate" and "quiche told us the port we were given still carries a dead path", and only
+     * the second may not retry again. See [probeRejection].
+     */
+    private sealed interface MigrateAttempt {
+        data object First : MigrateAttempt
+
+        data object AfterRebind : MigrateAttempt
+    }
+
+    /**
      * Open a new local path, probe it, and arm [pendingMigration]; [drainPathEvents]
      * completes the switch once the peer validates the path. Suspends to open the socket.
      */
-    private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
+    private suspend fun handleMigrate(
+        cmd: QuicheCmd.Migrate,
+        attempt: MigrateAttempt = MigrateAttempt.First,
+    ) {
         // One translation, not a judgement: each non-Supported capability names exactly one
         // "and never will" outcome, so the caller learns *which* permanent condition applies rather
         // than the single opaque `Unsupported` that used to cover all three.
@@ -1971,9 +1987,9 @@ class QuicheDriver(
         // Probe BEFORE the path entry exists, because the entry cannot be built without the DCID this
         // call returns (see [PathSlot]). The old order — insert, then probe, then read nothing —
         // is what made #447 writable: the sequence number went into `seqScratch` and no failure exit
-        // had a value to retire. A rejected probe allocates nothing in quiche (every failure inside
-        // `create_path_on_client` returns before `link_dcid_to_path_id`), so there is no recv_info,
-        // no map entry and no connection ID to unwind here.
+        // had a value to retire. On the `create_path_on_client` failures a rejected probe allocates
+        // nothing, so there is no recv_info, no map entry and no connection ID to unwind here; see
+        // [probeRejection] for the one branch where that is not true.
         val probe =
             api.connProbePath(
                 conn,
@@ -1986,6 +2002,20 @@ class QuicheDriver(
             when (probe) {
                 is ProbeOutcome.Rejected -> {
                     releaseUnprobedPath(newPath)
+                    val reason = probeRejection(probe.code)
+                    // A stale-path collision means the kernel handed back a port whose old path quiche
+                    // still holds. Rebinding is the only thing that can clear it — retrying the same
+                    // 4-tuple fails identically forever — and it is only available when the caller let
+                    // us choose the port. One retry, because a second collision on a fresh ephemeral
+                    // port is evidence of something this does not model, not of bad luck twice.
+                    val rebindable =
+                        reason is ProbeRejection.StalePathCollision &&
+                            requestedPort == 0 &&
+                            attempt == MigrateAttempt.First
+                    if (rebindable) {
+                        handleMigrate(cmd, MigrateAttempt.AfterRebind)
+                        return
+                    }
                     cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
                     return
                 }
@@ -2015,6 +2045,38 @@ class QuicheDriver(
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
     }
+
+    /**
+     * What quiche's refusal to probe a path actually means (#583).
+     *
+     * The two codes below are the ones `quiche_conn_probe_path` can return, and they are reached by
+     * different routes in quiche 0.29.3 (`lib.rs:7175`):
+     *
+     * ```rust
+     * let pid = match self.paths.path_id_from_addrs(&(local_addr, peer_addr)) {
+     *     Some(pid) => pid,
+     *     None => self.create_path_on_client(local_addr, peer_addr)?,   // OUT_OF_IDENTIFIERS
+     * };
+     * let path = self.paths.get_mut(pid)?;
+     * path.request_validation();
+     * path.active_dcid_seq.ok_or(Error::InvalidState)                    // INVALID_STATE
+     * ```
+     *
+     * So `INVALID_STATE` is **not** an exhausted pool: it is an *existing* path whose destination CID
+     * is gone — the shape a previous abandoned probe leaves behind when the kernel hands its ephemeral
+     * port back. Probing that same 4-tuple again fails identically forever, so it is retryable only by
+     * rebinding, never by waiting.
+     *
+     * ⚠️ Note `request_validation()` runs **before** the failing check, so on that branch quiche has
+     * already put the existing path into requesting-validation. A rejected probe is therefore not
+     * always inert, which is what the older "a rejected probe allocates nothing" comment claimed.
+     */
+    private fun probeRejection(code: Int): ProbeRejection =
+        when (code) {
+            QUICHE_ERR_INVALID_STATE -> ProbeRejection.StalePathCollision
+            QUICHE_ERR_OUT_OF_IDENTIFIERS -> ProbeRejection.OutOfConnectionIds
+            else -> ProbeRejection.Unrecognised(code)
+        }
 
     /**
      * Give back everything [newPath] acquired, for the two exits that abandon it before

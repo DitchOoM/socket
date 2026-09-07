@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -610,6 +611,80 @@ class PathRetirementTests {
      * `create_path_on_client` returns *before* `link_dcid_to_path_id`, so a rejected probe never took
      * an id — retiring one here would drop a spare the connection still owns, or the id it is using.
      */
+    /**
+     * **A stale-path collision is retried from a fresh port, once** (#583).
+     *
+     * `quiche_conn_probe_path` returns `INVALID_STATE` when the 4-tuple it was handed already names a
+     * path whose destination connection id is gone — the state a previously abandoned probe leaves
+     * behind once the kernel hands its ephemeral port back. It is **not** an exhausted pool, and it is
+     * not absorbed by waiting: probing the same 4-tuple again fails identically forever, which is why
+     * the replenish backoff in `FailedProbeConnectionIdTestSuite` could never rescue it and why #583
+     * surfaced as a flake wearing #447's error message.
+     *
+     * The only thing that can clear it is a different local port, so the driver rebinds and re-probes.
+     */
+    @Test
+    fun aStalePathCollisionRebindsAndProbesAgain() =
+        runTest {
+            val f = Fixture()
+            // First bind lands on a port quiche still holds a dead path for; the retry is unscripted,
+            // so the stub probes it normally.
+            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+
+                assertNotEquals(
+                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_INVALID_STATE),
+                    result.await(),
+                    "the collision was reported to the caller instead of being retried from another port " +
+                        "— which is the one response that can clear it",
+                )
+                assertEquals(
+                    2,
+                    f.factory.opened,
+                    "the driver did not rebind: a stale-path collision retried on the same 4-tuple fails " +
+                        "identically forever, so one bind means the retry never happened",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **…and only once.** A second collision on a freshly bound ephemeral port is evidence of something
+     * this does not model, not of bad luck twice, so it is reported rather than retried into a loop.
+     */
+    @Test
+    fun aSecondStalePathCollisionIsReportedRatherThanRetriedForever() =
+        runTest {
+            val f = Fixture()
+            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
+            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+
+                assertEquals(
+                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_INVALID_STATE),
+                    result.await(),
+                    "a second collision was not reported, so the rebind is unbounded",
+                )
+                assertEquals(
+                    2,
+                    f.factory.opened,
+                    "the driver bound ${f.factory.opened} times for one migration — the retry is not bounded " +
+                        "to a single rebind",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
     @Test
     fun aProbeQuicheRejectsOutrightRetiresNothing() =
         runTest {

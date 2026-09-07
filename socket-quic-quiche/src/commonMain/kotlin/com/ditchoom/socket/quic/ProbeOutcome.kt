@@ -36,8 +36,22 @@ sealed interface ProbeOutcome {
      *
      * No CID is owed here: every failure inside `create_path_on_client` returns before
      * `link_dcid_to_path_id`, so a rejected probe consumes nothing.
+     *
+     * ⚠️ That reasoning covers the `create_path_on_client` failures only. [QUICHE_ERR_INVALID_STATE]
+     * is reached on a path that already existed — quiche calls `request_validation()` on it *before*
+     * the check that fails — so on that branch the refusal is not inert, and the caller owes the
+     * rebind rather than a retry. See `QuicheDriver.probeRejection` (#583).
      */
     class Rejected(
         val code: Int,
     ) : ProbeOutcome
 }
+
+/**
+ * `QUICHE_ERR_INVALID_STATE` (quiche.h). Out of `quiche_conn_probe_path` it means the 4-tuple already
+ * names a path whose destination connection id is gone — **not** an exhausted pool.
+ */
+internal const val QUICHE_ERR_INVALID_STATE = -6
+
+/** `QUICHE_ERR_OUT_OF_IDENTIFIERS` (quiche.h): no spare connection id to bind to a new path. */
+internal const val QUICHE_ERR_OUT_OF_IDENTIFIERS = -18
