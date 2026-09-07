@@ -37,6 +37,46 @@ calls `harnessUp` before the test task and `harnessDown` after. If Docker
 isn't installed those tasks no-op (tests then skip the harness-backed
 cases at runtime via `isHarnessAvailable()` / `withNetworkHarness`).
 
+## On macOS (and any non-Linux host)
+
+Two separate things used to stop this working. Both are handled, but the second needs a choice from
+you.
+
+**The image no longer depends on who built it.** `quicEchoJar` stages *the host's* quiche natives
+(`prepareQuicheNativeLib` is "for the current host OS/arch") and the container is Linux, so a Mac-built
+jar made the container die on `META-INF/native/linux-arm64/libquiche.so (not on classpath)`. `harnessUp`
+now fetches CI's `quic-echo-docker-context` on non-Linux hosts — the same artefact the integration lanes
+consume, carrying both Linux arches. Linux hosts still build locally.
+
+⚠️ That is **`main`'s** server, not your working tree's. Better for client-side work (a known-good
+peer); useless if you are changing `QuicEchoTestServer` itself — build on Linux for that.
+
+**Docker Desktop does not publish UDP to the macOS host.** `docker compose ps` reports
+`127.0.0.1:14433->14433/udp` while `lsof -iUDP:14433` shows no socket, so the QUIC handshake never
+arrives and every harness test skips with `IdleTimeout`. Apple's `container` has no such problem — it
+gives the container its **own routable IP**, so there is no publishing proxy to fail:
+
+```bash
+container build -t quic-echo-local test-harness/quic-echo/   # context carries CI's Linux-native jar
+container run -d --name quicecho quic-echo-local             # no args: the image's CMD is complete
+container ls                                                 # read the IP, e.g. 192.168.64.11
+
+sed -i '' 's/^HARNESS_HOST=.*/HARNESS_HOST=192.168.64.11/' test-harness/harness.env
+./gradlew :socket-quic-quiche:jvmTest --tests '*Harness*' --rerun -x harnessUp -x harnessDown
+
+container rm -f quicecho && git checkout test-harness/harness.env
+```
+
+Measured on macOS arm64: **7 OK / 0 SKIP in 8s**, against 1m40s of timeouts under Docker Desktop.
+
+⚠️ `container run <image> <args>` **replaces** the CMD, and the entrypoint then tries to exec the cert
+path (`/app/cert.crt: Permission denied`). Pass no args.
+⚠️ `container` runs one container, not a compose stack — quic-echo alone covers the QUIC harness suite;
+toxiproxy/netem/rst/tls back other suites and still need Docker.
+⚠️ These containers have **no IPv6 interface**, so a v6 axis cannot be exercised on this path.
+⚠️ `jvmTest` *dependsOn* `harnessUp` and is *finalizedBy* `harnessDown`, which is why a hand-started
+container disappears mid-run — hence `-x harnessUp -x harnessDown` above.
+
 ## The controller & `GET /describe` (W6 control plane)
 
 The `controller` service is the consumer-facing entry point to the harness
