@@ -5,11 +5,14 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.testkit.fault.FaultSchedule
+import com.ditchoom.socket.testsuite.harness.NetworkHarnessScope
 import com.ditchoom.socket.testsuite.harness.withNetworkHarness
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -17,57 +20,55 @@ import kotlin.time.Duration.Companion.seconds
  * that is neither an in-process pipe nor a clean loopback.
  *
  * `udp-toxi` is transport-agnostic: it moves datagrams, and QUIC is datagrams, so pointing a second
- * named relay at `quic-echo` is all it takes to put a real handshake and a real stream behind real
- * packet loss (P2 `impairedQuic` of RFC_UNIFIED_NETWORK_TEST_HARNESS).
+ * named relay at `quic-echo` puts a real handshake and a real stream behind real packet loss (P2
+ * `impairedQuic` of RFC_UNIFIED_NETWORK_TEST_HARNESS).
  *
  * ## What these assert, and what they deliberately do not
  * A dropped datagram here is a **lost QUIC packet**, so loss is absorbed by loss recovery and surfaces
- * as latency, not as a failed read. Asserting "the echo came back" is therefore the honest assertion;
- * asserting anything per-datagram would be asserting quiche's recovery schedule, which is not ours and
- * changes between releases.
+ * as latency, not as a failed read. Asserting "the echo came back" is the honest assertion; asserting
+ * anything per-datagram would be asserting quiche's recovery schedule, which is not ours and changes
+ * between releases.
  *
- * ⚠️ **`dropEvery(n)` defaults to `offset = 0`, so the first datagram of each impaired leg is always
- * dropped — which is the client's first Initial.** The costs below are therefore handshake recovery,
- * not steady-state loss: measured 1.1s for the uplink case (one Initial PTO at quiche's 333ms initial
- * RTT) and 18.2s for both legs (PTO exponential backoff, 1+2+4+8…). That distribution is discrete in
- * powers of two, so "margin" here is not continuous — one more unlucky alignment is +16s. An earlier
- * revision explained the 18.2s as symmetric loss "compounding", which is not the mechanism.
+ * **But a successful echo does not prove anything was dropped**, so every impaired case also asserts
+ * the relay's own tally ([NetworkHarnessScope.quicRelayStats]). Without it this suite passes
+ * identically against a relay that silently forwarded everything — the shape that makes an impairment
+ * matrix green and meaningless, and the one the UDP suite avoids by asserting a specific datagram.
  *
- * The interesting failure this can catch is the opposite one: loss that the connection does *not*
- * absorb — a handshake that never completes, a stream that reports end instead of data, a connection
- * that dies rather than retransmits. Those are ours.
+ * ⚠️ **`dropEvery(n)` defaults to `offset = 0`, so the first datagram of each impaired leg is dropped —
+ * which is the client's first Initial.** The costs are therefore handshake recovery, not steady-state
+ * loss: measured 1.1s for the uplink case (one Initial PTO at quiche's 333ms initial RTT) and 18.2s for
+ * both legs (PTO exponential backoff, 1+2+4+8…). That distribution is discrete in powers of two, so
+ * "margin" is not continuous here — one more unlucky alignment is +16s.
  *
  * ## Why JVM-only
- * Same reasoning as `UdpHarnessTests`: the harness sidecars are reachable from `jvmTest` under the
- * `harnessUp` window on Linux CI and dev machines, and this needs `:socket-testsuite`'s control plane.
+ * Same reasoning as `UdpHarnessTests`: the sidecars are reachable from `jvmTest` under the `harnessUp`
+ * window, and this needs `:socket-testsuite`'s control plane.
  *
  * **Skip-on-unreachable, never flaky-fail:** every body runs inside [withNetworkHarness], so with the
  * stack down each test is a printed skip rather than a failure. Assertions inside the block are real.
  *
- * ⚠️ These tests can only fail as of #577. Before that a wrong answer from a reachable harness was
- * swallowed and reported as a skip, which is exactly the shape that would make an impairment matrix
- * green and meaningless.
+ * ⚠️ These can only fail as of #577. Before it, a wrong answer from a reachable harness was swallowed
+ * and reported as a skip.
  */
 class QuicImpairedHarnessTests {
     private val bufferFactory = BufferFactory.network()
 
     /**
-     * ⚠️ A 60s idle timeout, not the 30s the clean harness suite uses, because **loss is paid in
-     * latency here**. Measured on Linux against the real sidecars: 45ms clean, 1.1s at one-in-three
-     * loss on the uplink, **18.2s at one-in-four on both legs** — symmetric loss also delays the ACKs
-     * that drive recovery, so it compounds. 18.2s under a 30s timeout is 1.6x of margin, which is a
-     * flake on a loaded runner rather than a safety factor; 60s makes it 3.3x while leaving the
-     * impairment exactly as harsh.
+     * ⚠️ **The budget that matters is [withQuicConnection]'s, not the idle timeout.** RFC 9000 §10.1
+     * makes the effective idle timeout the *minimum* of the two endpoints', and `QuicEchoTestServer`
+     * advertises 30s — so raising the client's above that changes nothing, and idle never fires here
+     * anyway because PTO probes keep packets arriving. Stated because an earlier revision credited this
+     * knob for headroom that `withQuicConnection(timeout = …)` and the per-read deadlines provide.
      */
     private val quicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
             verifyPeer = false,
-            idleTimeout = 60.seconds,
+            idleTimeout = 30.seconds,
         )
 
-    /** One stream round trip, as the assertion these tests are actually about. */
-    private suspend fun QuicScope.echo(payload: String): String {
+    /** One stream round trip — the assertion these tests are actually about. */
+    private suspend fun QuicScope.echoOnce(payload: String): String {
         val stream = openStream()
         val out = bufferFactory.allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
@@ -75,31 +76,49 @@ class QuicImpairedHarnessTests {
         stream.write(out, 60.seconds)
         out.freeNativeMemory()
         val read = stream.read(60.seconds)
-        val text =
-            if (read is ReadResult.Data) {
-                read.buffer.readString(read.buffer.remaining(), Charset.UTF8).also { read.buffer.freeIfNeeded() }
-            } else {
-                NO_DATA
-            }
+        // assertIs, not a NO_DATA sentinel: ReadResult is sealed, and collapsing End/Closed/Reset into
+        // one string would report "expected X but was NO_DATA" and lose which of them it was — on the
+        // failures where the variant is the whole diagnosis.
+        assertIs<ReadResult.Data>(read, "the impaired stream produced $read instead of data")
+        val text = read.buffer.readString(read.buffer.remaining(), Charset.UTF8)
+        read.buffer.freeIfNeeded()
         stream.close()
         return text
+    }
+
+    /** Run one echo through the relay at [endpointHost]:[endpointPort] and return what came back. */
+    private suspend fun echoThroughRelay(
+        endpointHost: String,
+        endpointPort: Int,
+        payload: String,
+    ): String {
+        var echoed = ""
+        withQuicConnection(endpointHost, endpointPort, quicOptions, timeout = 60.seconds) {
+            echoed = echoOnce(payload)
+        }
+        return echoed
     }
 
     @Test
     fun aCleanRelayRoundTripsAStream() {
         runBlocking(Dispatchers.IO) {
             withNetworkHarness {
-                // The control: the relay itself must not break QUIC. Without this, a red impaired test
-                // proves nothing — it could be the relay rather than the loss.
+                // The control: the relay itself must not break QUIC. Without it a red impaired case
+                // could be the relay rather than the loss.
                 impairedQuic(clientToServer = FaultSchedule.CLEAN) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
-                        assertEquals(
-                            "through-the-relay",
-                            echo("through-the-relay"),
-                            "a CLEAN udp-toxi relay broke a QUIC stream, so every impaired assertion " +
-                                "beside this one would be measuring the relay rather than the impairment",
-                        )
-                    }
+                    assertEquals(
+                        "through-the-relay",
+                        echoThroughRelay(endpoint.host, endpoint.port, "through-the-relay"),
+                        "a CLEAN udp-toxi relay broke a QUIC stream, so every impaired assertion beside " +
+                            "this one would be measuring the relay rather than the impairment",
+                    )
+                    val stats = quicRelayStats()
+                    assertEquals(
+                        0,
+                        stats.clientToServer.dropped,
+                        "the CLEAN control dropped datagrams ($stats), so a schedule leaked across tests " +
+                            "and every 'survives loss' result below is against an unknown impairment",
+                    )
                 }
             }
         }
@@ -110,15 +129,18 @@ class QuicImpairedHarnessTests {
         runBlocking(Dispatchers.IO) {
             withNetworkHarness {
                 impairedQuic(clientToServer = FaultSchedule { dropEvery(n = 3) }) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
-                        assertEquals(
-                            "lossy-uplink",
-                            echo("lossy-uplink"),
-                            "a stream did not survive one-in-three loss on the uplink. QUIC is supposed to " +
-                                "absorb that through loss recovery, so this is retransmission failing, not " +
-                                "the network being lossy",
-                        )
-                    }
+                    assertEquals(
+                        "lossy-uplink",
+                        echoThroughRelay(endpoint.host, endpoint.port, "lossy-uplink"),
+                        "a stream did not survive one-in-three loss on the uplink — QUIC absorbs that " +
+                            "through loss recovery, so this is retransmission failing, not a lossy network",
+                    )
+                    val stats = quicRelayStats()
+                    assertTrue(
+                        stats.clientToServer.dropped > 0,
+                        "the uplink schedule was accepted but nothing was dropped ($stats) — the echo " +
+                            "succeeded because the path was clean, so this proved nothing",
+                    )
                 }
             }
         }
@@ -132,20 +154,20 @@ class QuicImpairedHarnessTests {
                     clientToServer = FaultSchedule { dropEvery(n = 4) },
                     serverToClient = FaultSchedule { dropEvery(n = 4) },
                 ) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
-                        assertEquals(
-                            "lossy-both-ways",
-                            echo("lossy-both-ways"),
-                            "loss on both legs killed the exchange. Symmetric loss also delays ACKs, so this " +
-                                "exercises the recovery path the uplink-only case does not",
-                        )
-                    }
+                    assertEquals(
+                        "lossy-both-ways",
+                        echoThroughRelay(endpoint.host, endpoint.port, "lossy-both-ways"),
+                        "loss on both legs killed the exchange — impairing both exercises recovery the " +
+                            "uplink-only case does not",
+                    )
+                    val stats = quicRelayStats()
+                    assertTrue(
+                        stats.clientToServer.dropped > 0 && stats.serverToClient.dropped > 0,
+                        "one or both legs dropped nothing ($stats) — a two-leg assertion that only " +
+                            "impaired one leg is a one-leg test wearing the wrong name",
+                    )
                 }
             }
         }
-    }
-
-    private companion object {
-        const val NO_DATA = "NO_DATA"
     }
 }

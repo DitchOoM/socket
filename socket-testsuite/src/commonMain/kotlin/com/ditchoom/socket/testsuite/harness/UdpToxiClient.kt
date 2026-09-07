@@ -76,6 +76,30 @@ class UdpToxiClient(
         request(method = "DELETE", path = "/relays/$relay/schedule", body = null, acceptConflict = false)
     }
 
+    /**
+     * What the relay's two legs actually did — the read that turns "the schedule was accepted" into
+     * "the schedule was applied".
+     *
+     * A QUIC impairment test cannot otherwise tell loss absorbed by recovery from loss that never
+     * happened: both end in a successful echo. Asserting a leg's `dropped` is greater than zero is the
+     * discriminator, and it exercises the control plane end to end at the same time.
+     */
+    suspend fun relayStats(relay: String): RelayStats {
+        val (code, body) = harnessHttpExchange(host, apiPort, "GET", "/relays/$relay", requestBody = null)
+        if (code != 200) {
+            throw IllegalStateException("udp-toxi GET /relays/$relay returned $code")
+        }
+
+        fun leg(name: String): LegStats {
+            val obj = HarnessJson.objectField(body, name) ?: return LegStats(0, 0)
+            return LegStats(
+                dropped = HarnessJson.intField(obj, "dropped") ?: 0,
+                delivered = HarnessJson.intField(obj, "delivered") ?: 0,
+            )
+        }
+        return RelayStats(clientToServer = leg("clientToServer"), serverToClient = leg("serverToClient"))
+    }
+
     private suspend fun request(
         method: String,
         path: String,
@@ -101,3 +125,15 @@ enum class RelayDirection(
     ClientToServer("clientToServer"),
     ServerToClient("serverToClient"),
 }
+
+/** One leg's tally, as the relay counted it at its single decision point. */
+data class LegStats(
+    val dropped: Int,
+    val delivered: Int,
+)
+
+/** Both legs of a relay — see [UdpToxiClient.relayStats]. */
+data class RelayStats(
+    val clientToServer: LegStats,
+    val serverToClient: LegStats,
+)

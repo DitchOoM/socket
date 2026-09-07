@@ -222,10 +222,25 @@ class NetworkHarnessScope internal constructor(
     }
 
     /**
+     * What the QUIC relay's legs did during the enclosing [impairedQuic] block.
+     *
+     * The discriminator an impairment test otherwise lacks: a successful echo proves the connection
+     * survived, not that anything was ever dropped, so without this a relay silently defaulting to
+     * CLEAN passes every assertion. Read it inside the block, before the schedules are cleared.
+     */
+    suspend fun quicRelayStats(): RelayStats {
+        val relay =
+            manifest.udpToxi
+                ?: throw IllegalStateException("harness manifest has no 'udp-toxi' scenario")
+        return UdpToxiClient(relay.host, relay.api).relayStats(SUITE_QUIC_RELAY)
+    }
+
+    /**
      * Upsert the QUIC relay (its own name and data port, schedules cleared) and return the control
      * client + ports. Upstream is the compose service address ([QUIC_ECHO_UPSTREAM]) — resolvable from
      * *inside* the harness network, where `udp-toxi` runs.
      */
+
     private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, HarnessEndpoint> {
         val relay =
             manifest.udpToxi
