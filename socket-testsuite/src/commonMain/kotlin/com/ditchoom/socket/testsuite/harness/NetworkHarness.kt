@@ -231,7 +231,10 @@ class NetworkHarnessScope internal constructor(
     suspend fun quicRelayStats(): RelayStats {
         val relay =
             manifest.udpToxi
-                ?: throw IllegalStateException("harness manifest has no 'udp-toxi' scenario")
+                ?: throw HarnessUnavailable(
+                    HarnessUnavailable.Reason.ScenarioNotInManifest,
+                    "udp-toxi — no relay control plane, so no stats to read",
+                )
         return UdpToxiClient(relay.host, relay.api).relayStats(SUITE_QUIC_RELAY)
     }
 
@@ -244,8 +247,9 @@ class NetworkHarnessScope internal constructor(
     private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, HarnessEndpoint> {
         val relay =
             manifest.udpToxi
-                ?: throw IllegalStateException(
-                    "harness manifest has no 'udp-toxi' scenario — QUIC impairments unavailable on this runtime",
+                ?: throw HarnessUnavailable(
+                    HarnessUnavailable.Reason.ScenarioNotInManifest,
+                    "udp-toxi — QUIC impairments need its control plane",
                 )
         // Its own scenario key, NOT a field on udp-toxi. A required field there would make a controller
         // that predates it report no udp-toxi at all, which disables `impairedUdp` — an existing,

@@ -87,7 +87,10 @@ class UdpToxiClient(
     suspend fun relayStats(relay: String): RelayStats {
         val (code, body) = harnessHttpExchange(host, apiPort, "GET", "/relays/$relay", requestBody = null)
         if (code != 200) {
-            throw IllegalStateException("udp-toxi GET /relays/$relay returned $code")
+            throw HarnessUnavailable(
+                HarnessUnavailable.Reason.SidecarRejectedRequest,
+                "udp-toxi GET /relays/$relay returned $code",
+            )
         }
 
         fun leg(name: String): LegStats {
