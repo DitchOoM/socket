@@ -10,6 +10,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.harness.QuicHarnessConfig
+import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CancellationException
@@ -224,6 +225,35 @@ class QuicHarnessIntegrationTests {
     private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) =
         runAgainstHarness(quicOptions.copy(datagrams = DatagramOptions()), block)
 
+    /**
+     * What the body did, captured *before* teardown can throw over it.
+     *
+     * `withQuicConnection` closes in a `finally`, and on Kotlin an exception from a `finally`
+     * **replaces** the one in flight — so a body that failed on a connection whose `close()` then
+     * also failed would arrive at the outer `catch` as a teardown throwable with the body's failure
+     * gone. That is #577 again on the one path where a body failure is most likely, so what the body
+     * did is recorded as it happens rather than inferred from what escaped.
+     */
+    private sealed interface BodyOutcome {
+        /** `withQuicConnection` never invoked the block — establishment failed. */
+        data object NeverRan : BodyOutcome
+
+        data object Completed : BodyOutcome
+
+        data class Failed(
+            val failure: Throwable,
+        ) : BodyOutcome
+    }
+
+    /** Whether leaving [withQuicConnection] — establishment, the block, and `close()` — threw. */
+    private sealed interface Teardown {
+        data object Clean : Teardown
+
+        data class Threw(
+            val cause: Throwable,
+        ) : Teardown
+    }
+
     /** What one attempt to run a body against the harness did. */
     private sealed interface HarnessRun {
         /** The body ran to completion. */
@@ -237,11 +267,27 @@ class QuicHarnessIntegrationTests {
             val failure: Throwable,
         ) : HarnessRun
 
+        /**
+         * The body completed and then leaving the connection threw. A close that fails after a good
+         * body is a defect in this library, never a reason to call the harness unreachable.
+         */
+        data class TeardownFailed(
+            val failure: Throwable,
+        ) : HarnessRun
+
         /** The connection was never established, so the body never ran. */
         data class Unreachable(
             val cause: Throwable,
         ) : HarnessRun
     }
+
+    /**
+     * `withQuicConnection` returned normally without ever invoking the block. Unreachable by
+     * construction — it either runs the block or throws — and recorded as a type rather than as a
+     * message so that, if the contract ever changes, the report names this invariant instead of
+     * printing a sentence.
+     */
+    private object BlockNeverRan : Throwable("withQuicConnection returned without running the block")
 
     /**
      * Marks a throwable as having come from the test body rather than from establishing the
@@ -269,9 +315,23 @@ class QuicHarnessIntegrationTests {
         when (val run = connectAndRun(options, block)) {
             HarnessRun.Completed -> println("[QuicHarnessIntegrationTests] harness OK")
             is HarnessRun.BodyFailed -> throw run.failure
+            is HarnessRun.TeardownFailed -> throw run.failure
             is HarnessRun.Unreachable -> {
                 println("[QuicHarnessIntegrationTests] harness SKIP: ${auditMarker(run.cause)}")
-                recordSkip(QuicHarnessIntegrationTests::class, unreachableReason(run.cause))
+                recordSkip(
+                    QuicHarnessIntegrationTests::class,
+                    unreachableReason(run.cause),
+                    // Whether a quic-echo peer is listening is a fact about how the lane was
+                    // provisioned, and no lane setting can make this test run without one: the Apple
+                    // workflow sets HARNESS_DISABLED=true and never starts the peer, while also
+                    // setting SOCKET_REQUIRE_ALL_TESTS=1 on three shards. Gating on the lane instead
+                    // would make those three permanently red for a harness they deliberately do not
+                    // run. The skip is still emitted and still counted, and the escalation for a lane
+                    // that DOES provision the peer already lives outside this process: build-linux
+                    // counts `harness OK` against `harness SKIP:` and fails the lane when every test
+                    // skipped.
+                    SkipGate.HostCannotProvideIt("a running quic-echo harness peer"),
+                )
             }
         }
     }
@@ -279,27 +339,46 @@ class QuicHarnessIntegrationTests {
     private suspend fun connectAndRun(
         options: QuicOptions,
         block: suspend QuicScope.() -> Unit,
-    ): HarnessRun =
-        try {
-            withQuicConnection(harnessHost, QuicHarnessConfig.quicEchoPort, options, connOptions, connectTimeout) {
-                try {
-                    block()
-                } catch (cancellation: CancellationException) {
-                    // Structured concurrency: a cancelled body is neither a failure nor a skip, and
-                    // swallowing it here would leave the coroutine machinery believing it completed.
-                    throw cancellation
-                } catch (t: Throwable) {
-                    throw HarnessBodyFailure(t)
+    ): HarnessRun {
+        var body: BodyOutcome = BodyOutcome.NeverRan
+        val teardown =
+            try {
+                withQuicConnection(harnessHost, QuicHarnessConfig.quicEchoPort, options, connOptions, connectTimeout) {
+                    body =
+                        try {
+                            block()
+                            BodyOutcome.Completed
+                        } catch (cancellation: CancellationException) {
+                            // Structured concurrency: a cancelled body is neither a failure nor a
+                            // skip, and swallowing it would leave the machinery believing it ran.
+                            throw cancellation
+                        } catch (t: Throwable) {
+                            // Recorded, not rethrown: letting it out here would run `close()` in a
+                            // `finally` that can replace it. The verdict below rethrows it instead.
+                            BodyOutcome.Failed(t)
+                        }
                 }
+                Teardown.Clean
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (t: Throwable) {
+                Teardown.Threw(t)
             }
-            HarnessRun.Completed
-        } catch (bodyFailure: HarnessBodyFailure) {
-            HarnessRun.BodyFailed(bodyFailure.failure)
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (t: Throwable) {
-            HarnessRun.Unreachable(t)
+        return when (val outcome = body) {
+            // The body's verdict outranks teardown's: it ran, and what it decided is the answer.
+            is BodyOutcome.Failed -> HarnessRun.BodyFailed(outcome.failure)
+            BodyOutcome.Completed ->
+                when (teardown) {
+                    Teardown.Clean -> HarnessRun.Completed
+                    is Teardown.Threw -> HarnessRun.TeardownFailed(teardown.cause)
+                }
+            BodyOutcome.NeverRan ->
+                when (teardown) {
+                    is Teardown.Threw -> HarnessRun.Unreachable(teardown.cause)
+                    Teardown.Clean -> HarnessRun.Unreachable(BlockNeverRan)
+                }
         }
+    }
 
     /**
      * Classify a failed establishment. An [UnsupportedOperationException] is QUIC not being
@@ -311,8 +390,10 @@ class QuicHarnessIntegrationTests {
             SkipReason.TransportUnavailable("QUIC is not implemented on this platform: ${cause.message}")
         } else {
             SkipReason.HarnessUnreachableFromDevice(
-                "$harnessHost:${QuicHarnessConfig.quicEchoPort} did not complete a QUIC handshake from this " +
-                    "test process (in-process loopback, no device hop): ${cause::class.simpleName}: ${cause.message}",
+                "$harnessHost:${QuicHarnessConfig.quicEchoPort} did not complete a QUIC handshake. Tried by: " +
+                    "this test process, to the out-of-process quic-echo peer the docker-compose harness " +
+                    "publishes on the loopback of the same host (started by `harnessUp`; never started on a " +
+                    "lane with HARNESS_DISABLED=true). Cause: ${cause::class.simpleName}: ${cause.message}",
             )
         }
 

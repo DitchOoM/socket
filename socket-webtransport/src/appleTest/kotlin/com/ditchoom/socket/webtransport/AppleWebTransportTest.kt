@@ -7,9 +7,9 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.QuicHarnessAvailability
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.QuicHarnessAvailability
 import com.ditchoom.socket.quic.quicHarnessAvailability
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.fixtures.TestCerts

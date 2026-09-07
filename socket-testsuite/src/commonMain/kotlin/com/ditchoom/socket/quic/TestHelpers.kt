@@ -303,7 +303,7 @@ expect fun isKotlinNative(): Boolean
  * is supplied; no such property, and no assignment of `QUIC_SIM_BOOTED`, exists anywhere in the
  * build or in CI. Every Apple simulator lane therefore skips unconditionally today, which is why
  * this now reports the skip instead of hiding it. macOS K/N (no simulator, real network stack)
- * returns `null` and validates the QUIC client.
+ * returns [QuicHarnessAvailability.Available] and validates the QUIC client.
  */
 expect fun quicHarnessAvailability(): QuicHarnessAvailability
 
