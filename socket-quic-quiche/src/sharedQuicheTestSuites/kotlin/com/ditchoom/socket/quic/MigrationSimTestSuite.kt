@@ -902,8 +902,9 @@ abstract class MigrationSimTestSuite {
         runTest {
             val scheduler = testScheduler
             val monitor = SimNetworkMonitor.on(WIFI)
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 574_101L,
                     quicOptions =
                         migrationSimOptions(
@@ -1023,8 +1024,6 @@ abstract class MigrationSimTestSuite {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -1068,10 +1067,11 @@ abstract class MigrationSimTestSuite {
     fun aBlipTheLengthOfThe385ExcursionCostsNoMigration() =
         runTest {
             val scheduler = testScheduler
-            try {
+            wrapTestBody {
                 for (latency in BLIP_LATENCIES) {
                     val monitor = SimNetworkMonitor.on(WIFI)
                     withMigrationSim(
+                        simEnv(),
                         seed = 574_102L,
                         quicOptions =
                             migrationSimOptions(
@@ -1163,8 +1163,6 @@ abstract class MigrationSimTestSuite {
                         }
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -1187,10 +1185,11 @@ abstract class MigrationSimTestSuite {
     @Test
     fun aLossyPathIsNotASilentOne() =
         runTest {
-            try {
+            wrapTestBody {
                 for (loss in LOSSY_RATES) {
                     val monitor = SimNetworkMonitor.on(WIFI)
                     withMigrationSim(
+                        simEnv(),
                         seed = 574_104L,
                         quicOptions =
                             migrationSimOptions(
@@ -1249,8 +1248,6 @@ abstract class MigrationSimTestSuite {
                         }
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
@@ -1281,8 +1278,9 @@ abstract class MigrationSimTestSuite {
     fun separateBlipsDoNotAccumulateIntoAMigration() =
         runTest {
             val monitor = SimNetworkMonitor.on(WIFI)
-            try {
+            wrapTestBody {
                 withMigrationSim(
+                    simEnv(),
                     seed = 574_103L,
                     quicOptions =
                         migrationSimOptions(
@@ -1370,8 +1368,6 @@ abstract class MigrationSimTestSuite {
                         serverJob.cancel()
                     }
                 }
-            } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(MigrationSimTests::class, e)
             }
         }
 
