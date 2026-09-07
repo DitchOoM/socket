@@ -106,10 +106,3 @@ internal class LaggingScidRetirementQuicheApi(
 
 /** `QUICHE_ERR_INVALID_STATE` — what quiche returns for a destination CID it no longer recognises. */
 internal const val QUICHE_ERR_INVALID_STATE = -6
-
-/**
- * `QUICHE_ERR_OUT_OF_IDENTIFIERS` — no spare connection ID is available for the operation. What
- * `probe_path`/`migrate` answer once the CID pool is exhausted, which is the state #447's leak drove
- * a connection into permanently.
- */
-internal const val QUICHE_ERR_OUT_OF_IDENTIFIERS = -18

@@ -146,7 +146,21 @@ sealed interface MigrationResult {
                 val cause: Throwable,
             ) : Failed
 
-            /** quiche refused to probe the new path. */
+            /**
+             * The QUIC stack refused to probe the new path, carrying its error number verbatim.
+             *
+             * ⚠️ **A known gap, deliberately left open (#583).** A [code] cannot tell a caller whether
+             * the refusal is worth another attempt, and the two that occur in practice call for
+             * opposite responses: a stale-path collision clears only by binding a *different* local
+             * port, while an exhausted connection-id pool clears only by waiting for a replacement id.
+             * A caller reading this today can act on neither, and the driver's own retry could not
+             * either until it began classifying the code internally.
+             *
+             * It stays an `Int` because replacing it with the sealed reason the driver already uses is
+             * source- and binary-incompatible, and this library is not ready for a major release. **The
+             * next major should replace [code] with that type** — see `ProbeRejection` in
+             * `socket-quic-quiche`, which is the shape it should take.
+             */
             data class ProbeRejected(
                 val code: Int,
             ) : Failed
