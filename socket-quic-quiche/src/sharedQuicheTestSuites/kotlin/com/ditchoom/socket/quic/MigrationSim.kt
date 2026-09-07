@@ -505,6 +505,12 @@ internal suspend fun <R> withMigrationSim(
     quicOptions: QuicOptions = migrationSimOptions(),
     establishTimeout: Duration = 60.seconds,
     clock: SimClockChoice = SimClockChoice.Virtual,
+    /**
+     * When the client's active path counts as having stopped answering. Defaults to the shipped
+     * [SILENT_PATH_THRESHOLD]; a scenario passes another to measure where the boundary is rather than
+     * asserting the constants back to themselves. Client only — the server never migrates.
+     */
+    silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
     block: suspend MigrationSimScope.() -> R,
 ): R {
     // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
@@ -632,6 +638,7 @@ internal suspend fun <R> withMigrationSim(
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
+                silenceThreshold = silenceThreshold,
                 onCleanup = { clientPeerSock.free() },
             )
         val serverDriver =

@@ -1036,7 +1036,7 @@ abstract class MigrationSimTestSuite {
      * *"there is no principled window"*, and a constant chosen to be larger than one recorded blip is
      * not a policy. A data-plane trigger re-opens that question, so it answers it with a conjunction:
      * a run of unanswered loss-detection expiries **and** a floor on how long the run has been going
-     * ([pathHasStoppedAnswering]).
+     * ([SilenceThreshold.isMetBy]).
      *
      * ## Why this test is a sweep, and what the single-latency version hid
      * The first version of the trigger was the expiry count alone, and this test ran only at the sim's
@@ -1179,7 +1179,7 @@ abstract class MigrationSimTestSuite {
      *
      * Nothing is blackholed here at all: the path drops [LOSSY_RATES] of its datagrams and carries the
      * rest, throughout. The echoes completing are the proof that it is working; zero migrations are the
-     * assertion. This is the second reason the time floor in [pathHasStoppedAnswering] is not optional,
+     * assertion. This is the second reason the time floor in [SilenceThreshold.isMetBy] is not optional,
      * and it stacks with the first — see `aBlipTheLengthOfThe385ExcursionCostsNoMigration`.
      */
     @Test
@@ -1252,6 +1252,98 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * One run of [BLIP_ROUNDS] separate stalls, each sized by evidence rather than by the clock, under
+     * an arbitrary [threshold] — the shape both the guard below and [theSilenceThresholdMarginIsWhereWeThinkItIs]
+     * need, differing only in what they assert about the result.
+     */
+    private class BlipRun(
+        /** Migration attempts recorded after each round, in order. */
+        val attemptsPerRound: List<Int>,
+        val probePathsOpened: Int,
+        val datagramsSwallowed: Int,
+    )
+
+    private suspend fun blipRoundsUnder(threshold: SilenceThreshold): BlipRun {
+        val monitor = SimNetworkMonitor.on(WIFI)
+        return withMigrationSim(
+            simEnv(),
+            seed = 574_103L,
+            quicOptions =
+                migrationSimOptions(
+                    // Not the field deadline: quiche's backoff makes each successive stall
+                    // longer, and surviving a 30s idle window is the #453 scenario's assertion,
+                    // not this one's. Virtual, so the room costs nothing.
+                    idleTimeout = 5.minutes,
+                    migration = MigrationPolicy.Automatic,
+                    networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                ),
+            probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+            silenceThreshold = threshold,
+        ) {
+            val serverJob =
+                client.launch {
+                    val st = server.acceptStream()
+                    while (true) {
+                        val d = st.read(STALL_ECHO_TIMEOUT)
+                        if (d !is ReadResult.Data) break
+                        st.write(d.buffer, 30.seconds)
+                        d.buffer.freeIfNeeded()
+                    }
+                }
+            try {
+                val stream = client.openStream()
+
+                suspend fun write(payload: String) {
+                    val out = BufferFactory.network().allocate(payload.length)
+                    out.writeString(payload, Charset.UTF8)
+                    out.resetForRead()
+                    stream.write(out, STALL_ECHO_TIMEOUT)
+                    out.freeNativeMemory()
+                }
+
+                suspend fun read(): String {
+                    val r = stream.read(STALL_ECHO_TIMEOUT)
+                    if (r !is ReadResult.Data) return "NO_DATA"
+                    return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                }
+
+                write("before")
+                assertEquals("before", read(), "the connection must be healthy before the first blip")
+                awaitSpareDcids()
+
+                // quiche's own cumulative fire count, read through the driver's stats seam —
+                // the raw evidence, not the predicate under test. It sizes the stalls; every
+                // assertion below is about migrations.
+                suspend fun ptoFires(): Long = clientDriver.stats().pathStats?.totalPtoCount ?: 0L
+
+                val primary = pipe.paths().first()
+                val attemptsPerRound = mutableListOf<Int>()
+                repeat(BLIP_ROUNDS) { round ->
+                    write("blip$round")
+                    val firesBefore = ptoFires()
+                    pipe.impair(primary.local, PathImpairment(blackhole = true))
+                    withTimeout(DARK_ROUND_LIMIT) {
+                        while (ptoFires() - firesBefore < DARK_ROUND_PTOS) delay(50.milliseconds)
+                    }
+                    pipe.impair(primary.local, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+                    assertEquals(
+                        "blip$round",
+                        read(),
+                        "round $round: the path healed but the echo never came back, so the " +
+                            "rounds after it would prove nothing",
+                    )
+                    attemptsPerRound += client.attempts.size
+                }
+                val run = BlipRun(attemptsPerRound.toList(), clientPaths().size, primary.stats.blackholed)
+                stream.close()
+                run
+            } finally {
+                serverJob.cancel()
+            }
+        }
+    }
+
+    /**
      * **"Consecutive" is the whole of the threshold: separate stalls must not add up.**
      *
      * The #385 guard next door shows that one blip of the recorded length is under the line. It does
@@ -1277,97 +1369,101 @@ abstract class MigrationSimTestSuite {
     @Test
     fun separateBlipsDoNotAccumulateIntoAMigration() =
         runTest {
-            val monitor = SimNetworkMonitor.on(WIFI)
             wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 574_103L,
-                    quicOptions =
-                        migrationSimOptions(
-                            // Not the field deadline: quiche's backoff makes each successive stall
-                            // longer, and surviving a 30s idle window is the #453 scenario's assertion,
-                            // not this one's. Virtual, so the room costs nothing.
-                            idleTimeout = 5.minutes,
-                            migration = MigrationPolicy.Automatic,
-                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
-                        ),
-                    probeImpairment = { PathImpairment(latency = 35.milliseconds) },
-                ) {
-                    val serverJob =
-                        client.launch {
-                            val st = server.acceptStream()
-                            while (true) {
-                                val d = st.read(STALL_ECHO_TIMEOUT)
-                                if (d !is ReadResult.Data) break
-                                st.write(d.buffer, 30.seconds)
-                                d.buffer.freeIfNeeded()
-                            }
-                        }
-                    try {
-                        val stream = client.openStream()
-
-                        suspend fun write(payload: String) {
-                            val out = BufferFactory.network().allocate(payload.length)
-                            out.writeString(payload, Charset.UTF8)
-                            out.resetForRead()
-                            stream.write(out, STALL_ECHO_TIMEOUT)
-                            out.freeNativeMemory()
-                        }
-
-                        suspend fun read(): String {
-                            val r = stream.read(STALL_ECHO_TIMEOUT)
-                            if (r !is ReadResult.Data) return "NO_DATA"
-                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
-                        }
-
-                        write("before")
-                        assertEquals("before", read(), "the connection must be healthy before the first blip")
-                        awaitSpareDcids()
-
-                        // quiche's own cumulative fire count, read through the driver's stats seam —
-                        // the raw evidence, not the predicate under test. It sizes the stalls; every
-                        // assertion below is about migrations.
-                        suspend fun ptoFires(): Long = clientDriver.stats().pathStats?.totalPtoCount ?: 0L
-
-                        val primary = pipe.paths().first()
-                        repeat(BLIP_ROUNDS) { round ->
-                            write("blip$round")
-                            val firesBefore = ptoFires()
-                            pipe.impair(primary.local, PathImpairment(blackhole = true))
-                            withTimeout(DARK_ROUND_LIMIT) {
-                                while (ptoFires() - firesBefore < DARK_ROUND_PTOS) delay(50.milliseconds)
-                            }
-                            pipe.impair(primary.local, PathImpairment(latency = DEFAULT_PATH_LATENCY))
-                            assertEquals(
-                                "blip$round",
-                                read(),
-                                "round $round: the path healed but the echo never came back, so the " +
-                                    "rounds after it would prove nothing",
-                            )
-                            assertEquals(
-                                0,
-                                client.attempts.size,
-                                "after ${round + 1} separate stall(s), each of them under the threshold " +
-                                    "on its own, the connection migrated: ${client.attempts}. The run of " +
-                                    "unanswered expiries is not being cleared when the path answers, so it " +
-                                    "is a lifetime tally rather than a consecutive one — every long-lived " +
-                                    "connection reaches the threshold eventually, on no evidence at all",
-                            )
-                        }
-                        assertTrue(
-                            primary.stats.blackholed >= BLIP_MIN_SWALLOWED * BLIP_ROUNDS,
-                            "only ${primary.stats.blackholed} datagram(s) were swallowed across " +
-                                "$BLIP_ROUNDS stalls, so the data plane was never meaningfully dark",
-                        )
-                        assertTrue(
-                            clientPaths().isEmpty(),
-                            "no migration was recorded but ${clientPaths().size} probe path(s) were opened",
-                        )
-                        stream.close()
-                    } finally {
-                        serverJob.cancel()
-                    }
+                val run = blipRoundsUnder(SILENT_PATH_THRESHOLD)
+                run.attemptsPerRound.forEachIndexed { round, attempts ->
+                    assertEquals(
+                        0,
+                        attempts,
+                        "after ${round + 1} separate stall(s), each of them under the threshold " +
+                            "on its own, the connection migrated. The run of " +
+                            "unanswered expiries is not being cleared when the path answers, so it " +
+                            "is a lifetime tally rather than a consecutive one — every long-lived " +
+                            "connection reaches the threshold eventually, on no evidence at all",
+                    )
                 }
+                assertTrue(
+                    run.datagramsSwallowed >= BLIP_MIN_SWALLOWED * BLIP_ROUNDS,
+                    "only ${run.datagramsSwallowed} datagram(s) were swallowed across " +
+                        "$BLIP_ROUNDS stalls, so the data plane was never meaningfully dark",
+                )
+                assertEquals(
+                    0,
+                    run.probePathsOpened,
+                    "no migration was recorded but ${run.probePathsOpened} probe path(s) were opened",
+                )
+            }
+        }
+
+    /**
+     * **Where the margin actually is**, asserted rather than written down — the "holds" half.
+     *
+     * [SILENT_PATH_EXPIRY_THRESHOLD] is 4 because Chromium uses 4, and the honest question is how much
+     * room that leaves. Measured here: the guard holds at 4 **and at 3**.
+     *
+     * ⚠️ At 2 the scenario stops *completing* — it dies on a 1m virtual-time `withTimeout` inside the
+     * run rather than on the migration assertion — so "the boundary is at 2" is NOT asserted here. That
+     * distinction is the point: a test that went red at 2 for an uncharacterised reason would read as
+     * "the margin is one step" while actually proving something else. One step of margin below the
+     * shipped value is what is measured and what is claimed.
+     *
+     * Two things this buys that a comment could not:
+     *  - the sweep that established it ran on one host by editing a `const val`; this runs on every
+     *    backend the shared suite runs on, each linking its own `libquiche`, so the boundary is
+     *    checked against quiche's real loss-detection accounting rather than one platform's;
+     *  - it is self-mutation-proving. A change that moves the boundary — in the predicate, in the
+     *    reset, or in quiche's own `total_pto_count` semantics — fails this test instead of
+     *    silently leaving the shipped value with less margin than the number implies.
+     *
+     * ⚠️ The #385 blip guard is NOT the one that discriminates here: it passes at 4, 3, 2 and 1,
+     * because a 1.02s excursion is blocked by the time floor, not by the count. Reading a green
+     * [aBlipTheLengthOfThe385ExcursionCostsNoMigration] as protection against a bad count is the
+     * mistake these tests exist to prevent.
+     *
+     * ⚠️ One threshold per test body on purpose: two [withMigrationSim] runs in a single [runTest]
+     * leave the first run's driver loops on the test scheduler, and the second run's establishment
+     * budget then expires in virtual time before it can connect.
+     *
+     * ⚠️ Only one threshold is exercised here. A test at the shipped value would be a second run of
+     * [separateBlipsDoNotAccumulateIntoAMigration] with identical seed, options and impairment — the
+     * most expensive scenario in this file, re-run per backend for no new information — so the margin
+     * is measured at the step below and nowhere else.
+     */
+    @Test
+    fun separateBlipsDoNotAccumulateOneExpiryBelowTheShippedThreshold() = assertBlipMarginHolds(SILENT_PATH_EXPIRY_THRESHOLD - 1)
+
+    private fun assertBlipMarginHolds(expiries: Long) =
+        runTest {
+            wrapTestBody {
+                val run = blipRoundsUnder(SilenceThreshold(expiries, SILENT_PATH_MINIMUM_SILENCE))
+                assertEquals(
+                    BLIP_ROUNDS,
+                    run.attemptsPerRound.size,
+                    "the run did not complete every round, so a migration count read from it means nothing",
+                )
+                // Per round, not just the last: a migration in round 0 should name round 0, rather than
+                // surfacing two rounds later as an echo that never came back.
+                run.attemptsPerRound.forEachIndexed { round, attempts ->
+                    assertEquals(
+                        0,
+                        attempts,
+                        "at a threshold of $expiries expiries, ${round + 1} separate stall(s) — each under " +
+                            "the threshold on its own — bought a migration, so the shipped " +
+                            "$SILENT_PATH_EXPIRY_THRESHOLD has less margin than these tests assume",
+                    )
+                }
+                // The same two premises the shipped-threshold guard checks. Without them a run that
+                // never went dark, or that opened a probe path without recording an attempt, passes.
+                assertTrue(
+                    run.datagramsSwallowed >= BLIP_MIN_SWALLOWED * BLIP_ROUNDS,
+                    "only ${run.datagramsSwallowed} datagram(s) were swallowed across $BLIP_ROUNDS stalls, " +
+                        "so the data plane was never meaningfully dark and this margin is decorative",
+                )
+                assertEquals(
+                    0,
+                    run.probePathsOpened,
+                    "no migration was recorded but ${run.probePathsOpened} probe path(s) were opened",
+                )
             }
         }
 

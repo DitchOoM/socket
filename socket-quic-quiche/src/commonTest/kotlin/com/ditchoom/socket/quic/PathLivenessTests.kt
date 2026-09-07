@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -25,7 +26,7 @@ import kotlin.time.Duration.Companion.seconds
  * `MigrationSimTests` drives this end to end against a real quiche pair, which is the right test for
  * "does the connection re-home" and the wrong one for everything below: each of these is about what the
  * sampler does with particular counter *values*, and the sim can only produce the values a real
- * connection happens to produce. At its 120ms round trip the two halves of [pathHasStoppedAnswering]
+ * connection happens to produce. At its 120ms round trip the two halves of [SilenceThreshold.isMetBy]
  * bind at the same expiry, so neither can be shown to be load-bearing there at all.
  *
  * The path-identity cases are not merely awkward there but unreachable. quiche can move the active path
@@ -116,6 +117,123 @@ class PathLivenessTests {
         backgroundScope.launch { f.driver.pathLiveness.collect { } }
         runCurrent()
     }
+
+    /**
+     * **The verdict lands at the floor, not at the next expiry** (#574's remaining quantisation).
+     *
+     * Both halves of the threshold can be satisfied long before anything wakes the driver to notice.
+     * Expiries back off exponentially, so a verdict evaluated *only* at expiry wakes is pinned to
+     * whichever expiry happens to fall past both conditions rather than to the conditions themselves.
+     *
+     * Two separate measurements, which describe different paths and must not be read as one:
+     *  - on the sim's **120ms round trip** the expiries land at 245 / 735 / 1715 / 3675ms, so a 2s floor
+     *    is met at ≈2.245s while the verdict waits for 3.675s;
+     *  - end to end on a **20ms one-way** path, `aDeadPathReHomesWhileTheMonitorStillCallsTheLinkHealthy`
+     *    measured **3.062s without this wake and 2.099s with it**.
+     *
+     * The floor did not move in either. The waiting did.
+     *
+     * Here the count is driven past the threshold at a fast tick, and quiche's own timer is then pushed
+     * far out so that nothing but the driver's floor deadline can produce the verdict. If the wake is
+     * removed, [PathLiveness.Silent] arrives at the 30s quiche wake instead of at the floor, and the
+     * time assertion — not the state assertion — is what fails.
+     */
+    @Test
+    fun theVerdictLandsAtTheFloorNotAtTheNextExpiry() =
+        runTest {
+            val f = Fixture(this, tick)
+            startObserved(f)
+
+            f.read(this, expiries = 0)
+            var expiries = 0L
+            repeat(SILENT_PATH_EXPIRY_THRESHOLD.toInt()) {
+                expiries++
+                f.read(this, expiries = expiries)
+            }
+            val countMetAt = currentTime.milliseconds
+            assertEquals(
+                PathLiveness.Answering,
+                f.driver.pathLiveness.value,
+                "the count was met at $countMetAt, well short of the $SILENT_PATH_MINIMUM_SILENCE floor, " +
+                    "and the path was already called silent — the floor is not being applied",
+            )
+
+            // Quiche will not ask to be woken again for half a minute. Anything that publishes a verdict
+            // before then can only be the driver's own floor deadline.
+            f.stub.connTimeout = 30.seconds
+
+            // Step in slices and record the first instant the verdict appears, rather than advancing
+            // straight to the floor and asserting the clock is where advanceTimeBy just put it — which
+            // is true whatever the driver did. Mutation-proven: with floorRemaining() forced to null,
+            // `silentAt` stays Unmeasured here and the assertion below is what fails.
+            var silentAt: Duration? = null
+            val slice = 50.milliseconds
+            while (currentTime.milliseconds < countMetAt + SILENT_PATH_MINIMUM_SILENCE * 2) {
+                advanceTimeBy(slice)
+                runCurrent()
+                if (silentAt == null && f.driver.pathLiveness.value == PathLiveness.Silent) {
+                    silentAt = currentTime.milliseconds
+                }
+            }
+
+            val landed =
+                assertNotNull(
+                    silentAt,
+                    "the run met both halves and nothing ever published the verdict, so detection is still " +
+                        "pinned to quiche's next timer — #574's quantisation, not its trigger",
+                )
+            assertTrue(
+                landed <= countMetAt + SILENT_PATH_MINIMUM_SILENCE + slice,
+                "the verdict landed at $landed, but the run's floor was due at " +
+                    "${countMetAt + SILENT_PATH_MINIMUM_SILENCE} — it waited for something other than the floor",
+            )
+        }
+
+    /**
+     * **The floor deadline disarms itself, even when quiche has no active path.**
+     *
+     * The regression guard for a livelock this branch shipped and adversarial review caught. The floor
+     * deadline used to be cleared only by [QuicheDriver.publishActivePathLiveness], which runs from the
+     * sampler — and the sampler bails when no path reports `active == true`. quiche clears that flag in
+     * `on_failed_validation()` and picks a replacement only on the *next* `on_timeout`, so the deadline
+     * stayed armed, recomputed as zero on every iteration, and the loop spun at 100% of a core. Worse,
+     * the spin starved the `connOnTimeout` that would have restored the active path, so it did not
+     * recover: measured at 105s of CPU with the test scheduler never going idle.
+     *
+     * An unanswered probe on cellular is the ordinary case for #574, so this was a phone-side livelock.
+     * The test asserts the two things that distinguish fixed from broken: the body **terminates**, and
+     * the verdict is published from the floor wake itself rather than from a stats read that cannot run.
+     */
+    @Test
+    fun aFloorDeadlineIsDisarmedEvenWhenQuicheHasNoActivePath() =
+        runTest {
+            val f = Fixture(this, tick)
+            startObserved(f)
+
+            f.read(this, expiries = 0)
+            var expiries = 0L
+            repeat(SILENT_PATH_EXPIRY_THRESHOLD.toInt()) {
+                expiries++
+                f.read(this, expiries = expiries)
+            }
+
+            // quiche loses its active path — the state its own `on_failed_validation()` leaves behind —
+            // and will not ask to be woken for half a minute.
+            f.stub.connTimeout = 30.seconds
+            f.stub.pathStats = listOf(pathStats(active = false, totalPtoCount = expiries))
+
+            // Before the fix this never returns: the scheduler cannot go idle while the loop respins a
+            // zero-length wait, so runTest's own timeout cannot fire either.
+            advanceTimeBy(SILENT_PATH_MINIMUM_SILENCE * 2)
+            runCurrent()
+
+            assertEquals(
+                PathLiveness.Silent,
+                f.driver.pathLiveness.value,
+                "the floor was reached with no active path to read, and the verdict was never published — " +
+                    "so the deadline is still armed and the loop is spinning on it",
+            )
+        }
 
     /**
      * **Both halves of the conjunction, separately.**

@@ -209,6 +209,20 @@ class QuicheDriver(
      * in CommonJvmWithQuicServer.
      */
     internal val recvBufPool: BufferPool = newRecvBufPool(bufferFactory),
+    /**
+     * When the active path counts as having stopped answering — the data-plane half of #574's trigger.
+     *
+     * Defaults to [SILENT_PATH_THRESHOLD], the shipped specification; production never passes anything
+     * else. It is a parameter rather than a direct read of the constants because those are `const val`
+     * and therefore inlined at every use site, so the only way to vary them was to edit the source and
+     * rebuild: the sweep that chose them could run on exactly one platform, and the margin around them
+     * could not be asserted anywhere. See [SilenceThreshold].
+     *
+     * ⚠️ Deliberately **last**: inserting it mid-list changes the constructor descriptor for every
+     * positional caller, and this repo has no `.api` dump or binary-compatibility gate that would catch
+     * that.
+     */
+    private val silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
 ) {
     /**
      * The quiche FFI. When [clock] is a virtual-time clock ([DriverTime.Virtual]) the backend api is
@@ -692,7 +706,7 @@ class QuicheDriver(
     /**
      * Whether the path this connection lives on is still answering — the data-plane migration trigger
      * (#574), read by [wireAutoMigration] beside the platform's reachability signal. See [PathLiveness]
-     * for what the two values mean and [SILENT_PATH_PTO_THRESHOLD] for what separates them.
+     * for what the two values mean and [SILENT_PATH_EXPIRY_THRESHOLD] for what separates them.
      *
      * Published from [sampleActivePathLiveness] on the driver coroutine, so every value it carries was
      * read from quiche under the single-threaded contract. Permanently [PathLiveness.Answering] on a
@@ -703,7 +717,7 @@ class QuicheDriver(
 
     /**
      * The run of unanswered loss-detection timer expiries currently building on the active path — the
-     * count and the clock that [pathHasStoppedAnswering] needs, held together because they are two
+     * count and the clock that [SilenceThreshold.isMetBy] needs, held together because they are two
      * halves of one fact and a run with only one of them is not a state this driver can be in.
      */
     private sealed interface SilentRun {
@@ -713,6 +727,17 @@ class QuicheDriver(
         /** [expiries] consecutive expiries have gone unanswered, the first of them at [since]. */
         class Building(
             val expiries: Long,
+            val since: TimeMark,
+        ) : SilentRun
+
+        /**
+         * Both halves of the threshold are met and [PathLiveness.Silent] has been published for this
+         * run. Distinct from [Building] because there is nothing left to arm: a dead path produces no
+         * datagrams, so without this the floor deadline would recompute as already-elapsed on every
+         * subsequent wake and spin. Left only by [activePathAnswered] or
+         * [rebaselineActivePathLiveness], which is exactly what "the episode ended" means.
+         */
+        class Declared(
             val since: TimeMark,
         ) : SilentRun
     }
@@ -853,9 +878,155 @@ class QuicheDriver(
     }
 
     /**
+     * Which deadline a timer wake belongs to, and how far off it is.
+     *
+     * One list of candidates, one comparison: [nextWake] answers both "how long to wait" and "what to do
+     * when it fires" from the same reduction. Deriving them separately — `minOrNull` over loose durations
+     * for the wait, an ordered guard chain for the arm — let the loop wake on one deadline and dispatch
+     * another, which on a floor wake meant sending an ack-eliciting PING that answers the very silence
+     * being measured.
+     *
+     * Ties break on [priority], lowest first, reproducing the chain this replaces: [ProbeAbandon] over
+     * [KeepAlive] over [QuicheTimeout], because a wake that falls through to `connOnTimeout` hands quiche
+     * a timeout it did not ask for and silently swallows an expired probe. [SilenceFloor] ranks last, so
+     * a tie still hands quiche its own timeout.
+     */
+    private sealed interface Wake {
+        val remaining: Duration
+        val priority: Int
+
+        class ProbeAbandon(
+            override val remaining: Duration,
+        ) : Wake {
+            override val priority = 0
+        }
+
+        class KeepAlive(
+            override val remaining: Duration,
+        ) : Wake {
+            override val priority = 1
+        }
+
+        class QuicheTimeout(
+            override val remaining: Duration,
+        ) : Wake {
+            override val priority = 2
+        }
+
+        class SilenceFloor(
+            override val remaining: Duration,
+        ) : Wake {
+            override val priority = 3
+        }
+    }
+
+    /** Whether any deadline is pending at all — never a duration standing in for "none". */
+    private sealed interface NextWake {
+        data object NoTimer : NextWake
+
+        class Armed(
+            val wake: Wake,
+        ) : NextWake
+    }
+
+    /** Every deadline the driver currently has, reduced once. See [Wake]. */
+    private fun nextWake(
+        connTimeout: Deadline,
+        keepAlive: Deadline,
+        probe: Deadline,
+    ): NextWake {
+        fun candidate(
+            deadline: Deadline,
+            wake: (Duration) -> Wake,
+        ): Wake? =
+            when (deadline) {
+                Deadline.NotArmed -> null
+                is Deadline.Due -> wake(deadline.remaining)
+            }
+
+        val soonest =
+            listOfNotNull(
+                candidate(probe, Wake::ProbeAbandon),
+                candidate(keepAlive, Wake::KeepAlive),
+                candidate(connTimeout, Wake::QuicheTimeout),
+                candidate(floorWake(), Wake::SilenceFloor),
+            ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
+        return NextWake.Armed(soonest)
+    }
+
+    /**
+     * How long until the active path's silence meets the threshold's time floor, as a [FloorWake].
+     *
+     * Offered only while a run is [SilentRun.Building] past the expiry count: before that only an expiry
+     * — quiche's own timer — can change the verdict, and after [SilentRun.Declared] there is nothing left
+     * to decide.
+     *
+     * Expiries back off exponentially, so on a 120ms round trip they land at 245 / 735 / 1715 / 3675ms.
+     * The run's clock starts at the **first** unanswered expiry, so a 2s floor is met at ≈2.245s, while
+     * the fourth expiry — where a verdict evaluated only at expiry wakes must wait — is at 3.675s. This
+     * removes that gap without moving the floor, which is the constant #385 is closed by. Measured end to
+     * end on a 20ms one-way path: 3.062s without it, 2.099s with.
+     */
+    private fun floorWake(): Deadline {
+        val progress = activePathProgress
+        if (progress !is ActivePathProgress.Read) return Deadline.NotArmed
+        val run = progress.run
+        if (run !is SilentRun.Building || run.expiries < silenceThreshold.expiries) return Deadline.NotArmed
+        return Deadline.Due((silenceThreshold.silence - run.since.elapsedNow()).coerceAtLeast(Duration.ZERO))
+    }
+
+    /**
+     * Whether one of the driver's timers is armed, and how far off it is.
+     *
+     * ⚠️ Consumed by an exhaustive `when` in [nextWake] and **never converted back to a `Duration?`**.
+     * An earlier cut of this branch did exactly that — a sealed type produced and immediately flattened
+     * into a nullable — which is the sentinel the standing rule forbids, and it is what let the wait and
+     * the arm be derived by two different rules and disagree.
+     *
+     * [from] is the **single** place a nullable duration becomes a deadline, and it exists because
+     * `quiche_conn_timeout_as_millis` genuinely has no value to report when no timer is set. Converting
+     * once, at that boundary, is the alternative to threading `Duration?` through every signature that
+     * touches a timer.
+     */
+    private sealed interface Deadline {
+        data object NotArmed : Deadline
+
+        class Due(
+            val remaining: Duration,
+        ) : Deadline
+
+        companion object {
+            fun from(remaining: Duration?): Deadline = if (remaining == null) NotArmed else Due(remaining)
+        }
+    }
+
+    /**
+     * The floor deadline fired: the run has met both halves, so declare it here rather than leaving it to
+     * the next sampler read.
+     *
+     * ⚠️ **This is what disarms the deadline, and it must not depend on a stats read.** An earlier cut
+     * left the promotion to [publishActivePathLiveness], which needs [sampleActivePathLiveness] to find a
+     * path with `active == true`. quiche clears that flag in `on_failed_validation()` and only picks a
+     * replacement on the *next* `on_timeout` — so the deadline stayed armed, recomputed as `ZERO` on
+     * every iteration, and the spin starved the very `connOnTimeout` that would have restored the active
+     * path. Measured before the fix: **105s of CPU in this loop**, one core pegged, the test scheduler
+     * never going idle. An unanswered probe on cellular is the ordinary case for #574, so that was a
+     * phone-side livelock rather than a test artefact.
+     */
+    private fun declareFloorReached() {
+        val progress = activePathProgress
+        if (progress !is ActivePathProgress.Read) return
+        val run = progress.run
+        if (run !is SilentRun.Building) return
+        activePathProgress =
+            ActivePathProgress.Read(progress.pathIndex, progress.totalPtoCount, SilentRun.Declared(run.since))
+        mutablePathLiveness.value = PathLiveness.Silent
+    }
+
+    /**
      * Re-read the **active** path's counters and publish whether it is still answering — the driver
      * half of #574's data-plane migration trigger. See [PathLiveness] for why a connection needs an
-     * opinion of its own and [pathHasStoppedAnswering] for where the line is drawn.
+     * opinion of its own and [SilenceThreshold.isMetBy] for where the line is drawn.
      *
      * ## The evidence, and why it is already here
      * `quiche_conn_path_stats` carries `total_pto_count`, incremented on every loss-detection timer
@@ -925,25 +1096,33 @@ class QuicheDriver(
             if (!comparable) {
                 SilentRun.None
             } else {
-                val expired = stats.totalPtoCount - previous!!.totalPtoCount
-                when (val building = previous.run) {
+                val expired = stats.totalPtoCount - previous.totalPtoCount
+                when (val carried = previous.run) {
                     SilentRun.None -> if (expired > 0) SilentRun.Building(expired, clock.markNow()) else SilentRun.None
                     is SilentRun.Building ->
-                        if (expired > 0) SilentRun.Building(building.expiries + expired, building.since) else building
+                        if (expired > 0) SilentRun.Building(carried.expiries + expired, carried.since) else carried
+                    // Already declared: further expiries on a path that has stopped answering are not
+                    // new evidence, and re-entering Building would re-arm the floor deadline forever.
+                    is SilentRun.Declared -> carried
                 }
             }
-        activePathProgress = ActivePathProgress.Read(pathIndex, stats.totalPtoCount, run)
-        mutablePathLiveness.value =
+        // Timed from the first unanswered expiry rather than from the arrival before it, which
+        // under-states the silence by at most one PTO — the conservative direction.
+        val settled =
             when (run) {
-                SilentRun.None -> PathLiveness.Answering
+                SilentRun.None, is SilentRun.Declared -> run
                 is SilentRun.Building ->
-                    // Timed from the first unanswered expiry rather than from the arrival before it,
-                    // which under-states the silence by at most one PTO — the conservative direction.
-                    if (pathHasStoppedAnswering(run.expiries, run.since.elapsedNow())) {
-                        PathLiveness.Silent
+                    if (silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow())) {
+                        SilentRun.Declared(run.since)
                     } else {
-                        PathLiveness.Answering
+                        run
                     }
+            }
+        activePathProgress = ActivePathProgress.Read(pathIndex, stats.totalPtoCount, settled)
+        mutablePathLiveness.value =
+            when (settled) {
+                SilentRun.None, is SilentRun.Building -> PathLiveness.Answering
+                is SilentRun.Declared -> PathLiveness.Silent
             }
     }
 
@@ -1062,9 +1241,18 @@ class QuicheDriver(
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
                 val probeRemaining = pendingMigration?.validationRemaining()
-                // Three deadlines, one wake: whichever is soonest decides what the timer branch below
-                // does. A `when` over the 2×2 null matrix this replaced does not survive a third term.
-                val wait = listOfNotNull(connTimeout, keepAliveRemaining, probeRemaining).minOrNull()
+                // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
+                val armed =
+                    nextWake(
+                        connTimeout = Deadline.from(connTimeout),
+                        keepAlive = Deadline.from(keepAliveRemaining),
+                        probe = Deadline.from(probeRemaining),
+                    )
+                val wait =
+                    when (armed) {
+                        NextWake.NoTimer -> null
+                        is NextWake.Armed -> armed.wake.remaining
+                    }
                 val cmd =
                     if (wait == null) {
                         // No timer pending — block until next command (or channel close)
@@ -1099,24 +1287,32 @@ class QuicheDriver(
                         }
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
-                    // A timer fired, and the path-validation deadline is the soonest of the three →
-                    // abandon the probe. This arm must sit ABOVE the keepalive one: without it the
-                    // wake falls through to `else`, quiche is handed a timeout it did not ask for,
-                    // and the expired probe is silently swallowed — which is the shape of the defect,
-                    // not a variation on it.
-                    probeRemaining != null &&
-                        (connTimeout == null || probeRemaining <= connTimeout) &&
-                        (keepAliveRemaining == null || probeRemaining <= keepAliveRemaining) -> abandonPathValidationIfDue()
-                    // A timer fired. If the keepalive deadline is strictly the sooner one, PING; quiche's
-                    // idle timer is always later (keepAliveInterval < idleTimeout), so this fires first and
-                    // prevents the idle close. Otherwise hand the (idle/loss-recovery) timeout to quiche.
-                    keepAliveRemaining != null && (connTimeout == null || keepAliveRemaining < connTimeout) -> {
-                        if (!api.connIsClosed(conn)) {
-                            api.connSendAckEliciting(conn) // emitted by the afterCommand() flush below
-                            lastActivity = clock.markNow()
+                    // A timer fired: the deadline it belongs to decides what happens, and nothing else.
+                    else ->
+                        when (armed) {
+                            // Unreachable: `wait` is null only here, and then the receive above either
+                            // returned a command or closed the channel and broke out of the loop.
+                            NextWake.NoTimer -> Unit
+                            is NextWake.Armed ->
+                                when (armed.wake) {
+                                    is Wake.ProbeAbandon -> abandonPathValidationIfDue()
+                                    // Keepalive is the sooner deadline → PING; quiche's idle timer is
+                                    // always later (keepAliveInterval < idleTimeout), so this fires first
+                                    // and prevents the idle close.
+                                    is Wake.KeepAlive ->
+                                        if (!api.connIsClosed(conn)) {
+                                            api.connSendAckEliciting(conn) // emitted by the afterCommand() flush below
+                                            lastActivity = clock.markNow()
+                                        }
+                                    // Declares the run itself rather than waiting for the sampler below,
+                                    // because that read can fail to find an active path — see
+                                    // [declareFloorReached]. It must not hand quiche a timeout it did not
+                                    // ask for, and must not PING: that would answer the silence being
+                                    // measured.
+                                    is Wake.SilenceFloor -> declareFloorReached()
+                                    is Wake.QuicheTimeout -> api.connOnTimeout(conn)
+                                }
                         }
-                    }
-                    else -> api.connOnTimeout(conn)
                 }
                 // Trace capture: a timer wake is the periodic-stats sampling point (RFC §5.1 item
                 // 5) — the driver already woke, so this adds no timer and costs nothing when off.
