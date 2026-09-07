@@ -188,6 +188,80 @@ class NetworkHarnessScope internal constructor(
     }
 
     /**
+     * Run [block] against a `udp-toxi`-fronted **QUIC** endpoint, impairing the two datagram legs with
+     * [clientToServer] (client→server) and [serverToClient] (server→client).
+     *
+     * The datagram-level twin of [impairedUdp], pointed at `quic-echo` instead of `udp-echo` — which is
+     * all it takes, because the relay is transport-agnostic: it moves datagrams and QUIC is datagrams.
+     * What that buys is the first end-to-end interop cell in this repository where **our client talks to
+     * our server across a lossy path**, rather than either an in-process pipe or a clean loopback.
+     *
+     * ⚠️ Impairing QUIC is not impairing UDP with a different port number. A dropped datagram here is a
+     * lost QUIC packet, so loss is absorbed by loss recovery and shows up as latency rather than as a
+     * failed read, and a schedule harsh enough to break an echo may instead break the *handshake* — a
+     * different failure with a different meaning. Assert on what the connection did, not on individual
+     * datagrams.
+     *
+     * ⚠️ Its own relay name and listen port ([SUITE_QUIC_RELAY], the [QUIC_RELAY_SCENARIO] endpoint):
+     * one listen port cannot host two relays, so sharing [impairedUdp]'s would make the two suites
+     * mutually exclusive and they would only discover that as a flake when they happened to overlap.
+     */
+    suspend fun impairedQuic(
+        clientToServer: FaultSchedule,
+        serverToClient: FaultSchedule = FaultSchedule.CLEAN,
+        block: suspend (HarnessEndpoint) -> Unit,
+    ) {
+        val (client, quicRelay) = provisionQuicRelay()
+        client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ClientToServer, clientToServer)
+        client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ServerToClient, serverToClient)
+        try {
+            block(quicRelay)
+        } finally {
+            runCatching { client.clearSchedules(SUITE_QUIC_RELAY) }
+        }
+    }
+
+    /**
+     * What the QUIC relay's legs did during the enclosing [impairedQuic] block.
+     *
+     * The discriminator an impairment test otherwise lacks: a successful echo proves the connection
+     * survived, not that anything was ever dropped, so without this a relay silently defaulting to
+     * CLEAN passes every assertion. Read it inside the block, before the schedules are cleared.
+     */
+    suspend fun quicRelayStats(): RelayStats {
+        val relay =
+            manifest.udpToxi
+                ?: throw HarnessUnavailable(
+                    HarnessUnavailable.Reason.ScenarioNotInManifest,
+                    "udp-toxi — no relay control plane, so no stats to read",
+                )
+        return UdpToxiClient(relay.host, relay.api).relayStats(SUITE_QUIC_RELAY)
+    }
+
+    /**
+     * Upsert the QUIC relay (its own name and data port, schedules cleared) and return the control
+     * client + ports. Upstream is the compose service address ([QUIC_ECHO_UPSTREAM]) — resolvable from
+     * *inside* the harness network, where `udp-toxi` runs.
+     */
+
+    private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, HarnessEndpoint> {
+        val relay =
+            manifest.udpToxi
+                ?: throw HarnessUnavailable(
+                    HarnessUnavailable.Reason.ScenarioNotInManifest,
+                    "udp-toxi — QUIC impairments need its control plane",
+                )
+        // Its own scenario key, NOT a field on udp-toxi. A required field there would make a controller
+        // that predates it report no udp-toxi at all, which disables `impairedUdp` — an existing,
+        // unrelated suite — for a QUIC-only addition. Scenario absence is the manifest's own primitive
+        // for "this runtime does not have it", and it is per-scenario for exactly this reason.
+        val quicRelay = manifest.scenario(QUIC_RELAY_SCENARIO)
+        val client = UdpToxiClient(relay.host, relay.api)
+        client.upsertRelay(name = SUITE_QUIC_RELAY, listenPort = quicRelay.port, upstream = QUIC_ECHO_UPSTREAM)
+        return client to quicRelay
+    }
+
+    /**
      * Upsert the suite UDP relay (bound to its own data port, schedules cleared) and return the control
      * client + ports. The upstream uses the compose service address ([UDP_ECHO_UPSTREAM]) — resolvable
      * from *inside* the harness network, where `udp-toxi` runs.
@@ -241,5 +315,21 @@ class NetworkHarnessScope internal constructor(
 
         /** Compose-internal address of the UDP echo upstream (udp-toxi resolves it in-network). */
         const val UDP_ECHO_UPSTREAM = "udp-echo:14434"
+
+        /** The QUIC relay's name, distinct from [SUITE_UDP_RELAY] so their schedules never collide. */
+        const val SUITE_QUIC_RELAY = "suite-quic"
+
+        /**
+         * `quic-echo`'s address **inside** the harness network — the relay dials it from there, so this
+         * is the compose service name, never `HARNESS_HOST`.
+         */
+        const val QUIC_ECHO_UPSTREAM = "quic-echo:14433"
+
+        /**
+         * The QUIC relay's data plane, as its **own** manifest scenario rather than a field on
+         * `udp-toxi`. A required field there would make a controller predating it report no udp-toxi at
+         * all, disabling [impairedUdp] — an existing, unrelated suite — for a QUIC-only addition.
+         */
+        const val QUIC_RELAY_SCENARIO = "udp-toxi-quic"
     }
 }

@@ -24,6 +24,7 @@ import com.ditchoom.socket.testkit.fault.FaultScheduleCodec
 import com.ditchoom.socket.testkit.fault.ImpairmentEngine
 import com.ditchoom.socket.testkit.fault.UnitDecision
 import com.ditchoom.socket.testsuite.harness.HarnessJson
+import com.ditchoom.socket.testsuite.harness.RelayDirection
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -106,6 +107,10 @@ object UdpToxiServer {
         val response =
             when {
                 request.method == "GET" && request.path == "/health" -> ok("ok")
+                // What each leg DID, so a consumer can prove a schedule was applied and not merely
+                // accepted — the difference between "loss absorbed by recovery" and "loss never
+                // happened", which a successful echo alone cannot distinguish.
+                request.method == "GET" && request.path.matches(RELAY_PATH) -> handleStats(request.path)
                 request.method == "POST" && request.path == "/relays" -> handleUpsert(request.body, relayScope)
                 request.method == "POST" && request.path.matches(SCHEDULE_PATH) ->
                     handleSetSchedule(request.path, request.query, request.body)
@@ -114,6 +119,12 @@ object UdpToxiServer {
                 else -> status("404 Not Found", "not found")
             }
         socket.writeString(response, Charset.UTF8, 5.seconds)
+    }
+
+    private suspend fun handleStats(path: String): String {
+        val name = RELAY_PATH.find(path)?.groupValues?.get(1) ?: return status("404 Not Found", "not found")
+        val relay = relaysLock.withLock { relays[name] } ?: return status("404 Not Found", "no such relay")
+        return ok(relay.statsJson())
     }
 
     private suspend fun handleUpsert(
@@ -127,6 +138,10 @@ object UdpToxiServer {
             val existing = relays[name]
             if (existing != null) {
                 existing.clearSchedules()
+                // …and the tally with them. A relay outlives the block that provisioned it, so counts
+                // that survived an upsert would be the PREVIOUS block's: measured, the CLEAN control
+                // ran after two lossy tests and read their 6 and 5 drops as its own. Stats are
+                // per-provisioning because that is the unit every assertion about them is about.
             } else {
                 relays[name] = Relay.open(name, listen, upstream, relayScope)
             }
@@ -165,6 +180,9 @@ object UdpToxiServer {
     }
 
     private val SCHEDULE_PATH = Regex("^/relays/([^/?]+)/schedule$")
+
+    /** `GET /relays/{name}` — the stats read. Anchored so it cannot also match the schedule path. */
+    private val RELAY_PATH = Regex("^/relays/([^/?]+)$")
 
     private fun queryParam(
         query: String,
@@ -277,6 +295,22 @@ private class Relay private constructor(
     private val upstreamAddress: SocketAddress,
     private val scope: CoroutineScope,
 ) {
+    /** One leg's tally. Mutable and unsynchronised: only the relay's own receive loop touches it. */
+    private class LegCounts {
+        var dropped: Int = 0
+        var delivered: Int = 0
+    }
+
+    /** `{"clientToServer":{"dropped":N,"delivered":M},"serverToClient":{…}}` for `GET /relays/{name}`. */
+    fun statsJson(): String {
+        fun leg(direction: RelayDirection): String {
+            val c = counts[direction] ?: LegCounts()
+            return """{"dropped":${c.dropped},"delivered":${c.delivered}}"""
+        }
+        return """{"clientToServer":${leg(RelayDirection.ClientToServer)},""" +
+            """"serverToClient":${leg(RelayDirection.ServerToClient)}}"""
+    }
+
     // decide() is stateful (seeded RNG + monotonic unit index), so a schedule swap installs a *fresh*
     // engine (index 0). Tests set a schedule before sending and clear it after, so no swap ever splits a
     // unit sequence. @Volatile: written by the control coroutine, read by the receive pumps.
@@ -289,6 +323,16 @@ private class Relay private constructor(
     // The most recent client source — the reply target. @Volatile: written by the c2s pump, read by s2c.
     @Volatile
     private var lastClient: SocketAddress? = null
+
+    /**
+     * What each leg actually did, so a consumer can prove the schedule was **applied** and not merely
+     * accepted.
+     *
+     * Without this a QUIC impairment test cannot tell "loss absorbed by recovery" from "loss never
+     * applied": both look like a successful echo, and wall-clock is not an assertion. Counted at the
+     * single [impair] decision point, so it cannot drift from what the engine decided.
+     */
+    private val counts = mutableMapOf<RelayDirection, LegCounts>()
 
     private val toUpstream = Channel<Outgoing>(Channel.UNLIMITED)
     private val toClient = Channel<Outgoing>(Channel.UNLIMITED)
@@ -304,6 +348,7 @@ private class Relay private constructor(
     }
 
     fun clearSchedules() {
+        counts.clear()
         clientToServer = ImpairmentEngine(FaultSchedule.CLEAN)
         serverToClient = ImpairmentEngine(FaultSchedule.CLEAN)
     }
@@ -314,7 +359,7 @@ private class Relay private constructor(
             while (true) {
                 val datagram = receiveOrNull(clientFacing) ?: break
                 lastClient = datagram.peer
-                impair(datagram.payload, clientToServer, toUpstream, upstreamAddress)
+                impair(datagram.payload, clientToServer, toUpstream, upstreamAddress, RelayDirection.ClientToServer)
             }
         }
         // upstream → client
@@ -322,7 +367,7 @@ private class Relay private constructor(
             while (true) {
                 val datagram = receiveOrNull(upstreamSocket) ?: break
                 val replyTo = lastClient ?: continue // nothing has come from a client yet — drop the reply
-                impair(datagram.payload, serverToClient, toClient, replyTo)
+                impair(datagram.payload, serverToClient, toClient, replyTo, RelayDirection.ServerToClient)
             }
         }
         // send drains — one coroutine per physical channel
@@ -346,11 +391,14 @@ private class Relay private constructor(
         engine: ImpairmentEngine,
         mailbox: Channel<Outgoing>,
         target: SocketAddress,
+        direction: RelayDirection,
     ) {
+        val leg = counts.getOrPut(direction) { LegCounts() }
         when (val decision = engine.decide()) {
-            is UnitDecision.Dropped -> {}
+            is UnitDecision.Dropped -> leg.dropped++
             is UnitDecision.Delivered ->
                 decision.copies.forEach { copy ->
+                    leg.delivered++
                     val out = Outgoing(snapshot(payload, copy.edits), target)
                     if (copy.afterDelay <= Duration.ZERO) {
                         mailbox.trySend(out)

@@ -331,6 +331,13 @@ services:
     ports:
       - "127.0.0.1:8475:8475"          # control API (TCP)
       - "127.0.0.1:14435:14435/udp"    # suite relay data plane (UDP)
+      # QUIC relay data plane (UDP) — impairedQuic. ⚠️ Deliberately NO `depends_on: quic-echo`:
+      # the relay resolves its upstream by name at upsert time, so a down quic-echo costs a
+      # handshake timeout inside the QUIC suite and nothing else. An edge here would instead let a
+      # broken quic-echo stop udp-toxi from starting at all, turning the *UDP* impairment suite red —
+      # and quic-echo's healthcheck is `pgrep -x java`, which a crash-looping JVM satisfies for the
+      # second or two it is alive, so whether udp-toxi came up would be a coin flip per `compose up`.
+      - "127.0.0.1:14436:14436/udp"
     healthcheck:
       # HTTP /health probe via bash's /dev/tcp (temurin-noble ships bash but not
       # curl/wget; /bin/sh is dash which lacks /dev/tcp — hence explicit bash -c).

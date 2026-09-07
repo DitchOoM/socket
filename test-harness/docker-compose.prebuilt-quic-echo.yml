@@ -1,0 +1,23 @@
+# Overlay for hosts that cannot build the quic-echo image.
+#
+# `quicEchoJar` stages the BUILDING host's quiche natives (`prepareQuicheNativeLib` is documented as
+# "for the current host OS/arch") while the container is Linux, so a jar built anywhere else makes the
+# container die on first load with
+#
+#     META-INF/native/linux-arm64/libquiche.so (not on classpath)
+#
+# This replaces the local build with the image the release flow already publishes and that
+# `harness-consumer.yml` already consumes — no cross-compilation, no second implementation of the
+# quiche patch set (which `quichePatchDigest` exists to keep singular), and nothing to expire.
+#
+# ⚠️ This is the LAST RELEASE's server, not your working tree's. Good for client-side work — a
+# known-good peer — and useless if you are changing QuicEchoTestServer itself. Build on Linux for that.
+#
+# Applied automatically by `harnessUp` on non-Linux hosts; see the root build script.
+services:
+  quic-echo:
+    # `!reset null` removes the base file's `build:` so `compose up --build` cannot try to build an
+    # image this host has no inputs for. Without it compose would keep both keys, build, and tag the
+    # result with the ghcr name — reintroducing exactly the host-native problem this avoids.
+    build: !reset null
+    image: ghcr.io/ditchoom/socket-test-harness-quic-echo:latest

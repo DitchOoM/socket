@@ -23,7 +23,9 @@ See `../TESTING_STRATEGY.md` for the full design. This directory is
 ## Run it
 
 ```bash
-# Build the JVM image inputs first (harnessUp does all of them automatically):
+# Build the JVM image inputs first (harnessUp does all of them automatically).
+# ⚠️ On a NON-Linux host, `quicEchoJar` stages that host's natives and the container cannot load
+# them — use `fetchQuicEchoContext` instead, as harnessUp does. See "On macOS" below.
 ./gradlew :socket-quic-quiche:quicEchoJar :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar
 
 cd test-harness
@@ -36,6 +38,63 @@ Gradle does this automatically: `./gradlew jvmTest` (and `linuxX64Test`)
 calls `harnessUp` before the test task and `harnessDown` after. If Docker
 isn't installed those tasks no-op (tests then skip the harness-backed
 cases at runtime via `isHarnessAvailable()` / `withNetworkHarness`).
+
+## On macOS (and any non-Linux host)
+
+Two separate things used to stop this working. Both are handled, but the second needs a choice from
+you.
+
+**The image no longer depends on who built it.** `quicEchoJar` stages *the host's* quiche natives
+(`prepareQuicheNativeLib` is "for the current host OS/arch") and the container is Linux, so a Mac-built
+jar made the container die on `META-INF/native/linux-arm64/libquiche.so (not on classpath)`. `harnessUp`
+now fetches CI's `quic-echo-docker-context` on non-Linux hosts — the same artefact the integration lanes
+consume, carrying both Linux arches. Linux hosts still build locally.
+
+⚠️ That is **`main`'s** server, not your working tree's. Better for client-side work (a known-good
+peer); useless if you are changing `QuicEchoTestServer` itself — build on Linux for that.
+
+**A Lima-backed docker context does not publish UDP to the macOS host.** Measured on `colima`
+(`docker context ls` → `colima *`): `docker compose ps` reports `127.0.0.1:14433->14433/udp` and
+`docker port` agrees, while `lsof -iUDP:14433` shows no socket and datagrams never arrive. Reproduced
+minimally with `docker run -p 127.0.0.1:19998:19998/udp alpine/socat` — this is Lima's UDP
+port-forwarding gap, not something about QUIC or this repo.
+
+⚠️ Attribute it to your **active context**, not to "Docker on macOS". Docker Desktop is a different
+runtime and is not what these measurements were taken against; the TCP suites are wired to run on
+developer Macs, so do not assume TCP is affected either without measuring it.
+
+Apple's `container` avoids the question entirely — it gives the container its **own routable IP**, so
+there is no publishing proxy in the path:
+
+```bash
+# The context needs the jar and certs, which harnessUp's dependencies produce:
+./gradlew fetchQuicEchoContext generateHarnessCerts     # non-Linux; on Linux use :socket-quic-quiche:quicEchoJar
+
+container build -t quic-echo-local test-harness/quic-echo/
+container run -d --name quicecho quic-echo-local        # no args: the image's CMD is complete
+container ls                                            # read the IP, e.g. 192.168.64.11
+
+sed -i '' 's/^HARNESS_HOST=.*/HARNESS_HOST=192.168.64.11/' test-harness/harness.env
+./gradlew :socket-quic-quiche:jvmTest --tests '*QuicHarnessIntegrationTests*' --rerun -x harnessUp -x harnessDown
+
+container rm -f quicecho && git checkout test-harness/harness.env
+```
+
+Measured on macOS arm64: `QuicHarnessIntegrationTests` **7 OK / 0 SKIP in 8s**, against 1m40s of
+timeouts on the colima context.
+
+⚠️ Filter to `QuicHarnessIntegrationTests`, **not** `*Harness*`. The broader pattern also selects
+`QuicImpairedHarnessTests`, which needs the controller and udp-toxi sidecars that this single-container
+recipe does not run — those would report green having executed nothing, which is the lane-vacancy shape
+this repository has been bitten by before.
+⚠️ `container run <image> <args>` **replaces** the CMD; the entrypoint then tries to exec the cert path
+(`/app/cert.crt: Permission denied`). Pass no args.
+⚠️ `container` runs one container, not a compose stack.
+⚠️ These containers have **no IPv6 interface**, so a v6 axis cannot be exercised on this path.
+⚠️ `-x harnessUp -x harnessDown` is there because `jvmTest` *dependsOn* `harnessUp` and is *finalizedBy*
+`harnessDown`, so a Gradle run would otherwise spend ~1m40s standing up the compose stack you are
+deliberately not using. (`harnessDown` runs `docker compose down -v`, which cannot touch an Apple
+`container` — the container survives; the time does not.)
 
 ## The controller & `GET /describe` (W6 control plane)
 

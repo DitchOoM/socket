@@ -975,16 +975,48 @@ val generateHarnessCerts by tasks.registering {
     }
 }
 
+/**
+ * A `docker compose` invocation, with the prebuilt-quic-echo overlay applied on hosts that cannot build
+ * that image.
+ *
+ * Non-Linux hosts stage the wrong natives into `quicEchoJar` (see [harnessUp]), so they take the
+ * published `ghcr.io/ditchoom/socket-test-harness-quic-echo` instead. That is the image
+ * `harness-consumer.yml` already uses, so it needs no token, no artifact retention window and no
+ * second implementation of the quiche patch set.
+ *
+ * ⚠️ Both `up` and `down` must pass the same `-f` list, or compose treats them as different projects
+ * and `down` leaves the stack running.
+ */
+fun composeArgs(vararg command: String): List<String> {
+    val files =
+        if (isLinux) {
+            emptyList()
+        } else {
+            listOf("-f", "docker-compose.yml", "-f", "docker-compose.prebuilt-quic-echo.yml")
+        }
+    return listOf("docker", "compose") + files + command.toList()
+}
+
 val harnessUp by tasks.registering {
     group = "verification"
     description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
     dependsOn(generateHarnessCerts)
     // Phase 4 — make sure the quic-echo image's input artefact (a fat jar of
-    // QuicEchoTestServer + its test deps + the host's quiche native libs) is
-    // current before `docker compose up` reads it. Subproject task is wrapped
-    // in `tasks.named` so the dependency edge is resolved lazily — keeps the
-    // root build script orderable against the subproject's afterEvaluate.
-    dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
+    // QuicEchoTestServer + its test deps + Linux quiche natives) is current before
+    // `docker compose up` reads it. On a Linux host that is a local build; anywhere
+    // else the host's natives are the wrong ones, so it is CI's artefact — see
+    // [quicEchoContext].
+    // The quic-echo image's input, but ONLY where this host can produce one the container can load:
+    // `quicEchoJar` stages the host's own natives and the container is Linux. Elsewhere the overlay
+    // below swaps in the published image instead, so there is nothing to build and no edge to add.
+    //
+    // ⚠️ The branch stays INSIDE this configuration block and the subproject edge stays wrapped in
+    // `tasks.named`, because both are lazy there. Hoisting either to a top-level `val` resolves the
+    // subproject task eagerly, before :socket-quic-quiche has registered it, and every build fails with
+    // `Task with name 'quicEchoJar' not found` — on Linux only, so a macOS run cannot see it.
+    if (isLinux) {
+        dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
+    }
     // W6 — same treatment for the harness controller image's input artefact
     // (a fat jar of :socket-testsuite's jvmMain HarnessController; see
     // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
@@ -998,7 +1030,7 @@ val harnessUp by tasks.registering {
         // controllerJar/quicEchoJar would silently keep serving a stale build on
         // dev machines (CI runners start imageless, so they build regardless).
         // The compose build cache makes this a no-op when the inputs are unchanged.
-        val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait", "--build"))
+        val rc = runHarnessCmd(composeArgs("up", "-d", "--wait", "--build"))
         if (rc != 0) {
             logger.lifecycle(
                 "harness: `docker compose up` returned $rc — tests will skip harness scenarios " +
@@ -1011,7 +1043,7 @@ val harnessUp by tasks.registering {
 val harnessDown by tasks.registering {
     group = "verification"
     description = "Stop the local test harness (docker compose down -v). No-op if docker unavailable."
-    doLast { runHarnessCmd(listOf("docker", "compose", "down", "-v")) }
+    doLast { runHarnessCmd(composeArgs("down", "-v")) }
 }
 
 // Wrap both the root module's test tasks AND :socket-quic's matching test
