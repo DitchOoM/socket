@@ -268,17 +268,20 @@ expect fun isAppleKNative(): Boolean
  *
  * A platform fact, not a skip decision: a test that must not run on K/N because of a filed defect
  * names the issue itself, through `recordSkip` with [SkipReason.BlockedByIssue], next to the code
- * the issue is about. (Contrast [quicHarnessSkipReason], which IS the decision, because the cause
+ * the issue is about. (Contrast [quicHarnessAvailability], which IS the decision, because the cause
  * there varies by simulator and environment variable.)
  */
 expect fun isKotlinNative(): Boolean
 
 /**
- * The reason the QUIC harness suite cannot run here, or `null` when it can.
+ * Whether the QUIC harness suite can run here.
  *
- * Returns a [SkipReason] rather than a `Boolean` so the caller has to route it through
- * `recordSkip`. The `Boolean` form let callers early-return, and on Kotlin/Native an early return
- * is reported as a **pass** — the suite and a genuinely passing suite were the same green tick.
+ * Two named outcomes rather than `SkipReason?`, because the nullable form made "it can run" an
+ * *absence*: the docstring had to explain what `null` meant, and every call site re-derived the
+ * decision as an `if (reason != null)` that reads as a null-check rather than as a choice. It is
+ * also not a `Boolean` — the caller has to route the reason through `recordSkip`, and the `Boolean`
+ * form let callers early-return, which on Kotlin/Native is reported as a **pass**: a suite that
+ * stopped running and a genuinely passing suite were the same green tick.
  *
  * NOT a platform limitation — QUIC works fine on the iOS Simulator. The blocker is the
  * Kotlin/Native test runner: KGP launches simulator tests with `simctl spawn --standalone`, which
@@ -300,6 +303,25 @@ expect fun isKotlinNative(): Boolean
  * is supplied; no such property, and no assignment of `QUIC_SIM_BOOTED`, exists anywhere in the
  * build or in CI. Every Apple simulator lane therefore skips unconditionally today, which is why
  * this now reports the skip instead of hiding it. macOS K/N (no simulator, real network stack)
- * returns `null` and validates the QUIC client.
+ * returns [QuicHarnessAvailability.Available] and validates the QUIC client.
  */
-expect fun quicHarnessSkipReason(): SkipReason?
+expect fun quicHarnessAvailability(): QuicHarnessAvailability
+
+/**
+ * Whether a lane can stand up a QUIC connection to the harness at all — the decision
+ * [quicHarnessAvailability] returns.
+ *
+ * Deliberately NOT a report on whether a connection attempt *succeeded*: that is the harness being
+ * down or the test being wrong, and it belongs to the suite, not to this gate. Collapsing the two
+ * is #577 — the shape where an assertion failure inside a test body reads as "harness unreachable"
+ * and the lane goes green.
+ */
+sealed interface QuicHarnessAvailability {
+    /** The network services a QUIC connection needs are reachable from this lane. */
+    data object Available : QuicHarnessAvailability
+
+    /** This lane cannot open a QUIC connection at all, for [reason]. */
+    data class Unavailable(
+        val reason: SkipReason,
+    ) : QuicHarnessAvailability
+}
