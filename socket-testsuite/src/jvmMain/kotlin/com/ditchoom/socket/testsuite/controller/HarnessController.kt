@@ -83,11 +83,11 @@ object HarnessController {
                 // `data` is the SUITE relay's data port (UDP_TOXI_SUITE_PORT), isolated from any relay
                 // a parallel test-task family provisions — the udp-toxi twin of the toxiproxy suite-echo
                 // split above.
-                """"udp-toxi":{"api":${env("UDP_TOXI_API_PORT", "8475")},""" +
-                    """"data":${env("UDP_TOXI_SUITE_PORT", "14435")},""" +
-                    // The QUIC relay's own data port: `impairedQuic` and `impairedUdp` are separate
-                    // relays on this sidecar, so they must not share a listen port.
-                    """"quicData":${env("UDP_TOXI_QUIC_PORT", "14436")}}""",
+                // The QUIC relay is its own scenario, not a field on udp-toxi: a consumer whose
+                // controller predates it must still see udp-toxi and keep `impairedUdp` working.
+                """"udp-toxi-quic":${ep("UDP_TOXI_QUIC_PORT", 14436, env("UDP_TOXI_HOST", "127.0.0.1"))},""" +
+                    """"udp-toxi":{"api":${env("UDP_TOXI_API_PORT", "8475")},""" +
+                    """"data":${env("UDP_TOXI_SUITE_PORT", "14435")}}""",
             )
             append("}}")
         }

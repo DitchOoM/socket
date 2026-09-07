@@ -202,20 +202,20 @@ class NetworkHarnessScope internal constructor(
      * different failure with a different meaning. Assert on what the connection did, not on individual
      * datagrams.
      *
-     * ⚠️ Its own relay name and listen port ([SUITE_QUIC_RELAY], [UdpToxiPorts.quicData]): sharing
-     * [impairedUdp]'s would make the two mutually exclusive, and the two suites would only discover
-     * that as a flake when they happened to overlap.
+     * ⚠️ Its own relay name and listen port ([SUITE_QUIC_RELAY], the [QUIC_RELAY_SCENARIO] endpoint):
+     * one listen port cannot host two relays, so sharing [impairedUdp]'s would make the two suites
+     * mutually exclusive and they would only discover that as a flake when they happened to overlap.
      */
     suspend fun impairedQuic(
         clientToServer: FaultSchedule,
         serverToClient: FaultSchedule = FaultSchedule.CLEAN,
         block: suspend (HarnessEndpoint) -> Unit,
     ) {
-        val (client, relay) = provisionQuicRelay()
+        val (client, quicRelay) = provisionQuicRelay()
         client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ClientToServer, clientToServer)
         client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ServerToClient, serverToClient)
         try {
-            block(HarnessEndpoint(relay.host, relay.quicData))
+            block(quicRelay)
         } finally {
             runCatching { client.clearSchedules(SUITE_QUIC_RELAY) }
         }
@@ -226,15 +226,20 @@ class NetworkHarnessScope internal constructor(
      * client + ports. Upstream is the compose service address ([QUIC_ECHO_UPSTREAM]) — resolvable from
      * *inside* the harness network, where `udp-toxi` runs.
      */
-    private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, UdpToxiPorts> {
+    private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, HarnessEndpoint> {
         val relay =
             manifest.udpToxi
                 ?: throw IllegalStateException(
                     "harness manifest has no 'udp-toxi' scenario — QUIC impairments unavailable on this runtime",
                 )
+        // Its own scenario key, NOT a field on udp-toxi. A required field there would make a controller
+        // that predates it report no udp-toxi at all, which disables `impairedUdp` — an existing,
+        // unrelated suite — for a QUIC-only addition. Scenario absence is the manifest's own primitive
+        // for "this runtime does not have it", and it is per-scenario for exactly this reason.
+        val quicRelay = manifest.scenario(QUIC_RELAY_SCENARIO)
         val client = UdpToxiClient(relay.host, relay.api)
-        client.upsertRelay(name = SUITE_QUIC_RELAY, listenPort = relay.quicData, upstream = QUIC_ECHO_UPSTREAM)
-        return client to relay
+        client.upsertRelay(name = SUITE_QUIC_RELAY, listenPort = quicRelay.port, upstream = QUIC_ECHO_UPSTREAM)
+        return client to quicRelay
     }
 
     /**
@@ -300,5 +305,12 @@ class NetworkHarnessScope internal constructor(
          * is the compose service name, never `HARNESS_HOST`.
          */
         const val QUIC_ECHO_UPSTREAM = "quic-echo:14433"
+
+        /**
+         * The QUIC relay's data plane, as its **own** manifest scenario rather than a field on
+         * `udp-toxi`. A required field there would make a controller predating it report no udp-toxi at
+         * all, disabling [impairedUdp] — an existing, unrelated suite — for a QUIC-only addition.
+         */
+        const val QUIC_RELAY_SCENARIO = "udp-toxi-quic"
     }
 }

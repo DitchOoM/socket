@@ -4,8 +4,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.testsuite.harness.withNetworkHarness
 import com.ditchoom.socket.testkit.fault.FaultSchedule
+import com.ditchoom.socket.testsuite.harness.withNetworkHarness
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -25,6 +25,13 @@ import kotlin.time.Duration.Companion.seconds
  * as latency, not as a failed read. Asserting "the echo came back" is therefore the honest assertion;
  * asserting anything per-datagram would be asserting quiche's recovery schedule, which is not ours and
  * changes between releases.
+ *
+ * ⚠️ **`dropEvery(n)` defaults to `offset = 0`, so the first datagram of each impaired leg is always
+ * dropped — which is the client's first Initial.** The costs below are therefore handshake recovery,
+ * not steady-state loss: measured 1.1s for the uplink case (one Initial PTO at quiche's 333ms initial
+ * RTT) and 18.2s for both legs (PTO exponential backoff, 1+2+4+8…). That distribution is discrete in
+ * powers of two, so "margin" here is not continuous — one more unlucky alignment is +16s. An earlier
+ * revision explained the 18.2s as symmetric loss "compounding", which is not the mechanism.
  *
  * The interesting failure this can catch is the opposite one: loss that the connection does *not*
  * absorb — a handshake that never completes, a stream that reports end instead of data, a connection

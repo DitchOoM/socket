@@ -23,7 +23,9 @@ See `../TESTING_STRATEGY.md` for the full design. This directory is
 ## Run it
 
 ```bash
-# Build the JVM image inputs first (harnessUp does all of them automatically):
+# Build the JVM image inputs first (harnessUp does all of them automatically).
+# ⚠️ On a NON-Linux host, `quicEchoJar` stages that host's natives and the container cannot load
+# them — use `fetchQuicEchoContext` instead, as harnessUp does. See "On macOS" below.
 ./gradlew :socket-quic-quiche:quicEchoJar :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar
 
 cd test-harness
@@ -51,31 +53,48 @@ consume, carrying both Linux arches. Linux hosts still build locally.
 ⚠️ That is **`main`'s** server, not your working tree's. Better for client-side work (a known-good
 peer); useless if you are changing `QuicEchoTestServer` itself — build on Linux for that.
 
-**Docker Desktop does not publish UDP to the macOS host.** `docker compose ps` reports
-`127.0.0.1:14433->14433/udp` while `lsof -iUDP:14433` shows no socket, so the QUIC handshake never
-arrives and every harness test skips with `IdleTimeout`. Apple's `container` has no such problem — it
-gives the container its **own routable IP**, so there is no publishing proxy to fail:
+**A Lima-backed docker context does not publish UDP to the macOS host.** Measured on `colima`
+(`docker context ls` → `colima *`): `docker compose ps` reports `127.0.0.1:14433->14433/udp` and
+`docker port` agrees, while `lsof -iUDP:14433` shows no socket and datagrams never arrive. Reproduced
+minimally with `docker run -p 127.0.0.1:19998:19998/udp alpine/socat` — this is Lima's UDP
+port-forwarding gap, not something about QUIC or this repo.
+
+⚠️ Attribute it to your **active context**, not to "Docker on macOS". Docker Desktop is a different
+runtime and is not what these measurements were taken against; the TCP suites are wired to run on
+developer Macs, so do not assume TCP is affected either without measuring it.
+
+Apple's `container` avoids the question entirely — it gives the container its **own routable IP**, so
+there is no publishing proxy in the path:
 
 ```bash
-container build -t quic-echo-local test-harness/quic-echo/   # context carries CI's Linux-native jar
-container run -d --name quicecho quic-echo-local             # no args: the image's CMD is complete
-container ls                                                 # read the IP, e.g. 192.168.64.11
+# The context needs the jar and certs, which harnessUp's dependencies produce:
+./gradlew fetchQuicEchoContext generateHarnessCerts     # non-Linux; on Linux use :socket-quic-quiche:quicEchoJar
+
+container build -t quic-echo-local test-harness/quic-echo/
+container run -d --name quicecho quic-echo-local        # no args: the image's CMD is complete
+container ls                                            # read the IP, e.g. 192.168.64.11
 
 sed -i '' 's/^HARNESS_HOST=.*/HARNESS_HOST=192.168.64.11/' test-harness/harness.env
-./gradlew :socket-quic-quiche:jvmTest --tests '*Harness*' --rerun -x harnessUp -x harnessDown
+./gradlew :socket-quic-quiche:jvmTest --tests '*QuicHarnessIntegrationTests*' --rerun -x harnessUp -x harnessDown
 
 container rm -f quicecho && git checkout test-harness/harness.env
 ```
 
-Measured on macOS arm64: **7 OK / 0 SKIP in 8s**, against 1m40s of timeouts under Docker Desktop.
+Measured on macOS arm64: `QuicHarnessIntegrationTests` **7 OK / 0 SKIP in 8s**, against 1m40s of
+timeouts on the colima context.
 
-⚠️ `container run <image> <args>` **replaces** the CMD, and the entrypoint then tries to exec the cert
-path (`/app/cert.crt: Permission denied`). Pass no args.
-⚠️ `container` runs one container, not a compose stack — quic-echo alone covers the QUIC harness suite;
-toxiproxy/netem/rst/tls back other suites and still need Docker.
+⚠️ Filter to `QuicHarnessIntegrationTests`, **not** `*Harness*`. The broader pattern also selects
+`QuicImpairedHarnessTests`, which needs the controller and udp-toxi sidecars that this single-container
+recipe does not run — those would report green having executed nothing, which is the lane-vacancy shape
+this repository has been bitten by before.
+⚠️ `container run <image> <args>` **replaces** the CMD; the entrypoint then tries to exec the cert path
+(`/app/cert.crt: Permission denied`). Pass no args.
+⚠️ `container` runs one container, not a compose stack.
 ⚠️ These containers have **no IPv6 interface**, so a v6 axis cannot be exercised on this path.
-⚠️ `jvmTest` *dependsOn* `harnessUp` and is *finalizedBy* `harnessDown`, which is why a hand-started
-container disappears mid-run — hence `-x harnessUp -x harnessDown` above.
+⚠️ `-x harnessUp -x harnessDown` is there because `jvmTest` *dependsOn* `harnessUp` and is *finalizedBy*
+`harnessDown`, so a Gradle run would otherwise spend ~1m40s standing up the compose stack you are
+deliberately not using. (`harnessDown` runs `docker compose down -v`, which cannot touch an Apple
+`container` — the container survives; the time does not.)
 
 ## The controller & `GET /describe` (W6 control plane)
 
