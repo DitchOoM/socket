@@ -1022,7 +1022,7 @@ class QuicheDriver(
             if (!comparable) {
                 SilentRun.None
             } else {
-                val expired = stats.totalPtoCount - previous!!.totalPtoCount
+                val expired = stats.totalPtoCount - previous.totalPtoCount
                 when (val carried = previous.run) {
                     SilentRun.None -> if (expired > 0) SilentRun.Building(expired, clock.markNow()) else SilentRun.None
                     is SilentRun.Building ->
