@@ -36,7 +36,9 @@ import com.ditchoom.socket.udp.linux.IP_RECVTOS
 import com.ditchoom.socket.udp.linux.IP_RECVTTL
 import com.ditchoom.socket.udp.linux.cmsg_data
 import com.ditchoom.socket.udp.linux.cmsg_firsthdr
+import com.ditchoom.socket.udp.linux.cmsg_len
 import com.ditchoom.socket.udp.linux.cmsg_nxthdr
+import com.ditchoom.socket.udp.linux.cmsg_space
 import com.ditchoom.socket.udp.linux.cmsghdr
 import com.ditchoom.socket.udp.linux.io_uring_prep_cancel64
 import com.ditchoom.socket.udp.linux.io_uring_prep_nop
@@ -44,9 +46,11 @@ import com.ditchoom.socket.udp.linux.io_uring_prep_recvmsg
 import com.ditchoom.socket.udp.linux.io_uring_prep_sendmsg
 import com.ditchoom.socket.udp.linux.iovec
 import com.ditchoom.socket.udp.linux.msghdr
+import com.ditchoom.socket.udp.linux.socket_bind
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.MemScope
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
@@ -56,24 +60,32 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import platform.posix.AF_INET
+import platform.posix.AF_INET6
+import platform.posix.EADDRNOTAVAIL
 import platform.posix.ETIME
 import platform.posix.ETIMEDOUT
 import platform.posix.IPPROTO_IP
 import platform.posix.IPPROTO_IPV6
+import platform.posix.IPPROTO_UDP
 import platform.posix.IPV6_TCLASS
 import platform.posix.IP_TOS
 import platform.posix.IP_TTL
+import platform.posix.SOCK_DGRAM
 import platform.posix.close
+import platform.posix.errno
 import platform.posix.memset
 import platform.posix.setsockopt
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
+import platform.posix.socket
 import kotlin.concurrent.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 
@@ -82,6 +94,42 @@ private const val MAX_UDP_PAYLOAD = 65507
 
 /** Ancillary-data scratch — ample for IP_TOS(1) + IP_TTL(4) + IP_PKTINFO(12) each in a cmsghdr. */
 private const val CONTROL_BUFFER_SIZE = 256
+
+/**
+ * `struct in_pktinfo { int ipi_ifindex; struct in_addr ipi_spec_dst; struct in_addr ipi_addr; }` — 12
+ * bytes. The kernel reads a *different address field* in each direction, which is why both are named
+ * here: on receive it fills `ipi_addr` (offset 8) with the datagram's destination IP, and on send it
+ * reads `ipi_spec_dst` (offset 4) as the source to leave from.
+ *
+ * `ipi_ifindex` (offset 0) is deliberately left 0 on send: IPv4 has no scoped addresses, so an IPv4
+ * source names a device unambiguously and there is nothing for the caller to disambiguate. Pinning the
+ * address and leaving the device to the route lookup is what a multi-homed reply wants. IPv6 is not
+ * like this — see [IN6_PKTINFO_IFINDEX_OFFSET].
+ */
+private const val IN_PKTINFO_SIZE = 12
+private const val IN_PKTINFO_SPEC_DST_OFFSET = 4
+private const val IN_PKTINFO_ADDR_OFFSET = 8
+
+/**
+ * `struct in6_pktinfo { struct in6_addr ipi6_addr; unsigned int ipi6_ifindex; }` — 20 bytes. Unlike
+ * the IPv4 struct this one has a single address field, used as the destination on receive and as the
+ * source on send, so [IN6_PKTINFO_ADDR_OFFSET] serves both.
+ *
+ * `ipi6_ifindex` (offset 16) carries the address's scope id in **both** directions, and it is not
+ * optional the way its IPv4 counterpart is: `ip6_datagram_send_ctl` returns `EINVAL` unconditionally
+ * for a link-local source when no interface is named, because `fe80::/10` is only an address on a
+ * link. Receiving it and sending it back are the same field, which is what lets a reply leave from a
+ * link-local address the receive loop recorded.
+ */
+private const val IN6_PKTINFO_SIZE = 20
+private const val IN6_PKTINFO_ADDR_OFFSET = 0
+private const val IN6_PKTINFO_IFINDEX_OFFSET = 16
+
+/**
+ * The low half of `::ffff:0.0.0.0` packed the way [LinuxSocketAddress] packs an address — the
+ * v4-mapped spelling of "no address", which a dual-stack socket can be handed instead of `::`.
+ */
+private const val V4_MAPPED_UNSPECIFIED_LO = 0x0000FFFF00000000L
 
 /**
  * "This channel has no submission in flight." `IoUringManager.nextUserData()` counts up from 1 and 0 is
@@ -171,8 +219,9 @@ internal abstract class IoUringDatagramChannelCore(
     /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IP). PMTU is a consumer concern. */
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
-    // Linux is §7.1's richest platform: the full send + receive control plane is implemented, so only
-    // per-send source-IP selection (IP_PKTINFO on send / sourceAddressSelect) and multicast are absent.
+    // Linux is §7.1's richest platform: the full send + receive control plane is implemented — as of
+    // #556's step 2, send-side source selection included — so multicast is the only absent capability
+    // left here, and [MulticastIoUringDatagramChannel] flips that one on for a channel that has joined.
     override val capabilities: DatagramCapabilities =
         DatagramCapabilities(
             ecnSend = true,
@@ -182,7 +231,12 @@ internal abstract class IoUringDatagramChannelCore(
             hopLimitSend = true,
             hopLimitReceive = true,
             localAddressReceive = true,
-            sourceAddressSelect = false, // send-side IP_PKTINFO (fromLocal) is a later additive minor
+            // Honoured, not merely tolerated: [sendAdmitted] attaches an IP_PKTINFO / IPV6_PKTINFO
+            // control message built from DatagramSendOptions.fromLocal, and *refuses* a source it
+            // cannot pin instead of sending from the kernel's choice as though it had. Advertising
+            // this while quietly ignoring the option would be worse than advertising it absent — a
+            // consumer would stop compensating for something that never started working (#558).
+            sourceAddressSelect = true,
             multicast = false, // design-for, defer (§10.3)
             // sendmsg's iovec is a raw base pointer: sendDatagram takes payload.nativeMemoryAccess
             // and errors if it is absent. BufferFactory.Default on K/N Linux is a GC buffer with no
@@ -273,17 +327,28 @@ internal abstract class IoUringDatagramChannelCore(
                     // Kernel-reported TTL / hop limit is always a valid octet — HopLimit.of accepts it.
                     level == IPPROTO_IP && type == IP_TTL ->
                         hopLimit = HopLimit.of(data.reinterpret<IntVar>().pointed.value)
-                    // struct in_pktinfo { int ipi_ifindex; struct in_addr ipi_spec_dst; struct in_addr ipi_addr; }
-                    // ipi_addr (the datagram's destination IP) is at offset 8.
+                    // ipi_addr — the datagram's destination IP. Layout at [IN_PKTINFO_ADDR_OFFSET].
                     level == IPPROTO_IP && type == IP_PKTINFO ->
-                        localAddress = LocalAddress.of(ipv4LocalAddress(data.reinterpret(), 8, localPort))
+                        localAddress =
+                            LocalAddress.of(ipv4LocalAddress(data.reinterpret(), IN_PKTINFO_ADDR_OFFSET, localPort))
                     level == IPPROTO_IPV6 && type == IPV6_TCLASS ->
                         ecn = Ecn.fromCodepoint(data.reinterpret<IntVar>().pointed.value)
                     level == IPPROTO_IPV6 && type == IPV6_HOPLIMIT ->
                         hopLimit = HopLimit.of(data.reinterpret<IntVar>().pointed.value)
-                    // struct in6_pktinfo { struct in6_addr ipi6_addr; unsigned ipi6_ifindex; } — addr at offset 0.
+                    // ipi6_addr + ipi6_ifindex. The interface index used to be dropped here, which
+                    // made every received link-local local address unusable as a reply source: the
+                    // send path would have had nothing to put back in ipi6_ifindex, and the kernel
+                    // refuses an unscoped link-local source outright.
                     level == IPPROTO_IPV6 && type == IPV6_PKTINFO ->
-                        localAddress = LocalAddress.of(ipv6LocalAddress(data.reinterpret(), 0, localPort))
+                        localAddress =
+                            LocalAddress.of(
+                                ipv6LocalAddress(
+                                    data.reinterpret(),
+                                    IN6_PKTINFO_ADDR_OFFSET,
+                                    localPort,
+                                    ifIndexAt(data.reinterpret(), IN6_PKTINFO_IFINDEX_OFFSET),
+                                ),
+                            )
                 }
             }
             cmsg = cmsg_nxthdr(msg, cmsg)
@@ -419,6 +484,14 @@ internal abstract class IoUringDatagramChannelCore(
         target: SocketAddress?,
         options: DatagramSendOptions,
     ) {
+        // First, so that a source refused *here* leaves the socket exactly as it found it —
+        // applyControlPlane's setsockopts are socket-wide and outlive this call, and a send that never
+        // happens should not have changed the next one's TOS. This covers only the refusals this
+        // library decides ([SourcePin]); one the kernel makes necessarily comes after the options were
+        // applied, since applying them is part of making the call that gets refused. That is not a
+        // hole: those options are the caller's own request and are re-applied on change, so the socket
+        // is left in the state the caller asked for either way.
+        val pin = sourcePinFor(options.fromLocal)
         applyControlPlane(options)
         // Send the readable window [position, limit) straight from the buffer's native memory — no
         // copy, and reading position()/remaining() does not consume it (send-does-not-consume).
@@ -444,8 +517,15 @@ internal abstract class IoUringDatagramChannelCore(
             }
             msg.msg_iov = iov.ptr
             msg.msg_iovlen = 1.convert()
-            msg.msg_control = null
-            msg.msg_controllen = 0u.convert()
+            when (pin) {
+                // No source named: no ancillary data at all, and the kernel routes and picks — the
+                // default, and every send this channel made before #556.
+                SourcePin.OsRouting -> {
+                    msg.msg_control = null
+                    msg.msg_controllen = 0u.convert()
+                }
+                is SourcePin.Pinned -> writePktInfo(msg, pin.address)
+            }
 
             // Check the CQE result. io_uring reports failure as a negative `res` carrying -errno, and
             // discarding it made a failed sendmsg indistinguishable from a delivered datagram — which
@@ -464,9 +544,253 @@ internal abstract class IoUringDatagramChannelCore(
             inFlightSend.value = NO_OP_IN_FLIGHT
             // Checked before `res`: a nop reports 0, which would otherwise read as a delivered datagram.
             if (handoff.closed) error("sink is closed")
-            if (res < 0) throw DatagramSendException(sendErrnoToError(-res, attempted = len, limit = maxWritableSize))
+            if (res < 0) throw DatagramSendException(sendFailure(-res, attempted = len, pin = pin))
         }
     }
+
+    /**
+     * What one send must do about [DatagramSendOptions.fromLocal] on *this* socket.
+     *
+     * A sealed pair rather than the option's own nullable address, because the two cases are different
+     * syscall shapes — no control message at all, versus a `PKTINFO` cmsg the kernel reads a source out
+     * of — and because the third outcome, a source this socket could never leave from, is a typed
+     * failure reported to the caller rather than a value the send path could forget to branch on.
+     */
+    private sealed interface SourcePin {
+        /** No source named. The kernel routes and picks; the default, and the pre-#556 behaviour. */
+        data object OsRouting : SourcePin
+
+        /** Leave from [address], already normalized into this socket's own address family. */
+        class Pinned(
+            val address: LinuxSocketAddress,
+        ) : SourcePin
+    }
+
+    /**
+     * Decide what [fromLocal] means for this socket: nothing, a source to pin, or a refusal.
+     *
+     * **Every input reaches a decision here, and none is forwarded on the chance that the kernel will
+     * do something sensible with it.** That is the whole discipline of the capability: a channel
+     * advertising `sourceAddressSelect` and then handing the kernel something it quietly ignores would
+     * report success for a datagram that left from the wrong address — #556 again, one layer down and
+     * harder to see. Each of the three refusable shapes was measured, not assumed:
+     *
+     *  - **A wildcard** (`0.0.0.0`, `::`, and the `::ffff:0.0.0.0` spelling a dual-stack socket can be
+     *    handed) is not a source, it is the *absence* of one, and the kernel treats it as such — its
+     *    `if (fl4->saddr)` and `addr_type != IPV6_ADDR_ANY` guards skip an all-zero pin and choose for
+     *    themselves. Forwarding it would be a silent no-op reported as an honoured request, and it is
+     *    not hypothetical: a server whose receive path falls back to its own wildcard bind address
+     *    produces exactly this. Answered as [SourcePin.OsRouting], which is what it means — and
+     *    answered *before* the family check, because a wildcard names no address for a family to
+     *    disagree about.
+     *  - **The wrong address family** is refused, because the kernel does not: it walks past an
+     *    `IPV6_PKTINFO` cmsg on an `AF_INET` socket and sends from whatever routing preferred.
+     *  - **An unscoped IPv6 link-local** is refused for what it actually is. `fe80::/10` is only an
+     *    address on a link, and `ip6_datagram_send_ctl` answers `EINVAL` when no interface is named.
+     *    Letting that reach the kernel would produce a failure this backend cannot attribute — `bind`
+     *    answers `EINVAL` for the same address, so the locality probe could not clear it either — and
+     *    the honest name for it is not "no interface holds this address", which is false about an
+     *    address the host demonstrably holds. A *scoped* link-local is pinned like any other source;
+     *    the scope arrives on [LinuxSocketAddress.scopeId], which the receive path now preserves.
+     *
+     * Throwing rather than returning a refusal keeps the send path's `when` to the two shapes that
+     * actually reach a syscall, and puts the refusal in the same channel as every other send failure —
+     * a typed [DatagramSendError], never a message to parse.
+     */
+    private fun sourcePinFor(fromLocal: SocketAddress?): SourcePin {
+        if (fromLocal == null) return SourcePin.OsRouting
+        val source = fromLocal.asLinuxAddress()
+        if (source.namesNoAddress()) return SourcePin.OsRouting
+        if ((source.family == AddressFamily.IPv6) != ipv6) throw refusal(source, SourceAddressRejection.WrongFamily)
+        if (source.isUnscopedLinkLocal()) throw refusal(source, SourceAddressRejection.UnscopedLinkLocal)
+        return SourcePin.Pinned(source)
+    }
+
+    /** The one place a source refusal is built, so every one of them reports the same shape. */
+    private fun refusal(
+        source: LinuxSocketAddress,
+        reason: SourceAddressRejection,
+    ) = DatagramSendException(DatagramSendError.SourceAddressUnavailable(source.host, reason))
+
+    /**
+     * Is this the unspecified address — the one the kernel reads as "choose for me"?
+     *
+     * Three spellings, not one. `0.0.0.0` and `::` are the obvious pair; `::ffff:0.0.0.0` is the third,
+     * and it is the awkward one, because whether the kernel ignores it or rejects it depends on the
+     * *destination*: a v4-mapped destination re-enters the IPv4 sender, which reads the low 32 bits
+     * and finds zero, while a native IPv6 destination sees an address that is not `IPV6_ADDR_ANY`,
+     * fails `ipv6_chk_addr` and returns `EINVAL` (both measured). Neither outcome is what a caller
+     * writing "no particular source" meant, so it is decided here instead of left to the destination.
+     */
+    private fun LinuxSocketAddress.namesNoAddress(): Boolean =
+        when (family) {
+            AddressFamily.IPv4 -> lo == 0L
+            AddressFamily.IPv6 -> hi == 0L && (lo == 0L || lo == V4_MAPPED_UNSPECIFIED_LO)
+        }
+
+    /**
+     * An IPv6 link-local (`fe80::/10`) with no interface index — an address that cannot be used as a
+     * source, and cannot even be bound, until something says on which link it means what it says.
+     */
+    private fun LinuxSocketAddress.isUnscopedLinkLocal(): Boolean {
+        if (family != AddressFamily.IPv6 || scopeId != 0) return false
+        val firstByte = (hi ushr 56) and 0xFF
+        val secondByte = (hi ushr 48) and 0xFF
+        return firstByte == 0xFEL && (secondByte and 0xC0L) == 0x80L
+    }
+
+    /**
+     * Attach to [msg] the control message that pins [source] as this datagram's source address:
+     * `IP_PKTINFO` on an IPv4 socket, `IPV6_PKTINFO` on an IPv6 one.
+     *
+     * The cmsg is built in the caller's `memScoped` arena — the same lifetime as the `msghdr` and the
+     * `iovec` it belongs to, which is what makes it safe against the io_uring hand-off: [MemScope]
+     * outlives `submitAndWait`, so the kernel is never reading a scratch this coroutine has left.
+     *
+     * Address bytes are written at named offsets rather than through the cinterop structs for the same
+     * reason [parseControlPlane] reads them that way — one description of each layout, used in both
+     * directions, so a wrong offset shows up as a failing round trip instead of two files agreeing
+     * with each other and disagreeing with the kernel.
+     */
+    private fun MemScope.writePktInfo(
+        msg: msghdr,
+        source: LinuxSocketAddress,
+    ) {
+        val infoSize = if (ipv6) IN6_PKTINFO_SIZE else IN_PKTINFO_SIZE
+        val space = cmsg_space(infoSize.convert()).toInt()
+        val control = allocArray<ByteVar>(space)
+        // allocArray does not zero, and the kernel reads every byte the cmsg covers — the interface
+        // index included, where garbage would name a device instead of leaving the choice to routing.
+        memset(control, 0, space.convert())
+        // Both fields before asking for the first header: CMSG_FIRSTHDR answers null unless
+        // msg_controllen already says the buffer is big enough to hold a cmsghdr.
+        msg.msg_control = control
+        msg.msg_controllen = space.convert()
+        val cmsg = cmsg_firsthdr(msg.ptr)!!.pointed
+        cmsg.cmsg_level = if (ipv6) IPPROTO_IPV6 else IPPROTO_IP
+        cmsg.cmsg_type = if (ipv6) IPV6_PKTINFO else IP_PKTINFO
+        cmsg.cmsg_len = cmsg_len(infoSize.convert()).convert()
+        val data = cmsg_data(cmsg.ptr)!!.reinterpret<ByteVar>()
+        if (ipv6) {
+            val addr = (data + IN6_PKTINFO_ADDR_OFFSET)!!
+            for (i in 0 until 8) addr[i] = ((source.hi shr (56 - 8 * i)) and 0xFF).toByte()
+            for (i in 0 until 8) addr[8 + i] = ((source.lo shr (56 - 8 * i)) and 0xFF).toByte()
+            // ipi6_ifindex, host byte order. 0 when the address carries no scope, which is correct for
+            // every global address and fatal for a link-local — hence the refusal in [sourcePinFor]
+            // rather than a zero written here and an unattributable EINVAL from the kernel.
+            val ifIndex = (data + IN6_PKTINFO_IFINDEX_OFFSET)!!
+            for (i in 0 until 4) ifIndex[i] = ((source.scopeId ushr (8 * i)) and 0xFF).toByte()
+        } else {
+            val addr = (data + IN_PKTINFO_SPEC_DST_OFFSET)!!
+            for (i in 0 until 4) addr[i] = ((source.lo shr (24 - 8 * i)) and 0xFF).toByte()
+        }
+    }
+
+    /**
+     * Classify a failed `sendmsg`, deciding first whether the *source* this send named is what the
+     * kernel turned down.
+     *
+     * The kernel has no errno for "that source is not mine". A non-local IPv4 `ipi_spec_dst` makes the
+     * output route lookup fail and comes back `ENETUNREACH`; the IPv6 path checks the address against
+     * the interface list itself and answers `EINVAL`. Passing either through [sendErrnoToError] would
+     * publish a lie a consumer acts on: `ENETUNREACH` is [DatagramSendError.Unreachable], the local
+     * "no path to the peer" verdict a migration trigger and an ICE agent both branch on, and the peer
+     * is not the problem at all here.
+     *
+     * Assuming the source is to blame whenever a pinned send fails would be the opposite lie — a
+     * genuinely unreachable destination would stop reporting itself. So the two are told apart by
+     * asking the kernel the question it has no errno for, once, on a path that has already failed:
+     * [localityOf]. Its three answers map to three different reports, and the third — "could not
+     * establish it" — is reported as itself rather than folded into either of the other two.
+     */
+    private fun sendFailure(
+        errnoCode: Int,
+        attempted: Int,
+        pin: SourcePin,
+    ): DatagramSendError {
+        if (pin !is SourcePin.Pinned) return sendErrnoToError(errnoCode, attempted = attempted, limit = maxWritableSize)
+        return when (val locality = localityOf(pin.address)) {
+            // The host has the address, so whatever went wrong is not that it lacks it: the send's own
+            // errno is the answer, exactly as it would be for an unpinned send.
+            AddressLocality.Holds -> sendErrnoToError(errnoCode, attempted = attempted, limit = maxWritableSize)
+            AddressLocality.DoesNotHold ->
+                DatagramSendError.SourceAddressUnavailable(
+                    pin.address.host,
+                    SourceAddressRejection.NotAssigned(errnoCode),
+                )
+            is AddressLocality.Unprobed ->
+                DatagramSendError.SourceAddressUnavailable(
+                    pin.address.host,
+                    SourceAddressRejection.Undetermined(sendErrno = errnoCode, probeErrno = locality.errno),
+                )
+        }
+    }
+
+    /** What [localityOf] could establish about an address. A verdict, so "unknown" is not a guess. */
+    private sealed interface AddressLocality {
+        /** This host has the address: the probe bound it. */
+        data object Holds : AddressLocality
+
+        /** This host does not have it: the probe was refused with the errno that means exactly that. */
+        data object DoesNotHold : AddressLocality
+
+        /** The probe could not answer, and [errno] is why. Never silently one of the other two. */
+        data class Unprobed(
+            val errno: Int,
+        ) : AddressLocality
+    }
+
+    /**
+     * Can this host use [address] as a local address? Asked by binding a throwaway socket to it.
+     *
+     * **Why `bind` and not `getifaddrs`.** `getifaddrs` enumerates addresses *configured on
+     * interfaces*, which is not the question. The kernel's own test, in `__ip_dev_find`, is
+     * `inet_addr_type(saddr) == RTN_LOCAL` — a lookup in the local routing table — and that is exactly
+     * what `inet_bind` checks. The two agree where an enumeration does not: `127.0.0.2` appears in no
+     * interface's address list, yet the kernel pins from it happily and `bind` accepts it (both
+     * measured), so an enumeration-based probe would report the whole of `127.0.0.0/8` — and any
+     * address given a `local` route — as one this host does not have.
+     *
+     * Its one residual is `ip_nonlocal_bind` (and `IP_FREEBIND`, which this probe never sets): with the
+     * sysctl on, `bind` accepts an address the host does not have, the verdict is [Holds], and the
+     * send's own errno is reported unchanged. That is a less specific answer, never an inverted one —
+     * it never claims the host lacks an address it has. Closing it would mean reimplementing the FIB
+     * lookup in userspace, which is a larger promise than this diagnostic is worth.
+     *
+     * **On port 0, never the address's own.** A `fromLocal` derived from a received datagram carries
+     * the port that datagram arrived on — a port this very socket is holding — so binding the pair
+     * would come back `EADDRINUSE` and read as a verdict about the address.
+     *
+     * **Every other refusal is [AddressLocality.Unprobed], not [AddressLocality.DoesNotHold].**
+     * `EADDRNOTAVAIL` is the only errno that means "nobody has this address". `EINVAL` (a scope the
+     * kernel will not accept), `EACCES`, `EAFNOSUPPORT`, and `EADDRINUSE`/`EAGAIN` from ephemeral port
+     * pressure are all reasons the *probe* failed, and reading any of them as an answer about the
+     * address is how a diagnostic turns into a false report.
+     *
+     * Only ever reached from [sendFailure], so the socket-per-failure cost is paid on a path that has
+     * already lost a datagram. The descriptor is opened and closed inside this call and is never named
+     * by an io_uring submission, so it stays outside the [LastOutHandoff] lifetime entirely.
+     */
+    private fun localityOf(address: LinuxSocketAddress): AddressLocality =
+        memScoped {
+            val storage = alloc<sockaddr_storage>()
+            val portless =
+                LinuxSocketAddress(address.host, 0, address.family, address.hi, address.lo, address.scopeId)
+            val len = portless.writeSockaddr(storage)
+            val probeFd = socket(if (ipv6) AF_INET6 else AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            if (probeFd < 0) return@memScoped AddressLocality.Unprobed(errno)
+            try {
+                if (socket_bind(probeFd, storage.ptr.reinterpret(), len) == 0) {
+                    AddressLocality.Holds
+                } else {
+                    // Read immediately: close() below would overwrite it.
+                    val code = errno
+                    if (code == EADDRNOTAVAIL) AddressLocality.DoesNotHold else AddressLocality.Unprobed(code)
+                }
+            } finally {
+                close(probeFd)
+            }
+        }
 
     /**
      * Borrow the descriptor for [block] under the same admission every read and write passes — a
@@ -596,11 +920,25 @@ internal abstract class IoUringDatagramChannelCore(
         return LinuxSocketAddress("$b0.$b1.$b2.$b3", port, AddressFamily.IPv4, 0L, lo)
     }
 
-    /** Build an IPv6 [SocketAddress] from 16 network-order address bytes at [ptr]+[offset] with [port]. */
+    /** Read a host-order 32-bit interface index (`ipi6_ifindex`) from [ptr]+[offset]. */
+    private fun ifIndexAt(
+        ptr: CPointer<ByteVar>,
+        offset: Int,
+    ): Int {
+        var index = 0
+        for (i in 0 until 4) index = index or (((ptr + offset)!![i].toInt() and 0xFF) shl (8 * i))
+        return index
+    }
+
+    /**
+     * Build an IPv6 [SocketAddress] from 16 network-order address bytes at [ptr]+[offset] with [port],
+     * scoped to interface [scopeId] (0 = unscoped).
+     */
     private fun ipv6LocalAddress(
         ptr: CPointer<ByteVar>,
         offset: Int,
         port: Int,
+        scopeId: Int,
     ): SocketAddress {
         var hi = 0L
         var lo = 0L
@@ -609,7 +947,7 @@ internal abstract class IoUringDatagramChannelCore(
         val groups = IntArray(8)
         for (i in 0 until 4) groups[i] = ((hi shr (48 - 16 * i)) and 0xFFFF).toInt()
         for (i in 0 until 4) groups[4 + i] = ((lo shr (48 - 16 * i)) and 0xFFFF).toInt()
-        return LinuxSocketAddress(groups.joinToString(":") { it.toString(16) }, port, AddressFamily.IPv6, hi, lo)
+        return LinuxSocketAddress(groups.joinToString(":") { it.toString(16) }, port, AddressFamily.IPv6, hi, lo, scopeId)
     }
 }
 
