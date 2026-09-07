@@ -44,11 +44,19 @@ import kotlin.time.Duration.Companion.seconds
 class QuicImpairedHarnessTests {
     private val bufferFactory = BufferFactory.network()
 
+    /**
+     * ⚠️ A 60s idle timeout, not the 30s the clean harness suite uses, because **loss is paid in
+     * latency here**. Measured on Linux against the real sidecars: 45ms clean, 1.1s at one-in-three
+     * loss on the uplink, **18.2s at one-in-four on both legs** — symmetric loss also delays the ACKs
+     * that drive recovery, so it compounds. 18.2s under a 30s timeout is 1.6x of margin, which is a
+     * flake on a loaded runner rather than a safety factor; 60s makes it 3.3x while leaving the
+     * impairment exactly as harsh.
+     */
     private val quicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
             verifyPeer = false,
-            idleTimeout = 30.seconds,
+            idleTimeout = 60.seconds,
         )
 
     /** One stream round trip, as the assertion these tests are actually about. */
@@ -57,9 +65,9 @@ class QuicImpairedHarnessTests {
         val out = bufferFactory.allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
-        stream.write(out, 30.seconds)
+        stream.write(out, 60.seconds)
         out.freeNativeMemory()
-        val read = stream.read(30.seconds)
+        val read = stream.read(60.seconds)
         val text =
             if (read is ReadResult.Data) {
                 read.buffer.readString(read.buffer.remaining(), Charset.UTF8).also { read.buffer.freeIfNeeded() }
@@ -77,7 +85,7 @@ class QuicImpairedHarnessTests {
                 // The control: the relay itself must not break QUIC. Without this, a red impaired test
                 // proves nothing — it could be the relay rather than the loss.
                 impairedQuic(clientToServer = FaultSchedule.CLEAN) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 30.seconds) {
+                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
                         assertEquals(
                             "through-the-relay",
                             echo("through-the-relay"),
@@ -95,7 +103,7 @@ class QuicImpairedHarnessTests {
         runBlocking(Dispatchers.IO) {
             withNetworkHarness {
                 impairedQuic(clientToServer = FaultSchedule { dropEvery(n = 3) }) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 30.seconds) {
+                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
                         assertEquals(
                             "lossy-uplink",
                             echo("lossy-uplink"),
@@ -117,7 +125,7 @@ class QuicImpairedHarnessTests {
                     clientToServer = FaultSchedule { dropEvery(n = 4) },
                     serverToClient = FaultSchedule { dropEvery(n = 4) },
                 ) { endpoint ->
-                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 30.seconds) {
+                    withQuicConnection(endpoint.host, endpoint.port, quicOptions, timeout = 60.seconds) {
                         assertEquals(
                             "lossy-both-ways",
                             echo("lossy-both-ways"),
