@@ -4,10 +4,12 @@ import com.ditchoom.socket.udp.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import platform.posix.ENOMEM
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
@@ -237,20 +239,41 @@ internal object IoUringManager {
         // kernel refused for which reason, and an ENOMEM on the bare attempt reads differently from
         // an ENOMEM only under DEFER_TASKRUN.
         val attempts = StringBuilder()
-        for (flags in flagSets) {
-            // Zero out params for each attempt
-            memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
-            params.flags = flags
 
-            val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
-            if (ret >= 0) {
-                nativeHeap.free(params)
-                ringsCreated.incrementAndGet()
-                ringRef.value = ptr
-                return ptr
+        // ⚠️ The ladder is retried on ENOMEM, because that errno here does not mean "out of memory"
+        // (#561). Three independent captures of the #562 ledger — 153/153, 141/141, 131/131 — all show
+        // `created == released`, `live = 0` and `io_uring_disabled = 0` at the moment the kernel
+        // refused *every* flag set including `flags=0x0`. Nothing was leaked; the rings had been
+        // released and the kernel's accounting for them had not yet settled. That is a race against
+        // teardown, and the only thing that clears it is a moment of waiting.
+        //
+        // Bounded and errno-scoped on purpose: ENOSYS (no io_uring at all) and EPERM (seccomp, or
+        // `io_uring_disabled=1`) are permanent, and retrying them would turn a clear diagnosis into a
+        // slow one. Only ENOMEM — the transient the ledger measured — buys another pass.
+        for (attempt in 0 until ENOMEM_SETUP_ATTEMPTS) {
+            for (flags in flagSets) {
+                // Zero out params for each attempt
+                memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
+                params.flags = flags
+
+                val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
+                if (ret >= 0) {
+                    nativeHeap.free(params)
+                    ringsCreated.incrementAndGet()
+                    ringRef.value = ptr
+                    return ptr
+                }
+                lastError = -ret
+                attempts.append(
+                    "try=$attempt flags=0x${flags.toString(16)} -> errno=$lastError " +
+                        "(${strerror(lastError)?.toKString() ?: "?"}); ",
+                )
             }
-            lastError = -ret
-            attempts.append("flags=0x${flags.toString(16)} -> errno=$lastError (${strerror(lastError)?.toKString() ?: "?"}); ")
+            if (lastError != ENOMEM) break
+            // Doubling from 1ms. The whole budget is ~31ms across five passes, which is nothing beside
+            // the 30s deadline a caller is working to, and long enough for a released ring's accounting
+            // to land — teardown is asynchronous, so the wait is the fix.
+            if (attempt < ENOMEM_SETUP_ATTEMPTS - 1) usleep((ENOMEM_BACKOFF_BASE_MICROS shl attempt).toUInt())
         }
 
         nativeHeap.free(params)
@@ -699,3 +722,15 @@ internal object IoUringManager {
             // regression guard on exactly that, and it needs no wall clock to fire.
         }
 }
+
+/**
+ * Passes over the whole flag ladder before an `io_uring_setup` ENOMEM is treated as real (#561).
+ *
+ * Five, because the failure is a race against asynchronous ring teardown rather than a resource limit:
+ * the ledger shows `live = 0` at the moment of refusal, so what is missing is time, not memory. The
+ * budget below is small enough to be invisible and the retry is scoped to ENOMEM alone.
+ */
+private const val ENOMEM_SETUP_ATTEMPTS = 5
+
+/** First backoff, doubling per pass: ~31ms total across [ENOMEM_SETUP_ATTEMPTS]. */
+private const val ENOMEM_BACKOFF_BASE_MICROS = 1_000
