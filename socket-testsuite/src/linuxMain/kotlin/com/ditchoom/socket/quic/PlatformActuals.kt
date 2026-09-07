@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic
 
-
 actual fun isAppleKNative(): Boolean = false
 
 actual fun isKotlinNative(): Boolean = true
