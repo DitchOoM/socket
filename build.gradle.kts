@@ -1040,17 +1040,6 @@ val fetchQuicEchoContext by tasks.registering {
     }
 }
 
-/**
- * Where the quic-echo image's build context comes from on this host — built here when the host's
- * natives are the container's, fetched from CI otherwise. See [fetchQuicEchoContext].
- */
-val quicEchoContext: Any =
-    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux) {
-        project(":socket-quic-quiche").tasks.named("quicEchoJar")
-    } else {
-        fetchQuicEchoContext
-    }
-
 val harnessUp by tasks.registering {
     group = "verification"
     description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
@@ -1060,7 +1049,18 @@ val harnessUp by tasks.registering {
     // `docker compose up` reads it. On a Linux host that is a local build; anywhere
     // else the host's natives are the wrong ones, so it is CI's artefact — see
     // [quicEchoContext].
-    dependsOn(quicEchoContext)
+    // Where the quic-echo image's build context comes from on THIS host: built here when the host's
+    // natives are the container's, fetched from CI otherwise (see [fetchQuicEchoContext]).
+    //
+    // ⚠️ The branch stays INSIDE this configuration block, and the subproject edge stays wrapped in
+    // `tasks.named`, because both are lazy there. Hoisting it to a top-level `val` resolves the
+    // subproject task eagerly, before :socket-quic-quiche has registered it, and the whole build fails
+    // with `Task with name 'quicEchoJar' not found` — on Linux only, so a macOS run cannot see it.
+    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux) {
+        dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
+    } else {
+        dependsOn(fetchQuicEchoContext)
+    }
     // W6 — same treatment for the harness controller image's input artefact
     // (a fat jar of :socket-testsuite's jvmMain HarnessController; see
     // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
