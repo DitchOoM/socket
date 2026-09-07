@@ -188,6 +188,56 @@ class NetworkHarnessScope internal constructor(
     }
 
     /**
+     * Run [block] against a `udp-toxi`-fronted **QUIC** endpoint, impairing the two datagram legs with
+     * [clientToServer] (client→server) and [serverToClient] (server→client).
+     *
+     * The datagram-level twin of [impairedUdp], pointed at `quic-echo` instead of `udp-echo` — which is
+     * all it takes, because the relay is transport-agnostic: it moves datagrams and QUIC is datagrams.
+     * What that buys is the first end-to-end interop cell in this repository where **our client talks to
+     * our server across a lossy path**, rather than either an in-process pipe or a clean loopback.
+     *
+     * ⚠️ Impairing QUIC is not impairing UDP with a different port number. A dropped datagram here is a
+     * lost QUIC packet, so loss is absorbed by loss recovery and shows up as latency rather than as a
+     * failed read, and a schedule harsh enough to break an echo may instead break the *handshake* — a
+     * different failure with a different meaning. Assert on what the connection did, not on individual
+     * datagrams.
+     *
+     * ⚠️ Its own relay name and listen port ([SUITE_QUIC_RELAY], [UdpToxiPorts.quicData]): sharing
+     * [impairedUdp]'s would make the two mutually exclusive, and the two suites would only discover
+     * that as a flake when they happened to overlap.
+     */
+    suspend fun impairedQuic(
+        clientToServer: FaultSchedule,
+        serverToClient: FaultSchedule = FaultSchedule.CLEAN,
+        block: suspend (HarnessEndpoint) -> Unit,
+    ) {
+        val (client, relay) = provisionQuicRelay()
+        client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ClientToServer, clientToServer)
+        client.setSchedule(SUITE_QUIC_RELAY, RelayDirection.ServerToClient, serverToClient)
+        try {
+            block(HarnessEndpoint(relay.host, relay.quicData))
+        } finally {
+            runCatching { client.clearSchedules(SUITE_QUIC_RELAY) }
+        }
+    }
+
+    /**
+     * Upsert the QUIC relay (its own name and data port, schedules cleared) and return the control
+     * client + ports. Upstream is the compose service address ([QUIC_ECHO_UPSTREAM]) — resolvable from
+     * *inside* the harness network, where `udp-toxi` runs.
+     */
+    private suspend fun provisionQuicRelay(): Pair<UdpToxiClient, UdpToxiPorts> {
+        val relay =
+            manifest.udpToxi
+                ?: throw IllegalStateException(
+                    "harness manifest has no 'udp-toxi' scenario — QUIC impairments unavailable on this runtime",
+                )
+        val client = UdpToxiClient(relay.host, relay.api)
+        client.upsertRelay(name = SUITE_QUIC_RELAY, listenPort = relay.quicData, upstream = QUIC_ECHO_UPSTREAM)
+        return client to relay
+    }
+
+    /**
      * Upsert the suite UDP relay (bound to its own data port, schedules cleared) and return the control
      * client + ports. The upstream uses the compose service address ([UDP_ECHO_UPSTREAM]) — resolvable
      * from *inside* the harness network, where `udp-toxi` runs.
@@ -241,5 +291,14 @@ class NetworkHarnessScope internal constructor(
 
         /** Compose-internal address of the UDP echo upstream (udp-toxi resolves it in-network). */
         const val UDP_ECHO_UPSTREAM = "udp-echo:14434"
+
+        /** The QUIC relay's name, distinct from [SUITE_UDP_RELAY] so their schedules never collide. */
+        const val SUITE_QUIC_RELAY = "suite-quic"
+
+        /**
+         * `quic-echo`'s address **inside** the harness network — the relay dials it from there, so this
+         * is the compose service name, never `HARNESS_HOST`.
+         */
+        const val QUIC_ECHO_UPSTREAM = "quic-echo:14433"
     }
 }

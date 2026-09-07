@@ -65,4 +65,10 @@ data class UdpToxiPorts(
     val host: String,
     val api: Int,
     val data: Int,
+    /**
+     * The QUIC relay's data port, distinct from [data] so `impairedQuic` and `impairedUdp` can be
+     * provisioned at once — they are separate named relays on one sidecar, and sharing a listen port
+     * would make them mutually exclusive in a way that only shows up as a flake.
+     */
+    val quicData: Int,
 )

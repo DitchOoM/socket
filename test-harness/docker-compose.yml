@@ -328,9 +328,15 @@ services:
     depends_on:
       udp-echo:
         condition: service_healthy
+      # The QUIC relay's upstream. Ordering only — the relay binds lazily on the first
+      # `impairedQuic` upsert, so a late quic-echo cannot break provisioning, but starting
+      # it first means the very first impaired handshake has somewhere to go.
+      quic-echo:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8475:8475"          # control API (TCP)
       - "127.0.0.1:14435:14435/udp"    # suite relay data plane (UDP)
+      - "127.0.0.1:14436:14436/udp"    # QUIC relay data plane (UDP) — impairedQuic
     healthcheck:
       # HTTP /health probe via bash's /dev/tcp (temurin-noble ships bash but not
       # curl/wget; /bin/sh is dash which lacks /dev/tcp — hence explicit bash -c).

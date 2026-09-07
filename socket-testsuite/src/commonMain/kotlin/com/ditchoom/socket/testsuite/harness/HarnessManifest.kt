@@ -107,8 +107,18 @@ class HarnessManifest internal constructor(
                 HarnessJson.objectField(scenariosJson, "udp-toxi")?.let { obj ->
                     val api = HarnessJson.intField(obj, "api")
                     val data = HarnessJson.intField(obj, "data")
-                    if (api != null && data != null) {
-                        UdpToxiPorts(host = HarnessJson.stringField(obj, "host") ?: defaultHost, api = api, data = data)
+                    // Absent from a controller older than the QUIC relay. Falling back to `data` would
+                    // silently put both relays on one listen port — the failure this port exists to
+                    // prevent — so an old controller reports no udp-toxi at all and the impairment
+                    // suites skip, which is visible.
+                    val quicData = HarnessJson.intField(obj, "quicData")
+                    if (api != null && data != null && quicData != null) {
+                        UdpToxiPorts(
+                            host = HarnessJson.stringField(obj, "host") ?: defaultHost,
+                            api = api,
+                            data = data,
+                            quicData = quicData,
+                        )
                     } else {
                         null
                     }
