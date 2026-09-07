@@ -25,7 +25,7 @@ import kotlin.time.Duration.Companion.seconds
  * `MigrationSimTests` drives this end to end against a real quiche pair, which is the right test for
  * "does the connection re-home" and the wrong one for everything below: each of these is about what the
  * sampler does with particular counter *values*, and the sim can only produce the values a real
- * connection happens to produce. At its 120ms round trip the two halves of [pathHasStoppedAnswering]
+ * connection happens to produce. At its 120ms round trip the two halves of [SilenceThreshold.isMetBy]
  * bind at the same expiry, so neither can be shown to be load-bearing there at all.
  *
  * The path-identity cases are not merely awkward there but unreachable. quiche can move the active path

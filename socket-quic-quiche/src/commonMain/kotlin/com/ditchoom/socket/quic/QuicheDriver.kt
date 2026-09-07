@@ -109,6 +109,16 @@ class QuicheDriver(
      */
     private val random: Random = Random.Default,
     /**
+     * When the active path counts as having stopped answering — the data-plane half of #574's trigger.
+     *
+     * Defaults to [SILENT_PATH_THRESHOLD], the shipped specification; production never passes anything
+     * else. It is a parameter rather than a direct read of the constants because those are `const val`
+     * and therefore inlined at every use site, so the only way to vary them was to edit the source and
+     * rebuild: the sweep that chose them could run on exactly one platform, and the margin around them
+     * could not be asserted anywhere. See [SilenceThreshold].
+     */
+    private val silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
+    /**
      * Opt-in trace capture (RFC_DETERMINISTIC_SIMULATION.md §5, W3). When non-null the driver:
      *  - wraps every path's [UdpChannel] in the recorder's decorator (DGRAM_OUT/DGRAM_IN + typed
      *    IO ERRORs at the single platform-neutral choke point),
@@ -703,7 +713,7 @@ class QuicheDriver(
 
     /**
      * The run of unanswered loss-detection timer expiries currently building on the active path — the
-     * count and the clock that [pathHasStoppedAnswering] needs, held together because they are two
+     * count and the clock that [SilenceThreshold.isMetBy] needs, held together because they are two
      * halves of one fact and a run with only one of them is not a state this driver can be in.
      */
     private sealed interface SilentRun {
@@ -855,7 +865,7 @@ class QuicheDriver(
     /**
      * Re-read the **active** path's counters and publish whether it is still answering — the driver
      * half of #574's data-plane migration trigger. See [PathLiveness] for why a connection needs an
-     * opinion of its own and [pathHasStoppedAnswering] for where the line is drawn.
+     * opinion of its own and [SilenceThreshold.isMetBy] for where the line is drawn.
      *
      * ## The evidence, and why it is already here
      * `quiche_conn_path_stats` carries `total_pto_count`, incremented on every loss-detection timer
@@ -939,7 +949,7 @@ class QuicheDriver(
                 is SilentRun.Building ->
                     // Timed from the first unanswered expiry rather than from the arrival before it,
                     // which under-states the silence by at most one PTO — the conservative direction.
-                    if (pathHasStoppedAnswering(run.expiries, run.since.elapsedNow())) {
+                    if (silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow())) {
                         PathLiveness.Silent
                     } else {
                         PathLiveness.Answering

@@ -188,7 +188,7 @@ private sealed interface MigrationTrigger {
  * reported `net=wifi validated=true`; the migration that eventually followed took 338ms–1954ms. iOS
  * reports the same handoff in ~1s. So the outage was ~12.5s of which QUIC was under two, and the
  * difference was entirely *which* signal the connection was waiting for. [PathLiveness] is the second
- * one, and [pathHasStoppedAnswering] carries the argument for why it cannot re-open #385.
+ * one, and [SilenceThreshold.isMetBy] carries the argument for why it cannot re-open #385.
  *
  * The two sources are `merge`d into a **single sequential collector** rather than given a coroutine
  * each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is

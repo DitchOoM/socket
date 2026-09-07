@@ -52,7 +52,7 @@ internal sealed interface PathLiveness {
     data object Answering : PathLiveness
 
     /**
-     * The active path has met **both** halves of [pathHasStoppedAnswering]: a run of unanswered
+     * The active path has met **both** halves of [SilenceThreshold.isMetBy]: a run of unanswered
      * loss-detection expiries, over a stretch of time long enough that a blip cannot have produced it.
      * Not "some packets went missing": every retransmission the path's own loss recovery scheduled in
      * that window went unanswered too.
@@ -136,16 +136,34 @@ internal sealed interface PathLiveness {
  * effective detection point is the first expiry past both conditions: measured at 3.695s on the sim's
  * 120ms round trip (count-bound) and in the same 3–4s band on a fast path (time-bound). Roughly
  * NWPathMonitor's job done three times slower, and Android's done three times faster.
+ *
+ * Public only because [QuicheDriver]'s constructor is, and a parameter has to name a type its caller
+ * could see. Nothing outside this module constructs one — production passes [SILENT_PATH_THRESHOLD],
+ * which stays internal.
  */
-internal fun pathHasStoppedAnswering(
-    unansweredExpiries: Long,
-    silentFor: Duration,
-): Boolean = unansweredExpiries >= SILENT_PATH_EXPIRY_THRESHOLD && silentFor >= SILENT_PATH_MINIMUM_SILENCE
+class SilenceThreshold(
+    val expiries: Long,
+    val silence: Duration,
+) {
+    init {
+        // A threshold of zero expiries would declare every idle connection dead, and a zero floor is
+        // the count-only rule the table above measures re-opening #385. Neither is a configuration
+        // anyone should be able to express, so neither is representable.
+        require(expiries >= 1) { "a silence threshold needs at least one unanswered expiry, not $expiries" }
+        require(silence > Duration.ZERO) { "a silence threshold needs a non-zero time floor, not $silence" }
+    }
+
+    /** Both halves, in the order the argument above establishes them. Never one without the other. */
+    fun isMetBy(
+        unansweredExpiries: Long,
+        silentFor: Duration,
+    ): Boolean = unansweredExpiries >= expiries && silentFor >= silence
+}
 
 /**
  * Consecutive unanswered loss-detection timer expiries on the active path that, **together with**
  * [SILENT_PATH_MINIMUM_SILENCE], mean it has stopped answering. Chromium's
- * `kNumRetransmissionDelaysForPathDegradingDelay`; see [pathHasStoppedAnswering] for the whole
+ * `kNumRetransmissionDelaysForPathDegradingDelay`; see [SilenceThreshold.isMetBy] for the whole
  * argument, including why neither half of the conjunction can be dropped.
  */
 internal const val SILENT_PATH_EXPIRY_THRESHOLD = 4L
@@ -153,6 +171,18 @@ internal const val SILENT_PATH_EXPIRY_THRESHOLD = 4L
 /**
  * How long the run in [SILENT_PATH_EXPIRY_THRESHOLD] must have been going before it counts. Twice the
  * longest self-healing excursion on record (#385's 1.02s), 5.75× under the lag it replaces (11.5s);
- * see [pathHasStoppedAnswering].
+ * see [SilenceThreshold.isMetBy].
  */
 internal val SILENT_PATH_MINIMUM_SILENCE: Duration = 2.seconds
+
+/**
+ * The shipped threshold — [SILENT_PATH_EXPIRY_THRESHOLD] expiries over [SILENT_PATH_MINIMUM_SILENCE].
+ *
+ * The driver takes a [SilenceThreshold] rather than reading these constants directly so the margin
+ * around them is **testable**: a `const val` is inlined at every use site, so the only way to vary it
+ * was to edit the source and rebuild, which confined the sweep that chose these numbers to one
+ * platform. With the seam, `MigrationSimTestSuite` asserts where the boundary *is* — the guards hold
+ * at 4 and at 3 and break at 2 — on every backend that runs the shared suite, so a change that moves
+ * the boundary fails a test instead of passing quietly.
+ */
+internal val SILENT_PATH_THRESHOLD = SilenceThreshold(SILENT_PATH_EXPIRY_THRESHOLD, SILENT_PATH_MINIMUM_SILENCE)
