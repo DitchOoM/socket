@@ -64,6 +64,11 @@ class HarnessManifest internal constructor(
                 "blackhole",
                 "quic-echo",
                 "udp-echo",
+                // The QUIC impairment relay's data plane. A scenario rather than a field on `udp-toxi`
+                // so that a controller predating it leaves `impairedUdp` — an existing, unrelated
+                // suite — working; scenario absence is the manifest's own primitive for "this runtime
+                // does not have it".
+                "udp-toxi-quic",
             )
 
         /**
