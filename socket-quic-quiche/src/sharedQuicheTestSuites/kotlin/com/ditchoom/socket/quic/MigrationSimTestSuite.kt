@@ -1412,8 +1412,8 @@ abstract class MigrationSimTestSuite {
      *    backend the shared suite runs on, each linking its own `libquiche`, so the boundary is
      *    checked against quiche's real loss-detection accounting rather than one platform's;
      *  - it is self-mutation-proving. A change that moves the boundary — in the predicate, in the
-     *    reset, or in quiche's own `total_pto_count` semantics — fails one of these three tests
-     *    instead of silently leaving 4 with less margin than the number implies.
+     *    reset, or in quiche's own `total_pto_count` semantics — fails this test instead of
+     *    silently leaving the shipped value with less margin than the number implies.
      *
      * ⚠️ The #385 blip guard is NOT the one that discriminates here: it passes at 4, 3, 2 and 1,
      * because a 1.02s excursion is blocked by the time floor, not by the count. Reading a green
@@ -1423,23 +1423,46 @@ abstract class MigrationSimTestSuite {
      * ⚠️ One threshold per test body on purpose: two [withMigrationSim] runs in a single [runTest]
      * leave the first run's driver loops on the test scheduler, and the second run's establishment
      * budget then expires in virtual time before it can connect.
+     *
+     * ⚠️ Only one threshold is exercised here. A test at the shipped value would be a second run of
+     * [separateBlipsDoNotAccumulateIntoAMigration] with identical seed, options and impairment — the
+     * most expensive scenario in this file, re-run per backend for no new information — so the margin
+     * is measured at the step below and nowhere else.
      */
-    @Test
-    fun separateBlipsDoNotAccumulateAtTheShippedThreshold() = assertBlipMarginHolds(SILENT_PATH_EXPIRY_THRESHOLD)
-
-    /** The step of margin below the shipped threshold — see [separateBlipsDoNotAccumulateAtTheShippedThreshold]. */
     @Test
     fun separateBlipsDoNotAccumulateOneExpiryBelowTheShippedThreshold() = assertBlipMarginHolds(SILENT_PATH_EXPIRY_THRESHOLD - 1)
 
     private fun assertBlipMarginHolds(expiries: Long) =
-        runTest(timeout = 10.minutes) {
+        runTest {
             wrapTestBody {
                 val run = blipRoundsUnder(SilenceThreshold(expiries, SILENT_PATH_MINIMUM_SILENCE))
                 assertEquals(
+                    BLIP_ROUNDS,
+                    run.attemptsPerRound.size,
+                    "the run did not complete every round, so a migration count read from it means nothing",
+                )
+                // Per round, not just the last: a migration in round 0 should name round 0, rather than
+                // surfacing two rounds later as an echo that never came back.
+                run.attemptsPerRound.forEachIndexed { round, attempts ->
+                    assertEquals(
+                        0,
+                        attempts,
+                        "at a threshold of $expiries expiries, ${round + 1} separate stall(s) — each under " +
+                            "the threshold on its own — bought a migration, so the shipped " +
+                            "$SILENT_PATH_EXPIRY_THRESHOLD has less margin than these tests assume",
+                    )
+                }
+                // The same two premises the shipped-threshold guard checks. Without them a run that
+                // never went dark, or that opened a probe path without recording an attempt, passes.
+                assertTrue(
+                    run.datagramsSwallowed >= BLIP_MIN_SWALLOWED * BLIP_ROUNDS,
+                    "only ${run.datagramsSwallowed} datagram(s) were swallowed across $BLIP_ROUNDS stalls, " +
+                        "so the data plane was never meaningfully dark and this margin is decorative",
+                )
+                assertEquals(
                     0,
-                    run.attemptsPerRound.lastOrNull() ?: 0,
-                    "at a threshold of $expiries expiries the separate-blip run bought a migration, so the " +
-                        "shipped $SILENT_PATH_EXPIRY_THRESHOLD has less margin than these tests assume",
+                    run.probePathsOpened,
+                    "no migration was recorded but ${run.probePathsOpened} probe path(s) were opened",
                 )
             }
         }
