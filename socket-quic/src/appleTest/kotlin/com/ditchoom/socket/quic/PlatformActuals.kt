@@ -13,7 +13,7 @@ import platform.posix.getenv
 // This file used to carry a second copy of the simulator gate "so behavior is uniform across
 // modules" — an expect + five actuals with no caller anywhere, since these mock-based tests never
 // touch the network. A duplicated gate that nothing calls is a drift hazard with no upside, so it
-// is gone; :socket-testsuite's `quicHarnessSkipReason` is the only one.
+// is gone; :socket-testsuite's `quicHarnessAvailability` is the only one.
 
 internal actual fun isAppleKNative(): Boolean = true
 

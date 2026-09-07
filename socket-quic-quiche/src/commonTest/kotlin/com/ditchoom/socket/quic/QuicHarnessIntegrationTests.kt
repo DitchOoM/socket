@@ -10,7 +10,9 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.harness.QuicHarnessConfig
+import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.skip.recordSkip
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -91,55 +93,23 @@ class QuicHarnessIntegrationTests {
     private val opTimeout = 10.seconds
 
     /**
-     * Run [block] inside a QUIC connection to the harness echo, or skip if
-     * unreachable. Logs `harness OK` / `harness SKIP: <reason>` on
-     * Linux/JVM/JS so CI can audit whether the QUIC client actually ran;
-     * Apple K/N short-circuits and skips (see PR #54).
+     * Run [block] inside a QUIC connection to the harness echo.
+     *
+     * Three outcomes that must never collapse into each other:
+     *  - this lane cannot open a QUIC connection at all ([QuicHarnessAvailability.Unavailable]),
+     *  - the connection could not be established ([HarnessRun.Unreachable]),
+     *  - the body ran and failed ([HarnessRun.BodyFailed]) — a **test failure**, which propagates.
+     *
+     * The shape this replaces wrapped `block()` in the same `catch (t: Throwable)` as the connect,
+     * so a wrong answer from a reachable harness was printed as `harness SKIP:` and the test passed.
+     * Every assertion in this file was unenforceable, and a lane could not tell "the harness is
+     * down" from "the client is broken" (#577).
+     *
+     * Both skip paths go through `recordSkip`, so they land in the skip inventory and a lane that
+     * set `SOCKET_REQUIRE_ALL_TESTS` fails instead of going quietly green. The `harness OK` /
+     * `harness SKIP:` lines are still printed verbatim because the CI interop audit greps them.
      */
-    private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
-        // Apple simulator launched via KGP's default `simctl spawn --standalone`, which runs
-        // outside launchd_sim's network services. Skip intentionally (not a flaky timeout);
-        // macOS K/N always runs it. Fires on Apple only, so the `harness SKIP:` markers the CI
-        // interop audit counts on Linux/JVM/JS (see logHarnessSkip) are unaffected. (Issue #81.)
-        val simulatorSkip = quicHarnessSkipReason()
-        if (simulatorSkip != null) return recordSkip(QuicHarnessIntegrationTests::class, simulatorSkip)
-        try {
-            withQuicConnection(
-                harnessHost,
-                QuicHarnessConfig.quicEchoPort,
-                quicOptions,
-                connOptions,
-                connectTimeout,
-                block,
-            )
-            println("[QuicHarnessIntegrationTests] harness OK")
-        } catch (t: Throwable) {
-            // Harness not up, native lib not built, or connection failed —
-            // skip silently from the test framework's perspective (no
-            // assertion) but emit a grep-able signal so we can audit whether
-            // tests are actually running. On Apple a trust/hostname reject (the
-            // pinning verify_block returning false) surfaces here as a clean
-            // handshake-failed exception, not a K/N crash.
-            logHarnessSkip(t)
-        }
-    }
-
-    /**
-     * Emit the grep-able skip marker for a [withHarness] failure, classified for
-     * the CI interop audit. An [UnsupportedOperationException] means QUIC isn't
-     * implemented on this platform yet (JS/Wasm) — a known, intentional gap, not
-     * a connection regression — so it gets the "platform unsupported" marker the
-     * audit counts as intentional (rendered ℹ️ "platform gap (known)"), mirroring
-     * the Apple-simulator gate. Any other throwable is a real connect/handshake
-     * failure and gets the plain marker (❌ when every test on a lane hits it).
-     */
-    private fun logHarnessSkip(t: Throwable) {
-        if (t is UnsupportedOperationException) {
-            println("[QuicHarnessIntegrationTests] harness SKIP: platform unsupported: ${t.message}")
-        } else {
-            println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
-        }
-    }
+    private suspend fun withHarness(block: suspend QuicScope.() -> Unit) = runAgainstHarness(quicOptions, block)
 
     /** Drop-in replacement for [QuicIntegrationTests.handshake_completesSuccessfully]. */
     @Test
@@ -251,23 +221,108 @@ class QuicHarnessIntegrationTests {
      * real round-trip that validates the Apple datagram surface end-to-end on the
      * macOS host (and, in CI's booted mode, the iOS simulator).
      */
-    private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) {
-        val simulatorSkip = quicHarnessSkipReason()
-        if (simulatorSkip != null) return recordSkip(QuicHarnessIntegrationTests::class, simulatorSkip)
-        try {
-            withQuicConnection(
-                harnessHost,
-                QuicHarnessConfig.quicEchoPort,
-                quicOptions.copy(datagrams = DatagramOptions()),
-                connOptions,
-                connectTimeout,
-                block,
-            )
-            println("[QuicHarnessIntegrationTests] harness OK")
-        } catch (t: Throwable) {
-            logHarnessSkip(t)
+    private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) =
+        runAgainstHarness(quicOptions.copy(datagrams = DatagramOptions()), block)
+
+    /** What one attempt to run a body against the harness did. */
+    private sealed interface HarnessRun {
+        /** The body ran to completion. */
+        data object Completed : HarnessRun
+
+        /**
+         * The body ran and threw. Carries the original [failure] so it can be rethrown unchanged —
+         * the test framework's own report is the right place for it, not a printed marker.
+         */
+        data class BodyFailed(
+            val failure: Throwable,
+        ) : HarnessRun
+
+        /** The connection was never established, so the body never ran. */
+        data class Unreachable(
+            val cause: Throwable,
+        ) : HarnessRun
+    }
+
+    /**
+     * Marks a throwable as having come from the test body rather than from establishing the
+     * connection — the only fact the two `catch` arms cannot otherwise tell apart, since both
+     * arrive out of the same [withQuicConnection] call.
+     *
+     * Private and never observed by a test: it exists for one throw and one catch, and
+     * [HarnessRun.BodyFailed] unwraps it immediately.
+     */
+    private class HarnessBodyFailure(
+        val failure: Throwable,
+    ) : Throwable(failure)
+
+    private suspend fun runAgainstHarness(
+        options: QuicOptions,
+        block: suspend QuicScope.() -> Unit,
+    ) {
+        // Apple simulator launched via KGP's default `simctl spawn --standalone`, which runs
+        // outside launchd_sim's network services. Not a flaky timeout; macOS K/N always runs it.
+        when (val availability = quicHarnessAvailability()) {
+            is QuicHarnessAvailability.Unavailable ->
+                return recordSkip(QuicHarnessIntegrationTests::class, availability.reason)
+            QuicHarnessAvailability.Available -> Unit
+        }
+        when (val run = connectAndRun(options, block)) {
+            HarnessRun.Completed -> println("[QuicHarnessIntegrationTests] harness OK")
+            is HarnessRun.BodyFailed -> throw run.failure
+            is HarnessRun.Unreachable -> {
+                println("[QuicHarnessIntegrationTests] harness SKIP: ${auditMarker(run.cause)}")
+                recordSkip(QuicHarnessIntegrationTests::class, unreachableReason(run.cause))
+            }
         }
     }
+
+    private suspend fun connectAndRun(
+        options: QuicOptions,
+        block: suspend QuicScope.() -> Unit,
+    ): HarnessRun =
+        try {
+            withQuicConnection(harnessHost, QuicHarnessConfig.quicEchoPort, options, connOptions, connectTimeout) {
+                try {
+                    block()
+                } catch (cancellation: CancellationException) {
+                    // Structured concurrency: a cancelled body is neither a failure nor a skip, and
+                    // swallowing it here would leave the coroutine machinery believing it completed.
+                    throw cancellation
+                } catch (t: Throwable) {
+                    throw HarnessBodyFailure(t)
+                }
+            }
+            HarnessRun.Completed
+        } catch (bodyFailure: HarnessBodyFailure) {
+            HarnessRun.BodyFailed(bodyFailure.failure)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (t: Throwable) {
+            HarnessRun.Unreachable(t)
+        }
+
+    /**
+     * Classify a failed establishment. An [UnsupportedOperationException] is QUIC not being
+     * implemented on this platform at all (JS/Wasm) — a known, intentional gap the CI audit renders
+     * as ℹ️ "platform gap (known)" — and everything else is a harness that did not answer.
+     */
+    private fun unreachableReason(cause: Throwable): SkipReason =
+        if (cause is UnsupportedOperationException) {
+            SkipReason.TransportUnavailable("QUIC is not implemented on this platform: ${cause.message}")
+        } else {
+            SkipReason.HarnessUnreachableFromDevice(
+                "$harnessHost:${QuicHarnessConfig.quicEchoPort} did not complete a QUIC handshake from this " +
+                    "test process (in-process loopback, no device hop): ${cause::class.simpleName}: ${cause.message}",
+            )
+        }
+
+    /** The line the CI interop audit greps; derived from the same throwable the skip reason is. */
+    private fun auditMarker(cause: Throwable): String =
+        if (cause is UnsupportedOperationException) {
+            "platform unsupported: ${cause.message}"
+        } else {
+            "${cause::class.simpleName}: ${cause.message}"
+        }
 
     /**
      * Round-trips one unreliable datagram through the echo peer. Loopback with no

@@ -9,7 +9,8 @@ import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.quicHarnessSkipReason
+import com.ditchoom.socket.quic.QuicHarnessAvailability
+import com.ditchoom.socket.quic.quicHarnessAvailability
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.fixtures.TestCerts
 import com.ditchoom.socket.testkit.fixtures.locateTestCerts
@@ -32,7 +33,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Cert paths are probed on the filesystem relative to the test's working directory, mirroring
  * [LinuxWebTransportTest]. macOS K/N runs the full suite; on iOS/tvOS/watchOS `--standalone` simulators
- * [wrapTestBody] reports a typed skip rather than returning green (see [quicHarnessSkipReason]).
+ * [wrapTestBody] reports a typed skip rather than returning green (see [quicHarnessAvailability]).
  *
  * [multiplexed_twoSessionsOverOneConnection_eachRoundTrip] exercises the full HTTP/3 **server** stack on
  * the Apple quiche backend.
@@ -57,7 +58,7 @@ class AppleWebTransportTest : WebTransportTestSuite() {
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
 
     /**
-     * Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]), or if the fixtures are
+     * Skip on `--standalone` Apple simulators (see [quicHarnessAvailability]), or if the fixtures are
      * genuinely missing.
      *
      * ⚠️ The order matters, and this suite is NOT unblocked by #359. Its skips are
@@ -68,8 +69,11 @@ class AppleWebTransportTest : WebTransportTestSuite() {
      * why the three simulator shards still cannot set `SOCKET_REQUIRE_ALL_TESTS=1`.
      */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        val networkSkip = quicHarnessSkipReason()
-        if (networkSkip != null) return recordSkip(AppleWebTransportTest::class, networkSkip)
+        when (val availability = quicHarnessAvailability()) {
+            is QuicHarnessAvailability.Unavailable ->
+                return recordSkip(AppleWebTransportTest::class, availability.reason)
+            QuicHarnessAvailability.Available -> Unit
+        }
         when (certs) {
             is TestCerts.Unavailable -> recordSkip(AppleWebTransportTest::class, certs.asSkipReason())
             is TestCerts.Available -> block()

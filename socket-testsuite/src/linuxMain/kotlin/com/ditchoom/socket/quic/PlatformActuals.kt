@@ -6,4 +6,4 @@ actual fun isAppleKNative(): Boolean = false
 
 actual fun isKotlinNative(): Boolean = true
 
-actual fun quicHarnessSkipReason(): SkipReason? = null
+actual fun quicHarnessAvailability(): QuicHarnessAvailability = QuicHarnessAvailability.Available
