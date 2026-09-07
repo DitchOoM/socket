@@ -883,6 +883,16 @@ abstract class MigrationSimTestSuite {
      * the end because a future change that quietly makes this a link-change test would otherwise still
      * pass.
      *
+     * ⚠️ [ANDROID_MONITOR_LAG] alone is far too loose to be the only bound: it is 3× the detection this
+     * ships, so an entire doubling of the PTO backoff can be lost inside it with the suite green — and
+     * one was, when the handshake-time baseline in `QuicheDriver.updateState` was missing (5 expiries
+     * and 7.635s instead of 4 and 3.695s). So the tighter assertion is in **expiries**, against
+     * [SILENT_PATH_EXPIRY_THRESHOLD] itself: at this rig's 120ms round trip the count is the binding
+     * half of the conjunction, so the trigger must fire on exactly the Nth unanswered expiry and never
+     * the N+1th. That assertion moves if the constant is deliberately retuned, which is correct — the
+     * constant is the specification — and does not move for any change to the *sampler*, which is what
+     * it is guarding.
+     *
      * ⚠️ The probe path carries a real 35ms latency, not the sim's zero default: a CID/path fix that
      * only works at RTT≈0 has shipped here before (#445, #459), and the asymmetry — new path faster
      * than the one being left — is also the #445 overtake window.
@@ -932,13 +942,18 @@ abstract class MigrationSimTestSuite {
                         assertEquals(0, client.attempts.size, "nothing may migrate before the path dies")
 
                         // The walk's own metric is "last echo that completed → `PATH Probing`", so the
-                        // sim measures the same edge rather than a proxy for it.
+                        // sim measures the same edge rather than a proxy for it — and, beside it,
+                        // quiche's own expiry counter at that instant, which is the only bound that
+                        // can see a whole doubling being lost. See the KDoc.
                         val probedAt = CompletableDeferred<Long>()
+                        val expiriesAtProbe = CompletableDeferred<Long>()
                         val probeWatcher =
                             client.launch {
                                 clientDriver.pathState.first { it is QuicPathState.Probing }
                                 probedAt.complete(scheduler.currentTime)
+                                expiriesAtProbe.complete(clientDriver.stats().pathStats?.totalPtoCount ?: -1L)
                             }
+                        val expiriesAtDark = clientDriver.stats().pathStats?.totalPtoCount ?: -1L
 
                         // --- the handoff the platform never reports. The monitor is not touched. ---
                         val primary = pipe.paths().first()
@@ -969,7 +984,20 @@ abstract class MigrationSimTestSuite {
                                 "so the recovery did not come from a migration: ${client.attempts}",
                         )
                         val detectedIn = (probedAt.await() - wentDark).milliseconds
+                        val expiriesSpent = expiriesAtProbe.await() - expiriesAtDark
                         probeWatcher.cancel()
+                        assertEquals(
+                            SILENT_PATH_EXPIRY_THRESHOLD,
+                            expiriesSpent,
+                            "the connection re-homed after $detectedIn, but it spent $expiriesSpent " +
+                                "unanswered loss-detection expiries doing it against a threshold of " +
+                                "$SILENT_PATH_EXPIRY_THRESHOLD. One too many means an expiry was spent " +
+                                "establishing the run's floor instead of counting toward it — the " +
+                                "baseline the handshake is supposed to take — and a threshold of N " +
+                                "silently means N+1. Measured when that baseline was missing: five " +
+                                "expiries and 7.635s instead of four and 3.695s, with the whole suite " +
+                                "green, which is why this is asserted in expiries and not only in time.",
+                        )
                         assertTrue(
                             detectedIn < ANDROID_MONITOR_LAG,
                             "the connection re-homed, but it took $detectedIn to start probing — longer " +
@@ -1001,120 +1029,224 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * **The #385 guard: a path that stops answering and then comes back costs nothing.**
+     * **The #385 guard: a path that stops answering and then comes back costs nothing —
+     * ⚠️ at every RTT, because at one RTT it proved the opposite of what it claimed.**
      *
      * #385 (closed) was the opposite failure to #574 — a 1.02s cellular excursion buying a full path
      * migration — and its closing analysis is the reason this file has no settle window anywhere:
      * *"there is no principled window"*, and a constant chosen to be larger than one recorded blip is
-     * not a policy. A data-plane trigger re-opens that question, so it answers it the only way that
-     * does not re-introduce a constant: the threshold is a run of **consecutive PTOs on the active
-     * path with no packet received on it in between**, and a PTO is the path's own
-     * `smoothed_rtt + 4·rttvar + max_ack_delay`, doubling on each consecutive fire (RFC 9002 §6.2.1).
-     * The window therefore scales with the path rather than with a guess.
+     * not a policy. A data-plane trigger re-opens that question, so it answers it with a conjunction:
+     * a run of unanswered loss-detection expiries **and** a floor on how long the run has been going
+     * ([pathHasStoppedAnswering]).
      *
-     * Measured on this rig at the sim's default 120ms round trip, PTO ≈ 245ms: the fires land at
-     * 245ms, 735ms, 1715ms and 3675ms after the last packet received. [BLIP_385] — the exact
-     * excursion #385 recorded — is over before the third, and the connection has to be dark **3.6×
-     * longer** before anything is attempted.
+     * ## Why this test is a sweep, and what the single-latency version hid
+     * The first version of the trigger was the expiry count alone, and this test ran only at the sim's
+     * default 120ms round trip, where it passed. Sweeping the same scenario over `primaryImpairment`
+     * and changing nothing else:
      *
-     * ## Why this is not vacuous
-     * A blip that never stalled anything would pass this test for free, so two independent facts are
-     * asserted first: the pipe really swallowed datagrams, and the echo really did not complete until
-     * after the heal. Neither is read from the predicate under test — they are the substrate's own
-     * counter and the test scheduler's own clock — which is the difference between a guard and a
-     * decoration. It passes both before and after the #574 trigger exists; that is the point of it.
+     * | one-way latency | 2ms | 10ms | 20ms | 40ms | 60ms | 120ms |
+     * |---|---|---|---|---|---|---|
+     * | migrations bought, count-only | 1 | 1 | 0 | 0 | 0 | 0 |
+     *
+     * (An independent run of the same sweep also lost the 20ms arm — the boundary moves with the
+     * seeded arrival order, which is itself the argument: a threshold whose safety depends on where
+     * that boundary happens to land is not a threshold.)
+     *
+     * RFC 9002 §6.2.1's PTO carries `max_ack_delay` — quiche's 25ms default, which this library never
+     * overrides — so it cannot fall below ~26ms however fast the path is, and fifteen of them bottom
+     * out under half a second. The "scales with the path" claim was true only on the right-hand side of
+     * that table, and #385's trace was an **iPhone on Wi-Fi**: 10–30ms to a CDN edge, squarely on the
+     * left. One latency is why it was invisible, so this now runs [BLIP_LATENCIES].
+     *
+     * ## Why it is not vacuous
+     * A blip that never stalled anything would pass for free, so two independent facts are asserted per
+     * arm: the pipe really swallowed datagrams, and the echo really did not complete until after the
+     * heal. Neither is read from the predicate under test — they are the substrate's own counter and
+     * the test scheduler's own clock — which is the difference between a guard and a decoration.
      */
     @Test
     fun aBlipTheLengthOfThe385ExcursionCostsNoMigration() =
         runTest {
             val scheduler = testScheduler
-            val monitor = SimNetworkMonitor.on(WIFI)
             try {
-                withMigrationSim(
-                    seed = 574_102L,
-                    quicOptions =
-                        migrationSimOptions(
-                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
-                            migration = MigrationPolicy.Automatic,
-                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
-                        ),
-                    probeImpairment = { PathImpairment(latency = 35.milliseconds) },
-                ) {
-                    val serverJob =
-                        client.launch {
-                            val st = server.acceptStream()
-                            while (true) {
-                                val d = st.read(60.seconds)
-                                if (d !is ReadResult.Data) break
-                                st.write(d.buffer, 30.seconds)
-                                d.buffer.freeIfNeeded()
+                for (latency in BLIP_LATENCIES) {
+                    val monitor = SimNetworkMonitor.on(WIFI)
+                    withMigrationSim(
+                        seed = 574_102L,
+                        quicOptions =
+                            migrationSimOptions(
+                                idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                                migration = MigrationPolicy.Automatic,
+                                networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            ),
+                        primaryImpairment = PathImpairment(latency = latency),
+                        probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+                    ) {
+                        val serverJob =
+                            client.launch {
+                                val st = server.acceptStream()
+                                while (true) {
+                                    val d = st.read(60.seconds)
+                                    if (d !is ReadResult.Data) break
+                                    st.write(d.buffer, 30.seconds)
+                                    d.buffer.freeIfNeeded()
+                                }
                             }
+                        try {
+                            val stream = client.openStream()
+
+                            suspend fun write(payload: String) {
+                                val out = BufferFactory.network().allocate(payload.length)
+                                out.writeString(payload, Charset.UTF8)
+                                out.resetForRead()
+                                stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                                out.freeNativeMemory()
+                            }
+
+                            suspend fun read(): String {
+                                val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
+                                if (r !is ReadResult.Data) return "NO_DATA"
+                                return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                            }
+
+                            write("before")
+                            assertEquals("before", read(), "at $latency: the connection must be healthy before the blip")
+                            awaitSpareDcids()
+
+                            // In flight across the blip on purpose: a path with nothing outstanding arms
+                            // no loss timer, so a blip over an idle connection would exercise nothing.
+                            write("blip")
+                            val primary = pipe.paths().first()
+                            val wentDark = scheduler.currentTime
+                            pipe.impair(primary.local, PathImpairment(blackhole = true))
+                            delay(BLIP_385)
+                            pipe.impair(primary.local, PathImpairment(latency = latency))
+                            val echoed = read()
+                            val stalledFor = (scheduler.currentTime - wentDark).milliseconds
+
+                            assertTrue(
+                                primary.stats.blackholed >= BLIP_MIN_SWALLOWED,
+                                "at $latency: only ${primary.stats.blackholed} datagram(s) were swallowed " +
+                                    "during the $BLIP_385 blip, so the data plane was never meaningfully " +
+                                    "dark and this guard would pass against any threshold at all",
+                            )
+                            assertTrue(
+                                stalledFor >= BLIP_385,
+                                "at $latency: the echo came back after $stalledFor, inside the $BLIP_385 " +
+                                    "blip — the impairment is not reaching the path, so nothing is damped",
+                            )
+                            assertEquals("blip", echoed, "at $latency: the connection must survive a blip on its own path")
+
+                            // Long enough that a trigger armed during the blip would have fired by now.
+                            delay(BLIP_SETTLE)
+                            assertEquals(
+                                0,
+                                client.attempts.size,
+                                "at a one-way latency of $latency a $BLIP_385 blip that healed bought " +
+                                    "${client.attempts.size} migration attempt(s): ${client.attempts}. " +
+                                    "That is #385 re-opened — the trigger is reacting to a path that went " +
+                                    "quiet rather than to one that stopped answering. Note the latency: a " +
+                                    "count of loss-detection expiries alone passes this at 40ms and above " +
+                                    "and fails it at 20ms and below, because quiche's 25ms max_ack_delay " +
+                                    "floors the PTO. Probe paths opened: ${clientPaths().size}",
+                            )
+                            assertTrue(
+                                clientPaths().isEmpty(),
+                                "at $latency: no migration was recorded but ${clientPaths().size} probe " +
+                                    "path(s) were opened, so something migrated behind the reactor's back",
+                            )
+                            write("still-here")
+                            assertEquals("still-here", read(), "at $latency: the healed path must still carry traffic")
+                            stream.close()
+                        } finally {
+                            serverJob.cancel()
                         }
-                    try {
-                        val stream = client.openStream()
+                    }
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(MigrationSimTests::class, e)
+            }
+        }
 
-                        suspend fun write(payload: String) {
-                            val out = BufferFactory.network().allocate(payload.length)
-                            out.writeString(payload, Charset.UTF8)
-                            out.resetForRead()
-                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
-                            out.freeNativeMemory()
+    /**
+     * **An ordinarily lossy path is not a silent one** — the other way the expiry count can run ahead
+     * of the truth.
+     *
+     * quiche increments `total_pto_count` on *every* loss-detection timer expiry, the time-threshold
+     * loss branch included, and that branch does not back off (its own header comment — "PTO count
+     * measures the number of loss events and provides a normalized loss metric" — is wrong about this).
+     * So on a path that is losing packets but working, the count can reach the threshold far sooner
+     * than the PTO-backoff arithmetic suggests, and a count-only trigger would migrate a connection
+     * whose only problem is ordinary loss.
+     *
+     * Nothing is blackholed here at all: the path drops [LOSSY_RATES] of its datagrams and carries the
+     * rest, throughout. The echoes completing are the proof that it is working; zero migrations are the
+     * assertion. This is the second reason the time floor in [pathHasStoppedAnswering] is not optional,
+     * and it stacks with the first — see `aBlipTheLengthOfThe385ExcursionCostsNoMigration`.
+     */
+    @Test
+    fun aLossyPathIsNotASilentOne() =
+        runTest {
+            try {
+                for (loss in LOSSY_RATES) {
+                    val monitor = SimNetworkMonitor.on(WIFI)
+                    withMigrationSim(
+                        seed = 574_104L,
+                        quicOptions =
+                            migrationSimOptions(
+                                idleTimeout = 5.minutes,
+                                migration = MigrationPolicy.Automatic,
+                                networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            ),
+                        primaryImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY, loss = loss),
+                        probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+                    ) {
+                        val serverJob =
+                            client.launch {
+                                val st = server.acceptStream()
+                                while (true) {
+                                    val d = st.read(STALL_ECHO_TIMEOUT)
+                                    if (d !is ReadResult.Data) break
+                                    st.write(d.buffer, 30.seconds)
+                                    d.buffer.freeIfNeeded()
+                                }
+                            }
+                        try {
+                            val stream = client.openStream()
+                            val primary = pipe.paths().first()
+                            repeat(LOSSY_ECHOES) { round ->
+                                val out = BufferFactory.network().allocate(8)
+                                out.writeString("lossy$round", Charset.UTF8)
+                                out.resetForRead()
+                                stream.write(out, STALL_ECHO_TIMEOUT)
+                                out.freeNativeMemory()
+                                val r = stream.read(STALL_ECHO_TIMEOUT)
+                                assertTrue(
+                                    r is ReadResult.Data,
+                                    "at ${loss * 100}% loss the connection stopped carrying data at round " +
+                                        "$round, so the zero-migration assertion below would prove nothing",
+                                )
+                                r.buffer.freeIfNeeded()
+                                delay(LOSSY_GAP)
+                            }
+                            assertEquals(
+                                0,
+                                client.attempts.size,
+                                "a working path losing ${loss * 100}% of its datagrams bought " +
+                                    "${client.attempts.size} migration attempt(s): ${client.attempts}. " +
+                                    "quiche counts every loss-detection expiry, not only backed-off " +
+                                    "PTOs, so loss alone can reach the expiry threshold — the elapsed " +
+                                    "floor is what keeps that from being a migration. Dropped: " +
+                                    "${primary.stats.dropped}",
+                            )
+                            assertTrue(
+                                primary.stats.dropped > 0,
+                                "no datagram was dropped at ${loss * 100}% loss, so this arm measured nothing",
+                            )
+                            stream.close()
+                        } finally {
+                            serverJob.cancel()
                         }
-
-                        suspend fun read(): String {
-                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
-                            if (r !is ReadResult.Data) return "NO_DATA"
-                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
-                        }
-
-                        write("before")
-                        assertEquals("before", read(), "the connection must be healthy before the blip")
-                        awaitSpareDcids()
-
-                        // In flight across the blip on purpose: a path with nothing outstanding arms no
-                        // PTO, so a blip over an idle connection would exercise nothing at all.
-                        write("blip")
-                        val primary = pipe.paths().first()
-                        val wentDark = scheduler.currentTime
-                        pipe.impair(primary.local, PathImpairment(blackhole = true))
-                        delay(BLIP_385)
-                        pipe.impair(primary.local, PathImpairment(latency = DEFAULT_PATH_LATENCY))
-                        val echoed = read()
-                        val stalledFor = (scheduler.currentTime - wentDark).milliseconds
-
-                        assertTrue(
-                            primary.stats.blackholed >= BLIP_MIN_SWALLOWED,
-                            "only ${primary.stats.blackholed} datagram(s) were swallowed during the " +
-                                "$BLIP_385 blip, so the data plane was never meaningfully dark and this " +
-                                "guard would pass against any threshold at all",
-                        )
-                        assertTrue(
-                            stalledFor >= BLIP_385,
-                            "the echo came back after $stalledFor, inside the $BLIP_385 blip — the " +
-                                "impairment is not reaching the path, so nothing here is being damped",
-                        )
-                        assertEquals("blip", echoed, "the connection must survive a blip on its own path")
-
-                        // Long enough that a trigger armed during the blip would have fired by now.
-                        delay(BLIP_SETTLE)
-                        assertEquals(
-                            0,
-                            client.attempts.size,
-                            "a $BLIP_385 blip that healed bought ${client.attempts.size} migration " +
-                                "attempt(s): ${client.attempts}. That is #385 re-opened — the trigger is " +
-                                "reacting to a path that went quiet rather than to one that stopped " +
-                                "answering. Probe paths opened: ${clientPaths().size}",
-                        )
-                        assertTrue(
-                            clientPaths().isEmpty(),
-                            "no migration was recorded but ${clientPaths().size} probe path(s) were " +
-                                "opened, so something migrated behind the reactor's back",
-                        )
-                        write("still-here")
-                        assertEquals("still-here", read(), "the healed path must still carry traffic")
-                        stream.close()
-                    } finally {
-                        serverJob.cancel()
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
@@ -1142,7 +1274,7 @@ abstract class MigrationSimTestSuite {
      * because of it.** RFC 9002 §6.2.1 doubles the PTO on each consecutive fire and quiche does not
      * always bring it back down between stalls: measured here, the timer was 246ms entering the first
      * stall, 1.590s entering the second and 2.355s entering the third — so three 1.02s blips contained
-     * *two* PTO fires in total, all of them in round one, and a lifetime tally sailed through. Sizing
+     * *two* expiries in total, all of them in round one, and a lifetime tally sailed through. Sizing
      * the stall by the evidence rather than by the clock is what makes the mutation fail.
      */
     @Test
@@ -1219,8 +1351,8 @@ abstract class MigrationSimTestSuite {
                                 client.attempts.size,
                                 "after ${round + 1} separate stall(s), each of them under the threshold " +
                                     "on its own, the connection migrated: ${client.attempts}. The run of " +
-                                    "unanswered PTOs is not being cleared when the path answers, so it is " +
-                                    "a lifetime tally rather than a consecutive one — every long-lived " +
+                                    "unanswered expiries is not being cleared when the path answers, so it " +
+                                    "is a lifetime tally rather than a consecutive one — every long-lived " +
                                     "connection reaches the threshold eventually, on no evidence at all",
                             )
                         }
@@ -1304,6 +1436,27 @@ abstract class MigrationSimTestSuite {
          * the suite. Generous against a PTO that has already backed off to seconds, and virtual.
          */
         val DARK_ROUND_LIMIT = 60.seconds
+
+        /**
+         * One-way latencies [aBlipTheLengthOfThe385ExcursionCostsNoMigration] sweeps. The low end is
+         * where a count-only threshold re-opens #385 (2/10/20ms bought a migration, 40/60/120ms did
+         * not) and is also where #385's own trace lived — an iPhone on Wi-Fi, 10–30ms to a CDN edge.
+         * Virtual time, so the whole sweep is free.
+         */
+        val BLIP_LATENCIES = listOf(2, 10, 20, 40, 60, 120).map { it.milliseconds }
+
+        /**
+         * Loss rates [aLossyPathIsNotASilentOne] sweeps on a path that is otherwise fine. 30% is well
+         * past anything a usable link does; the point is that the expiry counter runs at all under
+         * loss, not that the link is realistic.
+         */
+        val LOSSY_RATES = listOf(0.10, 0.20, 0.30)
+
+        /** Echoes per loss rate — enough round trips that the expiry counter has time to run ahead. */
+        const val LOSSY_ECHOES = 12
+
+        /** Idle gap between lossy echoes, so the loss timer is armed and expiring rather than idle. */
+        val LOSSY_GAP = 500.milliseconds
 
         /**
          * Read/write bound for [separateBlipsDoNotAccumulateIntoAMigration]. Each stall leaves the echo

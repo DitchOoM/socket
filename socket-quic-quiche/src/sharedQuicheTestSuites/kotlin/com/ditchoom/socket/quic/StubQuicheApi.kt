@@ -678,6 +678,43 @@ internal class StubQuicheApi : QuicheApi {
     ) = 0
 
     /**
+     * Scripted `quiche_conn_path_stats`, one entry per path in quiche's own slab order — index 0 is the
+     * path the connection opened with. Empty (the default) means **no path stats bound at all**, which
+     * is what every existing suite relies on: `connPathStats` answers null and
+     * `QuicheDriver.pathValidationBudget` lands in its RFC 9000 §8.2.4 `kInitialRtt` branch.
+     *
+     * Set it to drive the #574 liveness sampler by hand — the counters it reads are exactly these, so a
+     * run of unanswered loss-detection expiries becomes a list assignment rather than a dead network.
+     */
+    @Volatile var pathStats: List<QuicPathStats> = emptyList()
+
+    override fun connStats(conn: QuicheConn): QuicConnStats? =
+        if (pathStats.isEmpty()) {
+            null
+        } else {
+            QuicConnStats(
+                recv = 0,
+                sent = 0,
+                lost = 0,
+                spuriousLost = 0,
+                retrans = 0,
+                sentBytes = 0,
+                recvBytes = 0,
+                ackedBytes = 0,
+                lostBytes = 0,
+                streamRetransBytes = 0,
+                dgramRecv = 0,
+                dgramSent = 0,
+                pathsCount = pathStats.size.toLong(),
+            )
+        }
+
+    override fun connPathStats(
+        conn: QuicheConn,
+        pathIdx: Long,
+    ): QuicPathStats? = pathStats.getOrNull(pathIdx.toInt())
+
+    /**
      * Spare destination connection ids the peer has issued (`quiche_conn_available_dcids`).
      *
      * **0 by default, on purpose** — that is what real quiche reports until the peer sends

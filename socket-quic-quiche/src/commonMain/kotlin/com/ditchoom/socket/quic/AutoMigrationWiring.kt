@@ -8,6 +8,7 @@ import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -46,24 +47,11 @@ internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor
     }
 
 /**
- * A link the monitor can name, or the absence of one — used both for what the reactor believes it is
- * attached to and for what the monitor is reporting right now.
- *
- * The attachment was a `NetworkId?` local whose KDoc argued the nullable was acceptable: "a local in
- * one function that nothing outside observes". #574 made that argument stop holding. The value is now
- * read by a second trigger that fires with **no link change to name**, and by
- * [awaitRetrySlot] to decide what would count as news — so "the monitor has named no routable link"
- * has to be a state the compiler can see rather than a `null` explained in prose.
- *
- * [NetworkId.Unidentified] is not the sentinel either: that is a link the monitor **saw** and could
- * not name, which the pipeline below already drops, and reusing it would conflate "no link" with
- * "a nameless one".
+ * What the monitor is reporting **right now**, as a snapshot: a routable link it can name, or nothing
+ * it can name. Answers one question and only that one — see [Attachment] for the other.
  */
 private sealed interface ObservedLink {
-    /**
-     * No routable, identified link is being reported. At connect that means the baseline has yet to
-     * arrive; later it means the monitor has stopped naming one (a captive portal, a suspended radio).
-     */
+    /** Nothing routable and identified is being reported (unresolved, a captive portal, a dead radio). */
     data object None : ObservedLink
 
     /** The link, as the monitor named it. */
@@ -87,16 +75,56 @@ private val NetworkMonitor.observedLink: ObservedLink
         }
 
 /**
- * Whether [id] is news to a retry predicated on this link — the predicate [awaitRetrySlot] abandons a
- * backoff on.
+ * What the reactor believes about the link the connection is on.
  *
- * [ObservedLink.None] answers `false` for everything, and only a **data-plane** retry can ask from
- * there (a control-plane one is predicated on the link it is moving onto, which by construction is a
- * [ObservedLink.Link]). That is the right answer for it: the reactor has been told of no link at all,
- * so there is no link it is failing to reach, and each retry already asks the platform for whatever
- * its current default interface is.
+ * This started as a `NetworkId?` local whose KDoc argued the nullable was acceptable: "a local in one
+ * function that nothing outside observes". #574 made that argument stop holding — the value is now read
+ * by a second trigger that fires with no link change to name, and by [awaitRetrySlot] to decide what
+ * would count as news.
+ *
+ * ⚠️ It is a **separate type from [ObservedLink]** even though both have two cases and one of them
+ * holds a [NetworkId], and the first attempt at this fix shared one type between them. That sharing
+ * looked like economy and was an overloaded meaning: `None` had to stand for both "the monitor is
+ * naming nothing at this instant" and "no baseline has ever been taken", which are different facts with
+ * different consequences. [NetworkId.Unidentified] is not the sentinel either — that is a link the
+ * monitor **saw** and could not name, which the pipeline already drops, and reusing it would conflate
+ * "no link" with "a nameless one".
  */
-private fun ObservedLink.isNewsComparedTo(id: NetworkId): Boolean = this is ObservedLink.Link && this.id != id
+private sealed interface Attachment {
+    /**
+     * No routable, identified link has been reported yet, so the first one is the connect-time
+     * baseline rather than a handoff.
+     *
+     * A data-plane migration taken from here leaves it standing, which means the link the monitor
+     * eventually names is still read as the baseline. That is deliberate and it is correct:
+     * [MigrationTarget.FreshLocalEndpoint] binds on whatever the platform's current default interface
+     * is, so the first link the monitor manages to name *is* the one the connection is now on. If it
+     * is not — the device handed off in between — the path we just moved to dies too, and the
+     * data-plane trigger fires again; that backstop is exactly what makes leaving this alone safe.
+     */
+    data object AwaitingBaseline : Attachment
+
+    /** The connection is on the link the monitor named. */
+    data class On(
+        val id: NetworkId,
+    ) : Attachment
+}
+
+/** Whether [id] is the link this reactor already believes it is on. */
+private fun Attachment.isAlready(id: NetworkId): Boolean = this is Attachment.On && this.id == id
+
+/**
+ * Whether [id] is news to a retry predicated on this attachment — one of the two things
+ * [awaitRetrySlot] abandons a backoff on.
+ *
+ * [Attachment.AwaitingBaseline] answers `false` for everything, and only a **data-plane** retry can ask
+ * from there (a control-plane one is predicated on the link it is moving onto, which by construction is
+ * an [Attachment.On]). That is the right answer for it: the reactor has been told of no link at all, so
+ * there is no link it is failing to reach, and each retry already asks the platform for whatever its
+ * current default interface is. What ends *that* retry is the path answering again, which is the other
+ * clause.
+ */
+private fun Attachment.isNewsComparedTo(id: NetworkId): Boolean = this is Attachment.On && this.id != id
 
 /**
  * Why the reactor woke. Two sources, one sequential collector — see [wireAutoMigration]'s "two
@@ -141,7 +169,7 @@ private sealed interface MigrationTrigger {
  * **`distinctUntilChanged()`** — the dedupe that stops Android's ~1s `Pending`→`Confirmed` window on one
  * Wi-Fi network from reading as a handoff (RFC_NETWORK_REACHABILITY §5, `isTransient`).
  *
- * **[ObservedLink], not `drop(1)`** — the first identified link is the connect-time baseline, same
+ * **[Attachment], not `drop(1)`** — the first identified link is the connect-time baseline, same
  * contract as before, but *recorded* rather than discarded. That record is what makes the two decisions
  * below possible: a flap that returns to the link we are already on is free, and a link we failed to
  * migrate onto is not mistaken for the one we live on.
@@ -160,7 +188,7 @@ private sealed interface MigrationTrigger {
  * reported `net=wifi validated=true`; the migration that eventually followed took 338ms–1954ms. iOS
  * reports the same handoff in ~1s. So the outage was ~12.5s of which QUIC was under two, and the
  * difference was entirely *which* signal the connection was waiting for. [PathLiveness] is the second
- * one, and [SILENT_PATH_PTO_THRESHOLD] carries the argument for why it cannot re-open #385.
+ * one, and [pathHasStoppedAnswering] carries the argument for why it cannot re-open #385.
  *
  * The two sources are `merge`d into a **single sequential collector** rather than given a coroutine
  * each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is
@@ -173,6 +201,14 @@ private sealed interface MigrationTrigger {
  * "the path was dark a second ago" from becoming a second, pointless move. (The driver publishing one
  * transition per episode, and publishing [PathLiveness.Answering] synchronously with the switch, is the
  * other half of that; neither alone is enough.)
+ *
+ * ⚠️ **The retry ladder re-reads it too, and has to.** [PathLiveness] is an edge on a level condition:
+ * a dead path emits `Silent` once and then produces nothing, because the thing that would re-arm the
+ * edge is a datagram arriving on it. So a ladder that consulted only the monitor could neither notice
+ * the path recovering — measured, it then probed once a minute forever on a healthy connection — nor
+ * be re-entered on a path that is still dark after the ladder gave up. Both are #574 arriving through
+ * its own fix, and both are closed in [awaitRetrySlot], where the flow is one of the two things a
+ * data-plane backoff is abandoned on.
  *
  * ## Why a failed attempt cannot wait for the next network event (#453)
  *
@@ -216,8 +252,9 @@ private sealed interface MigrationTrigger {
  * period on top could only refuse a genuine handoff arriving inside the window — leaving the
  * connection on a dead path for the remainder of it, which is precisely the outage active migration
  * exists to prevent. The retry backoff is the opposite of such a window and must stay that way: it is
- * abandoned the instant a different routable link appears ([awaitRetrySlot]), because that link is
- * new information and the collector is about to be handed it.
+ * abandoned the instant new information arrives ([awaitRetrySlot]) — a different routable link, which
+ * the collector is about to be handed, or, for a data-plane retry, the path it was predicated on
+ * answering again.
  *
  * No-op unless [QuicOptions.migration] is [MigrationPolicy.Automatic], and a genuine no-op — nothing is
  * even launched — for [NetworkMonitor.AlwaysAvailable], whose network identity never changes. Note that
@@ -239,7 +276,7 @@ internal fun wireAutoMigration(
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
     connection.launch {
-        var attachedTo: ObservedLink = ObservedLink.None
+        var attachedTo: Attachment = Attachment.AwaitingBaseline
         merge(
             monitor.state
                 .filter { it.canRouteOffLink }
@@ -258,15 +295,20 @@ internal fun wireAutoMigration(
                 when (trigger) {
                     MigrationTrigger.LinkChanged -> {
                         // Re-read, never the emission's own payload: see [MigrationTrigger].
-                        val now = monitor.observedLink
-                        if (attachedTo == ObservedLink.None) {
-                            // The first identified link is the connect-time baseline, not a change.
-                            attachedTo = now
-                            return@collect
+                        when (val now = monitor.observedLink) {
+                            // Nothing routable to move onto any more — the link that woke us has been
+                            // withdrawn while we were busy. Not a handoff, and not a baseline either.
+                            ObservedLink.None -> return@collect
+                            is ObservedLink.Link -> {
+                                if (attachedTo == Attachment.AwaitingBaseline) {
+                                    // The first identified link is the connect-time baseline.
+                                    attachedTo = Attachment.On(now.id)
+                                    return@collect
+                                }
+                                if (attachedTo.isAlready(now.id)) return@collect // a flap that came home
+                                Attachment.On(now.id)
+                            }
                         }
-                        // Nothing routable to move onto any more, or a flap that came home: both free.
-                        if (now == ObservedLink.None || now == attachedTo) return@collect
-                        now
                     }
 
                     MigrationTrigger.PathStoppedAnswering -> {
@@ -293,7 +335,8 @@ internal fun wireAutoMigration(
                     // this time" is worth saying again is the leaf's own answer, never a default.
                     is MigrationResult.Unmoved.Failed -> {
                         if (!result.retryableWithoutNewInformation()) return@collect
-                        if (!awaitRetrySlot(monitor, attachOnSuccess, backoffBeforeAttempt(attempt))) return@collect
+                        val slot = awaitRetrySlot(trigger, monitor, pathLiveness, attachOnSuccess, backoffBeforeAttempt(attempt))
+                        if (!slot) return@collect
                         attempt++
                     }
                 }
@@ -355,30 +398,56 @@ private const val BACKOFF_SHIFT_CAP = 20
  * was already told it is on.
  *
  * Returns `true` when the backoff elapsed with no better idea available — retry. Returns `false` when
- * a *different* routable, identified link appeared first, which makes this retry stale: that link is
- * new information, the collector is about to be handed it, and it should be migrated onto instead of
- * whatever we were failing to reach. Collecting [NetworkMonitor.state] a second time here is free (it
- * is a `StateFlow`) and is what keeps the backoff from becoming the quiet period this reactor
- * deliberately does not have — a genuine handoff arriving mid-backoff is acted on at once rather than
- * waiting it out.
+ * something arrived first that makes this retry stale, and there are two such things, one per trigger.
  *
- * [ObservedLink.None] — only a data-plane retry can be predicated on it — abandons nothing, for the
- * reason [isNewsComparedTo] gives: there is no link being failed to reach, so no link report is a
- * better idea than the retry already in hand.
+ * **A different routable, identified link (both triggers).** That link is new information, the
+ * collector is about to be handed it, and it should be migrated onto instead of whatever we were
+ * failing to reach. Collecting [NetworkMonitor.state] a second time here is free (it is a `StateFlow`)
+ * and is what keeps the backoff from becoming the quiet period this reactor deliberately does not
+ * have — a genuine handoff arriving mid-backoff is acted on at once rather than waiting it out. The
+ * filters mirror the main pipeline exactly: a link the monitor cannot name, or says traffic will not
+ * cross, is not a reason to abandon the retry.
  *
- * The filters mirror the main pipeline exactly: a link the monitor cannot name, or says traffic will
- * not cross, is not a reason to abandon the retry.
+ * **The path answering again (data-plane trigger only), and this one is not optional.** [PathLiveness]
+ * is an edge on a level condition, so once the ladder is running nothing further will be emitted; a
+ * ladder that consulted only the monitor could not see the path recover at all. Measured on the first
+ * cut of #574, with `PathNotValidated` and the path healing immediately after attempt 1: attempts
+ * `1 → 5 → 9 → 14` at 5s, 65s and 365s with `pathLiveness` reading `Answering` throughout, and no
+ * termination — one probe, one socket and one spare connection id a minute, for the life of a
+ * perfectly healthy connection. The realistic route in is short: a 20ms Wi-Fi blip goes `Silent`, the
+ * probe's `PATH_CHALLENGE` is eaten by a middlebox, and the path is back 200ms later.
+ *
+ * It is also what closes the dual of that defect. Every exit from the ladder other than
+ * [MigrationResult.Succeeded] leaves a reactor that has already consumed its one `Silent` edge, so
+ * without a clause that can end a *data-plane* ladder on the path's own recovery, the reactor either
+ * spins forever (above) or — for the exits that return — sits idle on a path still reporting `Silent`
+ * with no trigger left to raise. Both are #574 reached through its own fix.
  */
 private suspend fun awaitRetrySlot(
+    trigger: MigrationTrigger,
     monitor: NetworkMonitor,
-    attempting: ObservedLink,
+    pathLiveness: StateFlow<PathLiveness>,
+    attempting: Attachment,
     backoff: Duration,
 ): Boolean =
     withTimeoutOrNull(backoff) {
-        monitor.state
-            .filter { it.canRouteOffLink }
-            .map { it.networkId }
-            .first { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it) }
+        merge(
+            monitor.state
+                .filter { it.canRouteOffLink }
+                .map { it.networkId }
+                .filter { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it) }
+                .map { },
+            when (trigger) {
+                // A control-plane retry is trying to reach a link the platform says we have moved to,
+                // and the *old* path coming good says nothing about whether it can. #453's contract —
+                // keep asking, on a decaying cadence, for as long as the connection lives — is
+                // unchanged for it.
+                MigrationTrigger.LinkChanged -> emptyFlow()
+                // A data-plane retry exists only because the path had stopped answering. The moment it
+                // answers again the premise is gone.
+                MigrationTrigger.PathStoppedAnswering -> pathLiveness.filter { it !is PathLiveness.Silent }.map { }
+            },
+        ).first()
     } == null
 
 /**
