@@ -975,16 +975,92 @@ val generateHarnessCerts by tasks.registering {
     }
 }
 
+/**
+ * Fetch the quic-echo image's build context from the last green `main` run instead of building it.
+ *
+ * `quicEchoJar` stages **the host's** quiche natives (`prepareQuicheNativeLib` is documented as "for
+ * the current host OS/arch"), and the harness container is Linux. On a Linux host those coincide; on
+ * any other host the jar carries macOS or Windows natives and the container dies on first load with
+ * `META-INF/native/linux-arm64/libquiche.so (not on classpath)`. That is why the local harness has
+ * never come up on a Mac — not a platform limitation, a build-input that follows the builder.
+ *
+ * CI already publishes exactly the right artefact (`quic-echo-docker-context`, uploaded by the `link`
+ * job and consumed by the integration lanes), carrying **both** linux-arm64 and linux-x64 natives, so
+ * this consumes it rather than teaching a second builder how to cross-compile.
+ *
+ * ⚠️ **This is main's server, not your working tree's.** For client-side work that is the better peer
+ * — a known-good one — but a change to `QuicEchoTestServer` itself will not be reflected here. Build
+ * on a Linux host for that.
+ *
+ * Tolerant by design: no `gh`, no network or no green run leaves the context untouched, `docker compose
+ * up` serves whatever is already there (or fails), and the suites skip through `isHarnessAvailable()`
+ * exactly as they do today.
+ */
+val fetchQuicEchoContext by tasks.registering {
+    group = "verification"
+    description = "Download the quic-echo Docker context (Linux natives) from the last green main run."
+    doLast {
+        val dest = rootDir.resolve("test-harness/quic-echo")
+        val runId =
+            runCatching {
+                val p =
+                    ProcessBuilder(
+                        "gh", "run", "list", "--workflow=merged.yaml", "--branch", "main",
+                        "--status", "success", "--limit", "1", "--json", "databaseId",
+                        "--jq", ".[0].databaseId",
+                    ).directory(rootDir).redirectErrorStream(true).start()
+                val out = p.inputStream.bufferedReader().readText().trim()
+                if (p.waitFor() == 0 && out.isNotEmpty()) out else null
+            }.getOrNull()
+        if (runId == null) {
+            logger.lifecycle(
+                "harness: could not resolve a green main run (no gh, no network, or no green run) — " +
+                    "leaving test-harness/quic-echo as it is; harness suites will skip if it cannot serve",
+            )
+            return@doLast
+        }
+        // Staged through a temp dir because `gh run download` refuses a destination that already
+        // holds the files, and this one always does — the context is checked in apart from the jar.
+        val staging = layout.buildDirectory.dir("quic-echo-context").get().asFile
+        staging.deleteRecursively()
+        staging.mkdirs()
+        val rc =
+            ProcessBuilder("gh", "run", "download", runId, "-n", "quic-echo-docker-context", "-D", staging.path)
+                .directory(rootDir).inheritIO().start().waitFor()
+        val fetchedJar = staging.resolve("quic-echo.jar")
+        if (rc != 0 || !fetchedJar.isFile) {
+            logger.lifecycle(
+                "harness: could not fetch the quic-echo context from run $runId (gh exit $rc) — " +
+                    "leaving the existing one; harness suites will skip if it cannot serve",
+            )
+            return@doLast
+        }
+        fetchedJar.copyTo(dest.resolve("quic-echo.jar"), overwrite = true)
+        logger.lifecycle("harness: quic-echo context fetched from main run $runId (Linux natives)")
+    }
+}
+
+/**
+ * Where the quic-echo image's build context comes from on this host — built here when the host's
+ * natives are the container's, fetched from CI otherwise. See [fetchQuicEchoContext].
+ */
+val quicEchoContext: Any =
+    if (org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux) {
+        project(":socket-quic-quiche").tasks.named("quicEchoJar")
+    } else {
+        fetchQuicEchoContext
+    }
+
 val harnessUp by tasks.registering {
     group = "verification"
     description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
     dependsOn(generateHarnessCerts)
     // Phase 4 — make sure the quic-echo image's input artefact (a fat jar of
-    // QuicEchoTestServer + its test deps + the host's quiche native libs) is
-    // current before `docker compose up` reads it. Subproject task is wrapped
-    // in `tasks.named` so the dependency edge is resolved lazily — keeps the
-    // root build script orderable against the subproject's afterEvaluate.
-    dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
+    // QuicEchoTestServer + its test deps + Linux quiche natives) is current before
+    // `docker compose up` reads it. On a Linux host that is a local build; anywhere
+    // else the host's natives are the wrong ones, so it is CI's artefact — see
+    // [quicEchoContext].
+    dependsOn(quicEchoContext)
     // W6 — same treatment for the harness controller image's input artefact
     // (a fat jar of :socket-testsuite's jvmMain HarnessController; see
     // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
