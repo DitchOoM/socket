@@ -118,6 +118,59 @@ class PathLivenessTests {
     }
 
     /**
+     * **The verdict lands at the floor, not at the next expiry** (#574's remaining quantisation).
+     *
+     * Both halves of the threshold can be satisfied long before anything wakes the driver to notice.
+     * Expiries back off exponentially — on the sim's 120ms round trip they land at 245 / 735 / 1715 /
+     * 3675ms — so a verdict evaluated *only* at expiry wakes is pinned to whichever expiry happens to
+     * fall past both conditions. Measured on the real stack at a 20ms one-way path: **3.062s without
+     * this wake, 2.099s with it**, against a 2s floor. The floor did not move; the waiting did.
+     *
+     * Here the count is driven past the threshold at a fast tick, and quiche's own timer is then pushed
+     * far out so that nothing but the driver's floor deadline can produce the verdict. If the wake is
+     * removed, [PathLiveness.Silent] arrives at the 30s quiche wake instead of at the floor, and the
+     * time assertion — not the state assertion — is what fails.
+     */
+    @Test
+    fun theVerdictLandsAtTheFloorNotAtTheNextExpiry() =
+        runTest {
+            val f = Fixture(this, tick)
+            startObserved(f)
+
+            f.read(this, expiries = 0)
+            var expiries = 0L
+            repeat(SILENT_PATH_EXPIRY_THRESHOLD.toInt()) {
+                expiries++
+                f.read(this, expiries = expiries)
+            }
+            val countMetAt = currentTime.milliseconds
+            assertEquals(
+                PathLiveness.Answering,
+                f.driver.pathLiveness.value,
+                "the count was met at $countMetAt, well short of the $SILENT_PATH_MINIMUM_SILENCE floor, " +
+                    "and the path was already called silent — the floor is not being applied",
+            )
+
+            // Quiche will not ask to be woken again for half a minute. Anything that publishes a
+            // verdict before then can only be the driver's own floor deadline.
+            f.stub.connTimeout = 30.seconds
+            advanceTimeBy(SILENT_PATH_MINIMUM_SILENCE)
+            runCurrent()
+
+            assertEquals(
+                PathLiveness.Silent,
+                f.driver.pathLiveness.value,
+                "the run met both halves but nothing published the verdict, so detection is still pinned " +
+                    "to quiche's next timer — which is #574's quantisation, not its trigger",
+            )
+            assertTrue(
+                currentTime.milliseconds < countMetAt + SILENT_PATH_MINIMUM_SILENCE + tick * 2,
+                "the verdict landed at ${currentTime.milliseconds}, past the floor deadline itself — it is " +
+                    "still waiting for an expiry wake rather than for the floor",
+            )
+        }
+
+    /**
      * **Both halves of the conjunction, separately.**
      *
      * The expiry count is driven past [SILENT_PATH_EXPIRY_THRESHOLD] inside a few hundred milliseconds —
