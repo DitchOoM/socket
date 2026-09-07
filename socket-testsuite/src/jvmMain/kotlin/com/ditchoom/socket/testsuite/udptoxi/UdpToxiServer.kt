@@ -138,6 +138,10 @@ object UdpToxiServer {
             val existing = relays[name]
             if (existing != null) {
                 existing.clearSchedules()
+                // …and the tally with them. A relay outlives the block that provisioned it, so counts
+                // that survived an upsert would be the PREVIOUS block's: measured, the CLEAN control
+                // ran after two lossy tests and read their 6 and 5 drops as its own. Stats are
+                // per-provisioning because that is the unit every assertion about them is about.
             } else {
                 relays[name] = Relay.open(name, listen, upstream, relayScope)
             }
@@ -344,6 +348,7 @@ private class Relay private constructor(
     }
 
     fun clearSchedules() {
+        counts.clear()
         clientToServer = ImpairmentEngine(FaultSchedule.CLEAN)
         serverToClient = ImpairmentEngine(FaultSchedule.CLEAN)
     }
