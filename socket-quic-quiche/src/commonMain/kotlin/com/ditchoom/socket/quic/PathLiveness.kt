@@ -148,9 +148,10 @@ class SilenceThreshold(
     init {
         // A threshold of zero expiries would declare every idle connection dead, and a zero floor is
         // the count-only rule the table above measures re-opening #385. Neither is a configuration
-        // anyone should be able to express, so neither is representable.
-        require(expiries >= 1) { "a silence threshold needs at least one unanswered expiry, not $expiries" }
-        require(silence > Duration.ZERO) { "a silence threshold needs a non-zero time floor, not $silence" }
+        // anyone should be able to express, so neither is constructible — and the refusal names which
+        // half was wrong as a value, not as a sentence.
+        if (expiries < 1) throw InvalidSilenceThreshold(InvalidSilenceThreshold.Problem.NotEnoughExpiries, expiries.toString())
+        if (silence <= Duration.ZERO) throw InvalidSilenceThreshold(InvalidSilenceThreshold.Problem.NoTimeFloor, silence.toString())
     }
 
     /** Both halves, in the order the argument above establishes them. Never one without the other. */
@@ -186,3 +187,24 @@ internal val SILENT_PATH_MINIMUM_SILENCE: Duration = 2.seconds
  * the boundary fails a test instead of passing quietly.
  */
 internal val SILENT_PATH_THRESHOLD = SilenceThreshold(SILENT_PATH_EXPIRY_THRESHOLD, SILENT_PATH_MINIMUM_SILENCE)
+
+/**
+ * A [SilenceThreshold] that cannot mean anything, and which half of it was wrong.
+ *
+ * The [problem] is the payload; [rejected] is the offending value rendered for a human reading a stack
+ * trace, never the thing a caller is expected to parse. An `IllegalArgumentException` carrying only a
+ * sentence would make "which half" un-inspectable, which is the shape this repository does not want
+ * even for a construction precondition.
+ */
+internal class InvalidSilenceThreshold(
+    val problem: Problem,
+    val rejected: String,
+) : IllegalArgumentException("$problem: $rejected") {
+    internal enum class Problem {
+        /** Fewer than one unanswered expiry — every idle connection would read as dead. */
+        NotEnoughExpiries,
+
+        /** A zero or negative time floor — the count-only rule that re-opens #385. */
+        NoTimeFloor,
+    }
+}

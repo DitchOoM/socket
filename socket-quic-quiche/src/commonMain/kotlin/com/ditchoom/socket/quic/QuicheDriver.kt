@@ -931,23 +931,31 @@ class QuicheDriver(
 
     /** Every deadline the driver currently has, reduced once. See [Wake]. */
     private fun nextWake(
-        connTimeout: Duration?,
-        keepAliveRemaining: Duration?,
-        probeRemaining: Duration?,
+        connTimeout: Deadline,
+        keepAlive: Deadline,
+        probe: Deadline,
     ): NextWake {
+        fun candidate(
+            deadline: Deadline,
+            wake: (Duration) -> Wake,
+        ): Wake? =
+            when (deadline) {
+                Deadline.NotArmed -> null
+                is Deadline.Due -> wake(deadline.remaining)
+            }
+
         val soonest =
             listOfNotNull(
-                probeRemaining?.let { Wake.ProbeAbandon(it) },
-                keepAliveRemaining?.let { Wake.KeepAlive(it) },
-                connTimeout?.let { Wake.QuicheTimeout(it) },
-                floorRemaining()?.let { Wake.SilenceFloor(it) },
+                candidate(probe, Wake::ProbeAbandon),
+                candidate(keepAlive, Wake::KeepAlive),
+                candidate(connTimeout, Wake::QuicheTimeout),
+                candidate(floorWake(), Wake::SilenceFloor),
             ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
         return NextWake.Armed(soonest)
     }
 
     /**
-     * How long until the active path's silence meets the threshold's time floor, or `null` when no floor
-     * deadline is pending — the shape [nextWake]'s `listOfNotNull` consumes.
+     * How long until the active path's silence meets the threshold's time floor, as a [FloorWake].
      *
      * Offered only while a run is [SilentRun.Building] past the expiry count: before that only an expiry
      * — quiche's own timer — can change the verdict, and after [SilentRun.Declared] there is nothing left
@@ -959,12 +967,37 @@ class QuicheDriver(
      * removes that gap without moving the floor, which is the constant #385 is closed by. Measured end to
      * end on a 20ms one-way path: 3.062s without it, 2.099s with.
      */
-    private fun floorRemaining(): Duration? {
+    private fun floorWake(): Deadline {
         val progress = activePathProgress
-        if (progress !is ActivePathProgress.Read) return null
+        if (progress !is ActivePathProgress.Read) return Deadline.NotArmed
         val run = progress.run
-        if (run !is SilentRun.Building || run.expiries < silenceThreshold.expiries) return null
-        return (silenceThreshold.silence - run.since.elapsedNow()).coerceAtLeast(Duration.ZERO)
+        if (run !is SilentRun.Building || run.expiries < silenceThreshold.expiries) return Deadline.NotArmed
+        return Deadline.Due((silenceThreshold.silence - run.since.elapsedNow()).coerceAtLeast(Duration.ZERO))
+    }
+
+    /**
+     * Whether one of the driver's timers is armed, and how far off it is.
+     *
+     * ⚠️ Consumed by an exhaustive `when` in [nextWake] and **never converted back to a `Duration?`**.
+     * An earlier cut of this branch did exactly that — a sealed type produced and immediately flattened
+     * into a nullable — which is the sentinel the standing rule forbids, and it is what let the wait and
+     * the arm be derived by two different rules and disagree.
+     *
+     * [from] is the **single** place a nullable duration becomes a deadline, and it exists because
+     * `quiche_conn_timeout_as_millis` genuinely has no value to report when no timer is set. Converting
+     * once, at that boundary, is the alternative to threading `Duration?` through every signature that
+     * touches a timer.
+     */
+    private sealed interface Deadline {
+        data object NotArmed : Deadline
+
+        class Due(
+            val remaining: Duration,
+        ) : Deadline
+
+        companion object {
+            fun from(remaining: Duration?): Deadline = if (remaining == null) NotArmed else Due(remaining)
+        }
     }
 
     /**
@@ -1209,7 +1242,12 @@ class QuicheDriver(
                 // always did.
                 val probeRemaining = pendingMigration?.validationRemaining()
                 // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
-                val armed = nextWake(connTimeout, keepAliveRemaining, probeRemaining)
+                val armed =
+                    nextWake(
+                        connTimeout = Deadline.from(connTimeout),
+                        keepAlive = Deadline.from(keepAliveRemaining),
+                        probe = Deadline.from(probeRemaining),
+                    )
                 val wait =
                     when (armed) {
                         NextWake.NoTimer -> null
