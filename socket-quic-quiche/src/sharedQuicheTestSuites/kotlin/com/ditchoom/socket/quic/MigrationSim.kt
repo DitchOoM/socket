@@ -708,10 +708,16 @@ internal suspend fun <R> withMigrationSim(
                     serverDriver.state.first { it !is QuicConnectionState.Handshaking }
                 }
                 // The production entry point, called exactly where the three `QuicheEngine.connect()`
-                // actuals call it: after the handshake, on the resolved monitor, once per connection. A
-                // MigrationPolicy other than Automatic makes this a no-op inside the reactor itself, so
-                // the manual scenarios below are unaffected and the branch under test is the shipped one.
-                wireAutoMigration(quicOptions, client, resolveNetworkMonitor(quicOptions.networkMonitor))
+                // actuals call it: after the handshake, on the resolved monitor and the client driver's own
+                // `pathLiveness` (#574's data-plane trigger), once per connection. A MigrationPolicy other
+                // than Automatic makes this a no-op inside the reactor itself, so the manual scenarios below
+                // are unaffected and the branch under test is the shipped one.
+                wireAutoMigration(
+                    quicOptions,
+                    client,
+                    resolveNetworkMonitor(quicOptions.networkMonitor),
+                    clientDriver.pathLiveness,
+                )
                 MigrationSimScope(
                     client,
                     server,

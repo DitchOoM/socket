@@ -685,6 +685,76 @@ class QuicheDriver(
     private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
     val pathState: StateFlow<QuicPathState> = _pathState
 
+    // Spelled out rather than underscore-prefixed: ktlint reserves that prefix for a backing field
+    // whose counterpart is public, and this one's is `internal` — see [pathLiveness].
+    private val mutablePathLiveness = MutableStateFlow<PathLiveness>(PathLiveness.Answering)
+
+    /**
+     * Whether the path this connection lives on is still answering — the data-plane migration trigger
+     * (#574), read by [wireAutoMigration] beside the platform's reachability signal. See [PathLiveness]
+     * for what the two values mean and [SILENT_PATH_PTO_THRESHOLD] for what separates them.
+     *
+     * Published from [sampleActivePathLiveness] on the driver coroutine, so every value it carries was
+     * read from quiche under the single-threaded contract. Permanently [PathLiveness.Answering] on a
+     * driver that cannot migrate anyway (a server connection, a policy-forbidden client): the sample is
+     * not taken there, because nothing could act on it.
+     */
+    internal val pathLiveness: StateFlow<PathLiveness> = mutablePathLiveness
+
+    /**
+     * The run of unanswered loss-detection timer expiries currently building on the active path — the
+     * count and the clock that [pathHasStoppedAnswering] needs, held together because they are two
+     * halves of one fact and a run with only one of them is not a state this driver can be in.
+     */
+    private sealed interface SilentRun {
+        /** The path has answered since its last expiry: no run. */
+        data object None : SilentRun
+
+        /** [expiries] consecutive expiries have gone unanswered, the first of them at [since]. */
+        class Building(
+            val expiries: Long,
+            val since: TimeMark,
+        ) : SilentRun
+    }
+
+    /**
+     * What the last read of the **active** path's counters saw, for [sampleActivePathLiveness].
+     *
+     * Sealed rather than a nullable-or-sentinel triple: "no read yet" is a real state with its own
+     * behaviour — the next read is a baseline and can never be evidence — and it is reached whenever
+     * the counters stop being comparable, which is more often than a migration.
+     */
+    private sealed interface ActivePathProgress {
+        /** Nothing comparable has been read from the path the connection is now on. */
+        data object Unread : ActivePathProgress
+
+        /**
+         * quiche's cumulative expiry count as of the last read, the [pathIndex] it was read from, and
+         * the run built out of it.
+         *
+         * ⚠️ **[pathIndex] is part of the state, not a diagnostic.** `total_pto_count` is per path, so a
+         * difference taken across two of them is not arithmetic that means anything — and the active
+         * path can change without [drainPathEvents]'s `Migrated` arm running at all: quiche's
+         * `on_failed_validation()` clears the active flag and the next `on_timeout` picks a replacement
+         * through `find_candidate_path()` + `set_active_path()`, entirely inside libquiche. A read from
+         * a different index than the last one is therefore a baseline, never a delta.
+         *
+         * There is deliberately no `recv` counter here. Inferring "a packet arrived" from a difference
+         * between two reads cannot order the two events inside the interval, and that is not academic:
+         * the interval between the connect-time baseline and the first expiry contains *both* an expiry
+         * and the traffic that preceded it, so a counter comparison reads it as progress and cancels an
+         * expiry that was never answered. [activePathAnswered] observes the arrival where it happens
+         * instead.
+         */
+        class Read(
+            val pathIndex: Long,
+            val totalPtoCount: Long,
+            val run: SilentRun,
+        ) : ActivePathProgress
+    }
+
+    private var activePathProgress: ActivePathProgress = ActivePathProgress.Unread
+
     /**
      * What the network was doing — live while the connection runs, frozen at [transitionToClosed].
      * [NetworkAtClose.NotObserved] when no monitor was resolved for this driver (a server connection, a
@@ -780,6 +850,148 @@ class QuicheDriver(
                 is PeerTransportParams.Negotiated -> params.maxAckDelayMillis.milliseconds
             }
         return rtt + maxOf(rttvar * 4, K_GRANULARITY) + maxAckDelay
+    }
+
+    /**
+     * Re-read the **active** path's counters and publish whether it is still answering — the driver
+     * half of #574's data-plane migration trigger. See [PathLiveness] for why a connection needs an
+     * opinion of its own and [pathHasStoppedAnswering] for where the line is drawn.
+     *
+     * ## The evidence, and why it is already here
+     * `quiche_conn_path_stats` carries `total_pto_count`, incremented on every loss-detection timer
+     * expiry on that path (`Path::on_loss_detection_timeout` — every branch of it, which is why this
+     * code says "expiry" and not "PTO"). A run of those with nothing arriving in between — the other
+     * half, kept by [activePathAnswered] — plus the elapsed time the run has been going, is the whole
+     * signal: every retransmission the path's own recovery scheduled went unanswered, on a path we are
+     * still choosing to send over. Nothing new is bound for this; [pathValidationBudget] has been
+     * reading the same struct since RFC 9000 §8.2.4's abandon timer needed a PTO.
+     *
+     * ## Called on timer wakes, and only for a connection something is watching
+     * A loss-detection timer expiring *is* a driver wake, so sampling where the loop already woke adds
+     * no timer of its own and costs **nothing at all** on the datagram path, where an extra call per
+     * received datagram would be a real cost (#366). It is not free on the timer path: one
+     * `quiche_conn_stats` plus up to `pathsCount` `quiche_conn_path_stats` reads, the first of which
+     * duplicates the one the trace recorder makes a line above (deliberately — the recorder wants path
+     * 0 and this wants the active one, and fusing them would tie an opt-in diagnostic to a shipped
+     * trigger). That is why the loop only calls this while [pathLiveness] has a collector: under
+     * [MigrationPolicy.Manual] or [MigrationPolicy.Forbidden], on a `NetworkMonitor.AlwaysAvailable`
+     * connection, or on a server, nobody subscribes and the reads are never made.
+     *
+     * The direction of the resulting lag is the safe one: a packet that arrives between two wakes is
+     * seen at the next one and clears the run, so this can be late in declaring a path dead and never
+     * early.
+     *
+     * ## The first read is a baseline, and where those come from
+     * A run is a difference between two reads, so whichever read is the first one is spent
+     * establishing the floor. Taken at an expiry, that would be the very expiry the threshold is
+     * counting, and a threshold of N would silently mean N+1 — measured, before [updateState] took
+     * one: detection on the fifth expiry (7.635s) instead of the fourth (3.695s), a 2.07× regression
+     * with the whole suite green. So a baseline is taken wherever the path is *provably* healthy —
+     * when the handshake completes, and when a migration switches onto a path the peer has just
+     * validated ([rebaselineActivePathLiveness]) — and `aDeadPathReHomesWhileTheMonitorStillCallsTheLinkHealthy`
+     * asserts the expiry count at which probing started, which is what makes the omission visible.
+     *
+     * ## Why the active path is searched for rather than assumed to be index 0
+     * It is index 0 until the first successful migration and never again — quiche keeps the original
+     * path in its slab and appends. Reading index 0 forever would mean a connection that has already
+     * re-homed once is judged by the counters of the link it left, which is precisely the link that has
+     * stopped answering.
+     */
+    private fun sampleActivePathLiveness() {
+        val pathCount = api.connStats(conn)?.pathsCount ?: return
+        for (index in 0 until pathCount) {
+            val stats = api.connPathStats(conn, index) ?: continue
+            if (!stats.active) continue
+            publishActivePathLiveness(index, stats)
+            return
+        }
+        // No active path at all is a transient of quiche's own bookkeeping (a switch in progress), not
+        // a verdict: leave the run where it is rather than inventing evidence in either direction.
+    }
+
+    /** Fold one read of the active path into the run and publish the verdict. See [sampleActivePathLiveness]. */
+    private fun publishActivePathLiveness(
+        pathIndex: Long,
+        stats: QuicPathStats,
+    ) {
+        val previous = activePathProgress as? ActivePathProgress.Read
+        // Comparable only against the same path, and only if the counter has not gone backwards.
+        // quiche's is monotonic per path, so a regression means the index has been reused for a
+        // different path — the one case the index alone cannot catch. Either way this read is a
+        // baseline; storing a negative delta would disarm the trigger for the rest of the connection.
+        val comparable =
+            previous != null && previous.pathIndex == pathIndex && stats.totalPtoCount >= previous.totalPtoCount
+        val run =
+            if (!comparable) {
+                SilentRun.None
+            } else {
+                val expired = stats.totalPtoCount - previous!!.totalPtoCount
+                when (val building = previous.run) {
+                    SilentRun.None -> if (expired > 0) SilentRun.Building(expired, clock.markNow()) else SilentRun.None
+                    is SilentRun.Building ->
+                        if (expired > 0) SilentRun.Building(building.expiries + expired, building.since) else building
+                }
+            }
+        activePathProgress = ActivePathProgress.Read(pathIndex, stats.totalPtoCount, run)
+        mutablePathLiveness.value =
+            when (run) {
+                SilentRun.None -> PathLiveness.Answering
+                is SilentRun.Building ->
+                    // Timed from the first unanswered expiry rather than from the arrival before it,
+                    // which under-states the silence by at most one PTO — the conservative direction.
+                    if (pathHasStoppedAnswering(run.expiries, run.since.elapsedNow())) {
+                        PathLiveness.Silent
+                    } else {
+                        PathLiveness.Answering
+                    }
+            }
+    }
+
+    /**
+     * A datagram arrived on the path the connection is living on — so whatever run of unanswered
+     * expiries [sampleActivePathLiveness] was building is over.
+     *
+     * This is the reset half of the trigger, and it lives on the datagram path rather than in the
+     * sampler because **only here is the ordering known**. A sampler comparing quiche's `recv` counter
+     * between two timer wakes learns that a packet arrived somewhere inside the interval, and an
+     * interval that also contains an expiry is ambiguous — measured: detection slipped a whole
+     * doubling, to the fifth expiry at 7.635s instead of the fourth at 3.695s, because the connect-time
+     * baseline's interval contained both.
+     *
+     * It costs two field reads and a comparison on the receive hot path, and allocates only on the
+     * transition out of a run — which is once per episode, not once per datagram (#366's standard for
+     * this path).
+     *
+     * A datagram quiche then rejects still counts. That is deliberate: the question this trigger asks
+     * is whether the *path* is carrying anything, and the bias of being wrong here is toward not
+     * migrating, which is the side #385 says to err on.
+     */
+    private fun activePathAnswered() {
+        val previous = activePathProgress as? ActivePathProgress.Read ?: return
+        if (previous.run == SilentRun.None) return
+        activePathProgress = ActivePathProgress.Read(previous.pathIndex, previous.totalPtoCount, SilentRun.None)
+        mutablePathLiveness.value = PathLiveness.Answering
+    }
+
+    /**
+     * Re-baseline the liveness sampler onto the path the connection has just moved to, discarding
+     * everything known about the one it left.
+     *
+     * The new baseline is taken **immediately**, not left to the next timer wake, for the reason
+     * [sampleActivePathLiveness] gives: a baseline taken at an expiry consumes that expiry, and a path
+     * a migration has just validated is exactly as known-good as one that has just finished a
+     * handshake. (The [ActivePathProgress.Read.pathIndex] check would catch the switch on its own; this
+     * is what keeps it from costing an expiry when it does.)
+     *
+     * It also publishes [PathLiveness.Answering] **synchronously with the switch**, before the caller
+     * parked in `migrate()` is resumed. That ordering is the load-bearing part: without it a reactor
+     * that migrated *because* the old path went silent would come back to a flow still reporting
+     * `Silent`, read its own successful move as fresh evidence, and migrate again.
+     */
+    private fun rebaselineActivePathLiveness() {
+        activePathProgress = ActivePathProgress.Unread
+        mutablePathLiveness.value = PathLiveness.Answering
+        sampleActivePathLiveness()
     }
 
     fun start(scope: CoroutineScope) {
@@ -910,6 +1122,15 @@ class QuicheDriver(
                 // 5) — the driver already woke, so this adds no timer and costs nothing when off.
                 if (cmd == null) {
                     recorder?.let { r -> api.connPathStats(conn, 0L)?.let { r.stats(it) } }
+                    // …and the same wake is where the loss-detection timer expires, which is the whole
+                    // of #574's data-plane migration trigger. Gated on there being a collector, which
+                    // is the honest test of "could anyone act on this": the reactor subscribes only
+                    // under MigrationPolicy.Automatic with a monitor whose identity can change, so
+                    // Manual, Forbidden, AlwaysAvailable and every server connection pay nothing.
+                    // See [sampleActivePathLiveness] for what the reads cost.
+                    if (migrationEnabled && mutablePathLiveness.subscriptionCount.value > 0) {
+                        sampleActivePathLiveness()
+                    }
                 }
                 afterCommand()
             }
@@ -969,6 +1190,11 @@ class QuicheDriver(
                                 cmd.buf.freeNativeMemory()
                                 return
                             }
+                            // The path we live on is carrying traffic: #574's trigger resets here,
+                            // where the arrival is observed rather than inferred. Ungated on purpose,
+                            // unlike the sampler — with no collector no run is ever built, so this
+                            // returns on its first field read. See [activePathAnswered].
+                            if (migrationEnabled && entry === active) activePathAnswered()
                             entry.recvInfo
                         }
                     }
@@ -1230,6 +1456,13 @@ class QuicheDriver(
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
             _state.value = QuicConnectionState.Established(readNegotiatedAlpn())
+            // Baseline the liveness sampler here, where the path is known good — the handshake it has
+            // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
+            // sample is: the reactor subscribes just after this, from the engine's connect(), so a
+            // gate here would lose the one baseline that is guaranteed to be taken on a healthy path.
+            // One pair of reads per connection, against a threshold that would otherwise silently
+            // become N+1 — measured at 7.635s instead of 3.695s. See [sampleActivePathLiveness].
+            if (migrationEnabled) sampleActivePathLiveness()
         }
         // Not once, but whenever capacity exists: RFC 9000 §5.1.1 says supply a new CID when the peer
         // retires one — which a migrating peer now does on every move (§9.5). Behind a one-shot flag,
@@ -1865,6 +2098,11 @@ class QuicheDriver(
                             val previous = active
                             entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
                             active = entry
+                            // The path the liveness sampler was judging is no longer the one we live
+                            // on, and the new one's counters start somewhere else — so the run of
+                            // unanswered expiries is re-baselined here, in the same statement sequence
+                            // that moves `active`. See [rebaselineActivePathLiveness].
+                            rebaselineActivePathLiveness()
                             // RFC 9000 §9.5: retire the DCID used on the old path — done by the
                             // teardown itself now, not by a separate call with a separately-tracked
                             // sequence number. This — with the retire-no-relink source patch — is what

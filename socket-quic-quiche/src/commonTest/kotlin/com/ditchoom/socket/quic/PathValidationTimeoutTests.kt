@@ -417,6 +417,7 @@ class PathValidationTimeoutTests {
                     ),
                     connection,
                     monitor,
+                    f.driver.pathLiveness,
                 )
                 runCurrent()
 
