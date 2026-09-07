@@ -12,8 +12,8 @@ import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -604,14 +604,6 @@ class PathRetirementTests {
         }
 
     /**
-     * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
-     *
-     * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring
-     * something on every failure, and that would be worse than the leak. Every failure inside
-     * `create_path_on_client` returns *before* `link_dcid_to_path_id`, so a rejected probe never took
-     * an id — retiring one here would drop a spare the connection still owns, or the id it is using.
-     */
-    /**
      * **A stale-path collision is retried from a fresh port, once** (#583).
      *
      * `quiche_conn_probe_path` returns `INVALID_STATE` when the 4-tuple it was handed already names a
@@ -685,6 +677,14 @@ class PathRetirementTests {
             }
         }
 
+    /**
+     * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
+     *
+     * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring
+     * something on every failure, and that would be worse than the leak. Every failure inside
+     * `create_path_on_client` returns *before* `link_dcid_to_path_id`, so a rejected probe never took
+     * an id — retiring one here would drop a spare the connection still owns, or the id it is using.
+     */
     @Test
     fun aProbeQuicheRejectsOutrightRetiresNothing() =
         runTest {

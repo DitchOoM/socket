@@ -106,4 +106,3 @@ internal class LaggingScidRetirementQuicheApi(
 
 /** `QUICHE_ERR_INVALID_STATE` — what quiche returns for a destination CID it no longer recognises. */
 internal const val QUICHE_ERR_INVALID_STATE = -6
-
