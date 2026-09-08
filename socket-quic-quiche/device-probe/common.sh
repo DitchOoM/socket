@@ -6,6 +6,7 @@ PKG="com.ditchoom.socket.quic.quiche.test"
 RUNNER="$PKG/androidx.test.runner.AndroidJUnitRunner"
 PROBE_CLASS="com.ditchoom.socket.quic.DeviceHandoffProbe"
 DEVICE_LOG="/sdcard/Android/data/$PKG/files/quic-handoff-probe.log"
+DEVICE_TRACES="/sdcard/Android/data/$PKG/files/traces"
 SERVER_HOST="${SERVER_HOST:-178.156.248.95}"
 SERVER_PORT="${SERVER_PORT:-44433}"
 adbs() { "$ADB" -s "$SERIAL" "$@"; }

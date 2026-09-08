@@ -12,6 +12,9 @@ import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CompletableDeferred
@@ -480,6 +483,7 @@ internal fun migrationSimOptions(
     keepAliveInterval: Duration? = null,
     migration: MigrationPolicy = MigrationPolicy.Manual,
     networkMonitor: NetworkMonitorSource = NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable),
+    trace: QuicTraceCapture? = null,
 ): QuicOptions =
     QuicOptions(
         alpnProtocols = listOf("migsim"),
@@ -488,6 +492,7 @@ internal fun migrationSimOptions(
         keepAliveInterval = keepAliveInterval,
         migration = migration,
         networkMonitor = networkMonitor,
+        trace = trace,
     )
 
 /**
@@ -641,6 +646,10 @@ internal suspend fun <R> withMigrationSim(
         val clientAudit = CidAuditQuicheApi(api)
         val serverAudit = CidAuditQuicheApi(api)
 
+        // The same opt-in a device sets, on the sim's own clock so offsets are virtual time.
+        val simCapture: TraceCapture =
+            quicOptions.trace?.let { TraceCapture.On(QuicTraceRecorder(it.sinkFor(), driverClock)) } ?: TraceCapture.Off
+
         val clientDriver =
             QuicheDriver(
                 migration =
@@ -662,6 +671,7 @@ internal suspend fun <R> withMigrationSim(
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
                 silenceThreshold = silenceThreshold,
+                capture = simCapture,
                 onCleanup = { clientPeerSock.free() },
             )
         val serverDriver =
@@ -747,6 +757,7 @@ internal suspend fun <R> withMigrationSim(
                     client,
                     resolveNetworkMonitor(quicOptions.networkMonitor),
                     clientDriver.pathLiveness,
+                    simCapture,
                 )
                 MigrationSimScope(
                     client,

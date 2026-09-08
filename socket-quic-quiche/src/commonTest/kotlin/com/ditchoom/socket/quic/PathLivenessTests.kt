@@ -5,6 +5,10 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.sim.SimClock
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -53,6 +57,12 @@ class PathLivenessTests {
         scope: TestScope,
         val tick: Duration,
     ) {
+        /** Everything this fixture's driver recorded, in order — see [recordedSilence]. */
+        val recorded = mutableListOf<TraceEvent>()
+
+        /** The SILENCE lines only, which is what the liveness tests have anything to say about. */
+        fun recordedSilence(): List<TraceEvent.Silence> = recorded.filterIsInstance<TraceEvent.Silence>()
+
         val stub =
             StubQuicheApi().apply {
                 established = true
@@ -79,6 +89,8 @@ class PathLivenessTests {
                 isServer = false,
                 clock = SimClock(scope.testScheduler),
                 driverContext = EmptyCoroutineContext,
+                // The fixture's own clock, so a recorded offset is virtual time.
+                capture = TraceCapture.On(QuicTraceRecorder({ event -> recorded += event }, SimClock(scope.testScheduler))),
             )
 
         /**
@@ -187,6 +199,22 @@ class PathLivenessTests {
                 landed <= countMetAt + SILENT_PATH_MINIMUM_SILENCE + slice,
                 "the verdict landed at $landed, but the run's floor was due at " +
                     "${countMetAt + SILENT_PATH_MINIMUM_SILENCE} — it waited for something other than the floor",
+            )
+
+            // The floor wake declares through a different door than the sampler; it records too.
+            val declared =
+                f.recordedSilence().filter { it.phase == TraceSilencePhase.Declared }
+            assertTrue(
+                declared.isNotEmpty(),
+                "the verdict was published at the floor but nothing was recorded, so a walk that hits " +
+                    "this path has a trace that shows a connection going quiet and no verdict behind " +
+                    "it: ${f.recordedSilence()}",
+            )
+            assertTrue(
+                declared.all { it.expiries >= SILENT_PATH_EXPIRY_THRESHOLD },
+                "the recorded run carries a tally below the threshold that declared it, so the trace " +
+                    "cannot say which half bound — the reconstruction-by-sentinel this replaced: " +
+                    "$declared",
             )
         }
 

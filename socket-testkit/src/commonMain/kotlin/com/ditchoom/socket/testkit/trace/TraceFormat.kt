@@ -91,6 +91,18 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append(s.pmtu).append(' ')
                 append(s.deliveryRate)
             }
+            is TraceEvent.Migration -> {
+                append("MIGRATION ")
+                append(event.trigger.name).append(' ')
+                append(event.attempt).append(' ')
+                append(event.outcome.name)
+            }
+            is TraceEvent.Silence -> {
+                append("SILENCE ")
+                append(event.phase.name).append(' ')
+                append(event.expiries).append(' ')
+                append(event.elapsed.inWholeNanoseconds)
+            }
             is TraceEvent.Net -> {
                 append("NET ")
                 append(encodeNetworkState(event.state))
@@ -187,6 +199,19 @@ internal fun decodeTraceLine(line: String): TraceEvent {
                     deliveryRate = f[17].toLong(),
                 ),
             )
+        }
+        "MIGRATION" -> {
+            val (trigger, attempt, outcome) = fields.split(' ', limit = 3)
+            TraceEvent.Migration(
+                at,
+                TraceMigrationTrigger.valueOf(trigger),
+                attempt.toInt(),
+                TraceMigrationOutcome.valueOf(outcome),
+            )
+        }
+        "SILENCE" -> {
+            val (phase, expiries, elapsed) = fields.split(' ', limit = 3)
+            TraceEvent.Silence(at, TraceSilencePhase.valueOf(phase), expiries.toLong(), elapsed.toLong().nanoseconds)
         }
         "NET" -> TraceEvent.Net(at, decodeNetworkState(fields))
         // `v1` still: NET_GAP is a new line kind in the existing version, exactly as NET_CAP was added

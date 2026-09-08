@@ -5,6 +5,8 @@ import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.DriverClock
+import com.ditchoom.socket.quic.MigrationResult
+import com.ditchoom.socket.quic.MigrationTrigger
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -16,8 +18,11 @@ import com.ditchoom.socket.quic.SendOutcome
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceMigrationOutcome
+import com.ditchoom.socket.testkit.trace.TraceMigrationTrigger
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TracePathStats
+import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.udp.DatagramSendException
 import kotlinx.coroutines.CoroutineScope
@@ -135,6 +140,41 @@ class QuicTraceRecorder(
         // The `?.`/`?:` is the wire-format adapter, not a meaning-bearing nullable: v1 already spells
         // "names no endpoint" as `-`/`0`, and typing it away here would churn every golden fixture.
         record(TraceEvent.PathState(now(), token, endpoint?.host, endpoint?.port ?: 0))
+    }
+
+    /** Record an auto-migration attempt, what woke it, and how it ended (MIGRATION). */
+    internal fun migrationAttempt(
+        trigger: MigrationTrigger,
+        attempt: Int,
+        outcome: MigrationResult,
+    ) {
+        val triggerToken =
+            when (trigger) {
+                MigrationTrigger.LinkChanged -> TraceMigrationTrigger.LinkChanged
+                MigrationTrigger.PathStoppedAnswering -> TraceMigrationTrigger.PathStoppedAnswering
+            }
+        record(TraceEvent.Migration(now(), triggerToken, attempt, outcome.toTraceOutcome()))
+    }
+
+    /** Record that the active path answered, ending any silent run (SILENCE None). */
+    internal fun silenceCleared() {
+        record(TraceEvent.Silence(now(), TraceSilencePhase.None, expiries = 0, elapsed = Duration.ZERO))
+    }
+
+    /** Record a growing run of unanswered loss-detection expiries (SILENCE Building). */
+    internal fun silenceBuilding(
+        expiries: Long,
+        elapsed: Duration,
+    ) {
+        record(TraceEvent.Silence(now(), TraceSilencePhase.Building, expiries, elapsed))
+    }
+
+    /** Record that the threshold was met and the path declared silent (SILENCE Declared). */
+    internal fun silenceDeclared(
+        expiries: Long,
+        elapsed: Duration,
+    ) {
+        record(TraceEvent.Silence(now(), TraceSilencePhase.Declared, expiries, elapsed))
     }
 
     /**
@@ -358,3 +398,22 @@ private class RecordingUdpChannel(
 internal class SendStalledException(
     after: Duration,
 ) : RuntimeException("send did not answer within $after")
+
+/** Exhaustive by construction: a new [MigrationResult] leaf is a compile error here. */
+private fun MigrationResult.toTraceOutcome(): TraceMigrationOutcome =
+    when (this) {
+        is MigrationResult.Succeeded -> TraceMigrationOutcome.Succeeded
+        MigrationResult.Unmoved.Impossible.ServerConnection -> TraceMigrationOutcome.ServerConnection
+        MigrationResult.Unmoved.Impossible.PolicyForbids -> TraceMigrationOutcome.PolicyForbids
+        MigrationResult.Unmoved.Impossible.PeerForbids -> TraceMigrationOutcome.PeerForbids
+        MigrationResult.Unmoved.Impossible.BackendCannotMigrate -> TraceMigrationOutcome.BackendCannotMigrate
+        MigrationResult.Unmoved.Impossible.ConnectionClosed -> TraceMigrationOutcome.ConnectionClosed
+        MigrationResult.Unmoved.Failed.HandshakeNotConfirmed -> TraceMigrationOutcome.HandshakeNotConfirmed
+        MigrationResult.Unmoved.Failed.EndpointNotSelectable -> TraceMigrationOutcome.EndpointNotSelectable
+        MigrationResult.Unmoved.Failed.AlreadyInProgress -> TraceMigrationOutcome.AlreadyInProgress
+        MigrationResult.Unmoved.Failed.NoSpareConnectionId -> TraceMigrationOutcome.NoSpareConnectionId
+        is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> TraceMigrationOutcome.LocalPathUnavailable
+        is MigrationResult.Unmoved.Failed.ProbeRejected -> TraceMigrationOutcome.ProbeRejected
+        MigrationResult.Unmoved.Failed.PathNotValidated -> TraceMigrationOutcome.PathNotValidated
+        is MigrationResult.Unmoved.Failed.SwitchRejected -> TraceMigrationOutcome.SwitchRejected
+    }

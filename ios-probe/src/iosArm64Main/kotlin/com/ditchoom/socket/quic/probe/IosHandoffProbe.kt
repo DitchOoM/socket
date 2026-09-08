@@ -2,6 +2,8 @@
 
 package com.ditchoom.socket.quic.probe
 
+import kotlin.concurrent.AtomicReference
+import kotlin.concurrent.AtomicInt
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
@@ -26,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
+import platform.Foundation.NSFileManager
 import platform.Foundation.NSLog
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.posix.fclose
@@ -119,6 +122,12 @@ object IosHandoffProbe {
         return "$docs/quic-handoff-probe.log"
     }
 
+    /** Directory holding this walk's per-connection replay traces, alongside the log. */
+    fun traceDir(): String {
+        val docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
+        return "$docs/traces"
+    }
+
     /** One line for the UI: what the connection is doing right now. */
     fun status(): String = statusLine
 
@@ -163,18 +172,48 @@ object IosHandoffProbe {
                 "readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs",
         )
 
-        // Bounded on purpose. A packet-level trace of a 72-hour walk is tens of gigabytes — every
-        // datagram is hex-encoded — so persisting it is out of the question and the naive "just turn
-        // tracing on" is not a fix. A ring keeps only what a post-mortem actually needs: the last few
-        // hundred events before the moment it stopped. Memory is bounded by capacity, and the encode
-        // cost at this cadence is ~8 datagrams a second, which is nothing next to the radio.
+        // The in-memory tail the stall watchdog dumps inline. It is NOT the record of the walk: it
+        // holds about a minute and is drained only when the echo loop stops, so a migration the
+        // connection *recovers from* never reached the log at all.
+        //
+        // The "tens of gigabytes, so persisting is out of the question" that used to be written here
+        // was measured against a saturated connection, not against this rig. The echo loop is one
+        // exchange every `echoIntervalMs` (2s default) carrying a ~12-byte payload, so the trace runs
+        // ~1.5 MB/hour and a 71-hour walk is ~100 MB. Persisting it was never the problem; assuming it
+        // could not be was.
         val ring = RingTraceSink(RING_CAPACITY) { log.emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
+
+        // The record of the walk: one file per connection, appended as it happens, replayable through
+        // `TraceToFixture` without re-walking anything. Per connection because the v1 grammar carries
+        // no connection id and each connection stamps against its own clock origin — one shared sink
+        // interleaves every reconnect into something no fixture can be built from.
+        val traceFiles =
+            WalkTraceFiles(traceDir(), TRACE_BUDGET_BYTES) { spent ->
+                log.emit(
+                    "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
+                        "longer replayable past this point.",
+                )
+            }
 
         val options =
             QuicOptions(
                 alpnProtocols = listOf("test"),
                 verifyPeer = false,
-                trace = QuicTraceCapture(ring),
+                trace =
+                    QuicTraceCapture(
+                        sinkFor = {
+                            val file = traceFiles.next()
+                            // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
+                            // keeps this connection's own replayable trace.
+                            TraceSink { event ->
+                                ring.emit(event)
+                                file.emit(event)
+                            }
+                        },
+                        // The connectivity stream is half of every migration question — which trigger
+                        // fired, and whether the platform had even noticed the link yet. It was off.
+                        recordNetworkObservations = true,
+                    ),
                 // Long enough that a dead path is not immediately reaped, short enough that the walk
                 // shows a death rather than a hang. Keepalive keeps an idle connection honest.
                 idleTimeout = 30.seconds,
@@ -602,6 +641,61 @@ private const val HEARTBEAT_INTERVAL_MS = 60_000L
  */
 private const val RING_CAPACITY = 256
 
+/** Ceiling on a single walk's replay traces — see [WalkTraceFiles]. ~5x the 71-hour projection. */
+private const val TRACE_BUDGET_BYTES = 512L * 1024L * 1024L
+
+/**
+ * One file-backed [TraceSink] per connection, under a shared byte budget.
+ *
+ * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
+ * killed by a reboot or a pulled cable must not lose its tail.
+ */
+private class WalkTraceFiles(
+    private val dir: String,
+    private val budgetBytes: Long,
+    private val onBudgetSpent: (Long) -> Unit,
+) {
+    private val connections = AtomicInt(0)
+    private val budget = AtomicReference<TraceBudget>(TraceBudget.Live(0L))
+
+    init {
+        NSFileManager.defaultManager.createDirectoryAtPath(dir, true, null, null)
+    }
+
+    /** Lock-free: the thread whose CAS moves the budget to [TraceBudget.Spent] is the one that reports it. */
+    private fun charge(n: Int): Boolean {
+        while (true) {
+            when (val current = budget.value) {
+                TraceBudget.Spent -> return false
+                is TraceBudget.Live ->
+                    if (current.written + n > budgetBytes) {
+                        if (budget.compareAndSet(current, TraceBudget.Spent)) {
+                            onBudgetSpent(current.written)
+                            return false
+                        }
+                    } else if (budget.compareAndSet(current, TraceBudget.Live(current.written + n))) {
+                        return true
+                    }
+            }
+        }
+    }
+
+    fun next(): TraceSink {
+        val path = "$dir/conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace"
+        return TraceSink { event ->
+            val line = event.toString() + "\n"
+            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+            if (charge(line.length)) {
+                val file = fopen(path, "a")
+                if (file != null) {
+                    fputs(line, file)
+                    fclose(file)
+                }
+            }
+        }
+    }
+}
+
 /**
  * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall.
  *
@@ -645,3 +739,19 @@ private fun battery(): String =
             }
         "battery=$level% $state"
     }.getOrElse { "battery=unreadable(${it::class.simpleName})" }
+
+/**
+ * How much of a walk's trace budget is left.
+ *
+ * Sealed rather than a `written` counter beside an `announced` flag, because those two admit a state
+ * that must not exist: spent-but-not-announced, or announced-then-charged-again. The ceiling is
+ * crossed exactly once, and it is the **transition** that announces — so "said so" is not a fact
+ * tracked alongside the budget, it is the budget.
+ */
+private sealed interface TraceBudget {
+    /** Room left, [written] bytes used so far. */
+    data class Live(val written: Long) : TraceBudget
+
+    /** The ceiling was reached, and reaching it is what reported it. */
+    data object Spent : TraceBudget
+}

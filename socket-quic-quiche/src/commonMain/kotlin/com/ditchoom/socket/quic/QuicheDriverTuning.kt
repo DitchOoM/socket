@@ -2,7 +2,7 @@
 
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
@@ -31,7 +31,7 @@ import kotlin.time.Instant
  *  - [wallClock] — "now" for the W3C `serverCertificateHashes` validity-window check
  *    ([verifyServerCertificateHashes]/[checkServerCertificatePinConstraints]). Default
  *    `Clock.System.now()`; a fixture replay pins it to the recorded capture time.
- *  - [recorderFactory] — the W3 opt-in trace tap (RFC §5), **invoked once per [QuicheDriver]
+ *  - [captureFactory] — the W3 opt-in trace tap (RFC §5), **invoked once per [QuicheDriver]
  *    construction**. Default `{ null }` (zero cost). When it returns a recorder, that driver wraps
  *    its `UdpChannel`s in the recording decorator, mirrors state/pathState/close-error transitions
  *    into the trace, and polls path-stats on its timer wake. It is a *factory* (not one shared
@@ -47,7 +47,7 @@ internal class QuicheDriverTuning(
     val clock: DriverClock = RealDriverClock,
     val random: Random = Random.Default,
     val wallClock: () -> Instant = { Clock.System.now() },
-    val recorderFactory: () -> QuicTraceRecorder? = { null },
+    val captureFactory: () -> TraceCapture = { TraceCapture.Off },
     /**
      * The client connection's resolved [com.ditchoom.socket.NetworkMonitor] observation, threaded to the
      * driver so it can latch [QuicConnection.networkAtClose] on the close transition. Default

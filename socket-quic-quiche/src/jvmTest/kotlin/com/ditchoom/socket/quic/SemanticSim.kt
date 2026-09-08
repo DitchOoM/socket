@@ -10,6 +10,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
+import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -157,7 +158,7 @@ internal suspend fun <R> withSemanticSim(
     establishTimeout: Duration = 10.seconds,
     // W3 trace tap: attached to the CLIENT driver (channel decorator + state mirror + stats poll),
     // mirroring how a consumer records its client-side connection in the field (RFC §5).
-    clientRecorder: com.ditchoom.socket.quic.trace.QuicTraceRecorder? = null,
+    clientCapture: TraceCapture = TraceCapture.Off,
     // The clock BOTH drivers — and, through [CallerClockQuicheApi], both libquiche conns — run on,
     // resolved against the calling dispatcher before anything native is allocated. The default is
     // whatever clock that dispatcher already runs `delay()` on, so the two sides of the FFI agree; the
@@ -285,7 +286,7 @@ internal suspend fun <R> withSemanticSim(
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
-                recorder = clientRecorder,
+                capture = clientCapture,
                 onCleanup = {
                     clientPeerSock.free()
                     clientLocalSock.free()

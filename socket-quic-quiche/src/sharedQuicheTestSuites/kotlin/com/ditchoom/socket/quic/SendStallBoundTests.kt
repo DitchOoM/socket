@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
@@ -156,7 +157,7 @@ class SendStallBoundTests {
                     api,
                     udpChannel = wedged,
                     sendStallBound = bound,
-                    recorder = QuicTraceRecorder(sink),
+                    capture = TraceCapture.On(QuicTraceRecorder(sink)),
                 )
             // Its own Job, same (virtual-time) dispatcher: a recorder makes `start` launch two
             // state-collector coroutines that live as long as the scope, and as children of the test
@@ -202,7 +203,7 @@ class SendStallBoundTests {
         clock: DriverClock = RealDriverClock,
         driverContext: CoroutineContext = EmptyCoroutineContext,
         sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
-        recorder: QuicTraceRecorder? = null,
+        capture: TraceCapture = TraceCapture.Off,
     ): QuicheDriver =
         QuicheDriver(
             // Test double: never exercises a path move.
@@ -218,6 +219,6 @@ class SendStallBoundTests {
             clock = clock,
             driverContext = driverContext,
             sendStallBound = sendStallBound,
-            recorder = recorder,
+            capture = capture,
         )
 }

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.StreamLossCause
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.awaitCancellation
@@ -76,7 +77,7 @@ class StreamLossTraceTests {
                 },
             clientMode = false,
             isServer = false,
-            recorder = QuicTraceRecorder(sink),
+            capture = TraceCapture.On(QuicTraceRecorder(sink)),
         )
 
     /** Queue [size] readable bytes for [slot], the way the driver's teardown drain does. */

@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.record
 import kotlinx.coroutines.CoroutineScope
 
 /*
@@ -18,7 +20,8 @@ import kotlinx.coroutines.CoroutineScope
  * recorder defaults its clock to [RealDriverClock] — the same singleton [QuicheDriverTuning.clock]
  * defaults to — so trace timestamps and driver timers share one clock (RFC §5 "one clock").
  */
-internal fun traceRecorderFor(quicOptions: QuicOptions): QuicTraceRecorder? = quicOptions.trace?.let { QuicTraceRecorder(it.sinkFor()) }
+internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
+    quicOptions.trace?.let { TraceCapture.On(QuicTraceRecorder(it.sinkFor())) } ?: TraceCapture.Off
 
 /**
  * Client-side connectivity tap (RFC §5.1): when the capture opt-in asked for network observations,
@@ -37,10 +40,10 @@ internal fun traceRecorderFor(quicOptions: QuicOptions): QuicTraceRecorder? = qu
  */
 internal fun wireClientConnectivityTap(
     quicOptions: QuicOptions,
-    recorder: QuicTraceRecorder?,
+    capture: TraceCapture,
     scope: CoroutineScope,
     monitor: NetworkMonitor,
 ) {
     if (quicOptions.trace?.recordNetworkObservations != true) return
-    recorder?.observe(monitor, scope)
+    capture.record { it.observe(monitor, scope) }
 }

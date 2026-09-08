@@ -30,7 +30,7 @@ object QuicheEngine : QuicEngine {
     ): QuicConnection {
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
-        val recorder = traceRecorderFor(quicOptions)
+        val capture = traceRecorderFor(quicOptions)
         // ONE monitor per connection, resolved here and handed to all three consumers below. See
         // `resolveNetworkMonitor`: sharing the instance is what keeps the observation sequence a
         // migration reports and the one `networkAtClose` reports indexing the same stream.
@@ -43,14 +43,14 @@ object QuicheEngine : QuicEngine {
                 quicOptions,
                 transport,
                 timeout,
-                QuicheDriverTuning(recorderFactory = { recorder }, networkObservation = observation),
+                QuicheDriverTuning(captureFactory = { capture }, networkObservation = observation),
             )
         observation.collectInto(connection)
-        wireClientConnectivityTap(quicOptions, recorder, connection, monitor)
+        wireClientConnectivityTap(quicOptions, capture, connection, monitor)
         // Auto-migration (QuicOptions.migration, Automatic by default): re-home on a link change, or
         // on the connection's own evidence that the path it is on has stopped answering (#574) — the
         // driver's `pathLiveness`, which is why this is wired here and not from inside the reactor.
-        wireAutoMigration(quicOptions, connection, monitor, connection.quicheDriver.pathLiveness)
+        wireAutoMigration(quicOptions, connection, monitor, connection.quicheDriver.pathLiveness, capture)
         return connection
     }
 
@@ -64,7 +64,7 @@ object QuicheEngine : QuicEngine {
             binding,
             tlsConfig,
             quicOptions,
-            QuicheDriverTuning(recorderFactory = {
+            QuicheDriverTuning(captureFactory = {
                 traceRecorderFor(quicOptions)
             }),
         )
