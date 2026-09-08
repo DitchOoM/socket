@@ -8,6 +8,7 @@ import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
@@ -232,20 +233,37 @@ object IoUringManager {
         // kernel refused for which reason, and an ENOMEM on the bare attempt reads differently from
         // an ENOMEM only under DEFER_TASKRUN.
         val attempts = StringBuilder()
-        for (flags in flagSets) {
-            // Zero out params for each attempt
-            memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
-            params.flags = flags
-
-            val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
-            if (ret >= 0) {
+        var pass = 0
+        val outcome =
+            withEnomemRetry({ micros -> usleep(micros.toUInt()) }) {
+                pass++
+                var refused = 0
+                var created: CPointer<io_uring>? = null
+                for (flags in flagSets) {
+                    memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
+                    params.flags = flags
+                    val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
+                    if (ret >= 0) {
+                        created = ptr
+                        break
+                    }
+                    refused = -ret
+                    attempts.append(
+                        "try=$pass flags=0x${flags.toString(16)} -> errno=$refused " +
+                            "(${strerror(refused)?.toKString() ?: "?"}); ",
+                    )
+                }
+                val ring = created
+                if (ring == null) SetupAttempt.Refused(refused) else SetupAttempt.Created(ring)
+            }
+        when (outcome) {
+            is SetupAttempt.Created -> {
                 nativeHeap.free(params)
                 ringsCreated.incrementAndGet()
-                ringRef.value = ptr
-                return ptr
+                ringRef.value = outcome.ring
+                return outcome.ring
             }
-            lastError = -ret
-            attempts.append("flags=0x${flags.toString(16)} -> errno=$lastError (${strerror(lastError)?.toKString() ?: "?"}); ")
+            is SetupAttempt.Refused -> lastError = outcome.errno
         }
 
         nativeHeap.free(params)
