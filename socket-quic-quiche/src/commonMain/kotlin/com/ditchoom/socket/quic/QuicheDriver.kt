@@ -888,7 +888,7 @@ class QuicheDriver(
      *
      * Ties break on [priority], lowest first, reproducing the chain this replaces: [ProbeAbandon] over
      * [KeepAlive] over [QuicheTimeout], because a wake that falls through to `connOnTimeout` hands quiche
-     * a timeout it did not ask for and silently swallows an expired probe. [SilenceFloor] ranks last, so
+     * a timeout it did not ask for and silently swallows an expired probe. [SilenceVerdict] ranks last, so
      * a tie still hands quiche its own timeout.
      */
     private sealed interface Wake {
@@ -913,7 +913,7 @@ class QuicheDriver(
             override val priority = 2
         }
 
-        class SilenceFloor(
+        class SilenceVerdict(
             override val remaining: Duration,
         ) : Wake {
             override val priority = 3
@@ -949,13 +949,13 @@ class QuicheDriver(
                 candidate(probe, Wake::ProbeAbandon),
                 candidate(keepAlive, Wake::KeepAlive),
                 candidate(connTimeout, Wake::QuicheTimeout),
-                candidate(floorWake(), Wake::SilenceFloor),
+                candidate(floorWake(), Wake::SilenceVerdict),
             ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
         return NextWake.Armed(soonest)
     }
 
     /**
-     * How long until the active path's silence meets the threshold's time floor, as a [FloorWake].
+     * How long until the active path's silence meets the threshold's time **floor**, as a [Deadline].
      *
      * Offered only while a run is [SilentRun.Building] past the expiry count: before that only an expiry
      * — quiche's own timer — can change the verdict, and after [SilentRun.Declared] there is nothing left
@@ -966,6 +966,21 @@ class QuicheDriver(
      * the fourth expiry — where a verdict evaluated only at expiry wakes must wait — is at 3.675s. This
      * removes that gap without moving the floor, which is the constant #385 is closed by. Measured end to
      * end on a 20ms one-way path: 3.062s without it, 2.099s with.
+     *
+     * ## ⚠️ Why [SilenceThreshold.patience] gets no arm of its own, measured
+     * The obvious symmetry — arm the ceiling too, so a count-short run is declared *at* it rather than at
+     * whichever expiry follows — is unsound, and the sim says so in one line. A run only grows while
+     * quiche keeps expiring loss timers, and it only does that while there is something outstanding for
+     * them to be armed about. A path that blips once and heals leaves a `Building(1, …)` run behind that
+     * nothing will ever advance or clear: no further expiry to grow it, no datagram to reset it, because
+     * the application had nothing more to say. A wall-clock ceiling then declares a **healthy idle path
+     * dead** purely because time passed — measured on the #385 guard at 2ms one-way, which failed with
+     * `expiries=1 elapsed=6s` against a 6s ceiling.
+     *
+     * The floor is immune to that in a way the ceiling is not, which is why one is armed and the other is
+     * not: it is offered only once the count is already met, and four unanswered expiries is the evidence
+     * the ceiling exists precisely because it may never arrive. So the ceiling is evaluated where the
+     * evidence changes instead — see [publishActivePathLiveness].
      */
     private fun floorWake(): Deadline {
         val progress = activePathProgress
@@ -1013,7 +1028,7 @@ class QuicheDriver(
      * never going idle. An unanswered probe on cellular is the ordinary case for #574, so that was a
      * phone-side livelock rather than a test artefact.
      */
-    private fun declareFloorReached() {
+    private fun declareSilenceReached() {
         val progress = activePathProgress
         if (progress !is ActivePathProgress.Read) return
         val run = progress.run
@@ -1092,11 +1107,13 @@ class QuicheDriver(
         // baseline; storing a negative delta would disarm the trigger for the rest of the connection.
         val comparable =
             previous != null && previous.pathIndex == pathIndex && stats.totalPtoCount >= previous.totalPtoCount
+        // Expiries this read carried. It is the whole of what the read contributes: it grows the run
+        // below, and it is also what makes the run judgeable at all — see [settled].
+        val expired = if (comparable) stats.totalPtoCount - previous.totalPtoCount else 0L
         val run =
             if (!comparable) {
                 SilentRun.None
             } else {
-                val expired = stats.totalPtoCount - previous.totalPtoCount
                 when (val carried = previous.run) {
                     SilentRun.None -> if (expired > 0) SilentRun.Building(expired, clock.markNow()) else SilentRun.None
                     is SilentRun.Building ->
@@ -1108,11 +1125,20 @@ class QuicheDriver(
             }
         // Timed from the first unanswered expiry rather than from the arrival before it, which
         // under-states the silence by at most one PTO — the conservative direction.
+        //
+        // ⚠️ Judged only on a read that carried an expiry. The sampler runs on every timer wake, not
+        // only on expiries, so without `expired > 0` the *elapsed* half of the threshold could be met by
+        // a run that has stopped growing — a path that blipped once and healed over an application with
+        // nothing more to send leaves a `Building(1, …)` run that no expiry will advance and no datagram
+        // will reset. Time would then be the whole of the evidence. Measured on the #385 guard at 2ms
+        // one-way: `expiries=1 elapsed=6s`, a healthy idle path declared dead, and a migration bought on
+        // nothing at all. The floor deadline is the one deliberate exception, and [floorWake] says why it
+        // is safe there and not here.
         val settled =
             when (run) {
                 SilentRun.None, is SilentRun.Declared -> run
                 is SilentRun.Building ->
-                    if (silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow())) {
+                    if (expired > 0 && silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow())) {
                         SilentRun.Declared(run.since)
                     } else {
                         run
@@ -1306,10 +1332,10 @@ class QuicheDriver(
                                         }
                                     // Declares the run itself rather than waiting for the sampler below,
                                     // because that read can fail to find an active path — see
-                                    // [declareFloorReached]. It must not hand quiche a timeout it did not
+                                    // [declareSilenceReached]. It must not hand quiche a timeout it did not
                                     // ask for, and must not PING: that would answer the silence being
                                     // measured.
-                                    is Wake.SilenceFloor -> declareFloorReached()
+                                    is Wake.SilenceVerdict -> declareSilenceReached()
                                     is Wake.QuicheTimeout -> api.connOnTimeout(conn)
                                 }
                         }

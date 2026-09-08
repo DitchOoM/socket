@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -856,46 +857,240 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * **#574 — the path is dead, the platform has not noticed, and the connection re-homes anyway.**
+     * **#574's second life: the path that dies is the one the connection just migrated *to*, and the
+     * expiry count is denominated in a round trip quiche has never measured.**
      *
-     * Every trigger this reactor had was a *control-plane* one: [NetworkMonitor.state]. On the 71h
-     * Android walk (2026-09-06) that signal lagged reality by a measured 11.5s / 11.5s / 11.9s on the
-     * three real Wi-Fi→cellular handoffs, with 17 consecutive failed echoes in each window and the
-     * heartbeat immediately before each outage still reporting `net=wifi validated=true`. The
-     * migration itself then took 338ms–1954ms. So a ~12.5s user-visible outage was ~12s of *waiting
-     * to be told* and under 2s of QUIC. iOS's `NWPathMonitor` reports the same handoff in ~1s, which
-     * is the whole of the 10× platform asymmetry.
+     * [aDeadPathReHomesWhileTheMonitorStillCallsTheLinkHealthy] kills the path a connection was
+     * established on, where quiche has a real RTT sample and the four-expiry budget is worth 3.695s.
+     * The field is not that. On the walk that followed #574 shipping, dead air was
+     * **10.1 / 16.7 / 19.2 / 10.9 / 10.1s** — with per-event round trips of 67 / 143 / 143 / 58 / 187ms,
+     * so two of those outages were on paths the application was measuring at under 70ms. The count was
+     * never wrong; it fired on exactly the fourth unanswered expiry every time. The expiries were just
+     * four times further apart than the ones the shipped scenario measures.
      *
-     * This scenario is that field condition with nothing scripted: the primary path stops carrying
-     * anything, and [SimNetworkMonitor] is **never touched again** — its [NetworkId] is the same
-     * `WIFI` it was established on, from the first line to the last. That constancy is the test.
-     * Under the old reactor the merged trigger stream has exactly one emission for the whole run (the
-     * connect-time baseline), so nothing can call `migrate()` and the connection idles out on a path
-     * that is provably carrying nothing.
+     * ## The mechanism, in one line
+     * A migration switches the connection onto a path the peer has validated but not yet **acked** —
+     * the server is still replying to the address it was last told about, so the only datagram the new
+     * path has carried inbound is the PATH_RESPONSE. quiche takes RTT samples from acks, so the path is
+     * still estimated at RFC 9002 §5.1's initial `333ms / 166.5ms`, and its PTO is
+     * `333 + 4·166.5 + 25 = 1024ms` rather than the 246ms of the sampled path next to it. Fifteen of
+     * those is 15.36s. Measured here across prior-migration counts, and the arithmetic is exact:
      *
-     * ## What is asserted, and why it is not a counter
-     * The echo is the assertion, exactly as in [aLostProbeIsRetriedUntilTheConnectionRehomes]: with
-     * the primary blackholed there is no route to the server except a successful migration, so "did
-     * the driver notice" and "did the connection survive" are the same question. The one number in it,
-     * [ANDROID_MONITOR_LAG], is the field's own — the time Android took merely to *start* probing — so
-     * the bound is a measurement rather than a threshold chosen to fit, and it is held against the same
-     * edge the walk reported (`PATH Probing`) rather than a proxy. The monitor's identity is re-read at
-     * the end because a future change that quietly makes this a link-change test would otherwise still
-     * pass.
+     * | prior migrations | srtt / rttvar when it went dark | PTO | detection |
+     * |---|---|---|---|
+     * | 0 | 120ms / 25.3ms | 246ms | 3.695s |
+     * | 1 | **333ms / 166.5ms** | **1024ms** | **15.36s** |
+     * | 2 | **333ms / 166.5ms** | **1024ms** | **15.36s** |
+     * | 3 | 70ms / 35ms | 235ms | 3.525s |
      *
-     * ⚠️ [ANDROID_MONITOR_LAG] alone is far too loose to be the only bound: it is 3× the detection this
-     * ships, so an entire doubling of the PTO backoff can be lost inside it with the suite green — and
-     * one was, when the handshake-time baseline in `QuicheDriver.updateState` was missing (5 expiries
-     * and 7.635s instead of 4 and 3.695s). So the tighter assertion is in **expiries**, against
-     * [SILENT_PATH_EXPIRY_THRESHOLD] itself: at this rig's 120ms round trip the count is the binding
-     * half of the conjunction, so the trigger must fire on exactly the Nth unanswered expiry and never
-     * the N+1th. That assertion moves if the constant is deliberately retuned, which is correct — the
-     * constant is the specification — and does not move for any change to the *sampler*, which is what
-     * it is guarding.
+     * Not monotone in the count — it is not "migrations make it worse". It depends only on whether an
+     * ack had reached the path before it died, which is a race the field runs constantly and the
+     * shipped scenario never runs at all.
      *
-     * ⚠️ The probe path carries a real 35ms latency, not the sim's zero default: a CID/path fix that
-     * only works at RTT≈0 has shipped here before (#445, #459), and the asymmetry — new path faster
-     * than the one being left — is also the #445 overtake window.
+     * ## What this asserts that the sibling cannot
+     * The bound it holds is [SILENT_PATH_PATIENCE]'s: the connection must re-home **without** the
+     * expiry count ever reaching [SILENT_PATH_EXPIRY_THRESHOLD]. That is the whole of the ceiling, and
+     * asserting it in expiries rather than only in time is what makes it mutation-proof — restore the
+     * count-only threshold and this run spends four expiries and 15.36s, both of which this test names.
+     *
+     * ⚠️ **The premise is asserted, not assumed.** Whether the dying path was ever acked is a race, and
+     * a run in which it *was* would recover in ~3.5s on the count rule alone and look like a perfectly
+     * green ceiling. So the un-sampled round trip is checked at the moment the path goes dark: if a
+     * future quiche, or a change to #556's reply-address pinning, gets an ack onto the new path first,
+     * this fails as "the scenario no longer reproduces the condition" instead of passing for the wrong
+     * reason.
+     *
+     * ⚠️ Two prior migrations rather than one, so the active path index is 2 and a reader that assumed
+     * index 0 is caught: `QuicheCmd.Stats` reads path 0, which is the active path only until the first
+     * successful migration, and an earlier cut of this scenario measured 0 expiries through it and sent
+     * the investigation after a comparability guard that was never involved. The expiry counts here go
+     * through [MigrationSim.clientActivePathExpiries], which searches for the active path exactly as
+     * `sampleActivePathLiveness` does.
+     */
+    @Test
+    fun aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime() =
+        runTest {
+            val scheduler = testScheduler
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 574_101L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+                ) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.write(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+
+                        suspend fun echo(payload: String): String {
+                            val out = BufferFactory.network().allocate(payload.length)
+                            out.writeString(payload, Charset.UTF8)
+                            out.resetForRead()
+                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                            out.freeNativeMemory()
+                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
+                            if (r !is ReadResult.Data) return "NO_DATA"
+                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                        }
+
+                        assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the path dies")
+                        awaitSpareDcids()
+                        assertEquals(0, client.attempts.size, "nothing may migrate before the path dies")
+
+                        // The field condition the shipped scenario cannot reach: a path dying on a
+                        // connection that has ALREADY migrated, so the active index is not 0 and the
+                        // path it points at has never carried an ack.
+                        repeat(PRIOR_MIGRATIONS) {
+                            assertTrue(
+                                migrate().await() is MigrationResult.Succeeded,
+                                "the scenario needs $PRIOR_MIGRATIONS successful migrations before it can start",
+                            )
+                            awaitSpareDcids()
+                        }
+
+                        val probedAt = CompletableDeferred<Long>()
+                        val readingAtProbe = CompletableDeferred<ActivePathReading>()
+                        val probeWatcher =
+                            client.launch {
+                                clientDriver.pathState.first { it is QuicPathState.Probing }
+                                probedAt.complete(scheduler.currentTime)
+                                readingAtProbe.complete(clientActivePath())
+                            }
+                        val atDark =
+                            assertIs<ActivePathReading.Read>(
+                                clientActivePath(),
+                                "quiche reported no active path at the moment the scenario went to kill one, " +
+                                    "so there is nothing to blackhole and nothing to measure",
+                            )
+
+                        // --- the handoff the platform never reports. The monitor is not touched. ---
+                        // Kill whichever path is active NOW, not the original primary.
+                        val primary = pipe.pathAt(clientPaths().last())
+                        val wentDark = scheduler.currentTime
+                        pipe.impair(primary.local, PathImpairment(blackhole = true))
+
+                        val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
+                        val recoveredIn = (scheduler.currentTime - wentDark).milliseconds
+                        assertEquals(
+                            "after",
+                            after,
+                            "the connection never re-homed after the path it had just migrated onto went " +
+                                "dark. Attempts: ${client.attempts}, probe paths: ${clientPaths().size}, " +
+                                "pipe: ${pipeTraffic()}",
+                        )
+                        assertEquals(
+                            WIFI,
+                            monitor.state.value.networkId,
+                            "this scenario only means anything while the platform stays silent; the " +
+                                "monitor's identity changed, so the migration may have come from the " +
+                                "link-change trigger that has always existed",
+                        )
+                        // The premise. An acked path recovers in ~3.5s on the count rule alone, so
+                        // without this the ceiling could be dead code and this test still green.
+                        assertTrue(
+                            atDark.rtt >= UNSAMPLED_RTT_FLOOR,
+                            "the path that went dark was already estimated at ${atDark.rtt} / ${atDark.rttvar}, " +
+                                "so quiche had an ack from it and the four-expiry budget was worth ~3.5s " +
+                                "rather than the 15.36s this scenario exists to bound. Something now gets " +
+                                "an ack onto a freshly migrated path before it can die — #556's reply-address " +
+                                "pinning is the likely cause — and this test is no longer reproducing #574's " +
+                                "field condition, whatever its timings say.",
+                        )
+                        val detectedIn = (probedAt.await() - wentDark).milliseconds
+                        val atProbe =
+                            assertIs<ActivePathReading.Read>(
+                                readingAtProbe.await(),
+                                "quiche reported no active path at the instant probing started, so the " +
+                                    "expiry count that produced the verdict cannot be read back",
+                            )
+                        val expiriesSpent = atProbe.expiries - atDark.expiries
+                        probeWatcher.cancel()
+                        assertTrue(
+                            expiriesSpent < SILENT_PATH_EXPIRY_THRESHOLD,
+                            "the connection re-homed after $detectedIn, but it spent $expiriesSpent " +
+                                "unanswered expiries doing it — the full $SILENT_PATH_EXPIRY_THRESHOLD. " +
+                                "So the count decided this, not $SILENT_PATH_PATIENCE of silence, which " +
+                                "means the ceiling is not carrying the un-sampled case and detection here " +
+                                "is back to fifteen PTOs of a round trip quiche never measured (15.36s).",
+                        )
+                        assertTrue(
+                            detectedIn < ANDROID_MONITOR_LAG,
+                            "the connection re-homed, but it took $detectedIn to start probing — longer " +
+                                "than the $ANDROID_MONITOR_LAG Android's own signal took to arrive on the " +
+                                "walk, which is the whole of what this trigger is for. (Full recovery, " +
+                                "including quiche's retransmission of the data stranded on the dead path, " +
+                                "was $recoveredIn.) Attempts: ${client.attempts}",
+                        )
+                        assertTrue(
+                            primary.stats.blackholed > 0,
+                            "no datagram was ever blackholed, so the path never actually died and this " +
+                                "would pass against the reactor #574 describes",
+                        )
+                        val settled = pipe.pathAt(clientPaths().last())
+                        assertTrue(
+                            settled.stats.sentToServer > 0 && settled.stats.sentToClient > 0,
+                            "the connection reports itself moved but its final path carried no two-way " +
+                                "traffic (toServer=${settled.stats.sentToServer} " +
+                                "toClient=${settled.stats.sentToClient})",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * **The #385 guard: a path that stops answering and then comes back costs nothing —
+     * ⚠️ at every RTT, because at one RTT it proved the opposite of what it claimed.**
+     *
+     * #385 (closed) was the opposite failure to #574 — a 1.02s cellular excursion buying a full path
+     * migration — and its closing analysis is the reason this file has no settle window anywhere:
+     * *"there is no principled window"*, and a constant chosen to be larger than one recorded blip is
+     * not a policy. A data-plane trigger re-opens that question, so it answers it with a conjunction:
+     * a run of unanswered loss-detection expiries **and** a floor on how long the run has been going
+     * ([SilenceThreshold.isMetBy]).
+     *
+     * ## Why this test is a sweep, and what the single-latency version hid
+     * The first version of the trigger was the expiry count alone, and this test ran only at the sim's
+     * default 120ms round trip, where it passed. Sweeping the same scenario over `primaryImpairment`
+     * and changing nothing else:
+     *
+     * | one-way latency | 2ms | 10ms | 20ms | 40ms | 60ms | 120ms |
+     * |---|---|---|---|---|---|---|
+     * | migrations bought, count-only | 1 | 1 | 0 | 0 | 0 | 0 |
+     *
+     * (An independent run of the same sweep also lost the 20ms arm — the boundary moves with the
+     * seeded arrival order, which is itself the argument: a threshold whose safety depends on where
+     * that boundary happens to land is not a threshold.)
+     *
+     * RFC 9002 §6.2.1's PTO carries `max_ack_delay` — quiche's 25ms default, which this library never
+     * overrides — so it cannot fall below ~26ms however fast the path is, and fifteen of them bottom
+     * out under half a second. The "scales with the path" claim was true only on the right-hand side of
+     * that table, and #385's trace was an **iPhone on Wi-Fi**: 10–30ms to a CDN edge, squarely on the
+     * left. One latency is why it was invisible, so this now runs [BLIP_LATENCIES].
+     *
+     * ## Why it is not vacuous
+     * A blip that never stalled anything would pass for free, so two independent facts are asserted per
+     * arm: the pipe really swallowed datagrams, and the echo really did not complete until after the
+     * heal. Neither is read from the predicate under test — they are the substrate's own counter and
+     * the test scheduler's own clock — which is the difference between a guard and a decoration.
      */
     @Test
     fun aDeadPathReHomesWhileTheMonitorStillCallsTheLinkHealthy() =
@@ -1261,6 +1456,8 @@ abstract class MigrationSimTestSuite {
         val attemptsPerRound: List<Int>,
         val probePathsOpened: Int,
         val datagramsSwallowed: Int,
+        val darkMillisPerRound: List<Long> = emptyList(),
+        val firesPerRound: List<Long> = emptyList(),
     )
 
     private suspend fun blipRoundsUnder(threshold: SilenceThreshold): BlipRun {
@@ -1318,13 +1515,23 @@ abstract class MigrationSimTestSuite {
 
                 val primary = pipe.paths().first()
                 val attemptsPerRound = mutableListOf<Int>()
+                val darkMillis = mutableListOf<Long>()
+                val firesPerRound = mutableListOf<Long>()
                 repeat(BLIP_ROUNDS) { round ->
                     write("blip$round")
                     val firesBefore = ptoFires()
+                    val sched = currentCoroutineContext()[kotlinx.coroutines.test.TestCoroutineScheduler]!!
+                    val darkFrom = sched.currentTime
                     pipe.impair(primary.local, PathImpairment(blackhole = true))
                     withTimeout(DARK_ROUND_LIMIT) {
-                        while (ptoFires() - firesBefore < DARK_ROUND_PTOS) delay(50.milliseconds)
+                        while (ptoFires() - firesBefore < DARK_ROUND_PTOS &&
+                            (sched.currentTime - darkFrom).milliseconds < BLIP_ROUND_LIMIT
+                        ) {
+                            delay(50.milliseconds)
+                        }
                     }
+                    darkMillis += sched.currentTime - darkFrom
+                    firesPerRound += ptoFires() - firesBefore
                     pipe.impair(primary.local, PathImpairment(latency = DEFAULT_PATH_LATENCY))
                     assertEquals(
                         "blip$round",
@@ -1333,8 +1540,24 @@ abstract class MigrationSimTestSuite {
                             "rounds after it would prove nothing",
                     )
                     attemptsPerRound += client.attempts.size
+                    // Ordinary traffic between the stalls. Not padding: each stall inflates the path's
+                    // own RTT estimate, and a round trip that succeeds is the only thing that walks it
+                    // back down — without them the second stall's PTO is already seconds long and the
+                    // rounds after it contribute no expiries at all, which would leave the tally this
+                    // test is built on below the threshold it has to cross.
+                    repeat(BLIP_SETTLE_ECHOES) { settle ->
+                        write("settle$round-$settle")
+                        assertEquals("settle$round-$settle", read(), "round $round: settling echo $settle never came back")
+                    }
                 }
-                val run = BlipRun(attemptsPerRound.toList(), clientPaths().size, primary.stats.blackholed)
+                val run =
+                    BlipRun(
+                        attemptsPerRound.toList(),
+                        clientPaths().size,
+                        primary.stats.blackholed,
+                        darkMillis.toList(),
+                        firesPerRound.toList(),
+                    )
                 stream.close()
                 run
             } finally {
@@ -1379,7 +1602,28 @@ abstract class MigrationSimTestSuite {
                             "on its own, the connection migrated. The run of " +
                             "unanswered expiries is not being cleared when the path answers, so it " +
                             "is a lifetime tally rather than a consecutive one — every long-lived " +
-                            "connection reaches the threshold eventually, on no evidence at all",
+                            "connection reaches the threshold eventually, on no evidence at all. " +
+                            "dark ms per round: ${run.darkMillisPerRound}",
+                    )
+                }
+                // The two premises, because this test spent a release asserting neither. Without the
+                // first it can pass with stalls too short to produce any evidence to accumulate;
+                // without the second it can pass with stalls so long that "must not migrate" is the
+                // wrong answer — which is what it did, at 20.3s. See [BLIP_ROUND_LIMIT].
+                assertTrue(
+                    run.firesPerRound.sum() >= SILENT_PATH_EXPIRY_THRESHOLD,
+                    "the stalls produced ${run.firesPerRound} unanswered expiries in total, which never " +
+                        "reaches the $SILENT_PATH_EXPIRY_THRESHOLD a lifetime tally would have had to " +
+                        "cross — so a tally and a run are indistinguishable in this run and zero " +
+                        "migrations proves nothing about which one the driver keeps",
+                )
+                run.darkMillisPerRound.forEachIndexed { round, dark ->
+                    assertTrue(
+                        dark.milliseconds <= BLIP_ROUND_LIMIT,
+                        "round $round was dark for ${dark.milliseconds}, past the $BLIP_ROUND_LIMIT that " +
+                            "keeps these stalls blips. A stall longer than $SILENT_PATH_PATIENCE *should* " +
+                            "re-home — that is #574 — so asserting no migration across one asserts the " +
+                            "defect. Rounds: ${run.darkMillisPerRound}",
                     )
                 }
                 assertTrue(
@@ -1520,8 +1764,49 @@ abstract class MigrationSimTestSuite {
          * whole arithmetic: a tally that never resets crosses inside this test and a run that resets
          * never does.
          */
-        const val BLIP_ROUNDS = 3
+        const val BLIP_ROUNDS = 4
         const val DARK_ROUND_PTOS = 2L
+
+        /**
+         * Migrations [aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime] performs before it
+         * kills anything. Two rather than one so the active path index is 2: a reader that assumed
+         * index 0 reads a path the connection left, which is how the first investigation of this
+         * scenario measured zero expiries and went looking in the wrong place.
+         */
+        const val PRIOR_MIGRATIONS = 2
+
+        /**
+         * Round trip above which a path is certainly **un-sampled** — quiche is reporting RFC 9002
+         * §5.1's initial `kInitialRtt = 333ms` rather than anything it measured.
+         *
+         * 300ms, so the check is against the initial value and not against a threshold: the sim's
+         * slowest arm is a 240ms round trip and its probe paths are 70ms, so nothing this suite runs
+         * can reach here by measuring honestly.
+         */
+        val UNSAMPLED_RTT_FLOOR = 300.milliseconds
+
+        /**
+         * ⚠️ **Ceiling on one stall, and the reason this test stopped meaning what it said.**
+         *
+         * The rounds used to be sized by [DARK_ROUND_PTOS] alone, with no bound on how long two expiries
+         * were allowed to take. They compound: a stall inflates the path's own RTT estimate (`srtt=540ms
+         * rttvar=966ms` measured on a path that had been dark), so the next stall's two expiries cost
+         * four times as much. Measured, the three "blips" this file asserted must not migrate were
+         * **750ms, 4.8s and 20.3s** — and it was the 20.3s one that made the guard read as "a twenty
+         * second blackout must not re-home", which is #574 itself, defended by a test named for #385.
+         *
+         * With this bound and [BLIP_SETTLE_ECHOES] between rounds, every stall is 700–750ms — shorter
+         * than [BLIP_385], the longest excursion actually on record — and the tally still crosses.
+         */
+        val BLIP_ROUND_LIMIT = 2.seconds
+
+        /**
+         * Successful round trips between stalls, which is what walks the inflated RTT estimate back
+         * down. Not padding: at four of them the later rounds contribute no expiries at all
+         * (`fires=[2, 1, 1, 0]`) and the tally never reaches the threshold, so the test passes while
+         * proving nothing. At twenty it is `fires=[2, 2, 2, 2]`.
+         */
+        const val BLIP_SETTLE_ECHOES = 20
 
         /**
          * Bound on one stall, so a round that can never see its fires fails loudly instead of hanging

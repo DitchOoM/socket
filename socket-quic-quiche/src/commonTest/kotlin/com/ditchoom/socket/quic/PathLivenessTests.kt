@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -325,7 +326,10 @@ class PathLivenessTests {
                 f.driver.pathLiveness.value,
                 "$expiries unanswered expiries over $silentFor was called a dead path. Elapsed time on " +
                     "its own is not evidence — three missed expiries is 'a few packets went missing', " +
-                    "which is precisely what #385 says this must be stronger than",
+                    "which is precisely what #385 says this must be stronger than. (Long enough, it " +
+                    "does become evidence: see aRunPastThePatienceCeilingIsSilentWithoutTheCount. " +
+                    "$silentFor is deliberately short of that $SILENT_PATH_PATIENCE ceiling, so this " +
+                    "is measuring the count and not the ceiling.)",
             )
 
             expiries++
@@ -337,6 +341,127 @@ class PathLivenessTests {
                     "halves of the threshold and still reads as answering, so nothing would ever trigger",
             )
         }
+
+    /**
+     * **Long enough is evidence: the ceiling declares a run the count will never finish.**
+     *
+     * The count half of the threshold is `(2⁴−1) = 15` PTOs, and that is a *duration* only if a PTO is
+     * one. It is not: quiche takes an RTT sample from an ack, so a path that has never been acked sits
+     * at RFC 9002 §5.1's `kInitialRtt`, and `333 + 4·166.5 + 25 = 1024ms` is four times the PTO of the
+     * sampled path beside it. #574 shipped with the count alone and the walk after it measured
+     * 10.1–19.2s of dead air on paths the application was clocking at 58–187ms. See
+     * [SILENT_PATH_PATIENCE].
+     *
+     * Here the tick is set past half the ceiling so the run crosses [SILENT_PATH_PATIENCE] while its
+     * count is still short of [SILENT_PATH_EXPIRY_THRESHOLD] — the case the sim reaches only by
+     * migrating twice first, and reaches here in four reads. The count is asserted to be short of the
+     * threshold *before* the verdict, so a change that made the count arrive early would fail here
+     * rather than turn this into a second copy of the count test.
+     */
+    @Test
+    fun aRunPastThePatienceCeilingIsSilentWithoutTheCount() =
+        runTest {
+            // Past half the ceiling, so two reads clear it: the run's clock starts at the first expiry.
+            val slowTick = SILENT_PATH_PATIENCE / 2 + 100.milliseconds
+            val f = Fixture(this, slowTick)
+            startObserved(f)
+
+            f.read(this, expiries = 0) // baseline on a healthy path
+            f.read(this, expiries = 1) // the run starts here…
+            val runStartedAt = currentTime
+            f.read(this, expiries = 2)
+            assertEquals(
+                PathLiveness.Answering,
+                f.driver.pathLiveness.value,
+                "the run was declared after one read, before it could have crossed either bound",
+            )
+
+            f.read(this, expiries = 3)
+            val silentFor = (currentTime - runStartedAt).milliseconds
+            assertTrue(
+                3L < SILENT_PATH_EXPIRY_THRESHOLD,
+                "this scenario needs a count short of $SILENT_PATH_EXPIRY_THRESHOLD to say anything " +
+                    "about the ceiling; at 3 it is no longer short of it",
+            )
+            assertTrue(
+                silentFor >= SILENT_PATH_PATIENCE,
+                "the run has only been going $silentFor, short of the $SILENT_PATH_PATIENCE ceiling, " +
+                    "so the assertion below is not measuring the ceiling at all",
+            )
+            assertEquals(
+                PathLiveness.Silent,
+                f.driver.pathLiveness.value,
+                "three unanswered expiries over $silentFor — past the $SILENT_PATH_PATIENCE ceiling — " +
+                    "still reads as answering, so detection is back to waiting for a fourth expiry " +
+                    "that is fifteen PTOs away on a path whose PTO quiche has never measured. That is " +
+                    "the 15.36s the sim records with this clause removed",
+            )
+        }
+
+    /**
+     * **A run that has stopped growing is never declared, however long it goes on.**
+     *
+     * The ceiling is the one half of the threshold that elapsed time alone can satisfy, and that makes
+     * it the one half that must be pinned to fresh evidence. A run only grows while quiche keeps
+     * expiring loss timers, and it only does that while something is outstanding for them to be armed
+     * about — so a path that blips once and heals over an application with nothing more to say leaves a
+     * `Building(1, …)` run that no expiry will advance and no datagram will reset. Time passes anyway.
+     *
+     * Measured, before the sampler required a fresh expiry: the #385 guard at 2ms one-way failed with
+     * `expiries=1 elapsed=6s` — a healthy idle path declared dead, and a migration bought on nothing at
+     * all, which is a worse #385 than #385.
+     *
+     * ⚠️ The reads here repeat the **same** counter value on purpose. That is not a no-op: the sampler
+     * runs on every driver wake, not only on expiries, so these are exactly the wakes on which a stale
+     * run would be re-judged.
+     */
+    @Test
+    fun aRunThatStopsGrowingIsNeverDeclaredOnElapsedTimeAlone() =
+        runTest {
+            val slowTick = 1.seconds
+            val f = Fixture(this, slowTick)
+            startObserved(f)
+
+            f.read(this, expiries = 0) // baseline on a healthy path
+            f.read(this, expiries = 1) // one expiry, and then the path goes quiet for good
+            val runStartedAt = currentTime
+            repeat(((SILENT_PATH_PATIENCE / slowTick).toInt() + 2)) { f.read(this, expiries = 1) }
+
+            val silentFor = (currentTime - runStartedAt).milliseconds
+            assertTrue(
+                silentFor > SILENT_PATH_PATIENCE,
+                "the run only aged $silentFor, inside the $SILENT_PATH_PATIENCE ceiling, so this would " +
+                    "pass without the sampler ever being asked the question",
+            )
+            assertEquals(
+                PathLiveness.Answering,
+                f.driver.pathLiveness.value,
+                "a run stuck at one unanswered expiry was declared dead after $silentFor, on no evidence " +
+                    "newer than that single expiry. Nothing grew and nothing arrived — which is what an " +
+                    "idle connection over a healthy path looks like once the application stops talking",
+            )
+        }
+
+    /**
+     * **A ceiling at or under the floor is not constructible.**
+     *
+     * It would answer the whole question before the floor could refuse a blip, which is the count-only
+     * rule that re-opens #385 arriving by a different route. The refusal names which half was wrong as
+     * a value rather than as a sentence, for the reason [InvalidSilenceThreshold] gives.
+     */
+    @Test
+    fun aCeilingAtOrUnderTheFloorIsNotConstructible() {
+        val equal =
+            assertFailsWith<InvalidSilenceThreshold> {
+                SilenceThreshold(SILENT_PATH_EXPIRY_THRESHOLD, 2.seconds, 2.seconds)
+            }
+        assertEquals(InvalidSilenceThreshold.Problem.PatienceUnderFloor, equal.problem)
+        val under =
+            assertFailsWith<InvalidSilenceThreshold> {
+                SilenceThreshold(SILENT_PATH_EXPIRY_THRESHOLD, 2.seconds, 1.seconds)
+            }
+        assertEquals(InvalidSilenceThreshold.Problem.PatienceUnderFloor, under.problem)
+    }
 
     /**
      * **A read from a different path is a baseline, never a delta.**
