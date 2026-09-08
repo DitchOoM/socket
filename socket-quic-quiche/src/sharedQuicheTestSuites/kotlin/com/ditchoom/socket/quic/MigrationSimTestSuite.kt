@@ -6,6 +6,10 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceMigrationTrigger
+import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
@@ -19,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -1213,6 +1218,104 @@ abstract class MigrationSimTestSuite {
                             "the connection reports itself moved but its final path carried no two-way " +
                                 "traffic (toServer=${settled.stats.sentToServer} " +
                                 "toClient=${settled.stats.sentToClient})",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * A recorded trace says which of the reactor's two triggers woke a migration.
+     *
+     * The load-bearing assertion is the negative one: the monitor never moves here, so a trace claiming
+     * `LinkChanged` is recording a trigger that did not fire. Asserting the positive alone would pass
+     * against a recorder that hardcoded either token.
+     */
+    @Test
+    fun aDataPlaneMigrationRecordsWhichTriggerWokeIt() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val recorded = mutableListOf<TraceEvent>()
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 574_777L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            // The production opt-in, so this asserts what a walk writes to disk.
+                            trace = QuicTraceCapture({ event -> recorded += event }),
+                        ),
+                    probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+                ) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.write(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+
+                        suspend fun echo(payload: String): String {
+                            val out = BufferFactory.network().allocate(payload.length)
+                            out.writeString(payload, Charset.UTF8)
+                            out.resetForRead()
+                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                            out.freeNativeMemory()
+                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
+                            if (r !is ReadResult.Data) return "NO_DATA"
+                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                        }
+
+                        assertEquals("before", echo("before"), "the connection must be healthy before the path dies")
+                        awaitSpareDcids()
+
+                        val primary = pipe.paths().first()
+                        pipe.impair(primary.local, PathImpairment(blackhole = true))
+                        assertEquals("after", echo("after"), "the connection never re-homed: ${client.attempts}")
+
+                        assertEquals(
+                            WIFI,
+                            monitor.state.value.networkId,
+                            "the monitor moved, so this scenario no longer isolates the data-plane trigger",
+                        )
+
+                        val migrations = recorded.filterIsInstance<TraceEvent.Migration>()
+                        assertTrue(
+                            migrations.isNotEmpty(),
+                            "the connection re-homed but the trace recorded no migration at all — which is " +
+                                "the state the walk rig was in: outcomes in the log, nothing about what " +
+                                "caused them. Recorded: ${recorded.size} events",
+                        )
+                        assertTrue(
+                            migrations.all { it.trigger == TraceMigrationTrigger.PathStoppedAnswering },
+                            "the platform monitor never moved in this scenario, so every migration here was " +
+                                "woken by the data plane. The trace says otherwise, which means the recorded " +
+                                "trigger is not the one that fired: ${migrations.map { it.trigger }}",
+                        )
+
+                        // The tally behind the trigger: which half of the threshold bound.
+                        val declared = recorded.filterIsInstance<TraceEvent.Silence>().filter { it.phase == TraceSilencePhase.Declared }
+                        assertTrue(
+                            declared.isNotEmpty(),
+                            "a migration was triggered by path silence, but no SILENCE Declared line was " +
+                                "recorded, so a reader cannot tell what the run actually counted: " +
+                                "${recorded.filterIsInstance<TraceEvent.Silence>()}",
+                        )
+                        assertTrue(
+                            declared.any { it.expiries > 0 && it.elapsed > Duration.ZERO },
+                            "the declared run carries no tally and no elapsed time, so it records that a " +
+                                "verdict was reached without recording anything about why: $declared",
                         )
                         stream.close()
                     } finally {

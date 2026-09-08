@@ -15,9 +15,13 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.recordMissingNativeLib
 import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.runQuicSim
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.withSemanticSim
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceMigrationOutcome
+import com.ditchoom.socket.testkit.trace.TraceMigrationTrigger
 import com.ditchoom.socket.testkit.trace.TracePath
+import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.launch
@@ -25,6 +29,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
@@ -51,7 +56,7 @@ class TraceRecorderRoundTripTests {
                     // proven configuration) — so this test costs milliseconds of wall clock.
                     ImpairmentConfig(seed = 21L),
                     establishTimeout = 5.seconds,
-                    clientRecorder = recorder,
+                    clientCapture = TraceCapture.On(recorder),
                 ) {
                     val payload = "trace me"
                     val serverJob =
@@ -195,6 +200,19 @@ class TraceRecorderRoundTripTests {
                 TraceEvent.State(22_000L.nanoseconds, "Closed", "IdleTimeout (0x-1)"),
                 TraceEvent.PathState(23_000L.nanoseconds, "Probing", "10.0.0.2", 4444),
                 TraceEvent.PathState(24_000L.nanoseconds, "None", null, 0),
+                // Both triggers, and outcomes from either side of the sealed hierarchy.
+                TraceEvent.Migration(25_000L.nanoseconds, TraceMigrationTrigger.LinkChanged, 1, TraceMigrationOutcome.Succeeded),
+                TraceEvent.Migration(
+                    26_000L.nanoseconds,
+                    TraceMigrationTrigger.PathStoppedAnswering,
+                    7,
+                    TraceMigrationOutcome.NoSpareConnectionId,
+                ),
+                // Every phase, including a tally only the patience ceiling could have declared.
+                TraceEvent.Silence(27_000L.nanoseconds, TraceSilencePhase.None, 0, Duration.ZERO),
+                TraceEvent.Silence(28_000L.nanoseconds, TraceSilencePhase.Building, 3, 1_500_000_000L.nanoseconds),
+                TraceEvent.Silence(29_000L.nanoseconds, TraceSilencePhase.Declared, 4, 3_695_000_000L.nanoseconds),
+                TraceEvent.Silence(30_000L.nanoseconds, TraceSilencePhase.Declared, 2, 4_000_000_000L.nanoseconds),
             )
         val obsLines = mutableListOf<String>()
         QuicTraceRecorder({ e -> obsLines += e.toString() }).also { r -> observations.forEach { r.record(it) } }
@@ -222,6 +240,14 @@ class TraceRecorderRoundTripTests {
                 // Observations must be dropped by codegen:
                 TraceEvent.DgramOut(5_000_000L.nanoseconds, 1, null, "ff"),
                 TraceEvent.State(6_000_000L.nanoseconds, "Closed", null),
+                // Observations a field trace is full of: codegen must drop them, not choke.
+                TraceEvent.Migration(
+                    7_000_000L.nanoseconds,
+                    TraceMigrationTrigger.PathStoppedAnswering,
+                    1,
+                    TraceMigrationOutcome.Succeeded,
+                ),
+                TraceEvent.Silence(8_000_000L.nanoseconds, TraceSilencePhase.Declared, 4, 3_695_000_000L.nanoseconds),
             )
         val source = TraceToFixture.generateKotlin("field-capture-1", "fieldCapture1", inputs)
         val expectedFragments =

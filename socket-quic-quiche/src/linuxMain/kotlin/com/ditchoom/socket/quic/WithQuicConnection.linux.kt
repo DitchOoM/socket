@@ -203,7 +203,7 @@ internal suspend fun buildLinuxQuicConnection(
                     driverContext = tuning.driverContext,
                     sendStallBound = tuning.sendStallBound,
                     random = tuning.random,
-                    recorder = tuning.recorderFactory(),
+                    capture = tuning.captureFactory(),
                     networkObservation = tuning.networkObservation,
                     // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned via
                     // onCleanup for the driver's life) and the same factory that opened the primary path

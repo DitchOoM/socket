@@ -9,6 +9,7 @@ import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
@@ -153,7 +154,7 @@ class AutoMigrationReactorTests {
     ) = runTest {
         val connection = RecordingQuicConnection(UnconfinedTestDispatcher(testScheduler), migrateResult)
         try {
-            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness)
+            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness, TraceCapture.Off)
             body(connection)
         } finally {
             connection.stop()

@@ -29,6 +29,10 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -121,18 +125,57 @@ class DeviceHandoffProbe {
                 "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
         )
 
-        // Bounded on purpose — see [RingTraceSink]. A packet-level trace of a multi-day walk is tens
-        // of gigabytes; what a post-mortem needs is the last few hundred events before it stopped.
+        // The in-memory tail the stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
+        // record of the walk: it holds about a minute and is drained only when the echo loop stops,
+        // so a migration the connection *recovers from* — every event #574 is about — never reached
+        // the log at all. That is why the 2026-09-08 walk had to be diagnosed by arithmetic on the
+        // gaps between human log lines, and why the first root cause drawn that way was wrong.
         val ring =
             RingTraceSink(
                 RING_CAPACITY,
             ) { emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
 
+        // The record of the walk: one file per connection, appended as it happens, replayable through
+        // `TraceToFixture` without re-walking anything. Per connection rather than one file because
+        // the v1 grammar carries no connection id and each connection stamps against its own clock
+        // origin — a single shared sink interleaves every reconnect into something no fixture can be
+        // built from, which is exactly what `QuicTraceCapture(ring)` was doing here.
+        //
+        // Affordable at this rig's cadence, which is the only reason it can be unconditional: the echo
+        // loop is one exchange every `probeEchoIntervalMs` (2s default) with a ~12-byte payload, so the
+        // trace runs ~1.5 MB/hour — a 71-hour walk is ~100 MB. The "tens of gigabytes" figure that
+        // justified the ring is a *saturated* connection; this probe is nearly idle by construction.
+        val traceBudgetBytes = arg("probeTraceBudgetMb", "512").toLong() * 1024L * 1024L
+        val traceDir = File(dir, "traces")
+        traceDir.mkdirs()
+        traceDir.listFiles()?.forEach { it.delete() }
+        val traceFiles =
+            WalkTraceFiles(traceDir, traceBudgetBytes) { spent ->
+                emit(
+                    "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
+                        "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
+                )
+            }
+
         val options =
             QuicOptions(
                 alpnProtocols = listOf("test"),
                 verifyPeer = false,
-                trace = QuicTraceCapture(ring),
+                trace =
+                    QuicTraceCapture(
+                        sinkFor = {
+                            val file = traceFiles.next()
+                            // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
+                            // keeps this connection's own replayable trace.
+                            TraceSink { event ->
+                                ring.emit(event)
+                                file.emit(event)
+                            }
+                        },
+                        // The connectivity stream is half of every migration question — which trigger
+                        // fired, and whether the platform had even noticed the link yet. It was off.
+                        recordNetworkObservations = true,
+                    ),
                 // Long enough that a dead path is not immediately reaped, short enough that the walk
                 // shows a death rather than a hang. Keepalive keeps an idle connection honest.
                 idleTimeout = 30.seconds,
@@ -728,44 +771,77 @@ private var loopTicks: Int = 0
 private class RingTraceSink(
     private val capacity: Int,
     /**
-     * Called the instant a stall is recorded, not when the ring is dumped.
-     *
-     * Without this the most interesting event in the run is the one thing the log cannot show. A
-     * stall the driver *recovers from* never trips the silence watchdog — the loop is running again
-     * within seconds — so the ring holding the evidence is never dumped, and the recovery reads as
-     * one more ordinary reconnect among hundreds. The whole point of this run is to catch the fix
-     * working, which means the stall has to announce itself when it happens.
+     * Called the instant a stall is recorded, not when the ring is dumped: a stall the driver recovers
+     * from never trips the silence watchdog, so the ring holding the evidence is never drained.
      */
     private val onStall: (String) -> Unit,
 ) : TraceSink {
-    private val slots = arrayOfNulls<String>(capacity)
-    private var next = 0
-    private var filled = 0
+    private val slots = AtomicReferenceArray<String?>(capacity)
+    private val written = AtomicLong(0)
 
-    @Synchronized
     override fun emit(event: TraceEvent) {
-        // Rendered on arrival: the encoding is what a post-mortem reads, and holding the objects
-        // would keep their buffers alive for the life of the ring.
+        // Rendered on arrival: holding the events would keep their buffers alive for the ring's life.
         val rendered = event.toString()
-        slots[next] = rendered
-        next = (next + 1) % capacity
-        if (filled < capacity) filled++
+        val slot = written.getAndIncrement()
+        slots.set((slot % capacity).toInt(), rendered)
         if (event is TraceEvent.Error && event.type.contains("SendStalled")) onStall(rendered)
     }
 
-    @Synchronized
-    fun size(): Int = filled
+    fun size(): Int = minOf(written.get(), capacity.toLong()).toInt()
 
     /** Oldest first, so the dump reads forwards into the moment things stopped. */
-    @Synchronized
     fun drain(): List<String> {
-        val start = if (filled < capacity) 0 else next
-        return (0 until filled).mapNotNull { slots[(start + it) % capacity] }
+        val total = written.get()
+        val count = minOf(total, capacity.toLong())
+        val start = total - count
+        return (0 until count).mapNotNull { slots.get(((start + it) % capacity).toInt()) }
     }
 }
 
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
+
+/**
+ * One file-backed [TraceSink] per connection, under a shared byte budget.
+ *
+ * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
+ * killed by a reboot or a pulled cable must not lose its tail.
+ */
+private class WalkTraceFiles(
+    private val dir: File,
+    private val budgetBytes: Long,
+    private val onBudgetSpent: (Long) -> Unit,
+) {
+    private val connections = AtomicInteger(0)
+    private val budget = AtomicReference<TraceBudget>(TraceBudget.Live(0L))
+
+    /** Lock-free: the thread whose CAS moves the budget to [TraceBudget.Spent] is the one that reports it. */
+    private fun charge(n: Int): Boolean {
+        while (true) {
+            when (val current = budget.get()) {
+                TraceBudget.Spent -> return false
+                is TraceBudget.Live ->
+                    if (current.written + n > budgetBytes) {
+                        if (budget.compareAndSet(current, TraceBudget.Spent)) {
+                            onBudgetSpent(current.written)
+                            return false
+                        }
+                    } else if (budget.compareAndSet(current, TraceBudget.Live(current.written + n))) {
+                        return true
+                    }
+            }
+        }
+    }
+
+    fun next(): TraceSink {
+        val file = File(dir, "conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace")
+        return TraceSink { event ->
+            val line = event.toString() + "\n"
+            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+            if (charge(line.length)) runCatching { file.appendText(line) }
+        }
+    }
+}
 
 /**
  * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall. Two (~2
@@ -818,3 +894,21 @@ private fun transport(ctx: Context): String =
             }
         "net=$kind validated=${caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
     }.getOrElse { "net=unreadable(${it::class.simpleName})" }
+
+/**
+ * How much of a walk's trace budget is left.
+ *
+ * Sealed rather than a `written` counter beside an `announced` flag, because those two admit a state
+ * that must not exist: spent-but-not-announced, or announced-then-charged-again. The ceiling is
+ * crossed exactly once, and it is the **transition** that announces — so "said so" is not a fact
+ * tracked alongside the budget, it is the budget.
+ */
+private sealed interface TraceBudget {
+    /** Room left, [written] bytes used so far. */
+    data class Live(
+        val written: Long,
+    ) : TraceBudget
+
+    /** The ceiling was reached, and reaching it is what reported it. */
+    data object Spent : TraceBudget
+}

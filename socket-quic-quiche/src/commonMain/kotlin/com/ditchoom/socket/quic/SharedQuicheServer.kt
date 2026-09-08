@@ -12,7 +12,8 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.udp.SocketAddressCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -160,12 +161,11 @@ internal class SharedQuicheServer(
      * receive loop to count what the trace could not). This records those three at the receive loop,
      * typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so the next such report says which.
      *
-     * Same [QuicheDriverTuning.recorderFactory] every accepted connection uses, so with the single-sink
+     * Same [QuicheDriverTuning.captureFactory] every accepted connection uses, so with the single-sink
      * [com.ditchoom.socket.quic.trace.QuicTraceCapture] the lines interleave with the connections' own
-     * in capture order; with a per-connection factory the server gets a sink of its own. Null when
-     * capture is off, and then every record site below is a null check and nothing else.
+     * in capture order; with a per-connection factory the server gets a sink of its own.
      */
-    private val serverRecorder: QuicTraceRecorder? = tuning.recorderFactory()
+    private val serverCapture: TraceCapture = tuning.captureFactory()
 
     private val receiveJob = scope.launch(serverReceiveDispatcher) { receiveLoop() }
 
@@ -383,7 +383,7 @@ internal class SharedQuicheServer(
                             tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                         )
                     if (rc < 0) {
-                        serverRecorder?.error(ServerDatagramDrop.Unparseable(received, peer))
+                        serverCapture.record { it.error(ServerDatagramDrop.Unparseable(received, peer)) }
                         recvBuf.freeNativeMemory()
                         continue@loop
                     }
@@ -435,7 +435,7 @@ internal class SharedQuicheServer(
                         if (sendResult.isFailure) {
                             // Not delivered → onRecvInfoConsumed won't fire; release the ref here.
                             cached.inFlight.decrementAndGet()
-                            serverRecorder?.error(ServerDatagramDrop.DriverGone(received, peer))
+                            serverCapture.record { it.error(ServerDatagramDrop.DriverGone(received, peer)) }
                             recvBuf.freeNativeMemory()
                             // Remove ALL entries for this dead driver, not just the one we hit.
                             registry.deRouteDriver(existingDriver)
@@ -453,18 +453,18 @@ internal class SharedQuicheServer(
                         // close in every trace someone reads to diagnose a real failure.
                         val packetType = QuicPacketType.fromQuiche(typeBuf[0].toInt() and 0xFF)
                         if (packetType !is QuicPacketType.Initial) {
-                            serverRecorder?.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType))
+                            serverCapture.record { it.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType)) }
                             recvBuf.freeNativeMemory()
                             continue@loop
                         }
                         if (received < MIN_INITIAL_DATAGRAM_SIZE) {
-                            serverRecorder?.error(ServerDatagramDrop.RuntInitial(received, peer))
+                            serverCapture.record { it.error(ServerDatagramDrop.RuntInitial(received, peer)) }
                             recvBuf.freeNativeMemory()
                             continue@loop
                         }
                         // Accept new connection — recvBuf ownership transfers inside.
                         when (val outcome = acceptNewConnection(recvBuf, received, peer, localAddr)) {
-                            is AcceptOutcome.Refused -> serverRecorder?.error(outcome.drop)
+                            is AcceptOutcome.Refused -> serverCapture.record { it.error(outcome.drop) }
                             is AcceptOutcome.Accepted -> {
                                 registry.routeDriver(outcome.serverScidKey, outcome.driver)
                                 registry.routeDriver(dcidKey, outcome.driver)
@@ -566,8 +566,8 @@ internal class SharedQuicheServer(
         }
         // The one datagram the connection's own recorder can never show: it is consumed here, before
         // the driver (and its recording channel wrap) exists. Recorded at the server level so a trace
-        // that begins with STATE lines is preceded by the arrival that caused them (see serverRecorder).
-        serverRecorder?.datagram(out = false, buffer = recvBuf, len = received, path = peerKey)
+        // that begins with STATE lines is preceded by the arrival that caused them (see serverCapture).
+        serverCapture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = peerKey) }
         recvBuf.freeNativeMemory()
 
         // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
@@ -600,7 +600,7 @@ internal class SharedQuicheServer(
                 driverContext = tuning.driverContext,
                 sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
-                recorder = tuning.recorderFactory(),
+                capture = tuning.captureFactory(),
                 // RFC 9000 §9 active migration is a client-only capability — in QUIC v1 only clients
                 // migrate — so a server-accepted connection states that outright. The server still
                 // handles a *peer's* migration (per-source recv_info + sendInfo.to egress, see

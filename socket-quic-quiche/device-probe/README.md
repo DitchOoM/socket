@@ -7,11 +7,25 @@ Everything here talks to the phone through `adb`; the probe itself runs detached
 
 ```bash
 ./gradlew :socket-quic-quiche:assembleDebugAndroidTest     # from the repo root; needs rustup's cargo + JDK 21
-device-probe/pull.sh previous-run          # START truncates the on-device log — save the old one first
+device-probe/pull.sh previous-run          # START wipes the log AND the replay traces — save them first
 device-probe/install.sh                    # proves the APK on the phone by sha256
 device-probe/doze.sh                       # Doze / App Standby exemption
 device-probe/preflight.sh                  # Tailscale OFF, route, install, notifications, whitelist, battery
 ```
+
+## What a run leaves behind
+
+Two artifacts, and the second is the one that stops a walk having to be repeated:
+
+- `quic-handoff-probe.log` — the human record. What happened, in order.
+- `traces/conn-NNNN.trace` — **one replayable trace per connection**, in the v1 grammar. Feed it to
+  `TraceToFixture` and the connection replays through the sim in virtual time, on every platform,
+  forever. A field bug becomes a committed regression test instead of another walk.
+
+`pull.sh` fetches both and says loudly if the traces are missing. Budget is ~1.5 MB/hour (`-e
+probeTraceBudgetMb`, default 512), so even a 71-hour walk is ~100 MB.
+
+⚠️ `start.sh` deletes **both** before it begins, exactly as it always has for the log. Pull first.
 
 ## Dry run (about 15 minutes)
 

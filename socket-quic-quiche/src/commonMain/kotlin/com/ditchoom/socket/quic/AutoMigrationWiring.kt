@@ -4,6 +4,8 @@ import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.processDefault
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
@@ -136,7 +138,7 @@ private fun Attachment.isNewsComparedTo(id: NetworkId): Boolean = this is Attach
  * wake-ups; the facts are re-read from [NetworkMonitor.observedLink] and [PathLiveness] at the moment
  * of use.
  */
-private sealed interface MigrationTrigger {
+internal sealed interface MigrationTrigger {
     /** The platform named a different link (the control plane). */
     data object LinkChanged : MigrationTrigger
 
@@ -267,6 +269,7 @@ internal fun wireAutoMigration(
     connection: QuicConnection,
     monitor: NetworkMonitor,
     pathLiveness: StateFlow<PathLiveness>,
+    capture: TraceCapture,
 ) {
     when (quicOptions.migration) {
         MigrationPolicy.Forbidden, MigrationPolicy.Manual -> return
@@ -320,7 +323,10 @@ internal fun wireAutoMigration(
                 }
             var attempt = 1
             while (true) {
-                when (val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)) {
+                val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)
+                // One site, so no outcome can be added that forgets to record itself.
+                capture.record { it.migrationAttempt(trigger, attempt, result) }
+                when (result) {
                     is MigrationResult.Succeeded -> {
                         attachedTo = attachOnSuccess
                         return@collect

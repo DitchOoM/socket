@@ -65,6 +65,30 @@ data class TracePathStats(
     val deliveryRate: Long,
 )
 
+/** Which of the reactor's two triggers woke a migration. */
+enum class TraceMigrationTrigger { LinkChanged, PathStoppedAnswering }
+
+/** How a migration attempt ended — one entry per `MigrationResult` leaf. */
+enum class TraceMigrationOutcome {
+    Succeeded,
+    ServerConnection,
+    PolicyForbids,
+    PeerForbids,
+    BackendCannotMigrate,
+    ConnectionClosed,
+    HandshakeNotConfirmed,
+    EndpointNotSelectable,
+    AlreadyInProgress,
+    NoSpareConnectionId,
+    LocalPathUnavailable,
+    ProbeRejected,
+    PathNotValidated,
+    SwitchRejected,
+}
+
+/** Where a silent run stands: no run, growing, or verdict published. */
+enum class TraceSilencePhase { None, Building, Declared }
+
 /**
  * One recorded trace event — the typed form of a `v1` trace line (grammar: `QuicTraceRecorder`).
  * [emit][TraceSink.emit] carries these directly; [toString] renders the `v1` line and the companion
@@ -185,6 +209,30 @@ sealed interface TraceEvent {
         override fun toString(): String = encodeTraceLine(this)
     }
 
+    /** An auto-migration attempt, the trigger that woke it, and how it ended. Observation. */
+    data class Migration(
+        override val at: Duration,
+        val trigger: TraceMigrationTrigger,
+        val attempt: Int,
+        val outcome: TraceMigrationOutcome,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
+     * A transition of the driver's silent-run tally, the state behind the data-plane migration
+     * trigger. [expiries] and [elapsed] are the two quantities the threshold is a conjunction of.
+     * Observation.
+     */
+    data class Silence(
+        override val at: Duration,
+        val phase: TraceSilencePhase,
+        val expiries: Long,
+        val elapsed: Duration,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
     /** A quiche path-stats snapshot ([TracePathStats]), polled on the driver's timer wake. Observation. */
     data class Stats(
         override val at: Duration,
@@ -291,7 +339,7 @@ sealed interface TraceEvent {
                 // StreamLoss is an OBSERVATION: it records what this endpoint did with bytes it had
                 // already received. Replay drives the transport from the far side, so feeding one back
                 // in would be replaying our own reaction, not the input that caused it.
-                is DgramOut, is State, is PathState, is Stats, is StreamLoss -> false
+                is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence -> false
             }
 
     /**

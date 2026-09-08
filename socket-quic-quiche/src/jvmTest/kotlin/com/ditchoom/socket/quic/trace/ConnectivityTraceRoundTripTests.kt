@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.sim.runQuicSim
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.withSemanticSim
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.transport.NetworkId
@@ -55,7 +56,7 @@ class ConnectivityTraceRoundTripTests {
                     // Lossless + zero latency: fully virtual-time (the W4-proven config), millisecond wall clock.
                     ImpairmentConfig(seed = 21L),
                     establishTimeout = 5.seconds,
-                    clientRecorder = recorder,
+                    clientCapture = TraceCapture.On(recorder),
                 ) {
                     // A real echo exchange, so the connectivity events sit inside genuine QUIC traffic.
                     val serverJob =

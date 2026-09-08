@@ -7,6 +7,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
+import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
@@ -418,6 +419,7 @@ class PathValidationTimeoutTests {
                     connection,
                     monitor,
                     f.driver.pathLiveness,
+                    TraceCapture.Off,
                 )
                 runCurrent()
 

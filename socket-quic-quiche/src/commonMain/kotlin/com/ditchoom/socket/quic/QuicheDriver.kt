@@ -13,9 +13,11 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
-import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.SendStalledException
 import com.ditchoom.socket.quic.trace.StreamLossCause
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.record
+import com.ditchoom.socket.quic.trace.recordOr
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -119,7 +121,7 @@ class QuicheDriver(
      * Timestamps come from the recorder's own clock, which callers must construct from the same
      * [clock] seam (one clock per RFC §5; `QuicheDriverTuning` threads both together).
      */
-    internal val recorder: QuicTraceRecorder? = null,
+    internal val capture: TraceCapture = TraceCapture.Off,
     /**
      * Connection-migration wiring (RFC 9000 §9), as one exhaustive answer.
      *
@@ -607,7 +609,7 @@ class QuicheDriver(
     private fun tapChannel(
         channel: UdpChannel,
         key: PathKey,
-    ): UdpChannel = recorder?.wrap(channel, key.takeIf { it.family != 0 }) ?: channel
+    ): UdpChannel = capture.recordOr(channel) { r -> r.wrap(channel, key.takeIf { k -> k.family != 0 }) }
 
     // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
     // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
@@ -1033,6 +1035,8 @@ class QuicheDriver(
         if (progress !is ActivePathProgress.Read) return
         val run = progress.run
         if (run !is SilentRun.Building) return
+        // The second way a run is declared; it bypasses the sampler, so it records its own verdict.
+        capture.record { it.silenceDeclared(run.expiries, run.since.elapsedNow()) }
         activePathProgress =
             ActivePathProgress.Read(progress.pathIndex, progress.totalPtoCount, SilentRun.Declared(run.since))
         mutablePathLiveness.value = PathLiveness.Silent
@@ -1139,11 +1143,26 @@ class QuicheDriver(
                 SilentRun.None, is SilentRun.Declared -> run
                 is SilentRun.Building ->
                     if (expired > 0 && silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow())) {
+                        // Recorded here, where the run is still the `Building` that carries the tally.
+                        capture.record { it.silenceDeclared(run.expiries, run.since.elapsedNow()) }
                         SilentRun.Declared(run.since)
                     } else {
                         run
                     }
             }
+        // Movement only: this runs on every timer wake, and the rate a tally grows at is the evidence.
+        capture.record { r ->
+            val before = previous?.run
+            when (settled) {
+                SilentRun.None -> if (before != null && before != SilentRun.None) r.silenceCleared()
+                is SilentRun.Building ->
+                    if (before !is SilentRun.Building || before.expiries != settled.expiries) {
+                        r.silenceBuilding(settled.expiries, settled.since.elapsedNow())
+                    }
+                // Recorded at the transition that produced it, which holds the tally.
+                is SilentRun.Declared -> Unit
+            }
+        }
         activePathProgress = ActivePathProgress.Read(pathIndex, stats.totalPtoCount, settled)
         mutablePathLiveness.value =
             when (settled) {
@@ -1175,6 +1194,8 @@ class QuicheDriver(
         val previous = activePathProgress as? ActivePathProgress.Read ?: return
         if (previous.run == SilentRun.None) return
         activePathProgress = ActivePathProgress.Read(previous.pathIndex, previous.totalPtoCount, SilentRun.None)
+        // The early return above keeps this once per episode, not once per datagram.
+        capture.record { it.silenceCleared() }
         mutablePathLiveness.value = PathLiveness.Answering
     }
 
@@ -1204,7 +1225,7 @@ class QuicheDriver(
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
-        recorder?.let { r ->
+        capture.record { r ->
             scope.launch(driverContext) {
                 state.collect { s ->
                     r.connectionState(s)
@@ -1343,7 +1364,7 @@ class QuicheDriver(
                 // Trace capture: a timer wake is the periodic-stats sampling point (RFC §5.1 item
                 // 5) — the driver already woke, so this adds no timer and costs nothing when off.
                 if (cmd == null) {
-                    recorder?.let { r -> api.connPathStats(conn, 0L)?.let { r.stats(it) } }
+                    capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
                     // …and the same wake is where the loss-detection timer expires, which is the whole
                     // of #574's data-plane migration trigger. Gated on there being a collector, which
                     // is the honest test of "could anyone act on this": the reactor subscribes only
@@ -1976,7 +1997,7 @@ class QuicheDriver(
                     // through it — and a failure mode that appears in no trace is precisely how the
                     // field hang stayed undiagnosable for 48 hours. Emitting it here is what makes a
                     // future stall visible in the replayable record instead of as a gap in it.
-                    recorder?.error(SendStalledException(sendStallBound))
+                    capture.record { it.error(SendStalledException(sendStallBound)) }
                     // Then behave exactly as SendOutcome.Failed: stop draining, do NOT end the
                     // connection. A stall is not one of RFC 9000 SS10's three terminations either, and
                     // pre-empting the idle timer here would report a cause we have not established.
@@ -2562,7 +2583,7 @@ class QuicheDriver(
             // the read above and this call share the driver coroutine, so it is reported rather than
             // handled.
             if (yielded > count) {
-                recorder?.error(RetiredScidOverflow(yielded, count))
+                capture.record { it.error(RetiredScidOverflow(yielded, count)) }
             }
             minOf(yielded, count)
         } finally {
@@ -2610,7 +2631,7 @@ class QuicheDriver(
                 // Sized from connActiveScids one line earlier, on this same coroutine, so this cannot
                 // happen — reported rather than handled, and the projection is abandoned rather than
                 // published, because a partial set would unroute the ids that did not fit.
-                recorder?.error(RetiredScidOverflow(yielded, active))
+                capture.record { it.error(RetiredScidOverflow(yielded, active)) }
                 return
             }
             if (yielded <= 0) {
@@ -2618,7 +2639,7 @@ class QuicheDriver(
                 // with only half the readback bound (the other half answering the QuicheApi default).
                 // Publishing that would unroute every id this connection has — the exact opposite of
                 // what a projection is for — so report it and leave the map alone.
-                recorder?.error(RetiredScidOverflow(yielded, active))
+                capture.record { it.error(RetiredScidOverflow(yielded, active)) }
                 return
             }
             // Unlike the retired-id drain this is a plain read, so a sink that snapshots the bytes
@@ -2660,7 +2681,7 @@ class QuicheDriver(
         // Trace capture: one final stats snapshot while the conn handle is still alive, so every
         // recorded session ends with the terminal loss/RTT/byte counters (STATS) even if no timer
         // wake happened (e.g. a pure event-cascade virtual-time run).
-        recorder?.let { r -> api.connPathStats(conn, 0L)?.let { r.stats(it) } }
+        capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
         api.connFree(conn)
         // Tear down any non-primary migration paths: cancel reader, close socket, free
         // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
@@ -2821,7 +2842,7 @@ class QuicheDriver(
         val slots = bufferFactory.allocate(count * RETIRED_SCID_SLOT_BYTES)
         try {
             val yielded = api.connReadSourceIds(conn, addr(slots), count)
-            if (yielded > count) recorder?.error(RetiredScidOverflow(yielded, count))
+            if (yielded > count) capture.record { it.error(RetiredScidOverflow(yielded, count)) }
             return (0 until minOf(yielded, count)).mapNotNull { i ->
                 slots.position(i * RETIRED_SCID_SLOT_BYTES)
                 val len = slots.readByte().toInt() and 0xFF
@@ -3038,7 +3059,7 @@ class DriverStreamAdapter(
             // Recorded before freeing: releasing here is CORRECT (no read() can hand these out any
             // more), and they are still bytes quiche accepted that the application never saw. Only
             // the second fact explains a stream that ends short, so the trace has to carry it.
-            driver.recorder?.streamLoss(slot.id.id, buffer.remaining(), StreamLossCause.ReaderGone)
+            driver.capture.record { it.streamLoss(slot.id.id, buffer.remaining(), StreamLossCause.ReaderGone) }
             buffer.freeIfNeeded()
         }
     }
@@ -3096,7 +3117,7 @@ class DriverStreamAdapter(
                 // The caller frees the buffer on this branch, so these bytes are gone. quiche already
                 // advanced the receive offset for them — this is the #393 shape, named at the moment
                 // it happens instead of being inferred later from a short stream.
-                driver.recorder?.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed)
+                driver.capture.record { it.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed) }
             }
         }
         if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
@@ -3323,11 +3344,9 @@ class DriverStreamAdapter(
                     // queue is closed, so nothing will ever drain this chunk and freeing is the only
                     // alternative to a leak. A STREAM_LOSS/QueueClosed line is the first direct
                     // evidence the #414 window is reachable rather than only real by construction.
-                    driver.recorder?.streamLoss(
-                        slot.id.id,
-                        undelivered.buffer.remaining(),
-                        StreamLossCause.QueueClosed,
-                    )
+                    driver.capture.record {
+                        it.streamLoss(slot.id.id, undelivered.buffer.remaining(), StreamLossCause.QueueClosed)
+                    }
                     undelivered.buffer.freeIfNeeded()
                 }
             }

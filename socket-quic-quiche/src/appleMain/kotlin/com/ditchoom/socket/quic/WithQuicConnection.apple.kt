@@ -228,7 +228,7 @@ internal suspend fun buildAppleQuicConnection(
                     driverContext = tuning.driverContext,
                     sendStallBound = tuning.sendStallBound,
                     random = tuning.random,
-                    recorder = tuning.recorderFactory(),
+                    capture = tuning.captureFactory(),
                     networkObservation = tuning.networkObservation,
                     // RFC 9000 §9 active migration, over a SECOND NWConnection.
                     //
