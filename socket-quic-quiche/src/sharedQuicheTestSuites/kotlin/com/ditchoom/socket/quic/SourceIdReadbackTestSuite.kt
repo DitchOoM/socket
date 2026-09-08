@@ -234,13 +234,18 @@ abstract class SourceIdReadbackTestSuite {
                                     "packet still in flight under that CID now reaches a quiche that does not " +
                                     "recognise it, and its InvalidState becomes a PROTOCOL_VIOLATION close (#437)",
                             )
-                            for (id in after) {
-                                assertTrue(
-                                    server.routesConnectionIdForTest(id),
-                                    "an id quiche still lists is not routed — a migrating peer switching to it " +
-                                        "would have its packets dropped at the demux, so the path never validates",
-                                )
-                            }
+                            // Same convergence window as the retired-id direction above: the routing table
+                            // is a projection our code maintains, so an id quiche has just issued can be in
+                            // `after` before the projection lands. Asserting it instantly races that gap.
+                            assertNotNull(
+                                withTimeoutOrNull(SYNC_BUDGET) {
+                                    while (after.any { !server.routesConnectionIdForTest(it) }) delay(POLL_INTERVAL)
+                                },
+                                "after $SYNC_BUDGET the server does not route " +
+                                    "${after.filterNot { server.routesConnectionIdForTest(it) }} of quiche's " +
+                                    "${after.size} source ids ($after). A migrating peer switching to one would " +
+                                    "have its packets dropped at the demux, so the path never validates",
+                            )
                             stream.close()
                         }
                     } finally {
