@@ -160,8 +160,31 @@ internal class MigrationSimScope(
         val n = api.connStats(clientConn)?.pathsCount ?: 0L
         return (0 until n).joinToString(" ") { idx ->
             val st = api.connPathStats(clientConn, idx)
-            "[$idx state=${st?.validationState} active=${st?.active}]"
+            "[$idx state=${st?.validationState} active=${st?.active} rtt=${st?.rtt} var=${st?.rttvar} pto=${st?.totalPtoCount}]"
         }
+    }
+
+    /**
+     * One read of the client's **active** path — the counters the shipped silence trigger actually
+     * folds into its run.
+     *
+     * Not reachable through `clientDriver.stats()`: [QuicheCmd.Stats] reads path index 0, which is the
+     * active path only until the first successful migration and never again. A scenario that migrates
+     * before it kills anything must ask for the active path by search, exactly as
+     * `QuicheDriver.sampleActivePathLiveness` does, or it measures the link the connection already left
+     * — which is how the first investigation of
+     * `aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime` came to read zero expiries off a dead
+     * path and go looking in the wrong place.
+     *
+     * ⚠️ Only valid while the driver is **quiescent**, for the reason [clientAvailableDcids] gives.
+     */
+    fun clientActivePath(): ActivePathReading {
+        val n = api.connStats(clientConn)?.pathsCount ?: return ActivePathReading.NoActivePath
+        for (idx in 0 until n) {
+            val st = api.connPathStats(clientConn, idx) ?: continue
+            if (st.active) return ActivePathReading.Read(idx, st.totalPtoCount, st.rtt, st.rttvar)
+        }
+        return ActivePathReading.NoActivePath
     }
 
     /** Diagnostic: how many more source CIDs the server is still allowed to issue. */
@@ -760,4 +783,24 @@ internal suspend fun <R> withMigrationSim(
         }
         result
     }
+}
+
+/**
+ * What a read of quiche's active path found — never a sentinel count or a zero duration standing in for
+ * "there wasn't one".
+ *
+ * [NoActivePath] is a real and transient state of quiche's own bookkeeping, not an error: it clears the
+ * active flag in `on_failed_validation()` and only picks a replacement on the next `on_timeout`, so a
+ * scenario sampling across a switch can land inside that window. A scenario that needs the counters says
+ * so with `assertIs`, and gets a failure naming the window rather than a `-1` folded into arithmetic.
+ */
+sealed interface ActivePathReading {
+    data object NoActivePath : ActivePathReading
+
+    class Read(
+        val index: Long,
+        val expiries: Long,
+        val rtt: Duration,
+        val rttvar: Duration,
+    ) : ActivePathReading
 }
