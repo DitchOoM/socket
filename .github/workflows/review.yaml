@@ -25,6 +25,19 @@ jobs:
   version:
     uses: ./.github/workflows/compute-version.yaml
 
+  ci-scripts:
+    name: "CI script tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run .github/scripts tests
+        run: |
+          for t in .github/scripts/tests/*.test.sh; do
+            echo "== $t"
+            bash "$t"
+          done
+
   build-linux:
     needs: version
     uses: ./.github/workflows/build-linux.yaml
@@ -65,10 +78,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download merged maven-local
+        id: maven-local-download
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: maven-local-merged
           path: /tmp/maven-local-merged
+      # See .github/scripts/artifact-download-retry.sh: the action does not retry an edge 403.
+      - name: Retry the maven-local download
+        if: steps.maven-local-download.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            maven-local-merged /tmp/maven-local-merged
       # Derive the version from the artifacts actually built (race-proof; the workflow input can
       # diverge if a release publishes mid-CI — the same reasoning validate-artifacts uses).
       - name: Resolve built version
@@ -213,10 +236,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download merged maven-local
+        id: maven-local-download
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: maven-local-merged
           path: /tmp/maven-local-merged
+      # See .github/scripts/artifact-download-retry.sh: the action does not retry an edge 403.
+      - name: Retry the maven-local download
+        if: steps.maven-local-download.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            maven-local-merged /tmp/maven-local-merged
       - name: Resolve built version
         run: |
           version=$(ls /tmp/maven-local-merged/com/ditchoom/socket/ 2>/dev/null \
