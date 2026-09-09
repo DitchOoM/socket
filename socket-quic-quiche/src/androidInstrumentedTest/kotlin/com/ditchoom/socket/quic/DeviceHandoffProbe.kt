@@ -141,11 +141,24 @@ class DeviceHandoffProbe {
         // origin — a single shared sink interleaves every reconnect into something no fixture can be
         // built from, which is exactly what `QuicTraceCapture(ring)` was doing here.
         //
-        // Affordable at this rig's cadence, which is the only reason it can be unconditional: the echo
-        // loop is one exchange every `probeEchoIntervalMs` (2s default) with a ~12-byte payload, so the
-        // trace runs ~1.5 MB/hour — a 71-hour walk is ~100 MB. The "tens of gigabytes" figure that
-        // justified the ring is a *saturated* connection; this probe is nearly idle by construction.
-        val traceBudgetBytes = arg("probeTraceBudgetMb", "512").toLong() * 1024L * 1024L
+        // Affordable at this rig's cadence, which is the only reason it can be unconditional. The
+        // budget is DERIVED from this run's own cadence and duration rather than being a constant,
+        // because the constant was computed against a cadence the rig never uses: this probe defaults
+        // to one echo every 2s, `device-probe/start.sh` sends 250ms, and the README's real run is
+        // 75 hours at 250ms. Measured on device 2026-09-09 at 250ms — 275,722 bytes over 120s, 480
+        // exchanges — that is ~574 bytes of trace per exchange, or 7.89 MB/hour, so the old flat
+        // 512 MB died at hour 65 of a 75-hour walk and the tail (where a handoff is most likely) was
+        // the part that stopped being replayable.
+        //
+        // Doubled for the events that do not scale with the echo loop (path changes, reconnects,
+        // heartbeats), floored so a short run still has room to be interesting, and capped so a
+        // reconnect storm still cannot fill the device — which is what the budget is for.
+        val plannedExchanges = minutes.toLong() * 60_000L / echoIntervalMs
+        val derivedBudgetMb =
+            (plannedExchanges * TRACE_BYTES_PER_EXCHANGE * 2 / (1024L * 1024L))
+                .coerceIn(MIN_TRACE_BUDGET_MB, MAX_TRACE_BUDGET_MB)
+        val traceBudgetBytes = arg("probeTraceBudgetMb", derivedBudgetMb.toString()).toLong() * 1024L * 1024L
+        emit("TRACE-BUDGET mb=${traceBudgetBytes / (1024L * 1024L)} plannedExchanges=$plannedExchanges")
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
         traceDir.listFiles()?.forEach { it.delete() }
@@ -842,6 +855,19 @@ private class WalkTraceFiles(
         }
     }
 }
+
+/**
+ * Bytes of v1 trace one echo exchange produces, measured on device 2026-09-09 (SM-F956U1, 250ms
+ * cadence): 275,722 bytes over 120s across 480 exchanges. Used to size the default trace budget
+ * against the cadence a run actually configures — see the derivation at its use site.
+ */
+private const val TRACE_BYTES_PER_EXCHANGE = 574L
+
+/** A short run still gets room to record something worth replaying. */
+private const val MIN_TRACE_BUDGET_MB = 512L
+
+/** A reconnect storm still cannot fill the device, which is the whole reason the budget exists. */
+private const val MAX_TRACE_BUDGET_MB = 4_096L
 
 /**
  * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall. Two (~2
