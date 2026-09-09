@@ -46,7 +46,7 @@ internal val idleTimeoutClose: SimFixture =
 /**
  * Golden 4 — `datagram-then-stale-path`: a datagram arrives, the network path changes (Wi-Fi →
  * cellular), and 5ms later another datagram arrives **on the old path** — the reconnect-race shape
- * (#222): a stale-path packet racing the path-change signal. The driver (clientMode = true, real
+ * (#222): a stale-path packet racing the path-change signal. The driver (DriverReaderLoop, real
  * reader loop) must feed both packets to quiche and stay Established — the packet is data, not a
  * teardown signal; reacting to the path change belongs to the transport layer above.
  */

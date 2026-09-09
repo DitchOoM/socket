@@ -78,8 +78,9 @@ class ReaderLoopFailureBackoffTests {
                     recvInfo = QuicheRecvInfo(1L),
                     sendInfo = QuicheSendInfo(1L),
                     udpChannel = udp,
-                    clientMode = true, // the reader loop is the protagonist
-                    isServer = false,
+                    // the reader loop is the protagonist
+                    ingress = DatagramIngress.DriverReaderLoop,
+                    role = QuicRole.Client,
                     clock = SimClock(testScheduler),
                     driverContext = EmptyCoroutineContext,
                 )

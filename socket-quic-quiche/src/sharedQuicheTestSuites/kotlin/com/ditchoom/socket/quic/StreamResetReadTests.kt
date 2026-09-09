@@ -51,8 +51,8 @@ class StreamResetReadTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = StubUdpChannel(),
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
         )
 
     @Test

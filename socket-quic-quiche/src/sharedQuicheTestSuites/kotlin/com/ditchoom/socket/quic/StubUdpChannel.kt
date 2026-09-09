@@ -5,7 +5,7 @@ import kotlinx.coroutines.channels.Channel
 
 /**
  * No-op [UdpChannel] for driver unit tests.
- * Does not perform real I/O — the driver is tested with [clientMode] = false,
+ * Does not perform real I/O — the driver is tested with [DatagramIngress.ExternalPump],
  * so the UDP reader loop is never started.
  *
  * Tests that need to inject UDP send errors (e.g. PortUnreachableException,
@@ -24,7 +24,7 @@ class StubUdpChannel(
         private set
 
     override suspend fun receive(buffer: PlatformBuffer): Int {
-        // Should never be called in tests (clientMode = false)
+        // Should never be called in tests (ingress is ExternalPump)
         Channel<Unit>().receive() // suspend forever
         return 0
     }

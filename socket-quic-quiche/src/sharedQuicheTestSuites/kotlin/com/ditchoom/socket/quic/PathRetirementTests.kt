@@ -187,8 +187,8 @@ class PathRetirementTests {
                 udpChannel = primaryChannel,
                 // No primary reader loop: nothing ever delivers a datagram here. Probed paths still
                 // start their own readers via handleMigrate, which is what the reader assertions use.
-                clientMode = false,
-                isServer = false,
+                role = QuicRole.Client,
+                ingress = DatagramIngress.ExternalPump,
                 driverContext = EmptyCoroutineContext,
             )
 

@@ -4,9 +4,11 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.MigrationCapability
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -37,14 +39,15 @@ internal class QuicSimRun(
  * the run's own t0, so consecutive runs of the same fixture must produce `==` traces (the
  * determinism bar).
  *
- * [clientMode] = true starts the driver's real UDP reader loop against the [TimelineUdpChannel]
- * (new ground in W2 — no pre-existing test ran the reader loop on a scripted channel); false keeps
- * the classic command-only driver for pure timer fixtures.
+ * [DatagramIngress.DriverReaderLoop] starts the driver's real UDP reader loop against the
+ * [TimelineUdpChannel] (new ground in W2 — no pre-existing test ran the reader loop on a scripted
+ * channel); [DatagramIngress.ExternalPump] keeps the classic command-only driver for pure timer
+ * fixtures.
  */
 internal suspend fun TestScope.runQuicSim(
     fixture: SimFixture,
     keepAliveInterval: Duration? = null,
-    clientMode: Boolean = false,
+    ingress: DatagramIngress = DatagramIngress.ExternalPump,
     bufferFactory: BufferFactory = BufferFactory.deterministic(),
     configureApi: StubQuicheApi.() -> Unit = {},
 ): QuicSimRun {
@@ -77,15 +80,15 @@ internal suspend fun TestScope.runQuicSim(
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = udp,
-            clientMode = clientMode,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = ingress,
             keepAliveInterval = keepAliveInterval,
             clock = clock,
             driverContext = EmptyCoroutineContext,
         )
 
     // Child scope standing in for the production connection scope: it owns the driver loop, the
-    // clientMode reader loop, and the trace collectors, and is cancelled at the end of the run —
+    // driver-owned reader loop, and the trace collectors, and is cancelled at the end of the run —
     // otherwise runTest would wait forever on the reader parked in TimelineUdpChannel.receive().
     val simScope = CoroutineScope(coroutineContext + Job())
     simScope.launch {

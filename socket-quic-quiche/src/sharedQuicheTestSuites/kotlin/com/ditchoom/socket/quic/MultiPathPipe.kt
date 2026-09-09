@@ -290,7 +290,7 @@ internal class MultiPathPipe(
     private inner class ServerEndpoint : UdpChannel {
         override suspend fun receive(buffer: PlatformBuffer): Int {
             // The server side is pumped through receiveAtServer() (it needs the source address), so the
-            // driver must not be run in clientMode against this endpoint. Park rather than return, so a
+            // driver must not own its ingress against this endpoint. Park rather than return, so a
             // harness that wires it wrongly hangs visibly instead of silently feeding quiche datagrams
             // under the wrong recv_info.
             awaitCancellation()

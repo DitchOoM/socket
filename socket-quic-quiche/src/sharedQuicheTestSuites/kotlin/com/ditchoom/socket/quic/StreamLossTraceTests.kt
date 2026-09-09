@@ -75,8 +75,8 @@ class StreamLossTraceTests {
 
                     override fun close() {}
                 },
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
             capture = TraceCapture.On(QuicTraceRecorder(sink)),
         )
 

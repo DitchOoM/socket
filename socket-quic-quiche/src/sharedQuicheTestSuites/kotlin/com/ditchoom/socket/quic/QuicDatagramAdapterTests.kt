@@ -50,8 +50,8 @@ class QuicDatagramAdapterTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = StubUdpChannel(),
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
         )
 
     /** Suspend until the driver has published [MaxDatagramSize] from [afterCommand]. */

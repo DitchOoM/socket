@@ -95,11 +95,11 @@ private const val SERVER_PORT = 42002
  *     **0ms of wall time**, where a real clock never leaves `Validating`. Without that, one #447
  *     scenario would cost ~3s of wall clock and a search would be an overnight run.
  *
- * ## Why the server is pumped rather than run in `clientMode`
- * [SemanticSim] runs its server driver with `clientMode = true` so the driver's own reader loop pulls
+ * ## Why the server is pumped rather than owning its ingress
+ * [SemanticSim] runs its server driver with [DatagramIngress.DriverReaderLoop] so the driver's own reader loop pulls
  * from the pipe — fine for one path, wrong the moment there are two. quiche recognises a client's new
  * path only if the server hands it a `recv_info` whose `from` is the datagram's **real** source, and a
- * `clientMode` reader has exactly one `recv_info` fixed at construction. So the server here mirrors
+ * [DatagramIngress.DriverReaderLoop] has exactly one `recv_info` fixed at construction. So the server here mirrors
  * `SharedQuicheServer` instead: [serverPump] takes each datagram's source from
  * [MultiPathPipe.receiveAtServer] and submits it as [PacketSource.FromServerSocket] with a per-source
  * `recv_info`, cached the same way the production server caches its own.
@@ -664,8 +664,8 @@ internal suspend fun <R> withMigrationSim(
                 recvInfo = clientRecvInfo,
                 sendInfo = clientSendInfo,
                 udpChannel = primaryPath.channel,
-                clientMode = true,
-                isServer = false,
+                role = QuicRole.Client,
+                ingress = DatagramIngress.DriverReaderLoop,
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,
@@ -683,10 +683,10 @@ internal suspend fun <R> withMigrationSim(
                 recvInfo = serverRecvInfo,
                 sendInfo = serverSendInfo,
                 udpChannel = pipe.serverEgress,
-                // NOT clientMode: the pump below owns ingress, because it is the only place that knows
+                // NOT DriverReaderLoop: the pump below owns ingress, because it is the only place that knows
                 // each datagram's real source address. See the class KDoc.
-                clientMode = false,
-                isServer = true,
+                role = QuicRole.Server,
+                ingress = DatagramIngress.ExternalPump,
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,

@@ -108,8 +108,8 @@ class JvmQuicConnectionTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = NioUdpChannel(channel),
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
         )
     }
 }

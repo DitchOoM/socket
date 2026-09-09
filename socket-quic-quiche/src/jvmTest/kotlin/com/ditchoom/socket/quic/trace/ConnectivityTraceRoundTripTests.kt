@@ -8,6 +8,7 @@ import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.recordMissingNativeLib
@@ -131,7 +132,7 @@ class ConnectivityTraceRoundTripTests {
             // layer's job, not the driver's (see GoldenDriverFixtures.datagramThenStalePath) — so the
             // asserted observations are the monitor's, and the liveness proof is the fixture mapping
             // above (SimEvent.Liveness present). ---
-            val replay = runQuicSim(fixture, clientMode = true)
+            val replay = runQuicSim(fixture, ingress = DatagramIngress.DriverReaderLoop)
             assertEquals(
                 listOf(NetworkState.Routable(migratedTo, InternetAccess.Unobserved), NetworkState.Offline),
                 replay.trace.events

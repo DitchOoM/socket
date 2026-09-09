@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.sim.fuzz
 
 import com.ditchoom.socket.SocketException
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.TrackingBufferFactory
@@ -94,7 +95,8 @@ private suspend fun TestScope.runOnce(case: FuzzCase): SingleRun {
         runQuicSim(
             fixture = case.fixture,
             keepAliveInterval = case.keepAliveInterval,
-            clientMode = true, // real reader loop — DatagramIn/RecvError events need a consumer
+            // real reader loop — DatagramIn/RecvError events need a consumer
+            ingress = DatagramIngress.DriverReaderLoop,
             bufferFactory = tracking,
         ) {
             // Idle timer armed and lethal, like the W2 goldens: without keepalive (per-case seeded)
