@@ -514,6 +514,122 @@ abstract class QuicServerTestSuite {
         }
 
     /**
+     * The **client** half of RFC 9443 port sharing (#306): a QUIC client whose local endpoint is a UDP
+     * port it does not own, handed to it as [QuicClientBinding.Shared].
+     *
+     * This is the arrangement that lets one socket carry QUIC and the WebRTC family at once — same
+     * port, same 5-tuple, same NAT binding, same gathered ICE candidate set. The server half already
+     * shipped ([sharedPort_quicAndANonQuicProtocolCoexist]); until this, a client could only ever open
+     * a socket of its own, so an ICE agent that had already gathered candidates on a port could not
+     * put a QUIC connection on it.
+     *
+     * Three things are asserted, and the third is the one that would otherwise be discovered in the
+     * field:
+     * 1. the handshake and a stream round trip complete over the shared branch;
+     * 2. a non-QUIC datagram sent *to the client's own port* still reaches the media branch, so the
+     *    sharing is real in both directions rather than QUIC quietly consuming the port; and
+     * 3. `migrate()` answers [MigrationResult.Unmoved.Impossible.BackendCannotMigrate] — the socket
+     *    belongs to its owner, so there is no second local path to move to, and the connection says so
+     *    instead of appearing to migrate. See [QuicClientBinding.Shared].
+     */
+    @Test
+    fun sharedPort_aClientCanRideAPortItDoesNotOwn() =
+        runQuicTest {
+            wrapTestBody {
+                val serverOptions =
+                    QuicOptions(
+                        alpnProtocols = listOf("client-shared"),
+                        verifyPeer = false,
+                        idleTimeout = 10.seconds,
+                    )
+                val listening = CompletableDeferred<Int>()
+                val server =
+                    launch {
+                        withQuicServer(QuicPortBinding.Own(0, "127.0.0.1"), testTlsConfig(), serverOptions) {
+                            listening.complete(port)
+                            connections {
+                                val stream = acceptStream()
+                                replyTagged(stream, "quic")
+                            }
+                        }
+                    }
+                val serverPort = listening.await()
+
+                // The client's own port, bound and demultiplexed by something that is not QUIC.
+                val clientSocket = UdpSocket.bind(localHost = "127.0.0.1")
+                val mux = clientSocket.demultiplex(this)
+                val seen = Channel<MultiplexedProtocol.NonQuic>(Channel.UNLIMITED)
+                val media =
+                    launch {
+                        mux.datagrams.collect { received ->
+                            seen.send(received.protocol)
+                            received.datagram.payload.freeIfNeeded()
+                        }
+                    }
+
+                try {
+                    val clientOptions =
+                        QuicOptions(
+                            alpnProtocols = listOf("client-shared"),
+                            verifyPeer = false,
+                            idleTimeout = 10.seconds,
+                        )
+                    // 127.0.0.1 rather than "localhost": the shared adapter matches each datagram's
+                    // source against the resolved peer, and a name that resolved to ::1 while the
+                    // server bound 127.0.0.1 would look like a hang rather than a mismatch.
+                    val reply =
+                        withQuicConnection(
+                            "127.0.0.1",
+                            serverPort,
+                            clientOptions,
+                            timeout = 10.seconds,
+                            binding = QuicClientBinding.Shared(mux.quic),
+                        ) {
+                            val stream = openStream()
+                            val sendBuf = BufferFactory.deterministic().allocate(4)
+                            sendBuf.writeString("ping", Charset.UTF8)
+                            sendBuf.resetForRead()
+                            stream.write(sendBuf, 5.seconds)
+                            val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                            val text =
+                                if (response is ScopedRead.Data) response.value else "no_data:${response::class.simpleName}"
+                            stream.close()
+
+                            assertEquals(
+                                MigrationResult.Unmoved.Impossible.BackendCannotMigrate,
+                                migrate(),
+                                "a connection on a port it does not own has no second local path to move to",
+                            )
+                            text
+                        }
+                    assertEquals("quic:ping", reply, "the handshake and round trip completed over the shared branch")
+
+                    // The port is still shared: a non-QUIC datagram addressed to it reaches the media
+                    // branch rather than being swallowed by the QUIC connection sitting on the same port.
+                    val prober = UdpSocket.connect("127.0.0.1", mux.localAddress.port, localHost = "127.0.0.1")
+                    try {
+                        val probe = BufferFactory.deterministic().allocate(8)
+                        probe.writeByte(0x00) // STUN: first two bits zero (RFC 8489 / RFC 9443)
+                        repeat(7) { probe.writeByte(0) }
+                        probe.resetForRead()
+                        prober.send(probe)
+                        assertEquals(
+                            MultiplexedProtocol.Stun,
+                            withTimeout(5.seconds.scaled) { seen.receive() },
+                            "the client's port still serves its owner while QUIC is on it",
+                        )
+                    } finally {
+                        prober.close()
+                    }
+                } finally {
+                    server.cancel()
+                    media.cancel()
+                    mux.close()
+                }
+            }
+        }
+
+    /**
      * The [ReadResult] a peer observes when the remote abruptly resets a stream: [ReadResult.Reset],
      * on every backend. [ReadResult.End] means the peer finished *politely* (a FIN), and reporting it
      * for a RESET_STREAM launders an abnormal, code-carrying abort into a clean end-of-stream — the

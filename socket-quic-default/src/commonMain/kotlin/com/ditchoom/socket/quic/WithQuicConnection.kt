@@ -39,6 +39,24 @@ import kotlin.time.Duration.Companion.seconds
  * `launch` completes *cancelled* on rather than failed. A deadline that fires once the connection is up
  * is the block's, and still propagates as the cancellation it is — as does a *parent's* deadline firing
  * at any point: only this function's own bound becomes the typed close.
+ *
+ * [binding] says where the local endpoint comes from. The default opens and owns a socket, as every
+ * client connection here always has. Pass [QuicClientBinding.Shared] to ride a UDP port somebody else
+ * owns and demultiplexes (RFC 9443) — the arrangement that lets QUIC share one port, one 5-tuple, one
+ * NAT binding and one gathered ICE candidate set with the WebRTC family:
+ *
+ * ```kotlin
+ * val socket = UdpSocket.bind(localPort = 0, bufferFactory = recvPool)
+ * val mux = socket.demultiplex(scope, relays = TurnRelays(setOf(turnServer)))
+ *
+ * launch { mux.datagrams.collect { iceAgent.onDatagram(it.protocol, it.datagram) } }
+ * withQuicConnection(peerHost, peerPort, options, binding = QuicClientBinding.Shared(mux.quic)) {
+ *     // QUIC over the same socket ICE gathered on.
+ * }
+ * ```
+ *
+ * ⚠️ A shared-port connection cannot migrate: the socket belongs to its owner, so there is no second
+ * local path for QUIC to move to. See [QuicClientBinding.Shared].
  */
 suspend fun <R> withQuicConnection(
     hostname: String,
@@ -46,6 +64,7 @@ suspend fun <R> withQuicConnection(
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
+    binding: QuicClientBinding = QuicClientBinding.OwnSocket,
     block: suspend QuicScope.() -> R,
 ): R {
     // Set between connect returning and the block starting — the single sequential coroutine below,
@@ -54,7 +73,7 @@ suspend fun <R> withQuicConnection(
     try {
         return withTimeout(timeout) {
             val connection =
-                defaultQuicEngine.connect(hostname, port, quicOptions, connectionOptions, timeout)
+                defaultQuicEngine.connect(binding, hostname, port, quicOptions, connectionOptions, timeout)
             established = true
             try {
                 connection.block()

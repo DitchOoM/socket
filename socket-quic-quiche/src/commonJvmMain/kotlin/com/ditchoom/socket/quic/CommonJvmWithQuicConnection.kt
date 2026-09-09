@@ -59,14 +59,21 @@ internal suspend fun <R> commonJvmWithQuicConnection(
 internal suspend fun buildJvmQuicConnection(
     hostname: String,
     port: Int,
-    quicOptions: QuicOptions,
+    requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
     api: QuicheApi,
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): JvmQuicConnection {
+    // The options this connection actually runs with. On a shared port GREASE is forced off before
+    // anything reads them, because applyQuicOptions below writes it into the quiche config and RFC
+    // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
+    val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
@@ -126,22 +133,23 @@ internal suspend fun buildJvmQuicConnection(
         // below because the primary path is the first thing it opens.
         val peer = UdpSocket.resolve(hostname, port)
         val codec = SocketAddressCodec(hostOsSockAddrLayout())
-        val channelFactory =
-            UdpSocketChannelFactory(
-                peer = peer,
-                codec = codec,
-                bufferFactory = bufferFactory,
-                recvBufferFactory = recvBufPool,
-                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                // NIO binds the requested local endpoint before connecting.
-                localEndpointSupport = LocalEndpointSupport.Bindable,
-            )
-        val channel = channelFactory.openPrimaryChannel()
-        // Wrapped here rather than at driver-construction time so that from this point on there is a
-        // single handle that releases both the socket and its selector coroutine.
-        val udpChannel = DatagramChannelUdpChannel(channel)
+        val path =
+            binding.openClientPath(peer) {
+                UdpSocketChannelFactory(
+                    peer = peer,
+                    codec = codec,
+                    bufferFactory = bufferFactory,
+                    recvBufferFactory = recvBufPool,
+                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                    // NIO binds the requested local endpoint before connecting.
+                    localEndpointSupport = LocalEndpointSupport.Bindable,
+                )
+            }
+        // A single handle that releases both the socket and its selector coroutine — and, on a shared
+        // port, releases nothing, because the port outlives this connection.
+        val udpChannel = path.udpChannel
         progress = ConnectProgress.ChannelOpen(udpChannel)
-        val localAddress = channel.localAddress.orNull() ?: error("connected UDP channel has no local address")
+        val localAddress = path.localAddress
 
         // 3. Server name — null-terminated UTF-8 in buffer
         val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
@@ -221,11 +229,11 @@ internal suspend fun buildJvmQuicConnection(
                 // step 2 — one factory per connection, so every path it ever holds was bound by one
                 // source-address discipline (#519).
                 migration =
-                    clientMigrationCapability(quicOptions.migration) {
+                    path.origin.migrationCapability(quicOptions.migration) { factory ->
                         MigrationCapability.Supported(
                             peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                             primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                            channelFactory = channelFactory,
+                            channelFactory = factory,
                         )
                     },
                 onCleanup = {

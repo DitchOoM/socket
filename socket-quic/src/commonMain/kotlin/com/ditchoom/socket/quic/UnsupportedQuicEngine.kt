@@ -19,6 +19,7 @@ class UnsupportedQuicEngine(
         EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = false)
 
     override suspend fun connect(
+        binding: QuicClientBinding,
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,

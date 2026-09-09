@@ -23,6 +23,7 @@ object QuicheEngine : QuicEngine {
         )
 
     override suspend fun connect(
+        binding: QuicClientBinding,
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,
@@ -46,6 +47,7 @@ object QuicheEngine : QuicEngine {
                 timeout,
                 loadQuicheApi(),
                 QuicheDriverTuning(captureFactory = { capture }, networkObservation = observation),
+                binding,
             )
         observation.collectInto(connection)
         wireClientConnectivityTap(quicOptions, capture, connection, monitor)
