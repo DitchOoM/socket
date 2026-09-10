@@ -50,6 +50,12 @@ class QuicTransportTest {
             val engine = FakeQuicEngine()
             val stream = QuicTransport(opts, engine).connect("example.com", 443, TransportConfig())
 
+            assertEquals(
+                QuicClientBinding.OwnSocket,
+                engine.lastBinding,
+                "the default transport opens its own socket; a shared port is something a caller asks for",
+            )
+
             val server = engine.connection!!.lastPeerStream!!
             // Client writes → server reads.
             BufferFactory.Default.allocate(5).also {
@@ -123,15 +129,20 @@ class QuicTransportTest {
         private val openStreamDelegate: ByteStream? = null,
     ) : QuicEngine {
         var connection: FakeQuicConnection? = null
+        var lastBinding: QuicClientBinding? = null
         override val capabilities = EngineCapabilities(supportsServer = false, supportsDatagrams = false, supportsMigration = false)
 
         override suspend fun connect(
+            binding: QuicClientBinding,
             hostname: String,
             port: Int,
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: kotlin.time.Duration,
-        ): QuicConnection = FakeQuicConnection(openStreamDelegate).also { connection = it }
+        ): QuicConnection {
+            lastBinding = binding
+            return FakeQuicConnection(openStreamDelegate).also { connection = it }
+        }
 
         override suspend fun bind(
             binding: QuicPortBinding,

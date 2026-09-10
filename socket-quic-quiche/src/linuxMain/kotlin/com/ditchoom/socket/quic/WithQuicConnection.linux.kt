@@ -66,13 +66,19 @@ private const val MAX_CONN_ID_LEN = 20
 internal suspend fun buildLinuxQuicConnection(
     hostname: String,
     port: Int,
-    quicOptions: QuicOptions,
+    requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): LinuxQuicConnection {
+    // GREASE is forced off on a shared port before anything reads these — see
+    // QuicClientBinding.transportOptionsFor.
+    val quicOptions = binding.transportOptionsFor(requestedOptions)
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
@@ -128,30 +134,29 @@ internal suspend fun buildLinuxQuicConnection(
             // the rest (#519).
             val peer = UdpSocket.resolve(hostname, port)
             val codec = SocketAddressCodec(linuxSockAddrLayout)
-            val channelFactory =
-                UdpSocketChannelFactory(
-                    peer = peer,
-                    codec = codec,
-                    bufferFactory = bufferFactory,
-                    recvBufferFactory = recvBufPool,
-                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                    // io_uring binds the requested local endpoint before connecting.
-                    localEndpointSupport = LocalEndpointSupport.Bindable,
-                )
-            val channel = channelFactory.openPrimaryChannel()
-            // Wrapped here rather than at driver-construction time so that from this point on there is a
-            // single handle that releases both the socket and its reader coroutine.
-            val udpChannel = DatagramChannelUdpChannel(channel)
+            val path =
+                binding.openClientPath(peer) {
+                    UdpSocketChannelFactory(
+                        peer = peer,
+                        codec = codec,
+                        bufferFactory = bufferFactory,
+                        recvBufferFactory = recvBufPool,
+                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                        // io_uring binds the requested local endpoint before connecting.
+                        localEndpointSupport = LocalEndpointSupport.Bindable,
+                    )
+                }
+            // A single handle that releases both the socket and its reader coroutine — and, on a shared
+            // port, releases nothing, because the port outlives this connection.
+            val udpChannel = path.udpChannel
             progress = ConnectProgress.ChannelOpen(udpChannel)
-            val local =
-                channel.localAddress.orNull()
-                    ?: throw SocketConnectionException.Refused(hostname, port, platformError = "connected UDP channel has no local address")
+            val local = path.localAddress
 
             // Encode the peer + local sockaddrs via the one differential-tested SocketAddressCodec (Phase 6
             // sockaddr SPI, replacing the memcpy'd kernel sockaddrs). A single encoding of each backs
             // quiche_connect AND recv_info; both stay pinned for the driver's life and are freed by
             // onCleanup so recv_info.from/to can never dangle. The codec is the one built above for
-            // [channelFactory], so the primary path's sockaddr and a migration path's cannot diverge.
+            // the path factory, so the primary path's sockaddr and a migration path's cannot diverge.
             val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
             progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
@@ -210,11 +215,11 @@ internal suspend fun buildLinuxQuicConnection(
                     // above — one per connection, so every path it holds was bound by one source-address
                     // discipline (#519). Mirrors the JVM client.
                     migration =
-                        clientMigrationCapability(quicOptions.migration) {
+                        path.origin.migrationCapability(quicOptions.migration) { factory ->
                             MigrationCapability.Supported(
                                 peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                                 primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                                channelFactory = channelFactory,
+                                channelFactory = factory,
                             )
                         },
                     onCleanup = {

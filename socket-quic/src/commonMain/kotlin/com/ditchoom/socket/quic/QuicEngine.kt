@@ -30,12 +30,25 @@ interface QuicEngine {
      * its [close][QuicConnection.close]. [timeout] bounds establishment.
      */
     suspend fun connect(
+        binding: QuicClientBinding,
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
     ): QuicConnection
+
+    @Deprecated(
+        "Superseded by QuicClientBinding, which also expresses a shared port.",
+        ReplaceWith("connect(QuicClientBinding.OwnSocket, hostname, port, quicOptions, transport, timeout)"),
+    )
+    suspend fun connect(
+        hostname: String,
+        port: Int,
+        quicOptions: QuicOptions,
+        transport: TransportConfig,
+        timeout: Duration,
+    ): QuicConnection = connect(QuicClientBinding.OwnSocket, hostname, port, quicOptions, transport, timeout)
 
     /**
      * Bind a QUIC server according to [binding]: its own UDP port ([QuicPortBinding.Own]), or one

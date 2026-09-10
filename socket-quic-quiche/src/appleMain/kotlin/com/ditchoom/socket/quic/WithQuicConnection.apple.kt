@@ -71,13 +71,19 @@ private const val MAX_CONN_ID_LEN = 20
 internal suspend fun buildAppleQuicConnection(
     hostname: String,
     port: Int,
-    quicOptions: QuicOptions,
+    requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): AppleQuicConnection {
+    // GREASE is forced off on a shared port before anything reads these — see
+    // QuicClientBinding.transportOptionsFor.
+    val quicOptions = binding.transportOptionsFor(requestedOptions)
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
@@ -135,21 +141,24 @@ internal suspend fun buildAppleQuicConnection(
             // typed connect failure to the QUIC error contract.
             val peer = UdpSocket.resolve(hostname, port)
             val codec = SocketAddressCodec(appleSockAddrLayout)
-            val channelFactory =
-                UdpSocketChannelFactory(
-                    peer = peer,
-                    codec = codec,
-                    bufferFactory = bufferFactory,
-                    recvBufferFactory = recvBufPool,
-                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                    // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
-                    // localHost/localPort "advisory" and ignores them. Declared so the driver refuses an
-                    // explicit endpoint instead of silently binding somewhere else and reporting success.
-                    localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
-                )
-            val channel =
+            val path =
                 try {
-                    withTimeout(timeout) { channelFactory.openPrimaryChannel() }
+                    withTimeout(timeout) {
+                        binding.openClientPath(peer) {
+                            UdpSocketChannelFactory(
+                                peer = peer,
+                                codec = codec,
+                                bufferFactory = bufferFactory,
+                                recvBufferFactory = recvBufPool,
+                                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
+                                // localHost/localPort "advisory" and ignores them. Declared so the driver
+                                // refuses an explicit endpoint instead of silently binding somewhere else
+                                // and reporting success.
+                                localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                            )
+                        }
+                    }
                 } catch (e: UdpConnectException) {
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(hostname, port, platformError = e.message)
@@ -157,26 +166,17 @@ internal suspend fun buildAppleQuicConnection(
                     quiche_config_free(config)
                     throw t
                 }
-            // Wrapped here rather than at driver-construction time so that from this point on there is a
-            // single handle that releases both the socket and its reader coroutine.
-            val udpChannel = DatagramChannelUdpChannel(channel)
+            // A single handle that releases both the socket and its reader coroutine — and, on a shared
+            // port, releases nothing, because the port outlives this connection.
+            val udpChannel = path.udpChannel
             progress = ConnectProgress.ChannelOpen(udpChannel)
-            val local =
-                channel.localAddress.orNull() ?: run {
-                    runCatching { channel.close() }
-                    quiche_config_free(config)
-                    throw SocketConnectionException.Refused(
-                        hostname,
-                        port,
-                        platformError = "connected UDP channel has no local address",
-                    )
-                }
+            val local = path.localAddress
 
             // Encode the peer + local sockaddrs via the one SocketAddressCodec (Phase 6 sockaddr SPI, BSD
             // layout, replacing the NW sockaddr pull + memcpy). A single encoding of each backs
             // quiche_connect AND recv_info; both stay pinned for the driver's life and are freed by
             // onCleanup so recv_info.from/to can never dangle. The codec is the one built above for
-            // [channelFactory], so the primary path's sockaddr and a migration path's cannot diverge.
+            // the path factory, so the primary path's sockaddr and a migration path's cannot diverge.
             val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
             progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
@@ -245,13 +245,13 @@ internal suspend fun buildAppleQuicConnection(
                     // `UdpSocket.connect` yields a fresh NWConnection with its own NW-assigned local
                     // endpoint, which is exactly the new 4-tuple quiche probes and migrates onto.
                     migration =
-                        clientMigrationCapability(quicOptions.migration) {
+                        path.origin.migrationCapability(quicOptions.migration) { factory ->
                             MigrationCapability.Supported(
                                 peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                                 primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
                                 // The same factory that opened the primary path above — one per
                                 // connection, so every path it holds was bound by one discipline (#519).
-                                channelFactory = channelFactory,
+                                channelFactory = factory,
                             )
                         },
                     onCleanup = {
