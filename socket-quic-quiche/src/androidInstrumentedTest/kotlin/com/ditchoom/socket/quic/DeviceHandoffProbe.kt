@@ -18,6 +18,9 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.migration.PoolProbeHistory
+import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
+import com.ditchoom.socket.testkit.migration.runLine
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
@@ -618,17 +621,38 @@ private class ProbeStatus(
 private class MigrationLedger(
     private val emit: (String) -> Unit,
 ) {
+    /**
+     * One attempt in flight, or none. The old `open` + `openedAt` pair made "closed, with a live
+     * timestamp" representable; [lostBefore] additionally records how many probes had already gone
+     * unanswered when this attempt opened, which is what makes "after a lost probe" answerable per
+     * attempt instead of by a global flag.
+     */
+    private sealed interface Attempt {
+        data object Idle : Attempt
+
+        data class InFlight(
+            val n: Int,
+            val openedAt: Long,
+            val lostBefore: Int,
+            val answered: Boolean = false,
+        ) : Attempt
+    }
+
+    private var attempt: Attempt = Attempt.Idle
     private var attempts = 0
     private var succeeded = 0
-    private var openedAt = 0L
-    private var open = false
     private val leaves = LinkedHashMap<String, Int>()
 
     /** Attempts resolved by an unanswered PATH_CHALLENGE — the precondition #447 needs to be visible. */
     private var unanswered = 0
 
-    /** …and what happened on the attempts that came AFTER the first one. This is the verdict. */
+    /**
+     * …and what happened on the attempts that came AFTER the first one. Only [answeredAfterUnanswered]
+     * is recovery: another probe merely being *sent* is the retry ladder of the same failure.
+     */
     private var probedAfterUnanswered = 0
+    private var answeredAfterUnanswered = 0
+    private var succeededAfterUnanswered = 0
     private var noSpareAfterUnanswered = 0
 
     @Synchronized
@@ -639,10 +663,12 @@ private class MigrationLedger(
                 openAttempt()
                 if (unanswered > 0) probedAfterUnanswered++
             }
-            // Intermediate: the probe was answered, but the active path has not switched yet.
-            is QuicPathState.Validated -> Unit
+            // The probe was ANSWERED, even though the active path has not switched yet — and being
+            // answered is the whole question after a probe has gone unanswered.
+            is QuicPathState.Validated -> markAnswered()
             is QuicPathState.Migrated -> {
                 openAttempt()
+                markAnswered()
                 succeeded++
                 close("Succeeded")
             }
@@ -666,42 +692,46 @@ private class MigrationLedger(
      * .NoSpareConnectionId] above all) are resolved before a probe is ever armed.
      */
     private fun openAttempt() {
-        if (open) return
-        open = true
+        if (attempt is Attempt.InFlight) return
         attempts++
-        openedAt = System.currentTimeMillis()
+        attempt = Attempt.InFlight(n = attempts, openedAt = System.currentTimeMillis(), lostBefore = unanswered)
+    }
+
+    /** Counted once per attempt: a conflated `Validated` -> `Migrated` is one answered probe, not two. */
+    private fun markAnswered() {
+        val inFlight = attempt as? Attempt.InFlight ?: return
+        if (inFlight.answered) return
+        attempt = inFlight.copy(answered = true)
+        if (inFlight.lostBefore > 0) answeredAfterUnanswered++
     }
 
     private fun close(leaf: String) {
+        val inFlight = attempt as? Attempt.InFlight ?: return
         leaves[leaf] = (leaves[leaf] ?: 0) + 1
-        emit("MIGRATION-ATTEMPT n=$attempts outcome=$leaf tookMs=${System.currentTimeMillis() - openedAt}")
-        open = false
+        if (inFlight.lostBefore > 0 && leaf == "Succeeded") succeededAfterUnanswered++
+        emit("MIGRATION-ATTEMPT n=${inFlight.n} outcome=$leaf tookMs=${System.currentTimeMillis() - inFlight.openedAt}")
+        attempt = Attempt.Idle
     }
+
+    private fun history() =
+        PoolProbeHistory(
+            attempts = attempts,
+            unanswered = unanswered,
+            probedAfterUnanswered = probedAfterUnanswered,
+            answeredAfterUnanswered = answeredAfterUnanswered,
+            succeededAfterUnanswered = succeededAfterUnanswered,
+            noSpareAfterUnanswered = noSpareAfterUnanswered,
+        )
 
     @Synchronized
     fun report(tag: String) {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit("MIGRATION-LEDGER $tag attempts=$attempts succeeded=$succeeded outcomes=[$breakdown]")
-        emit("447-VERDICT $tag ${verdict()}")
+        emit("447-VERDICT $tag ${verdict().line}")
     }
 
     @Synchronized
-    fun verdict(): String =
-        when {
-            unanswered == 0 ->
-                "INCONCLUSIVE — no probe went unanswered on this connection, so it exercises #445 only " +
-                    "and says nothing about #447 (attempts=$attempts)"
-            noSpareAfterUnanswered > 0 ->
-                "REGRESSION — $unanswered unanswered probe(s), then $noSpareAfterUnanswered later " +
-                    "attempt(s) answered NoSpareConnectionId: the pool did not come back (#447 alive)"
-            probedAfterUnanswered > 0 || succeeded > 0 ->
-                "PASS — $unanswered unanswered probe(s), and the connection still armed " +
-                    "$probedAfterUnanswered later probe(s) with $succeeded migration(s) succeeding: " +
-                    "the pool recovered in the field"
-            else ->
-                "INCONCLUSIVE — $unanswered unanswered probe(s) but no migration was attempted " +
-                    "afterwards, so pool recovery was never put to the question"
-        }
+    fun verdict(): PoolRecoveryVerdict = history().verdict()
 
     @Synchronized
     fun fold(into: MigrationTotals) {
@@ -710,6 +740,8 @@ private class MigrationLedger(
         into.succeeded += succeeded
         into.unanswered += unanswered
         into.probedAfterUnanswered += probedAfterUnanswered
+        into.answeredAfterUnanswered += answeredAfterUnanswered
+        into.succeededAfterUnanswered += succeededAfterUnanswered
         into.noSpareAfterUnanswered += noSpareAfterUnanswered
         leaves.forEach { (k, v) -> into.leaves[k] = (into.leaves[k] ?: 0) + v }
     }
@@ -722,6 +754,8 @@ private class MigrationTotals {
     var succeeded = 0
     var unanswered = 0
     var probedAfterUnanswered = 0
+    var answeredAfterUnanswered = 0
+    var succeededAfterUnanswered = 0
     var noSpareAfterUnanswered = 0
     val leaves = LinkedHashMap<String, Int>()
 
@@ -732,34 +766,22 @@ private class MigrationTotals {
         emit(
             "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
                 "unansweredProbes=$unanswered probedAfterUnanswered=$probedAfterUnanswered " +
+                "answeredAfterUnanswered=$answeredAfterUnanswered " +
                 "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
         )
-        emit(
-            "447-VERDICT run " +
-                when {
-                    unanswered == 0 ->
-                        "INCONCLUSIVE — not one probe went unanswered across $connections connection(s); " +
-                            "this run validates #445 only"
-                    noSpareAfterUnanswered > 0 ->
-                        "REGRESSION — NoSpareConnectionId answered $noSpareAfterUnanswered time(s) after " +
-                            "an unanswered probe (#447 alive in the field)"
-                    // A run-wide PASS requires that some connection which LOST a probe went on to arm
-                    // another one. The absence of NoSpareConnectionId is not enough on its own: the
-                    // first real walk (2026-08-23) lost a probe on connection 1, died of idle timeout
-                    // 30s later, and reconnected — and this verdict read the FRESH connection's five
-                    // clean migrations as proof the old connection's pool recovered. A reconnect
-                    // negotiates a brand-new CID pool, so it is evidence of nothing at all. That is
-                    // the very over-read this ledger exists to prevent, one level up.
-                    probedAfterUnanswered > 0 ->
-                        "PASS — $unanswered unanswered probe(s), and a connection that lost one still " +
-                            "armed $probedAfterUnanswered later probe(s) with no NoSpareConnectionId: " +
-                            "the pool came back in the field"
-                    else ->
-                        "INCONCLUSIVE — $unanswered unanswered probe(s), but no connection that lost one " +
-                            "ever attempted another migration, so pool recovery was never put to the " +
-                            "question (a later connection's successes prove nothing: fresh pool)"
-                },
-        )
+        // Every "after" counter only ever advanced inside the connection whose probe was lost, so
+        // summing them cannot let a RECONNECT's fresh pool answer for the old one — the over-read
+        // this roll-up was caught making after the 2026-08-23 walk.
+        val history =
+            PoolProbeHistory(
+                attempts = attempts,
+                unanswered = unanswered,
+                probedAfterUnanswered = probedAfterUnanswered,
+                answeredAfterUnanswered = answeredAfterUnanswered,
+                succeededAfterUnanswered = succeededAfterUnanswered,
+                noSpareAfterUnanswered = noSpareAfterUnanswered,
+            )
+        emit("447-VERDICT run ${history.verdict().runLine(connections)}")
     }
 }
 

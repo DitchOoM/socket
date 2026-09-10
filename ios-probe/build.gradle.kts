@@ -30,6 +30,11 @@ kotlin {
         iosArm64Main {
             dependencies {
                 implementation(project(":socket-quic-default"))
+                // The #447 pool-recovery verdict is one decision shared with the Android probe;
+                // two copies of it is how the two drifted into passing a connection that never
+                // recovered. :socket-testkit keeps kotlin.test out of its main source set, so it
+                // links into a shipping probe app without dragging a test framework along.
+                implementation(project(":socket-testkit"))
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
