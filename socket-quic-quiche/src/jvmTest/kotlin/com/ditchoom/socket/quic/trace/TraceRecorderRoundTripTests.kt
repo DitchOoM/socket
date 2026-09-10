@@ -10,6 +10,7 @@ import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReachResolution
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.recordMissingNativeLib
@@ -125,7 +126,7 @@ class TraceRecorderRoundTripTests {
 
             // --- 4. Replay smoke: the extracted inputs drive the W2 engine to completion. ---
             val fixture = TraceToFixture.toSimFixture("semantic-sim-replay", inputs)
-            val replay = runQuicSim(fixture, clientMode = true)
+            val replay = runQuicSim(fixture, ingress = DatagramIngress.DriverReaderLoop)
             val fedCount = replay.trace.events.count { it is Observed.DatagramFed }
             assertEquals(
                 inputs.count { it is TraceEvent.DgramIn },

@@ -9,7 +9,7 @@ package com.ditchoom.socket.quic
  * `peerAddr/peerLen/primaryLocalAddr/primaryLocalLen: Long/Int = 0L/0`, from which the driver derived
  *
  * ```kotlin
- * migrationEnabled = clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
+ * migrationEnabled = role is Client && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
  * ```
  *
  * Three separate anti-patterns met in that one line: nullability standing in for a capability, `0L`

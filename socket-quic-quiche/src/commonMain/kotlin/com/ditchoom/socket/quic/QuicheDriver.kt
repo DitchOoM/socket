@@ -65,8 +65,8 @@ class QuicheDriver(
     private val recvInfo: QuicheRecvInfo,
     private val sendInfo: QuicheSendInfo,
     private val udpChannel: UdpChannel,
-    private val clientMode: Boolean = true,
-    private val isServer: Boolean = false,
+    private val role: QuicRole = QuicRole.Client,
+    private val ingress: DatagramIngress = DatagramIngress.DriverReaderLoop,
     /**
      * Reactive keepalive (RFC 9000 §10.1.2): when non-null, after this much inactivity the driver
      * schedules an ack-eliciting PING (resetting both peers' idle timers) so an otherwise-idle
@@ -453,11 +453,11 @@ class QuicheDriver(
 
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
-    private var nextStreamId = if (isServer) 1L else 0L
+    private var nextStreamId = if (role is QuicRole.Server) 1L else 0L
 
     // Locally-initiated unidirectional stream IDs (RFC 9000 §2.1): low 2 bits 0b10 (client → 2)
     // or 0b11 (server → 3), stepping by 4. Separate from the bidi counter above.
-    private var nextUniStreamId = if (isServer) 3L else 2L
+    private var nextUniStreamId = if (role is QuicRole.Server) 3L else 2L
 
     // --- Unreliable datagrams (RFC 9221) ---
 
@@ -646,7 +646,7 @@ class QuicheDriver(
     /**
      * The migration wiring when this driver has it, else null — one `when` over the sealed capability
      * instead of the four-term boolean this replaced
-     * (`clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L`). Every
+     * (`role is Client && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L`). Every
      * conjunct of that expression is now either impossible to get wrong (the sockaddrs, by
      * [PinnedSockAddr]'s own construction) or stated once at the call site.
      */
@@ -1238,7 +1238,7 @@ class QuicheDriver(
         }
         driverJob = scope.launch(driverContext) { run() }
 
-        if (clientMode) {
+        if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
         }
     }
@@ -1258,10 +1258,10 @@ class QuicheDriver(
      */
     private fun maybeEnableQlog() {
         val dir = qlogDir() ?: return
-        val role = if (isServer) "server" else "client"
-        val path = "$dir/quiche-$role-${conn.handle.toString(16)}.sqlog"
-        val enabled = api.connSetQlogPath(conn, path, "ditchoom-socket $role", "QUIC_QLOG_DIR trace")
-        if (enabled) println("[qlog] tracing $role connection to $path")
+        val label = role.label
+        val path = "$dir/quiche-$label-${conn.handle.toString(16)}.sqlog"
+        val enabled = api.connSetQlogPath(conn, path, "ditchoom-socket $label", "QUIC_QLOG_DIR trace")
+        if (enabled) println("[qlog] tracing $label connection to $path")
     }
 
     /**
@@ -1925,7 +1925,7 @@ class QuicheDriver(
             // destination reconstruction (steady state targets one address), so the non-migrating server
             // path stays allocation-free.
             val sendTarget =
-                if (isServer) {
+                if (role is QuicRole.Server) {
                     SendTarget.ServerReply(
                         to = api.decodePathKey(api.sendInfoToAddr(sendInfo)),
                         // The one place quiche's "no egress address" sentinel is read. Converting it

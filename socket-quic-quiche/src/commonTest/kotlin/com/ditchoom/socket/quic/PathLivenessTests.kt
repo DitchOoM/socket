@@ -85,8 +85,8 @@ class PathLivenessTests {
                 recvInfo = QuicheRecvInfo(1L),
                 sendInfo = QuicheSendInfo(1L),
                 udpChannel = StubUdpChannel(),
-                clientMode = false,
-                isServer = false,
+                role = QuicRole.Client,
+                ingress = DatagramIngress.ExternalPump,
                 clock = SimClock(scope.testScheduler),
                 driverContext = EmptyCoroutineContext,
                 // The fixture's own clock, so a recorded offset is virtual time.

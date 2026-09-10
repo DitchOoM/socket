@@ -64,8 +64,8 @@ class SourceIdProjectionPolicyTests {
                 recvInfo = QuicheRecvInfo(1L),
                 sendInfo = QuicheSendInfo(1L),
                 udpChannel = StubUdpChannel(),
-                clientMode = false,
-                isServer = true,
+                role = QuicRole.Server,
+                ingress = DatagramIngress.ExternalPump,
                 driverContext = EmptyCoroutineContext,
                 onSourceIds = sink,
             )

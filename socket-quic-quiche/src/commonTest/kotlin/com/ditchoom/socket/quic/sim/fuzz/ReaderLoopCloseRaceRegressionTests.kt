@@ -2,7 +2,9 @@
 
 package com.ditchoom.socket.quic.sim.fuzz
 
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.MigrationCapability
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -58,7 +60,8 @@ class ReaderLoopCloseRaceRegressionTests {
             runQuicSim(
                 fixture = shrunkIdleCloseFixture,
                 keepAliveInterval = null,
-                clientMode = true, // the parked reader loop is the leak's protagonist
+                // the parked reader loop is the leak's protagonist
+                ingress = DatagramIngress.DriverReaderLoop,
                 bufferFactory = tracking,
             ) {
                 connTimeout = SIM_IDLE_TIMEOUT
@@ -84,8 +87,8 @@ class ReaderLoopCloseRaceRegressionTests {
                     recvInfo = QuicheRecvInfo(1L),
                     sendInfo = QuicheSendInfo(1L),
                     udpChannel = udp,
-                    clientMode = true,
-                    isServer = false,
+                    role = QuicRole.Client,
+                    ingress = DatagramIngress.DriverReaderLoop,
                     clock = SimClock(testScheduler),
                     driverContext = EmptyCoroutineContext,
                 )

@@ -38,8 +38,8 @@ class MigrationCapabilityAnswerTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = StubUdpChannel(),
-            clientMode = true,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.DriverReaderLoop,
             driverContext = EmptyCoroutineContext,
         )
 

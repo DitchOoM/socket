@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.DatagramIngress
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
@@ -117,10 +118,10 @@ class GoldenFixtureTests {
             }
         }
 
-    // ---- golden 4: datagram-then-stale-path (clientMode = true: real reader loop) ----
+    // ---- golden 4: datagram-then-stale-path (driver-owned ingress: real reader loop) ----
 
     private suspend fun TestScope.runDatagramThenStalePath(): QuicSimRun =
-        runQuicSim(datagramThenStalePath, keepAliveInterval = null, clientMode = true)
+        runQuicSim(datagramThenStalePath, keepAliveInterval = null, ingress = DatagramIngress.DriverReaderLoop)
 
     private val datagramThenStalePathGolden =
         listOf<Observed>(
@@ -169,7 +170,7 @@ class GoldenFixtureTests {
     // ---- golden 5: send-fault-survival (the shrunk fuzz counterexample) ----
 
     private suspend fun TestScope.runSendFaultSurvival(): QuicSimRun =
-        runQuicSim(sendFaultSurvival, keepAliveInterval = SIM_KEEPALIVE_INTERVAL, clientMode = true) {
+        runQuicSim(sendFaultSurvival, keepAliveInterval = SIM_KEEPALIVE_INTERVAL, ingress = DatagramIngress.DriverReaderLoop) {
             connTimeout = SIM_IDLE_TIMEOUT
             closeOnTimeout = true
             // Same send-pressure model the fuzz harness uses: a PING arms one outbound datagram, so

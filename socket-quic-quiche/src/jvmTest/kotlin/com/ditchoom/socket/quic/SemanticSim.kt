@@ -35,9 +35,9 @@ import kotlin.time.Duration.Companion.seconds
  * [buildJvmQuicConnection] minus the [java.nio.channels.DatagramChannel]/migration wiring, the
  * server side is [JvmQuicServer.acceptNewConnection] minus the Selector demux (a single-connection
  * sim needs no DCID routing, and `quiche_accept` never reads the Initial, so the server conn can
- * be created eagerly). The server driver runs `clientMode = true` so its own [QuicheDriver] reader
+ * be created eagerly). The server driver runs [DatagramIngress.DriverReaderLoop] so its own [QuicheDriver] reader
  * loop pulls datagrams off the pipe (in the real server the central receive loop does this);
- * `isServer = true` keeps server stream-ID parity and egress semantics.
+ * [QuicRole.Server] keeps server stream-ID parity and egress semantics.
  *
  * Determinism seams (W1): both drivers get `driverContext = EmptyCoroutineContext` (loops inherit
  * the caller's dispatcher — the virtual-time scheduler under `runTest`) and per-role seeded
@@ -280,8 +280,8 @@ internal suspend fun <R> withSemanticSim(
                 recvInfo = clientRecvInfo,
                 sendInfo = clientSendInfo,
                 udpChannel = pipe.clientEndpoint,
-                clientMode = true,
-                isServer = false,
+                role = QuicRole.Client,
+                ingress = DatagramIngress.DriverReaderLoop,
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,
@@ -302,10 +302,10 @@ internal suspend fun <R> withSemanticSim(
                 recvInfo = serverRecvInfo,
                 sendInfo = serverSendInfo,
                 udpChannel = pipe.serverEndpoint,
-                // clientMode=true runs the driver's own udpReaderLoop on the pipe endpoint — the
+                // DriverReaderLoop runs the driver's own udpReaderLoop on the pipe endpoint — the
                 // sim's stand-in for the real server's central Selector receive loop.
-                clientMode = true,
-                isServer = true,
+                role = QuicRole.Server,
+                ingress = DatagramIngress.DriverReaderLoop,
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 clock = driverClock,
                 driverContext = EmptyCoroutineContext,

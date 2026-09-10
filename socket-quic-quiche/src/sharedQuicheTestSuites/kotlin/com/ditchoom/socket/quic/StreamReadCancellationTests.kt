@@ -118,8 +118,8 @@ class StreamReadCancellationTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = gatedUdp,
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
         )
     }
 

@@ -125,7 +125,7 @@ class ReactiveDriverTests {
     @Test
     fun openStream_assigns_sequential_server_ids() =
         runQuicTest {
-            val driver = createTestDriver(isServer = true)
+            val driver = createTestDriver(role = QuicRole.Server)
             driver.start(this)
 
             try {
@@ -1335,7 +1335,7 @@ class ReactiveDriverTests {
 
     private fun createTestDriver(
         api: StubQuicheApi = StubQuicheApi(),
-        isServer: Boolean = false,
+        role: QuicRole = QuicRole.Client,
         udpChannel: UdpChannel = StubUdpChannel(),
         keepAliveInterval: kotlin.time.Duration? = null,
         clock: DriverClock = RealDriverClock,
@@ -1349,8 +1349,8 @@ class ReactiveDriverTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = udpChannel,
-            clientMode = false,
-            isServer = isServer,
+            role = role,
+            ingress = DatagramIngress.ExternalPump,
             keepAliveInterval = keepAliveInterval,
             clock = clock,
         )

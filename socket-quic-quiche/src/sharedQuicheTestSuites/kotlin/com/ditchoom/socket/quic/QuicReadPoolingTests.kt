@@ -56,8 +56,8 @@ class QuicReadPoolingTests {
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = StubUdpChannel(),
-            clientMode = false,
-            isServer = false,
+            role = QuicRole.Client,
+            ingress = DatagramIngress.ExternalPump,
         )
 
     private suspend fun openStream(driver: QuicheDriver): StreamSlot {

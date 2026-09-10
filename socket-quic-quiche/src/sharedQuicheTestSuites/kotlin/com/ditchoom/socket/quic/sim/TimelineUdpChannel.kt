@@ -11,7 +11,7 @@ import kotlinx.coroutines.channels.Channel
 /**
  * In-memory [UdpChannel] driven by the [SimTimeline] interpreter — the packet-level seam of the W2
  * engine, replacing `StubUdpChannel`'s suspend-forever `receive()` so the driver can run
- * `clientMode = true` with its real UDP reader loop consuming scripted datagrams under virtual time.
+ * [DatagramIngress.DriverReaderLoop] with its real UDP reader loop consuming scripted datagrams under virtual time.
  *
  * - [deliver] feeds one inbound datagram (hex payload) to the parked reader loop.
  * - [injectRecvError] surfaces a typed fault from the parked `receive()` — queued **in order** with

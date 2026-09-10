@@ -48,8 +48,8 @@ class RetiredScidRoutingTests {
             recvInfo = QuicheRecvInfo(handle),
             sendInfo = QuicheSendInfo(handle),
             udpChannel = StubUdpChannel(),
-            clientMode = false,
-            isServer = true,
+            role = QuicRole.Server,
+            ingress = DatagramIngress.ExternalPump,
         )
 
     private fun cid(vararg bytes: Int): ConnectionIdKey {

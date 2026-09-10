@@ -176,8 +176,8 @@ class PathValidationTimeoutTests {
                 // No primary reader loop: this stub channel parks in receive() forever and the tests
                 // never deliver a datagram. The probed path still starts its own reader, which is what
                 // the teardown assertions are about.
-                clientMode = false,
-                isServer = false,
+                role = QuicRole.Client,
+                ingress = DatagramIngress.ExternalPump,
                 clock = SimClock(scope.testScheduler),
                 driverContext = EmptyCoroutineContext,
             )
