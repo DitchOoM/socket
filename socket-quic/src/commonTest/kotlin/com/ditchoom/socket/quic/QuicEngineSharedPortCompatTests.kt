@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.TransportConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -32,14 +33,19 @@ class QuicEngineSharedPortCompatTests {
             EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = true),
     ) : QuicEngine {
         var lastBinding: QuicPortBinding? = null
+        var lastClientBinding: QuicClientBinding? = null
 
         override suspend fun connect(
+            binding: QuicClientBinding,
             hostname: String,
             port: Int,
             quicOptions: QuicOptions,
-            transport: com.ditchoom.socket.TransportConfig,
+            transport: TransportConfig,
             timeout: Duration,
-        ): QuicConnection = throw UnsupportedOperationException("client not needed here")
+        ): QuicConnection {
+            lastClientBinding = binding
+            throw UnsupportedOperationException("no connection is established here; the binding is what this records")
+        }
 
         override suspend fun bind(
             binding: QuicPortBinding,
@@ -108,5 +114,22 @@ class QuicEngineSharedPortCompatTests {
             assertFailsWith<UnsupportedOperationException> {
                 engine.bind(QuicPortBinding.Shared(UnusedChannel()), tls, options, 5.seconds)
             }
+        }
+
+    /**
+     * The client half of the same promise: the deprecated `connect(hostname, port, …)` still
+     * compiles and lands on the binding form as [QuicClientBinding.OwnSocket], so a call site that
+     * never heard of shared ports keeps its own socket.
+     */
+    @Test
+    @Suppress("DEPRECATION")
+    fun theDeprecatedHostPortConnectStillOwnsItsSocket() =
+        runQuicTest {
+            val engine = RecordingEngine()
+
+            assertFailsWith<UnsupportedOperationException> {
+                engine.connect("example.com", 443, options, TransportConfig(), 5.seconds)
+            }
+            assertEquals(QuicClientBinding.OwnSocket, engine.lastClientBinding)
         }
 }
