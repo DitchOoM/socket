@@ -22,8 +22,15 @@ Two artifacts, and the second is the one that stops a walk having to be repeated
   `TraceToFixture` and the connection replays through the sim in virtual time, on every platform,
   forever. A field bug becomes a committed regression test instead of another walk.
 
-`pull.sh` fetches both and says loudly if the traces are missing. Budget is ~1.5 MB/hour (`-e
-probeTraceBudgetMb`, default 512), so even a 71-hour walk is ~100 MB.
+`pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
+this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
+below is ~590 MB. The probe derives its own budget from `<minutes>` and `[echoIntervalMs]` and prints
+it as `TRACE-BUDGET`; override with a 4th argument to `start.sh` only if you want a different one.
+
+⚠️ The ~1.5 MB/hour an earlier revision of this file quoted was computed against the probe's *own*
+2s default, not the 250ms this script sends — 8x out, which put the flat 512 MB default's exhaustion
+at hour 65 of a 75-hour walk. The tail is exactly where a handoff is most likely, so the part that
+stopped being replayable was the part worth having.
 
 ⚠️ `start.sh` deletes **both** before it begins, exactly as it always has for the log. Pull first.
 
