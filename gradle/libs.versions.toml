@@ -130,7 +130,7 @@ kotlinWrappers = "2026.6.0"
 # stress test never reaches, so no iteration count would have found it. Now increment-if-nonzero (CAS),
 # which never makes a rejected reference visible; cost unchanged (the atomic RMW is the expense, and a
 # retry loop measured the same as fetch-and-add). Drop-in, no source changes here.
-buffer = "6.30.6"
+buffer = "6.30.8"
 ksp = "2.3.9"
 # 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
 # no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
