@@ -5,7 +5,13 @@
 
 Prints: run parameters, connections (lifetime, why it ended), migrations (Probing → Migrated
 latency, failed paths), echo counts and the longest echo gap, the memory trend from heartbeats,
-and every STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim.
+every STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, and a RE-DERIVED #447 verdict.
+
+The re-derived verdict exists because a probe build before #601 printed its own `447-VERDICT` line
+using logic that counted the retries of a failing episode as recovery — it reported PASS for a
+connection whose every probe went unanswered and which then died. Any log written by such a build
+still carries the *evidence* (the MIGRATION-ATTEMPT sequence), so the verdict can be recomputed here
+without reinstalling the probe and restarting a walk.
 """
 import re
 import sys
@@ -83,3 +89,34 @@ for tag in ("STREAM-INTEGRITY-BROKEN", "CONNECTION-DEAD", "WAKELOCK", "DONE", "M
         print(f"\n{tag}: {len(hits)}")
         for t, b in hits[:8]:
             print(f"  t+{t / 1000:.0f}s {b[:160]}")
+
+# --- #447 verdict, re-derived from the attempt sequence (see the module docstring) ---
+#
+# Recovery means a probe armed AFTER an unanswered one was itself ANSWERED. Another probe merely
+# being sent is the retry ladder of the same failure, and a migration that succeeded BEFORE the
+# first unanswered probe says nothing about the pool afterwards.
+print("\n#447 verdict (re-derived — the log's own line may predate #601):")
+conn_bounds = [t for t, b in events if b.startswith("CONNECTED ")]
+attempt_lines = [(t, b) for t, b in events if b.startswith("MIGRATION-ATTEMPT")]
+OUTCOME = re.compile(r"outcome=(\w+)")
+for i, start in enumerate(conn_bounds):
+    end = conn_bounds[i + 1] if i + 1 < len(conn_bounds) else float("inf")
+    outcomes = [OUTCOME.search(b).group(1) for t, b in attempt_lines if start <= t < end and OUTCOME.search(b)]
+    lost = [j for j, o in enumerate(outcomes) if o == "PathNotValidated"]
+    if not outcomes:
+        continue
+    if not lost:
+        print(f"  connection {i + 1}: INCONCLUSIVE — no probe went unanswered ({len(outcomes)} attempt(s), #445 only)")
+        continue
+    after = outcomes[lost[0] + 1:]
+    answered = [o for o in after if o == "Succeeded"]
+    no_spare = [o for o in after if o == "NoSpareConnectionId"]
+    if answered:
+        verdict = f"PASS — {len(lost)} unanswered, then {len(answered)} later probe(s) ANSWERED: pool recovered"
+    elif no_spare:
+        verdict = f"REGRESSION — {len(lost)} unanswered, then {len(no_spare)} NoSpareConnectionId: pool did not come back"
+    elif after:
+        verdict = f"FAIL — {len(lost)} unanswered and {len(after)} later probe(s), none answered: never regained a path"
+    else:
+        verdict = f"INCONCLUSIVE — {len(lost)} unanswered, nothing attempted afterwards"
+    print(f"  connection {i + 1}: {verdict}  [{','.join(outcomes)}]")
