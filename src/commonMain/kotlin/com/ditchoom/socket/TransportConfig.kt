@@ -29,7 +29,10 @@ import kotlin.time.Duration.Companion.seconds
  *   into one. Those reads pass [kotlin.time.Duration.INFINITE] explicitly and delegate liveness to the
  *   transport's idle timeout. The rule is the same for both roles of a protocol (see #472, #476, #495,
  *   #512, #513): a client and a server facing the same peer behaviour must not disagree about it.
- * - [connectTimeout] — bound on the connect handshake itself.
+ * - [connectTimeout] — bound on the connect handshake itself, per address attempted.
+ * - [nameResolution] — how the connect turns a name into the addresses it tries
+ *   ([NameResolution], sealed): the platform's own way by default, or a caller's [HostResolver]
+ *   whose candidates are tried in order on every platform.
  * - [tls] — the unified [TlsConfig]; `null` = plaintext.
  * - [io] — platform I/O + TCP knobs ([IoTuning]), injected rather than read from a process-global.
  * - [networkId] — typed identity of the network path this connect happens over
@@ -56,6 +59,7 @@ data class TransportConfig(
     val tls: TlsConfig? = null,
     val io: IoTuning = IoTuning(),
     val networkId: NetworkId = NetworkId.Unidentified,
+    val nameResolution: NameResolution = NameResolution.Platform,
 ) {
     companion object {
         /** Good defaults for interactive protocols (WebSocket, MQTT, HTTP): TCP_NODELAY on. */

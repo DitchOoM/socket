@@ -68,88 +68,56 @@ class LinuxClientSocket(
         val tlsConfig = config.tls
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
-        memScoped {
-            // Resolve hostname
-            val hints = alloc<addrinfo>()
-            memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
-            hints.ai_family = AF_UNSPEC
-            hints.ai_socktype = SOCK_STREAM
-            hints.ai_protocol = IPPROTO_TCP
-
-            val result = allocPointerTo<addrinfo>()
-            val portStr = port.toString()
-
-            val ret = getaddrinfo(host, portStr, hints.ptr, result.ptr)
-            if (ret != 0) {
-                val errorMsg = gai_strerror(ret)?.toKString() ?: "Unknown DNS error"
-                throw SocketUnknownHostException(host, errorMsg)
+        try {
+            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
+                connectCandidate(candidate, port, timeout)
             }
+            // Cache the socket's receive buffer size for efficient read operations
+            cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
+            if (tlsConfig != null) {
+                initTls(host, timeout)
+            }
+            // Track active socket for IoUringManager auto-cleanup
+            IoUringManager.onSocketOpened()
+        } catch (e: Exception) {
+            closeInternal()
+            throw e
+        }
+    }
 
-            val addrInfo = result.value ?: throw SocketUnknownHostException(host, "No address found")
-
+    /** One connect attempt to a resolved literal: the socket is [sockfd] on success and closed again on failure. */
+    private suspend fun connectCandidate(
+        candidate: ResolvedAddress,
+        port: Int,
+        timeout: Duration,
+    ) = memScoped {
+        val hints = alloc<addrinfo>()
+        memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+        hints.ai_flags = AI_NUMERICHOST
+        val result = allocPointerTo<addrinfo>()
+        val ret = getaddrinfo(candidate.ip, port.toString(), hints.ptr, result.ptr)
+        if (ret != 0) {
+            throw SocketUnknownHostException(candidate.ip, gai_strerror(ret)?.toKString() ?: "Unknown DNS error")
+        }
+        val entry = result.value?.pointed ?: throw SocketUnknownHostException(candidate.ip, "No address found")
+        try {
+            val fd = socket(entry.ai_family, SOCK_STREAM, 0)
+            if (fd < 0) throw mapErrnoToException(errno, "socket")
             try {
-                // Walk the addrinfo linked list and try each candidate in order. getaddrinfo
-                // returns multiple records for dual-stack hosts (AAAA + A, multiple IPv4s, etc.);
-                // attempting only the first record — as the prior code did — fails the entire
-                // connect when the head address is unreachable even though a later address would
-                // succeed. broker.hivemq.com is the canonical reproducer: its 8 AAAA records all
-                // ECONNREFUSED while the A record accepts. RFC 8305 / Happy Eyeballs racing is
-                // not implemented here; sequential fallback is enough to clear the common
-                // dual-stack-misconfiguration case.
-                var lastError: Exception? = null
-                var entryPtr: CPointer<addrinfo>? = addrInfo
-                while (entryPtr != null) {
-                    val entry = entryPtr.pointed
-                    val candidateFd = socket(entry.ai_family, SOCK_STREAM, 0)
-                    if (candidateFd < 0) {
-                        lastError = mapErrnoToException(errno, "socket")
-                        entryPtr = entry.ai_next
-                        continue
-                    }
-                    try {
-                        setNonBlocking(candidateFd)
-                        applySocketOptions(candidateFd, config.io)
-                        sockfd = candidateFd
-                        connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
-                        // Connect succeeded — exit the fallback loop.
-                        lastError = null
-                        break
-                    } catch (e: CancellationException) {
-                        // A cancelled connect must propagate immediately — not be recorded as lastError
-                        // and retried against the next address (which would mask the cancellation, or
-                        // surface a bogus "all addresses unreachable" if the last socket() then fails).
-                        closeSocket(candidateFd)
-                        sockfd = -1
-                        throw e
-                    } catch (e: Exception) {
-                        lastError = e
-                        closeSocket(candidateFd)
-                        sockfd = -1
-                        entryPtr = entry.ai_next
-                    }
-                }
-
-                if (sockfd < 0) {
-                    throw lastError
-                        ?: SocketConnectionException.Refused(host, port, platformError = "all addresses unreachable")
-                }
-
-                // Cache the socket's receive buffer size for efficient read operations
-                cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
-
-                // Initialize TLS if requested
-                if (tlsConfig != null) {
-                    initTls(host, timeout)
-                }
-
-                // Track active socket for IoUringManager auto-cleanup
-                IoUringManager.onSocketOpened()
-            } catch (e: Exception) {
-                closeInternal()
+                setNonBlocking(fd)
+                applySocketOptions(fd, config.io)
+                sockfd = fd
+                connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
+            } catch (e: Throwable) {
+                closeSocket(fd)
+                sockfd = -1
                 throw e
-            } finally {
-                freeaddrinfo(addrInfo)
             }
+        } finally {
+            freeaddrinfo(result.value)
         }
     }
 

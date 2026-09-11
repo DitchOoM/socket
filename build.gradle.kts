@@ -371,6 +371,9 @@ kotlin {
                     "ServerCancellationTests",
                     "SimpleSocketTests",
                     "WrapNodeErrorTests",
+                    // Spins up a TCP echo server and connects through the resolver seam; the JS
+                    // capability set claims TCP in a browser, so the gate inside cannot skip it.
+                    "HostResolverTests",
                     // The read-timeout contract suite spins up an in-process TCP SilentPeer, so it too
                     // can only run under Node (note the `.harness.` subpackage — the prefix below still
                     // resolves to its fully-qualified name).
@@ -508,6 +511,9 @@ kotlin {
         // Add shared Apple implementation to all Apple target source sets.
         // Cannot use appleMain directly because compileAppleMainKotlinMetadata
         // can't resolve Apple-specific types (NSDataBuffer, NSData, etc.) from dependencies.
+        // POSIX code every native target shares (getaddrinfo), added per leaf for the same reason
+        // appleNativeImpl is: a shared appleMain cannot compile metadata with watchosArm64 in it.
+        val posixNativeImplDir = file("src/posixNativeImpl/kotlin")
         if (isMacOS) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
@@ -524,6 +530,7 @@ kotlin {
                 "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
+                findByName(sourceSetName)?.kotlin?.srcDir(posixNativeImplDir)
             }
         }
 
@@ -534,6 +541,7 @@ kotlin {
         // to downstream modules that depend on project(":") (e.g. :socket-quic-quiche).
         if (isLinux) {
             val linuxMain by getting {
+                kotlin.srcDir(posixNativeImplDir)
                 dependencies {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }

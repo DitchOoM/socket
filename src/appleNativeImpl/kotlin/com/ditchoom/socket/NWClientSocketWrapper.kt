@@ -28,13 +28,33 @@ class NWClientSocketWrapper(
         hostname: String?,
     ) {
         val host = hostname ?: "localhost"
+        when (val resolution = config.nameResolution) {
+            // Network.framework resolves the name and races the families itself (RFC 8305).
+            NameResolution.Platform -> connectTo(host, port, host)
+            is NameResolution.Via -> {
+                if (config.tls != null) {
+                    throw UnsupportedOperationException(
+                        "NameResolution.Via with TLS is not supported on Apple: Network.framework verifies the " +
+                            "certificate against the endpoint it is given, and a resolved literal is not the name",
+                    )
+                }
+                firstReachable(resolution.candidatesFor(host)) { candidate -> connectTo(candidate.ip, port, host) }
+            }
+        }
+    }
+
+    /** One connect to [endpoint], a name or a literal; [hostname] is what errors name. */
+    private suspend fun connectTo(
+        endpoint: String,
+        port: Int,
+        hostname: String,
+    ) {
         val tlsConfig = config.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
-
         val conn =
             nw_helper_create_tcp_connection(
-                host = host,
+                host = endpoint,
                 port = port.toUShort(),
                 use_tls = NSNumber(bool = useTls),
                 verify_certs = NSNumber(bool = verifyCertificates),
@@ -63,7 +83,7 @@ class NWClientSocketWrapper(
                     1, 4 -> { // waiting or failed
                         resumed = true
                         continuation.resumeWithException(
-                            mapSocketException(errorDomain, errorDesc, hostname = host),
+                            mapSocketException(errorDomain, errorDesc, hostname = hostname),
                         )
                     }
                     5 -> { // cancelled

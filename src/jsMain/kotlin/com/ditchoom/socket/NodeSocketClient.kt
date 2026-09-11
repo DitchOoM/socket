@@ -233,17 +233,26 @@ class NodeClientSocket(
         val rejectUnauthorized = tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
         // Load system CAs when connecting with TLS and certificate verification is enabled
         val caCerts = if (useTls && rejectUnauthorized) systemCaCertificates else null
-        // Set servername explicitly for SNI (Server Name Indication)
-        val options =
-            Options(
-                port = port,
-                host = hostname,
-                onread = null,
-                rejectUnauthorized = rejectUnauthorized,
-                servername = hostname,
-                ca = caCerts,
-            )
-        val netSocket = connect(useTls, options, config.connectTimeout)
+        val host = hostname ?: "localhost"
+        val endpoints =
+            when (val resolution = config.nameResolution) {
+                NameResolution.Platform -> listOf(host)
+                is NameResolution.Via -> resolution.candidatesFor(host).map { it.ip }
+            }
+        val netSocket =
+            firstReachable(endpoints) { endpoint ->
+                // servername carries the name for SNI whichever endpoint the bytes go to.
+                val options =
+                    Options(
+                        port = port,
+                        host = endpoint,
+                        onread = null,
+                        rejectUnauthorized = rejectUnauthorized,
+                        servername = hostname,
+                        ca = caCerts,
+                    )
+                connect(useTls, options, config.connectTimeout)
+            }
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
         if (config.io.tcpNoDelay == true) {
