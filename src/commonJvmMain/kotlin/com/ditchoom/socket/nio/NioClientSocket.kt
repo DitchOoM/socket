@@ -3,10 +3,12 @@ package com.ditchoom.socket.nio
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.candidatesFor
+import com.ditchoom.socket.firstReachable
 import com.ditchoom.socket.nio.util.aConfigureBlocking
-import com.ditchoom.socket.nio.util.buildInetAddress
 import com.ditchoom.socket.nio.util.connect
 import com.ditchoom.socket.nio.util.openSocketChannel
+import java.net.InetAddress
 import java.net.InetSocketAddress
 
 class NioClientSocket(
@@ -19,24 +21,29 @@ class NioClientSocket(
         hostname: String?,
     ) {
         val timeout = config.connectTimeout
-        val socketAddress = buildInetAddress(port, hostname)
-        val socketChannel = openSocketChannel()
-        // Assign socket immediately so close() can clean it up if subsequent operations fail
-        this.socket = socketChannel
-        try {
-            socketChannel.aConfigureBlocking(blocking)
-            if (!socketChannel.connect(socketAddress, selector, timeout)) {
-                throw SocketIOException("Failed to connect client ${(socketAddress as? InetSocketAddress)?.port} $socketChannel")
+        val host = hostname ?: "localhost"
+        val socketChannel =
+            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
+                val attempt = openSocketChannel()
+                // Assigned before the connect so close() can reach it if the attempt fails.
+                this@NioClientSocket.socket = attempt
+                try {
+                    attempt.aConfigureBlocking(blocking)
+                    val address = InetSocketAddress(InetAddress.getByName(candidate.ip), port)
+                    if (!attempt.connect(address, selector, timeout)) {
+                        throw SocketIOException("Failed to connect client $port $attempt")
+                    }
+                    attempt
+                } catch (e: Throwable) {
+                    runCatching { attempt.close() }
+                    throw e
+                }
             }
+        try {
             applySocketOptions(config.io)
             config.tls?.let { initTls(hostname, port, it, timeout) }
         } catch (e: Throwable) {
-            // Ensure socket is closed on any failure during open
-            try {
-                socketChannel.close()
-            } catch (_: Throwable) {
-                // Ignore close errors
-            }
+            runCatching { socketChannel.close() }
             throw e
         }
     }

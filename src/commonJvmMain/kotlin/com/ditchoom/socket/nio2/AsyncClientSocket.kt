@@ -2,10 +2,12 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.TransportConfig
-import com.ditchoom.socket.nio.util.buildInetAddress
+import com.ditchoom.socket.candidatesFor
+import com.ditchoom.socket.firstReachable
 import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
-import kotlinx.coroutines.withTimeout
+import java.net.InetAddress
+import java.net.InetSocketAddress
 
 class AsyncClientSocket(
     config: TransportConfig = TransportConfig(),
@@ -16,23 +18,26 @@ class AsyncClientSocket(
         hostname: String?,
     ) {
         val timeout = config.connectTimeout
-        withTimeout(timeout) {
-            val asyncSocket = asyncSocket()
-            // Assign socket immediately so close() can clean it up if connect fails
-            this@AsyncClientSocket.socket = asyncSocket
-            try {
-                asyncSocket.aConnect(buildInetAddress(port, hostname), timeout)
-                applySocketOptions(config.io)
-                config.tls?.let { initTls(hostname, port, it, timeout) }
-            } catch (e: Throwable) {
-                // Ensure socket is closed on any failure during open
+        val host = hostname ?: "localhost"
+        val asyncSocket =
+            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
+                val attempt = asyncSocket()
+                // Assigned before the connect so close() can reach it if the attempt fails.
+                this@AsyncClientSocket.socket = attempt
                 try {
-                    asyncSocket.close()
-                } catch (_: Throwable) {
-                    // Ignore close errors
+                    attempt.aConnect(InetSocketAddress(InetAddress.getByName(candidate.ip), port), timeout)
+                    attempt
+                } catch (e: Throwable) {
+                    runCatching { attempt.close() }
+                    throw e
                 }
-                throw e
             }
+        try {
+            applySocketOptions(config.io)
+            config.tls?.let { initTls(hostname, port, it, timeout) }
+        } catch (e: Throwable) {
+            runCatching { asyncSocket.close() }
+            throw e
         }
     }
 }

@@ -194,19 +194,15 @@ class WrapJvmExceptionTests {
         assertSame(original, result.cause)
     }
 
-    // ==================== DNS resolution (buildInetAddress) ====================
+    // ==================== DNS resolution (JvmHostResolver) ====================
 
     @Test
-    fun buildInetAddress_unknownHost_wrapsToSocketUnknownHostException() =
+    fun jvmResolver_unknownHost_isAFailedAnswerCarryingTheJdkCause() =
         runTestNoTimeSkipping {
-            try {
-                com.ditchoom.socket.nio.util
-                    .buildInetAddress(80, "this.host.does.not.exist.invalid")
-                fail("Should have thrown SocketUnknownHostException")
-            } catch (e: SocketUnknownHostException) {
-                assertTrue(e.message.contains("this.host.does.not.exist.invalid"))
-                assertNotNull(e.cause)
-            }
+            val answer = HostResolver.platform().resolve("this.host.does.not.exist.invalid")
+            val failed = assertIs<Resolution.Failed>(answer)
+            assertEquals("this.host.does.not.exist.invalid", failed.host)
+            assertIs<java.net.UnknownHostException>(failed.cause)
         }
 
     // ==================== asyncIOIntHandler wrapping ====================
