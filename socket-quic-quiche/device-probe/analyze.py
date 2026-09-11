@@ -92,6 +92,23 @@ if hb:
     for t, b in (hb[:2] + hb[-2:] if len(hb) > 4 else hb):
         print(f"  t+{t / 1000:.0f}s {b[:150]}")
 
+# capture health: did the instruments keep recording for the whole run?
+spent = [(t, b) for t, b in events if b.startswith("TRACE-BUDGET-SPENT")]
+prev = [b for _, b in events if b.startswith("PREVIOUS-RUN")]
+hb_gaps = [(hb[i][0] - hb[i - 1][0], hb[i][0]) for i in range(1, len(hb)) if hb[i][0] - hb[i - 1][0] > 180_000]
+print("\ncapture health:")
+print(f"  trace budget: {'SPENT at t+' + str(spent[0][0] // 1000) + 's — the rest of the run is NOT replayable' if spent else 'never spent'}")
+print(f"  heartbeat gaps > 3 min: {len(hb_gaps)}" + (" — " + ", ".join(f"{g / 60000:.0f} min ending t+{at / 1000:.0f}s" for g, at in hb_gaps[:5]) if hb_gaps else ""))
+print(f"  previous run at start: {prev[0][13:] if prev else '(pre-rotation build: a START deleted whatever was there)'}")
+import os
+traces_dir = os.path.splitext(path)[0] + "-traces"
+if os.path.isdir(traces_dir):
+    n_traces = len([f for f in os.listdir(traces_dir) if f.endswith(".trace")])
+    n_conns = len([1 for _, b in events if b.startswith("CONNECTED ")])
+    print(f"  replay traces: {n_traces} file(s) for {n_conns} connection(s)" + ("" if n_traces >= n_conns else " — SOME CONNECTIONS HAVE NO TRACE"))
+else:
+    print(f"  replay traces: no {os.path.basename(traces_dir)}/ beside the log — pull.sh puts it there")
+
 # verbatim: the lines that matter
 for tag in ("STREAM-INTEGRITY-BROKEN", "CONNECTION-DEAD", "WAKELOCK", "DONE", "MIGRATION-"):
     hits = [(t, b) for t, b in events if b.startswith(tag)]
