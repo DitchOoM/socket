@@ -4,8 +4,9 @@
     ./analyze.py logs/<file>.log
 
 Prints: run parameters, connections (lifetime, why it ended), migrations (Probing → Migrated
-latency, failed paths), echo counts and the longest echo gap, the memory trend from heartbeats,
-every STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, and a RE-DERIVED #447 verdict.
+latency, failed paths), echo counts — late and unanswered apart from failed — with RTT and lateness
+percentiles and the longest echo gap, the memory trend from heartbeats, every
+STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, and a RE-DERIVED #447 verdict.
 
 The re-derived verdict exists because a probe build before #601 printed its own `447-VERDICT` line
 using logic that counted the retries of a failing episode as recovery — it reported PASS for a
@@ -56,22 +57,31 @@ for t, b in mig_fail:
 
 # echoes
 ok = [(t, b) for t, b in events if b.startswith("ECHO-OK")]
+late = [(t, b) for t, b in events if b.startswith("ECHO-LATE")]
+overdue = [(t, b) for t, b in events if b.startswith("ECHO-OVERDUE")]
 fail = [(t, b) for t, b in events if b.startswith("ECHO-FAIL")]
 nodata = [t for t, b in events if b.startswith("ECHO-NO-DATA")]
-# An echo that arrives one payload behind (pending == got, after a deadline miss) makes every later
-# read return the PREVIOUS echo at once, so its rtt reads ~0 and says nothing about the path. Only
-# in-sync echoes (pending=0B) carry a real round trip.
-in_sync = [b for _, b in ok if re.search(r"pending=0B", b)]
-rtts = [int(m.group(1)) for b in in_sync for m in [re.search(r"rtt=(\d+)ms", b)] if m]
-gaps = [(ok[i][0] - ok[i - 1][0], ok[i][0]) for i in range(1, len(ok))]
+unanswered = sum(int(m.group(1)) for _, b in events for m in [re.match(r"ECHO-UNANSWERED count=(\d+)", b)] if m)
+answered = sorted(ok + late)
+# A probe built before #599 wrote one ECHO-OK per READ (`got=…B`), so an echo that arrived one
+# payload behind made every later read return the PREVIOUS echo at once: its rtt read ~0 and only
+# in-sync echoes (pending=0B) carried a real round trip. Since #599 every exchange is judged on its
+# own send time, so every rtt is real.
+legacy = any("got=" in b for _, b in ok[:200])
+timed = [b for _, b in answered if not legacy or re.search(r"pending=0B", b)]
+rtts = sorted(int(m.group(1)) for b in timed for m in [re.search(r"rtt=(\d+)ms", b)] if m)
+lateness = sorted(int(m.group(1)) for _, b in late for m in [re.search(r"late=\+(\d+)ms", b)] if m)
+gaps = [(answered[i][0] - answered[i - 1][0], answered[i][0]) for i in range(1, len(answered))]
 worst = sorted(gaps, reverse=True)[:5]
-print(f"\nechoes: ok={len(ok)} fail={len(fail)} no-data={len(nodata)} in-sync={len(in_sync)} one-behind={len(ok) - len(in_sync)}")
+print(f"\nechoes: ok={len(ok)} late={len(late)} overdue={len(overdue)} unanswered={unanswered} fail={len(fail)} no-data={len(nodata)}"
+      + (f" in-sync={len(timed)} one-behind={len(ok) - len(timed)} (pre-#599 grammar)" if legacy else ""))
 if rtts:
-    rtts.sort()
-    print(f"  rtt (in-sync only) p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
-print("  longest gaps between ok echoes:", ", ".join(f"{g / 1000:.1f}s at t+{at / 1000:.0f}s" for g, at in worst))
+    print(f"  rtt{' (in-sync only)' if legacy else ''} p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
+if lateness:
+    print(f"  late by p50=+{lateness[len(lateness) // 2]}ms p95=+{lateness[int(len(lateness) * 0.95)]}ms max=+{lateness[-1]}ms")
+print("  longest gaps between answered echoes:", ", ".join(f"{g / 1000:.1f}s at t+{at / 1000:.0f}s" for g, at in worst))
 errs = Counter(re.search(r"err=(\S+)", b).group(1) for _, b in fail if re.search(r"err=(\S+)", b))
-print("  fail kinds:", dict(errs))
+print("  fail kinds:", dict(errs), "(a pre-#599 build files every missed deadline here as TimeoutCancellationException)" if legacy and errs else "")
 
 # heartbeats (memory trend)
 hb = [(t, b) for t, b in events if b.startswith("HEARTBEAT")]
