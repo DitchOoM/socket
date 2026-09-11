@@ -25,6 +25,7 @@ import com.ditchoom.socket.testkit.echo.EchoUnanswered
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
 import com.ditchoom.socket.testkit.migration.runLine
+import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
@@ -118,17 +119,20 @@ class DeviceHandoffProbe {
         // qlog could not be turned on. Writes one .sqlog per connection into the app's external files
         // dir, where `adb pull` can reach it. Off by default because at a 100ms cadence it is megabytes
         // per minute and it is an instrument, not a feature.
+        // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
+        // collects it. Every walk this rig has lost was lost by a START.
+        val kept = PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog"))
         val qlog = arg("probeQlog", "").isNotEmpty()
         val qlogDir = File(dir, "qlog")
         if (qlog) {
             qlogDir.mkdirs()
-            qlogDir.listFiles()?.forEach { it.delete() }
             System.setProperty("quic.qlog.dir", qlogDir.absolutePath)
         } else {
             System.clearProperty("quic.qlog.dir")
         }
 
         log.writeText("")
+        emit(kept.line)
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
                 "minutes=$minutes echoIntervalMs=$echoIntervalMs " +
@@ -152,28 +156,15 @@ class DeviceHandoffProbe {
         // built from, which is exactly what `QuicTraceCapture(ring)` was doing here.
         //
         // Affordable at this rig's cadence, which is the only reason it can be unconditional. The
-        // budget is DERIVED from this run's own cadence and duration rather than being a constant,
-        // because the constant was computed against a cadence the rig never uses: this probe defaults
-        // to one echo every 2s, `device-probe/start.sh` sends 250ms, and the README's real run is
-        // 75 hours at 250ms. Measured on device 2026-09-09 at 250ms — 275,722 bytes over 120s, 480
-        // exchanges — that is ~574 bytes of trace per exchange, or 7.89 MB/hour, so the old flat
-        // 512 MB died at hour 65 of a 75-hour walk and the tail (where a handoff is most likely) was
-        // the part that stopped being replayable.
-        //
-        // Doubled for the events that do not scale with the echo loop (path changes, reconnects,
-        // heartbeats), floored so a short run still has room to be interesting, and capped so a
-        // reconnect storm still cannot fill the device — which is what the budget is for.
-        val plannedExchanges = minutes.toLong() * 60_000L / echoIntervalMs
-        val derivedBudgetMb =
-            (plannedExchanges * TRACE_BYTES_PER_EXCHANGE * 2 / (1024L * 1024L))
-                .coerceIn(MIN_TRACE_BUDGET_MB, MAX_TRACE_BUDGET_MB)
-        val traceBudgetBytes = arg("probeTraceBudgetMb", derivedBudgetMb.toString()).toLong() * 1024L * 1024L
-        emit("TRACE-BUDGET mb=${traceBudgetBytes / (1024L * 1024L)} plannedExchanges=$plannedExchanges")
+        // budget follows this run's own duration and cadence (see [TraceBudget]); -e probeTraceBudgetMb
+        // overrides the ceiling for a run that wants a different one.
+        val derived = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds)
+        val budget = arg("probeTraceBudgetMb", "").let { if (it.isEmpty()) derived else derived.withMegabytes(it.toLong()) }
+        emit(budget.line)
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
-        traceDir.listFiles()?.forEach { it.delete() }
         val traceFiles =
-            WalkTraceFiles(traceDir, traceBudgetBytes) { spent ->
+            WalkTraceFiles(traceDir, budget.bytes) { spent ->
                 emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
@@ -860,20 +851,20 @@ private class WalkTraceFiles(
     private val onBudgetSpent: (Long) -> Unit,
 ) {
     private val connections = AtomicInteger(0)
-    private val budget = AtomicReference<TraceBudget>(TraceBudget.Live(0L))
+    private val budget = AtomicReference<TraceSpend>(TraceSpend.Live(0L))
 
-    /** Lock-free: the thread whose CAS moves the budget to [TraceBudget.Spent] is the one that reports it. */
+    /** Lock-free: the thread whose CAS moves the budget to [TraceSpend.Spent] is the one that reports it. */
     private fun charge(n: Int): Boolean {
         while (true) {
             when (val current = budget.get()) {
-                TraceBudget.Spent -> return false
-                is TraceBudget.Live ->
+                TraceSpend.Spent -> return false
+                is TraceSpend.Live ->
                     if (current.written + n > budgetBytes) {
-                        if (budget.compareAndSet(current, TraceBudget.Spent)) {
+                        if (budget.compareAndSet(current, TraceSpend.Spent)) {
                             onBudgetSpent(current.written)
                             return false
                         }
-                    } else if (budget.compareAndSet(current, TraceBudget.Live(current.written + n))) {
+                    } else if (budget.compareAndSet(current, TraceSpend.Live(current.written + n))) {
                         return true
                     }
             }
@@ -889,19 +880,6 @@ private class WalkTraceFiles(
         }
     }
 }
-
-/**
- * Bytes of v1 trace one echo exchange produces, measured on device 2026-09-09 (SM-F956U1, 250ms
- * cadence): 275,722 bytes over 120s across 480 exchanges. Used to size the default trace budget
- * against the cadence a run actually configures — see the derivation at its use site.
- */
-private const val TRACE_BYTES_PER_EXCHANGE = 574L
-
-/** A short run still gets room to record something worth replaying. */
-private const val MIN_TRACE_BUDGET_MB = 512L
-
-/** A reconnect storm still cannot fill the device, which is the whole reason the budget exists. */
-private const val MAX_TRACE_BUDGET_MB = 4_096L
 
 /**
  * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall. Two (~2
@@ -963,12 +941,49 @@ private fun transport(ctx: Context): String =
  * crossed exactly once, and it is the **transition** that announces — so "said so" is not a fact
  * tracked alongside the budget, it is the budget.
  */
-private sealed interface TraceBudget {
+private sealed interface TraceSpend {
     /** Room left, [written] bytes used so far. */
     data class Live(
         val written: Long,
-    ) : TraceBudget
+    ) : TraceSpend
 
     /** The ceiling was reached, and reaching it is what reported it. */
-    data object Spent : TraceBudget
+    data object Spent : TraceSpend
+}
+
+/** What a START found left behind by the run before it, and where it was moved to. */
+private sealed interface PreviousRun {
+    val line: String
+
+    data object None : PreviousRun {
+        override val line: String = "PREVIOUS-RUN none"
+    }
+
+    data class Kept(
+        val stamp: String,
+        val names: List<String>,
+    ) : PreviousRun {
+        override val line: String get() = "PREVIOUS-RUN kept previous/$stamp/ [${names.joinToString(",")}] — pull.sh collects it"
+    }
+
+    companion object {
+        fun rotate(
+            dir: File,
+            names: List<String>,
+        ): PreviousRun {
+            val leftovers =
+                names.map { File(dir, it) }.filter {
+                    (it.isFile && it.length() > 0) || (it.isDirectory && !it.listFiles().isNullOrEmpty())
+                }
+            if (leftovers.isEmpty()) return None
+            val stamp =
+                java.text
+                    .SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", java.util.Locale.US)
+                    .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                    .format(java.util.Date())
+            val into = File(dir, "previous/$stamp").apply { mkdirs() }
+            leftovers.forEach { it.renameTo(File(into, it.name)) }
+            return Kept(stamp, leftovers.map { it.name })
+        }
+    }
 }

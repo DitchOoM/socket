@@ -27,3 +27,15 @@ if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataCont
 else
   echo "no replay traces on the device — the walk is NOT replayable. Check that the probe build carries the trace sink, and that the probe process was terminated before pulling." >&2
 fi
+
+# quiche's own frame-level record (the probe turns qlog on), and any run a Start moved aside.
+qlog="$(dirname "$0")/logs/$stamp-$TAG-qlog"
+if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Documents/qlog --destination "$qlog" >/dev/null 2>&1; then
+  echo "pulled $(find "$qlog" -name '*.sqlog' | wc -l | tr -d ' ') qlog file(s), $(du -sk "$qlog" | cut -f1) KB -> $qlog"
+else
+  echo "no qlog on the device"
+fi
+prev="$(dirname "$0")/logs/$stamp-$TAG-previous"
+if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Documents/previous --destination "$prev" >/dev/null 2>&1; then
+  echo "pulled previous run(s): $(ls "$prev" | tr '\n' ' ') -> $prev (still on the device; devicectl cannot delete)"
+fi

@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.echo.EchoLedger
 import com.ditchoom.socket.testkit.echo.EchoRead
 import com.ditchoom.socket.testkit.echo.EchoUnanswered
+import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.quic.read
@@ -42,10 +43,11 @@ import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
-import platform.posix.remove
+import platform.posix.setenv
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.timeIntervalSince1970
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.IntVar
@@ -127,17 +129,16 @@ object IosHandoffProbe {
 
     private fun elapsedMs(since: Double): Long = ((NSDate().timeIntervalSince1970 - since) * 1000).toLong()
 
+    private fun documents(): String = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
+
     /** Absolute path of the newline-delimited log, so Swift can offer it to the Files app. */
-    fun logPath(): String {
-        val docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
-        return "$docs/quic-handoff-probe.log"
-    }
+    fun logPath(): String = "${documents()}/quic-handoff-probe.log"
 
     /** Directory holding this walk's per-connection replay traces, alongside the log. */
-    fun traceDir(): String {
-        val docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
-        return "$docs/traces"
-    }
+    fun traceDir(): String = "${documents()}/traces"
+
+    /** Directory quiche writes this walk's qlog into, alongside the traces. */
+    fun qlogDir(): String = "${documents()}/qlog"
 
     /** One line for the UI: what the connection is doing right now. */
     fun status(): String = statusLine
@@ -174,29 +175,34 @@ object IosHandoffProbe {
         minutes: Int,
         echoIntervalMs: Long,
     ) {
+        // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
+        // collects it. Tapping Start used to delete the log, and the trace files would have been
+        // appended to across walks.
+        val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
         val log = Logger(logPath(), startedAt)
-        log.reset()
-        log.emit(
-            "START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs",
-        )
+        log.emit("START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
+        log.emit(kept)
+        // quiche's own frame-level record, one .sqlog per connection: evidence written by quiche
+        // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h. The
+        // driver reads the directory from the environment once per connection.
+        NSFileManager.defaultManager.createDirectoryAtPath(qlogDir(), true, null, null)
+        setenv("QUIC_QLOG_DIR", qlogDir(), 1)
 
         // The in-memory tail the stall watchdog dumps inline. It is NOT the record of the walk: it
         // holds about a minute and is drained only when the echo loop stops, so a migration the
         // connection *recovers from* never reached the log at all.
-        //
-        // The "tens of gigabytes, so persisting is out of the question" that used to be written here
-        // was measured against a saturated connection, not against this rig. The echo loop is one
-        // exchange every `echoIntervalMs` (2s default) carrying a ~12-byte payload, so the trace runs
-        // ~1.5 MB/hour and a 71-hour walk is ~100 MB. Persisting it was never the problem; assuming it
-        // could not be was.
         val ring = RingTraceSink(RING_CAPACITY) { log.emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
         // `TraceToFixture` without re-walking anything. Per connection because the v1 grammar carries
         // no connection id and each connection stamps against its own clock origin — one shared sink
         // interleaves every reconnect into something no fixture can be built from.
+        // Sized from this run's own duration and cadence (see [TraceBudget]): at 250 ms the trace is
+        // ~8 MB/hour on this phone, so the flat 512 MB this replaces ran out at hour ~63 of a 75 h walk.
+        val budget = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds)
+        log.emit(budget.line)
         val traceFiles =
-            WalkTraceFiles(traceDir(), TRACE_BUDGET_BYTES) { spent ->
+            WalkTraceFiles(traceDir(), budget.bytes) { spent ->
                 log.emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point.",
@@ -463,10 +469,6 @@ private class Logger(
     private val path: String,
     private val startedAt: Double,
 ) {
-    fun reset() {
-        remove(path)
-    }
-
     fun emit(line: String) {
         val t = ((NSDate().timeIntervalSince1970 - startedAt) * 1000).toLong()
         val rendered = "t=${t}ms $line"
@@ -662,9 +664,6 @@ private const val HEARTBEAT_INTERVAL_MS = 60_000L
  */
 private const val RING_CAPACITY = 256
 
-/** Ceiling on a single walk's replay traces — see [WalkTraceFiles]. ~5x the 71-hour projection. */
-private const val TRACE_BUDGET_BYTES = 512L * 1024L * 1024L
-
 /**
  * One file-backed [TraceSink] per connection, under a shared byte budget.
  *
@@ -677,24 +676,24 @@ private class WalkTraceFiles(
     private val onBudgetSpent: (Long) -> Unit,
 ) {
     private val connections = AtomicInt(0)
-    private val budget = AtomicReference<TraceBudget>(TraceBudget.Live(0L))
+    private val budget = AtomicReference<TraceSpend>(TraceSpend.Live(0L))
 
     init {
         NSFileManager.defaultManager.createDirectoryAtPath(dir, true, null, null)
     }
 
-    /** Lock-free: the thread whose CAS moves the budget to [TraceBudget.Spent] is the one that reports it. */
+    /** Lock-free: the thread whose CAS moves the budget to [TraceSpend.Spent] is the one that reports it. */
     private fun charge(n: Int): Boolean {
         while (true) {
             when (val current = budget.value) {
-                TraceBudget.Spent -> return false
-                is TraceBudget.Live ->
+                TraceSpend.Spent -> return false
+                is TraceSpend.Live ->
                     if (current.written + n > budgetBytes) {
-                        if (budget.compareAndSet(current, TraceBudget.Spent)) {
+                        if (budget.compareAndSet(current, TraceSpend.Spent)) {
                             onBudgetSpent(current.written)
                             return false
                         }
-                    } else if (budget.compareAndSet(current, TraceBudget.Live(current.written + n))) {
+                    } else if (budget.compareAndSet(current, TraceSpend.Live(current.written + n))) {
                         return true
                     }
             }
@@ -769,10 +768,28 @@ private fun battery(): String =
  * crossed exactly once, and it is the **transition** that announces — so "said so" is not a fact
  * tracked alongside the budget, it is the budget.
  */
-private sealed interface TraceBudget {
+private sealed interface TraceSpend {
     /** Room left, [written] bytes used so far. */
-    data class Live(val written: Long) : TraceBudget
+    data class Live(val written: Long) : TraceSpend
 
     /** The ceiling was reached, and reaching it is what reported it. */
-    data object Spent : TraceBudget
+    data object Spent : TraceSpend
+}
+
+/**
+ * Move whatever the previous walk left under [documents] into `previous/<stamp>/`, and say so in the
+ * grammar the log is grepped for. Nothing is deleted: `pull.sh` collects it.
+ */
+private fun rotatePreviousRun(
+    documents: String,
+    names: List<String>,
+): String {
+    val fm = NSFileManager.defaultManager
+    val leftovers = names.filter { fm.fileExistsAtPath("$documents/$it") }
+    if (leftovers.isEmpty()) return "PREVIOUS-RUN none"
+    val stamp = NSDate().timeIntervalSince1970.toLong().toString()
+    val into = "$documents/previous/$stamp"
+    fm.createDirectoryAtPath(into, true, null, null)
+    leftovers.forEach { fm.moveItemAtPath("$documents/$it", "$into/$it", null) }
+    return "PREVIOUS-RUN kept previous/$stamp/ [${leftovers.joinToString(",")}] — pull.sh collects it"
 }

@@ -7,7 +7,7 @@ Everything here talks to the phone through `adb`; the probe itself runs detached
 
 ```bash
 ./gradlew :socket-quic-quiche:assembleDebugAndroidTest     # from the repo root; needs rustup's cargo + JDK 21
-device-probe/pull.sh previous-run          # START wipes the log AND the replay traces — save them first
+device-probe/pull.sh previous-run          # collects the log, traces, qlog and any previous/ runs
 device-probe/install.sh                    # proves the APK on the phone by sha256
 device-probe/doze.sh                       # Doze / App Standby exemption
 device-probe/preflight.sh                  # Tailscale OFF, route, install, notifications, whitelist, battery
@@ -15,12 +15,18 @@ device-probe/preflight.sh                  # Tailscale OFF, route, install, noti
 
 ## What a run leaves behind
 
-Two artifacts, and the second is the one that stops a walk having to be repeated:
+Three records, kept side by side so a bug in any one instrument leaves the others standing:
 
-- `quic-handoff-probe.log` — the human record. What happened, in order.
-- `traces/conn-NNNN.trace` — **one replayable trace per connection**, in the v1 grammar. Feed it to
-  `TraceToFixture` and the connection replays through the sim in virtual time, on every platform,
-  forever. A field bug becomes a committed regression test instead of another walk.
+- `quic-handoff-probe.log` — the human record. What happened, in order, as this probe understood it.
+- `traces/conn-NNNN.trace` — **one replayable trace per connection**, in the v1 grammar: every
+  datagram's bytes and path, path stats, state and path transitions, migrations, the network
+  observations. Feed it to `TraceToFixture` and the connection replays through the sim in virtual
+  time, on every platform, forever. A field bug becomes a committed regression test instead of
+  another walk.
+- `qlog/quiche-client-*.sqlog` — **quiche's own frame-level record** (packets, frames, recovery,
+  congestion, transport parameters), decrypted by quiche itself. This is the one record that does
+  not pass through this library's code, so it is what a bug in the trace or the log is checked
+  against. ~1.4 GB per 75 h at 250 ms.
 
 `pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
 this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
@@ -32,7 +38,10 @@ it as `TRACE-BUDGET`; override with a 3rd argument to `start.sh` only if you wan
 at hour 65 of a 75-hour walk. The tail is exactly where a handoff is most likely, so the part that
 stopped being replayable was the part worth having.
 
-⚠️ `start.sh` deletes **both** before it begins, exactly as it always has for the log. Pull first.
+A START no longer deletes anything: whatever the previous run left (log, traces, qlog) moves to
+`previous/<stamp>/` and the new log opens with a `PREVIOUS-RUN kept …` line. `pull.sh` collects the
+current run, its qlog, and every previous run, and only then removes the previous runs from the
+phone. Pulling first is still the habit worth keeping; forgetting is no longer fatal.
 
 ## Reading the echo lines
 
@@ -85,5 +94,6 @@ device-probe/analyze.py device-probe/logs/<stamp>-walk.log
 
 The analyzer prints every connection and why it ended, every migration and how long it took, the
 echo counts (late and unanswered separately from failed), RTT and lateness percentiles, the memory
-trend, and every `STREAM-INTEGRITY-BROKEN` / `CONNECTION-DEAD` line verbatim. Those last two are
-the lines that turn into issues.
+trend, a **capture health** section (was the trace budget spent, did the heartbeat ever stop, does
+every connection have a trace file), and every `STREAM-INTEGRITY-BROKEN` / `CONNECTION-DEAD` line
+verbatim. Those last two are the lines that turn into issues.
