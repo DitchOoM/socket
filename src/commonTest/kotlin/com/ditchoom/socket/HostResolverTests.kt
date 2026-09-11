@@ -99,8 +99,8 @@ class HostResolverTests {
                 assertEquals("fallback", client.readString())
             } finally {
                 client.close()
-                serverJob.cancel()
                 server.close()
+                serverJob.cancel()
             }
         }
 
