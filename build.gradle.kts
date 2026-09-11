@@ -371,6 +371,9 @@ kotlin {
                     "ServerCancellationTests",
                     "SimpleSocketTests",
                     "WrapNodeErrorTests",
+                    // Spins up a TCP echo server and connects through the resolver seam; the JS
+                    // capability set claims TCP in a browser, so the gate inside cannot skip it.
+                    "HostResolverTests",
                     // The read-timeout contract suite spins up an in-process TCP SilentPeer, so it too
                     // can only run under Node (note the `.harness.` subpackage — the prefix below still
                     // resolves to its fully-qualified name).
