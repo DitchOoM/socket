@@ -18,13 +18,20 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.echo.EchoLedger
+import com.ditchoom.socket.testkit.echo.EchoOutcome
+import com.ditchoom.socket.testkit.echo.EchoRead
+import com.ditchoom.socket.testkit.echo.EchoUnanswered
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
 import com.ditchoom.socket.testkit.migration.runLine
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -80,11 +87,9 @@ class DeviceHandoffProbe {
         assumeTrue("hand-driven probe — pass -e probeHost <ip> to run it (see class KDoc)", host.isNotEmpty())
         val port = arg("probePort", "14433").toInt()
         val minutes = arg("probeMinutes", "12").toInt()
-        // Read deadline, injectable so a run can be tuned to ARM the #393 salvage path rather than
-        // merely hope for it. The field default (8s) sees ~1 timeout per 15 minutes, so a short probe
-        // records zero and proves nothing about the cancellation edge. Setting this just under the
-        // cellular RTT (~200ms median, ~500ms post-migration spikes) makes timeouts routine.
-        val readTimeoutMs = arg("probeReadTimeoutMs", "8000").toLong()
+        // The read deadline is not an argument: each connection's [EchoLedger] derives it from the
+        // round trips it measures, the path's own probe timeout (#599). That keeps the #393 salvage
+        // path armed by the path's real tail rather than by a guess about it.
         // Echo cadence, injectable for the same reason the read deadline is. At the 2s default the
         // connection is very nearly IDLE at the instant a handoff lands — and an idle connection has
         // nothing in flight to strand on the path it is leaving, which is precisely the condition #393
@@ -96,6 +101,8 @@ class DeviceHandoffProbe {
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
         val log = File(dir, "quic-handoff-probe.log")
         val started = System.currentTimeMillis()
+
+        fun now() = (System.currentTimeMillis() - started).milliseconds
 
         fun emit(line: String) {
             val t = System.currentTimeMillis() - started
@@ -124,7 +131,7 @@ class DeviceHandoffProbe {
         log.writeText("")
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
-                "minutes=$minutes readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs " +
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs " +
                 "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
         )
 
@@ -271,6 +278,8 @@ class DeviceHandoffProbe {
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
                 // exhausted on the previous connection says nothing about this one.
                 val ledger = MigrationLedger(::emit)
+                // Per connection too: what is still owed when a connection ends is what failed on it.
+                val echoes = EchoLedger()
                 try {
                     // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
                     // measured, the first run of this probe tore the connection down every 15s with
@@ -283,25 +292,10 @@ class DeviceHandoffProbe {
                         var seq = 0
                         var lastWire = identity.wire
 
-                        // Stream-integrity ledger (#393).
-                        //
-                        // With a short read deadline a timeout is EXPECTED, and a working salvage path
-                        // hands those bytes to the NEXT read — so the old per-read `echoed == payload`
-                        // test would report a mismatch on correct behaviour. Small payloads can also
-                        // coalesce, so one read may carry two echoes.
-                        //
-                        // The invariant that survives both: everything received must be an exact,
-                        // in-order PREFIX of everything sent. Late delivery keeps that true; bytes
-                        // destroyed by a timed-out read (the #393 defect) break it permanently, because
-                        // the stream then resumes past the hole.
-                        //
-                        // Kept as the bytes sent but NOT YET echoed, not as two ever-growing histories.
-                        // The first version held `sentAll`/`recvAll` and asked `sentAll.startsWith(recvAll)`
-                        // on every echo: O(total) per echo, O(total²) over a run — fine for a 2.6 h walk,
-                        // fatal for a 72 h one (2.6M echoes at a 100 ms cadence would spend hours of CPU
-                        // per echo by the end, and hold ~30 MB of history per connection). Comparing the
-                        // echo against the head of the pending window is the same invariant in O(echo).
-                        val pendingSent = StringBuilder()
+                        // Every exchange is judged by [echoes] when its reply arrives (#393, #599): the
+                        // invariant is that everything received is an in-order prefix of everything
+                        // sent, and a missed read deadline is where "late" begins, not where an
+                        // exchange fails.
                         var integrityBroken = false
 
                         // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
@@ -344,75 +338,64 @@ class DeviceHandoffProbe {
                                 } finally {
                                     out.freeIfNeeded()
                                 }
-                                pendingSent.append(payload)
+                                echoes.sent(seq, payload, now())
                                 // Scoped read (#538): the echoed bytes are decoded inside the block and
                                 // the buffer is released on the way out. This loop used to take the
                                 // transferring read and drop the buffer — 45 382 times, on the walk that
                                 // filed the issue, until the process died at VmSize 20.8 GB with a
                                 // std::bad_alloc raised inside the unwinder. Nothing about the probe's
                                 // own logic was wrong; it did exactly what the KDoc of the day permitted.
-                                val resp = stream.read(readTimeoutMs.milliseconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                val rtt = System.currentTimeMillis() - sentAt
-                                if (resp is ScopedRead.Data) {
-                                    val echoed = resp.value
-                                    // Intact iff the echo is exactly the head of what is still owed.
-                                    val intact =
-                                        echoed.length <= pendingSent.length &&
-                                            pendingSent.regionMatches(0, echoed, 0, echoed.length)
-                                    if (intact) pendingSent.delete(0, echoed.length)
-                                    val pending = pendingSent.length
-                                    emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
-                                    status.onEcho(gotData = true, intactNow = intact, pendingBytes = pending)
-                                    if (!intact && !integrityBroken) {
-                                        integrityBroken = true
-                                        // The whole point of the run. Capture both sides at the divergence:
-                                        // the first byte of the echo that differs from the head of the
-                                        // pending window (or the echo running past it).
-                                        val at =
-                                            echoed.indices.firstOrNull { it >= pendingSent.length || pendingSent[it] != echoed[it] } ?: 0
-                                        status.onBroken(at)
-                                        emit(
-                                            "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
-                                                "expected=[${pendingSent.substring(0, minOf(pendingSent.length, at + 24))}] " +
-                                                "recv=[${echoed.substring(0, minOf(echoed.length, at + 24))}]",
-                                        )
+                                val resp = stream.read(echoes.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }
+                                when (resp) {
+                                    is ScopedRead.Data ->
+                                        when (val read = echoes.received(resp.value, now())) {
+                                            is EchoRead.Consumed -> {
+                                                read.outcomes.forEach { emit(it.line(read.owedBytes)) }
+                                                status.onRead(read)
+                                            }
+                                            is EchoRead.Diverged ->
+                                                if (integrityBroken) {
+                                                    emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
+                                                } else {
+                                                    integrityBroken = true
+                                                    // The whole point of the run: both sides at the divergence.
+                                                    status.onBroken(read.atByte)
+                                                    emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                                }
+                                        }
+                                    ScopedRead.End, ScopedRead.Reset -> {
+                                        emit("ECHO-NO-DATA seq=$seq after=${System.currentTimeMillis() - sentAt}ms result=$resp")
+                                        status.onNoData(echoes.owedBytes)
                                     }
-                                } else {
-                                    emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
-                                    status.onEcho(gotData = false, intactNow = !integrityBroken, pendingBytes = pendingSent.length)
                                 }
+                            } catch (e: TimeoutCancellationException) {
+                                // The deadline is where "late" begins, not where an exchange fails: the
+                                // reply is still owed and is judged when it arrives. Only this scope's own
+                                // cancellation, which wears the same type, gets out of here.
+                                currentCoroutineContext().ensureActive()
                             } catch (e: Throwable) {
-                                // The interesting case. Record and keep going — the connection may still
-                                // be alive and migrating underneath us.
                                 emit(
                                     "ECHO-FAIL seq=$seq after=${System.currentTimeMillis() - sentAt}ms " +
                                         "err=${e::class.simpleName} msg=${e.message}",
                                 )
-                                // A read that times out THROWS — it does not return a non-Data result — so
-                                // this branch, not ECHO-NO-DATA, is where a deadline lands. Wiring the
-                                // counter only to the other branch left the shade frozen on the last good
-                                // state while every read was failing: measured, 30s of
-                                // `timeouts=0 intact=yes` against a server that had been dead the whole
-                                // time. With a sub-RTT deadline this is the COMMON case during a handoff,
-                                // which is exactly when the operator is reading it.
-                                status.onEcho(gotData = false, intactNow = !integrityBroken, pendingBytes = pendingSent.length)
-                                // ...unless it is DEAD, in which case "keep going" means spinning this
-                                // loop against a closed connection for the rest of the run. Measured: a
-                                // connection that idle-timed out at t=178s produced an unbroken wall of
-                                // ECHO-FAIL to the deadline, so an unattended multi-hour recording would
-                                // capture one death and then nothing. Leave the scope instead and let the
-                                // outer loop reconnect — a reconnect is itself data (it is precisely what
-                                // distinguishes "migrated" from "had to start over").
+                                status.onFailure(echoes.owedBytes)
+                                // A dead connection makes "keep going" a loop spinning against a closed
+                                // connection for the rest of the run. Leave the scope and let the outer
+                                // loop reconnect — a reconnect is itself data, being precisely what
+                                // distinguishes "migrated" from "had to start over".
                                 if (e is QuicCloseException) {
                                     // The typed reason, side included: "we sent a frame the peer
                                     // rejected" and "the peer sent us one" are opposite bugs, and a
-                                    // device log is all we get from a real handoff (#437). It goes in
-                                    // the shade too — that is where a walk reads its state.
+                                    // device log is all we get from a real handoff (#437).
                                     val why = e.closeReason.describe()
                                     status.onEnded("connection dead ($why) — reconnecting")
                                     emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
                                     return@withQuicConnection
                                 }
+                            }
+                            echoes.overdue(now()).forEach {
+                                emit(it.line)
+                                status.onOverdue()
                             }
                             delay(echoIntervalMs)
                         }
@@ -420,6 +403,10 @@ class DeviceHandoffProbe {
                     emit("SCOPE-EXITED cleanly")
                 } catch (e: Throwable) {
                     emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                }
+                when (val unanswered = echoes.abandon()) {
+                    EchoUnanswered.None -> Unit
+                    is EchoUnanswered.Some -> emit(unanswered.line)
                 }
                 ledger.report("connection=$attempt")
                 totals.absorb(ledger)
@@ -465,15 +452,26 @@ private class ProbeStatus(
     private val emit: (String) -> Unit,
 ) {
     private val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+
+    @Volatile
     private var usable = false
-    private var path = "connecting"
-    private var migrations = 0
-    private var echoes = 0
-    private var sinceMove = 0
-    private var timeouts = 0
-    private var intact = true
-    private var pending = 0
-    private var broken: String? = null
+    private val path = AtomicReference("connecting")
+    private val migrations = AtomicInteger()
+    private val echoes = AtomicInteger()
+    private val sinceMove = AtomicInteger()
+    private val late = AtomicInteger()
+    private val overdue = AtomicInteger()
+    private val pending = AtomicInteger()
+    private val integrity = AtomicReference<Integrity>(Integrity.Intact)
+    private val lastPostedAt = AtomicLong()
+
+    private sealed interface Integrity {
+        data object Intact : Integrity
+
+        data class Broken(
+            val atByte: Int,
+        ) : Integrity
+    }
 
     init {
         val mgr = manager
@@ -501,44 +499,47 @@ private class ProbeStatus(
         post()
     }
 
-    @Synchronized
     fun onPath(state: String) {
-        path = state.substringBefore('(').substringAfterLast('.')
+        path.set(state.substringBefore('(').substringAfterLast('.'))
         if (state.contains("Migrated")) {
-            migrations++
-            sinceMove = 0
+            migrations.incrementAndGet()
+            sinceMove.set(0)
         }
         post(force = true)
     }
 
-    @Synchronized
-    fun onEcho(
-        gotData: Boolean,
-        intactNow: Boolean,
-        pendingBytes: Int,
-    ) {
-        echoes++
-        sinceMove++
-        if (!gotData) timeouts++
-        intact = intactNow
-        pending = pendingBytes
+    fun onRead(read: EchoRead.Consumed) {
+        echoes.addAndGet(read.outcomes.size)
+        sinceMove.addAndGet(read.outcomes.size)
+        late.addAndGet(read.outcomes.count { it is EchoOutcome.Late })
+        pending.set(read.owedBytes)
         post()
     }
 
-    @Synchronized
+    fun onOverdue() {
+        overdue.incrementAndGet()
+        post()
+    }
+
+    fun onNoData(owedBytes: Int) {
+        pending.set(owedBytes)
+        post()
+    }
+
+    fun onFailure(owedBytes: Int) {
+        pending.set(owedBytes)
+        post(force = true)
+    }
+
     fun onBroken(atByte: Int) {
-        broken = "byte $atByte"
-        intact = false
+        integrity.set(Integrity.Broken(atByte))
         post(force = true)
     }
 
-    @Synchronized
     fun onEnded(reason: String) {
-        path = reason
+        path.set(reason)
         post(force = true)
     }
-
-    private var lastPostedAt = 0L
 
     /**
      * Repost the shade. Echo-driven updates are rate-limited to one per second: at a 100 ms cadence
@@ -549,17 +550,28 @@ private class ProbeStatus(
     private fun post(force: Boolean = false) {
         if (!usable) return
         val now = System.currentTimeMillis()
-        if (!force && now - lastPostedAt < STATUS_MIN_INTERVAL_MS) return
-        lastPostedAt = now
+        if (force) {
+            lastPostedAt.set(now)
+        } else {
+            val last = lastPostedAt.get()
+            if (now - last < STATUS_MIN_INTERVAL_MS || !lastPostedAt.compareAndSet(last, now)) return
+        }
+        val moved = migrations.get()
         val title =
-            when {
-                broken != null -> "⚠ STREAM INTEGRITY BROKEN at $broken"
-                migrations == 0 -> "QUIC probe · no migration yet"
-                else -> "QUIC probe · $migrations migration(s) · $sinceMove echoes since"
+            when (val state = integrity.get()) {
+                is Integrity.Broken -> "⚠ STREAM INTEGRITY BROKEN at byte ${state.atByte}"
+                Integrity.Intact ->
+                    if (moved ==
+                        0
+                    ) {
+                        "QUIC probe · no migration yet"
+                    } else {
+                        "QUIC probe · $moved migration(s) · ${sinceMove.get()} echoes since"
+                    }
             }
         val text =
-            "path=$path · echoes=$echoes · timeouts=$timeouts · " +
-                "intact=${if (intact) "yes" else "NO"} · pending=${pending}B"
+            "path=${path.get()} · echoes=${echoes.get()} · late=${late.get()} · overdue=${overdue.get()} · " +
+                "intact=${if (integrity.get() is Integrity.Intact) "yes" else "NO"} · pending=${pending.get()}B"
         runCatching {
             val builder =
                 Notification

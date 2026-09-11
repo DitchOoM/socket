@@ -59,7 +59,6 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
             host: host,
             port: port,
             minutes: minutes,
-            readTimeoutMs: 400,
             echoIntervalMs: 250
         )
 

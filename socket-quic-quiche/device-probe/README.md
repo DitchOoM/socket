@@ -25,7 +25,7 @@ Two artifacts, and the second is the one that stops a walk having to be repeated
 `pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
 this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
 below is ~590 MB. The probe derives its own budget from `<minutes>` and `[echoIntervalMs]` and prints
-it as `TRACE-BUDGET`; override with a 4th argument to `start.sh` only if you want a different one.
+it as `TRACE-BUDGET`; override with a 3rd argument to `start.sh` only if you want a different one.
 
 ⚠️ The ~1.5 MB/hour an earlier revision of this file quoted was computed against the probe's *own*
 2s default, not the 250ms this script sends — 8x out, which put the flat 512 MB default's exhaustion
@@ -34,10 +34,28 @@ stopped being replayable was the part worth having.
 
 ⚠️ `start.sh` deletes **both** before it begins, exactly as it always has for the log. Pull first.
 
+## Reading the echo lines
+
+Echoes ride a reliable, ordered QUIC stream, so while a connection lives a reply cannot be lost —
+only late. Each exchange gets exactly one verdict, given when its reply arrives:
+
+- `ECHO-OK seq=N rtt=Rms` — answered inside the deadline.
+- `ECHO-LATE seq=N rtt=Rms late=+Xms deadline=Dms` — answered, but after the deadline. Still every byte.
+- `ECHO-OVERDUE seq=N waited=Wms deadline=Dms` — not yet answered and past its deadline; the
+  verdict is still open. Printed once per exchange, at the moment it crosses.
+- `ECHO-UNANSWERED count=N first=A last=B` — what was still owed when the connection ended. These
+  are the exchanges that actually failed.
+- `ECHO-FAIL seq=N err=…` — the read threw something other than its deadline: a real error, and
+  when it is the connection dying a `CONNECTION-DEAD` follows.
+
+The deadline is the path's own probe timeout (RFC 9002 §6.2.1), computed from the round trips the
+probe measures, so it is ~1 s before the first reply and settles to a few times the smoothed RTT.
+A coalesced read (several replies in one chunk) still gives every exchange its own round trip.
+
 ## Dry run (about 15 minutes)
 
 ```bash
-device-probe/start.sh 20 400 250           # minutes, read deadline ms, echo cadence ms
+device-probe/start.sh 20 250               # minutes, echo cadence ms
 device-probe/toggle.sh 2 45                # wifi off/on + airplane on/off, twice
 device-probe/dryrun-doze.sh 180            # 3 minutes of forced deep idle (a hotel night)
 device-probe/status.sh
@@ -50,7 +68,7 @@ and the `HEARTBEAT` RSS goes up and *down* (a sawtooth, not a ramp).
 ## The real run
 
 ```bash
-device-probe/start.sh 4500 400 250         # 75 hours
+device-probe/start.sh 4500 250             # 75 hours
 device-probe/status.sh                     # then unplug; the probe keeps going
 ```
 
@@ -66,5 +84,6 @@ device-probe/analyze.py device-probe/logs/<stamp>-walk.log
 ```
 
 The analyzer prints every connection and why it ended, every migration and how long it took, the
-echo gaps, RTT percentiles, the memory trend, and every `STREAM-INTEGRITY-BROKEN` /
-`CONNECTION-DEAD` line verbatim. Those last two are the lines that turn into issues.
+echo counts (late and unanswered separately from failed), RTT and lateness percentiles, the memory
+trend, and every `STREAM-INTEGRITY-BROKEN` / `CONNECTION-DEAD` line verbatim. Those last two are
+the lines that turn into issues.

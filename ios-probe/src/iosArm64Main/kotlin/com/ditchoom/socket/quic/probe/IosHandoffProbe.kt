@@ -18,6 +18,9 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.echo.EchoLedger
+import com.ditchoom.socket.testkit.echo.EchoRead
+import com.ditchoom.socket.testkit.echo.EchoUnanswered
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.quic.read
@@ -25,8 +28,11 @@ import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
@@ -40,7 +46,6 @@ import platform.posix.remove
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.timeIntervalSince1970
 import kotlin.concurrent.Volatile
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.IntVar
@@ -118,6 +123,10 @@ object IosHandoffProbe {
 
     private val startedAt: Double get() = NSDate().timeIntervalSince1970
 
+    private fun now() = NSDate().timeIntervalSince1970.seconds
+
+    private fun elapsedMs(since: Double): Long = ((NSDate().timeIntervalSince1970 - since) * 1000).toLong()
+
     /** Absolute path of the newline-delimited log, so Swift can offer it to the Files app. */
     fun logPath(): String {
         val docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
@@ -146,14 +155,13 @@ object IosHandoffProbe {
         host: String,
         port: Int,
         minutes: Int,
-        readTimeoutMs: Long = 400,
         echoIntervalMs: Long = 100,
     ) {
         if (running) return
         running = true
         GlobalScope.launch(Dispatchers.Default) {
             try {
-                walk(host, port, minutes, readTimeoutMs, echoIntervalMs)
+                walk(host, port, minutes, echoIntervalMs)
             } finally {
                 running = false
             }
@@ -164,14 +172,12 @@ object IosHandoffProbe {
         host: String,
         port: Int,
         minutes: Int,
-        readTimeoutMs: Long,
         echoIntervalMs: Long,
     ) {
         val log = Logger(logPath(), startedAt)
         log.reset()
         log.emit(
-            "START device=ios target=$host:$port minutes=$minutes " +
-                "readTimeoutMs=$readTimeoutMs echoIntervalMs=$echoIntervalMs",
+            "START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs",
         )
 
         // The in-memory tail the stall watchdog dumps inline. It is NOT the record of the walk: it
@@ -275,6 +281,8 @@ object IosHandoffProbe {
             // Per CONNECTION, not per walk: a reconnect negotiates a brand-new CID pool, so a pool
             // exhausted on the previous connection says nothing about this one.
             val ledger = MigrationLedger(log::emit)
+            // Per connection too: what is still owed when a connection ends is what failed on it.
+            val echoes = EchoLedger()
             try {
                 withQuicConnection(host, port, options, timeout = (minutes + 2).minutes) {
                     log.emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
@@ -283,13 +291,9 @@ object IosHandoffProbe {
                     var seq = 0
                     var lastWire = identity.wire
 
-                    // Everything received must be an exact, in-order PREFIX of everything sent. Late
-                    // delivery keeps that true; bytes destroyed by a timed-out read break it
-                    // permanently, because the stream then resumes past the hole.
-                    // Kept as the bytes sent but NOT YET echoed, not as two ever-growing histories:
-                    // `sentAll.startsWith(recvAll)` on every echo is O(total) per echo and O(total²)
-                    // over a run — fine for a 2 h walk, fatal for a 72 h one (millions of echoes).
-                    val pendingSent = StringBuilder()
+                    // Every exchange is judged by [echoes] when its reply arrives (#393, #599): the
+                    // invariant is that everything received is an in-order prefix of everything sent,
+                    // and a missed read deadline is where "late" begins, not where an exchange fails.
                     var integrityBroken = false
 
                     // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
@@ -335,41 +339,35 @@ object IosHandoffProbe {
                             } finally {
                                 out.freeIfNeeded()
                             }
-                            pendingSent.append(payload)
-                            val resp = stream.read(readTimeoutMs.milliseconds) { it.readString(it.remaining(), Charset.UTF8) }
-                            val rtt = ((NSDate().timeIntervalSince1970 - sentAt) * 1000).toLong()
-                            if (resp is ScopedRead.Data) {
-                                val echoed = resp.value
-                                val intact =
-                                    echoed.length <= pendingSent.length &&
-                                        pendingSent.regionMatches(0, echoed, 0, echoed.length)
-                                if (intact) pendingSent.deleteRange(0, echoed.length)
-                                val pending = pendingSent.length
-                                log.emit("ECHO-OK seq=$seq rtt=${rtt}ms got=${echoed.length}B intact=$intact pending=${pending}B")
-                                if (!intact && !integrityBroken) {
-                                    integrityBroken = true
-                                    val at = echoed.indices.firstOrNull { it >= pendingSent.length || pendingSent[it] != echoed[it] } ?: 0
-                                    log.emit(
-                                        "STREAM-INTEGRITY-BROKEN seq=$seq atByte=$at " +
-                                            "expected=[${pendingSent.substring(0, minOf(pendingSent.length, at + 24))}] " +
-                                            "recv=[${echoed.substring(0, minOf(echoed.length, at + 24))}]",
-                                    )
-                                    statusLine = "⚠ STREAM INTEGRITY BROKEN at byte $at"
-                                }
-                            } else {
-                                log.emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
+                            echoes.sent(seq, payload, now())
+                            val resp = stream.read(echoes.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }
+                            when (resp) {
+                                is ScopedRead.Data ->
+                                    when (val read = echoes.received(resp.value, now())) {
+                                        is EchoRead.Consumed -> read.outcomes.forEach { log.emit(it.line(read.owedBytes)) }
+                                        is EchoRead.Diverged ->
+                                            if (integrityBroken) {
+                                                log.emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
+                                            } else {
+                                                integrityBroken = true
+                                                log.emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                                statusLine = "\u26a0 STREAM INTEGRITY BROKEN at byte ${read.atByte}"
+                                            }
+                                    }
+                                ScopedRead.End, ScopedRead.Reset ->
+                                    log.emit("ECHO-NO-DATA seq=$seq after=${elapsedMs(sentAt)}ms result=$resp")
                             }
+                        } catch (e: TimeoutCancellationException) {
+                            // The deadline is where "late" begins, not where an exchange fails: the reply
+                            // is still owed and is judged when it arrives. Only this scope's own
+                            // cancellation, which wears the same type, gets out of here.
+                            currentCoroutineContext().ensureActive()
                         } catch (e: Throwable) {
-                            // The interesting case. Record and keep going — the connection may still
-                            // be alive and migrating underneath us.
-                            log.emit(
-                                "ECHO-FAIL seq=$seq after=${((NSDate().timeIntervalSince1970 - sentAt) * 1000).toLong()}ms " +
-                                    "err=${e::class.simpleName} msg=${e.message}",
-                            )
-                            // ...unless it is DEAD, in which case "keep going" means spinning against
-                            // a closed connection for the rest of the walk. Leave the scope and let
-                            // the outer loop reconnect — a reconnect is itself data, being precisely
-                            // what distinguishes "migrated" from "had to start over".
+                            log.emit("ECHO-FAIL seq=$seq after=${elapsedMs(sentAt)}ms err=${e::class.simpleName} msg=${e.message}")
+                            // A dead connection makes "keep going" a loop spinning against a closed
+                            // connection for the rest of the walk. Leave the scope and let the outer loop
+                            // reconnect — a reconnect is itself data, being precisely what distinguishes
+                            // "migrated" from "had to start over".
                             if (e is QuicCloseException) {
                                 val why = e.closeReason.describe()
                                 log.emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
@@ -377,12 +375,17 @@ object IosHandoffProbe {
                                 return@withQuicConnection
                             }
                         }
+                        echoes.overdue(now()).forEach { log.emit(it.line) }
                         delay(echoIntervalMs)
                     }
                 }
                 log.emit("SCOPE-EXITED cleanly")
             } catch (e: Throwable) {
                 log.emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+            }
+            when (val unanswered = echoes.abandon()) {
+                EchoUnanswered.None -> Unit
+                is EchoUnanswered.Some -> log.emit(unanswered.line)
             }
             ledger.report("connection=$attempt")
             totals.absorb(ledger)
