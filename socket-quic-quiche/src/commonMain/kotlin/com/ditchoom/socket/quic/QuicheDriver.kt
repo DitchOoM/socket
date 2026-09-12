@@ -696,7 +696,36 @@ class QuicheDriver(
      */
     private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
-    private var pendingMigration: PendingMigration? = null
+    /**
+     * Where the connection's one migration lane stands — one path move at a time (RFC 9000 §9).
+     *
+     * Three states, exhaustive. The nullable [PendingMigration] this replaces could not say "the
+     * platform is still opening the socket", and that is the state #613 lived in for 95 s: the open
+     * was awaited inline in the loop, so nothing could name it and nothing else could run.
+     */
+    private sealed interface MigrationLane {
+        data object Idle : MigrationLane
+
+        /** [job] is opening the socket beside the loop and will post [PathOpened] when it settles. */
+        class Opening(
+            val cmd: QuicheCmd.Migrate,
+            val job: Job,
+        ) : MigrationLane
+
+        /** The socket is open and probed; [pending] times the peer's answer (RFC 9000 §8.2.4). */
+        class Validating(
+            val pending: PendingMigration,
+        ) : MigrationLane
+    }
+
+    private var lane: MigrationLane = MigrationLane.Idle
+
+    /** The migration being validated, if that is where the lane stands — a projection, never state. */
+    private fun validating(): PendingMigration? =
+        when (val l = lane) {
+            MigrationLane.Idle, is MigrationLane.Opening -> null
+            is MigrationLane.Validating -> l.pending
+        }
 
     private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
     val pathState: StateFlow<QuicPathState> = _pathState
@@ -1287,7 +1316,7 @@ class QuicheDriver(
                 // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
-                val probeRemaining = pendingMigration?.validationRemaining()
+                val probeRemaining = validating()?.validationRemaining()
                 // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
                 val armed =
                     nextWake(
@@ -1318,7 +1347,16 @@ class QuicheDriver(
                         // would otherwise leave its deferred permanently uncompleted (see
                         // failCommandExceptionally).
                         try {
-                            handleMigrate(cmd) // suspends: opens a socket
+                            handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop (#613)
+                        } catch (t: Throwable) {
+                            failCommandExceptionally(cmd, t)
+                            throw t
+                        }
+                        lastActivity = clock.markNow()
+                    }
+                    cmd is PathOpened -> {
+                        try {
+                            continueMigration(cmd)
                         } catch (t: Throwable) {
                             failCommandExceptionally(cmd, t)
                             throw t
@@ -1611,6 +1649,7 @@ class QuicheDriver(
             }
 
             is QuicheCmd.Migrate -> handleMigrateSync(cmd) // routed via run() to handleMigrate; defensive only
+            is PathOpened -> handlePathOpenedSync(cmd) // routed via run() to continueMigration; defensive only
         }
     }
 
@@ -1622,6 +1661,20 @@ class QuicheDriver(
      */
     private fun handleMigrateSync(cmd: QuicheCmd.Migrate) {
         cmd.result.complete(MigrationResult.Unmoved.Failed.PathNotValidated)
+    }
+
+    /** Unreachable for the same reason as [handleMigrateSync]; an opened socket it carries must not leak. */
+    private fun handlePathOpenedSync(cmd: PathOpened) {
+        releaseIfOpened(cmd.outcome)
+        cmd.migrate.result.complete(MigrationResult.Unmoved.Failed.PathNotValidated)
+    }
+
+    /** Give back a socket a [PathOpenOutcome.Opened] carries when nothing will probe it. */
+    private fun releaseIfOpened(outcome: PathOpenOutcome) {
+        when (outcome) {
+            is PathOpenOutcome.Opened -> releaseUnprobedPath(outcome.path)
+            is PathOpenOutcome.TimedOut, is PathOpenOutcome.Failed -> Unit
+        }
     }
 
     private suspend fun afterCommand() {
@@ -2105,23 +2158,17 @@ class QuicheDriver(
     }
 
     /**
-     * Whether this is the first bind for a migration or the one retry a stale-path collision earns.
+     * Start a migration: check it can be asked for at all, then ask the platform for the new local
+     * socket **beside** the loop. [continueMigration] probes the socket once it exists and arms
+     * validation; [drainPathEvents] completes the switch once the peer validates the path.
      *
-     * A named pair rather than a `Boolean` parameter: the two are not "on/off", they are "the caller
-     * asked to migrate" and "quiche told us the port we were given still carries a dead path", and only
-     * the second may not retry again. See [probeRejection].
+     * Never suspends. Its predecessor awaited `openPath` inline, and on iOS a v4-only Wi-Fi joining
+     * under an IPv6 peer held that open in Network.framework's `waiting` state for 95 s — 95 s in
+     * which this loop sent nothing on the path the connection still had, so the peer's stateful path
+     * expired beneath a healthy connection (#613). The open now runs as its own job under the same
+     * budget path validation gets, and posts [PathOpened] to the loop when it settles.
      */
-    private sealed interface MigrateAttempt {
-        data object First : MigrateAttempt
-
-        data object AfterRebind : MigrateAttempt
-    }
-
-    /**
-     * Open a new local path, probe it, and arm [pendingMigration]; [drainPathEvents]
-     * completes the switch once the peer validates the path. Suspends to open the socket.
-     */
-    private suspend fun handleMigrate(
+    private fun handleMigrate(
         cmd: QuicheCmd.Migrate,
         attempt: MigrateAttempt = MigrateAttempt.First,
     ) {
@@ -2174,9 +2221,12 @@ class QuicheDriver(
             cmd.result.complete(MigrationResult.Unmoved.Failed.EndpointNotSelectable)
             return
         }
-        if (pendingMigration != null) {
-            cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
-            return
+        when (lane) {
+            MigrationLane.Idle -> Unit
+            is MigrationLane.Opening, is MigrationLane.Validating -> {
+                cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
+                return
+            }
         }
         if (api.connAvailableDcids(conn) <= 0L) {
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
@@ -2197,14 +2247,72 @@ class QuicheDriver(
                 is MigrationTarget.LocalEndpoint -> t.port
             }
 
-        val newPath =
-            try {
-                factory.openPath(requestedHost, requestedPort)
-            } catch (ce: kotlinx.coroutines.CancellationException) {
-                throw ce
-            } catch (e: Exception) {
-                cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathUnavailable(e))
+        // Commands are only ever handled by run(), which start() launched — so a missing scope here is an
+        // invariant broken, not a state to report.
+        val scope = checkNotNull(driverScope) { "a Migrate command is being handled before start()" }
+        // The open borrows validation's RFC 9000 §8.2.4 budget: a socket the platform has not
+        // produced by then is treated exactly like a probe the peer has not answered by then.
+        val budget = pathValidationBudget()
+        val job =
+            scope.launch(driverContext) {
+                val outcome =
+                    try {
+                        when (val opened = clock.withBound(budget) { factory.openPath(requestedHost, requestedPort) }) {
+                            null -> PathOpenOutcome.TimedOut(budget)
+                            else -> PathOpenOutcome.Opened(opened)
+                        }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        PathOpenOutcome.Failed(e)
+                    }
+                // The loop owns everything from here. A closed channel means the connection died while
+                // the platform was still opening — nothing will ever probe this socket, so give it back.
+                if (commands.trySend(PathOpened(cmd, attempt, outcome)).isFailure) releaseIfOpened(outcome)
+            }
+        lane = MigrationLane.Opening(cmd, job)
+    }
+
+    /**
+     * The open [handleMigrate] started has settled. Only the open this lane is waiting on may continue
+     * it: a completion for any other migration — one the connection has since closed or abandoned —
+     * has nothing to attach to, and the socket it may carry is released rather than probed.
+     */
+    private fun continueMigration(opened: PathOpened) {
+        val cmd = opened.migrate
+        val expected =
+            when (val l = lane) {
+                is MigrationLane.Opening -> l.cmd === cmd
+                MigrationLane.Idle, is MigrationLane.Validating -> false
+            }
+        if (!expected) {
+            releaseIfOpened(opened.outcome)
+            return
+        }
+        lane = MigrationLane.Idle
+        when (val outcome = opened.outcome) {
+            is PathOpenOutcome.TimedOut -> cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathOpenTimedOut(outcome.budget))
+            is PathOpenOutcome.Failed -> cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathUnavailable(outcome.cause))
+            is PathOpenOutcome.Opened -> probeOpenedPath(cmd, opened.attempt, outcome.path)
+        }
+    }
+
+    /** Probe a socket the platform opened for [cmd] and arm validation — the half of a migration that needs quiche. */
+    private fun probeOpenedPath(
+        cmd: QuicheCmd.Migrate,
+        attempt: MigrateAttempt,
+        newPath: NewPath,
+    ) {
+        val wiring =
+            migrationWiring ?: run {
+                releaseUnprobedPath(newPath)
+                cmd.result.complete(MigrationResult.Unmoved.Impossible.BackendCannotMigrate)
                 return
+            }
+        val requestedPort =
+            when (val t = cmd.target) {
+                MigrationTarget.FreshLocalEndpoint, is MigrationTarget.LocalAddress -> 0
+                is MigrationTarget.LocalEndpoint -> t.port
             }
 
         val key = api.decodePathKey(newPath.localSockAddrAddress)
@@ -2284,7 +2392,7 @@ class QuicheDriver(
         paths[key] = entry
 
         // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
-        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
+        lane = MigrationLane.Validating(PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget()))
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
     }
@@ -2345,7 +2453,7 @@ class QuicheDriver(
      * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
      * queues path events and the driver only reads them at [afterCommand], which runs *after* this
      * branch — so expiring first would fail a path the peer actually answered, converting a working
-     * migration into a spurious timeout. Draining first, then re-reading [pendingMigration] and
+     * migration into a spurious timeout. Draining first, then re-reading the lane and
      * re-*measuring* [PendingMigration.isDue], means a validated path wins the race and this only
      * ever fires on genuine silence.
      *
@@ -2360,7 +2468,7 @@ class QuicheDriver(
      */
     private fun abandonPathValidationIfDue() {
         if (migrationEnabled) drainPathEvents()
-        val pending = pendingMigration ?: return
+        val pending = validating() ?: return
         if (!pending.isDue()) return
         paths[pending.key]?.let { teardownPath(it) }
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
@@ -2377,7 +2485,7 @@ class QuicheDriver(
             when (type) {
                 QuichePathEventType.Validated -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    val pending = pendingMigration ?: continue
+                    val pending = validating() ?: continue
                     if (pending.key != key) continue
                     val entry = paths[key]
                     if (entry == null) {
@@ -2423,7 +2531,7 @@ class QuicheDriver(
                         }
                         is MigrateOutcome.Rejected -> {
                             // quiche validated the path and then refused to switch to it. Nothing will
-                            // ever retry *this* path — `pendingMigration` clears below and the next
+                            // ever retry *this* path — the lane clears below and the next
                             // migrate() opens a fresh socket — so leaving it in `paths` pins its DCID
                             // and its slot in quiche's path table for the connection's life, exactly
                             // as a failed validation used to (#447). Tear it down, which retires.
@@ -2435,7 +2543,7 @@ class QuicheDriver(
 
                 QuichePathEventType.FailedValidation -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    val pending = pendingMigration
+                    val pending = validating()
                     if (pending != null && pending.key == key) {
                         paths[key]?.let { teardownPath(it) }
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
@@ -2477,7 +2585,7 @@ class QuicheDriver(
     ) {
         _pathState.value = state
         pending.result.complete(result)
-        pendingMigration = null
+        lane = MigrationLane.Idle
     }
 
     /** [completeMigration]'s success overload — a [MigrationResult.Succeeded] is never a `Failed` state. */
@@ -2488,7 +2596,7 @@ class QuicheDriver(
     ) {
         _pathState.value = state
         pending.result.complete(result)
-        pendingMigration = null
+        lane = MigrationLane.Idle
     }
 
     /**
@@ -2663,9 +2771,18 @@ class QuicheDriver(
             failCommand(cmd)
         }
 
-        // A migration still in flight when the connection dies never completes — fail it.
-        pendingMigration?.result?.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
-        pendingMigration = null
+        // A migration still in flight when the connection dies never completes — fail it. An open still
+        // running beside the loop is cancelled; its own posting sees the closed channel and releases
+        // whatever the platform produced after this point.
+        when (val l = lane) {
+            MigrationLane.Idle -> Unit
+            is MigrationLane.Opening -> {
+                l.job.cancel()
+                l.cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+            }
+            is MigrationLane.Validating -> l.pending.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+        }
+        lane = MigrationLane.Idle
 
         for (slot in streams.values) {
             slot.dataSignal.close()
@@ -2754,6 +2871,10 @@ class QuicheDriver(
             is QuicheCmd.SourceIdsRead -> cmd.result.complete(emptyList())
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+            is PathOpened -> {
+                releaseIfOpened(cmd.outcome)
+                cmd.migrate.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+            }
         }
     }
 
@@ -2793,6 +2914,10 @@ class QuicheDriver(
             is QuicheCmd.SourceIdsRead -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
+            is PathOpened -> {
+                releaseIfOpened(cmd.outcome)
+                cmd.migrate.result.completeExceptionally(cause)
+            }
         }
     }
 

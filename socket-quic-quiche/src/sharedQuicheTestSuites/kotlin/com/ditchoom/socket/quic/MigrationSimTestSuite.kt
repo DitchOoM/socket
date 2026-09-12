@@ -1872,11 +1872,23 @@ abstract class MigrationSimTestSuite {
 
         /**
          * Migrations [aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime] performs before it
-         * kills anything. Two rather than one so the active path index is 2: a reader that assumed
+         * kills anything. At least one, so the active path index is not 0: a reader that assumed
          * index 0 reads a path the connection left, which is how the first investigation of this
          * scenario measured zero expiries and went looking in the wrong place.
+         *
+         * Exactly one since #613, and the reason is the scenario's own premise. The moment a migration
+         * completes, the driver retires the old path's connection id on the new path; the peer's ACK of
+         * that retirement is the first RTT sample the new path can get, one round trip later. While the
+         * path open ran inline in the driver loop, the *next* migration's PATH_CHALLENGE was flushed
+         * ahead of that retirement and the peer's ACK went to an address the client had already torn
+         * down — so it was lost, and a second prior migration still left an unsampled active path. With
+         * the open running beside the loop the retirement is flushed first, the ACK lands on the live
+         * path 70ms later, and every path migrated onto after that inherits the sample. The only
+         * instant this scenario can still find the field condition — a fresh path with no round trip
+         * behind it — is inside that first round trip, which is what killing after one migration does.
+         * The premise guard below is what catches this moving again.
          */
-        const val PRIOR_MIGRATIONS = 2
+        const val PRIOR_MIGRATIONS = 1
 
         /**
          * Round trip above which a path is certainly **un-sampled** — quiche is reporting RFC 9002
