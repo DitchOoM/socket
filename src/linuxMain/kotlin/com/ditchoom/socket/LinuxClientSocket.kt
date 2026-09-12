@@ -69,9 +69,12 @@ class LinuxClientSocket(
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         try {
-            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
-                connectCandidate(candidate, port, timeout)
-            }
+            sockfd =
+                connectRace(
+                    candidates = config.nameResolution.candidatesFor(host),
+                    pacing = config.connectPacing,
+                    close = { closeSocket(it) },
+                ) { candidate -> connectCandidate(candidate, port, timeout) }
             // Cache the socket's receive buffer size for efficient read operations
             cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
             if (tlsConfig != null) {
@@ -85,12 +88,12 @@ class LinuxClientSocket(
         }
     }
 
-    /** One connect attempt to a resolved literal: the socket is [sockfd] on success and closed again on failure. */
+    /** One connect attempt to a resolved literal: the connected descriptor on success, closed again on failure. */
     private suspend fun connectCandidate(
         candidate: ResolvedAddress,
         port: Int,
         timeout: Duration,
-    ) = memScoped {
+    ): Int = memScoped {
         val hints = alloc<addrinfo>()
         memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
         hints.ai_family = AF_UNSPEC
@@ -109,11 +112,10 @@ class LinuxClientSocket(
             try {
                 setNonBlocking(fd)
                 applySocketOptions(fd, config.io)
-                sockfd = fd
-                connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
+                connectWithIoUring(fd, entry.ai_addr!!, entry.ai_addrlen, timeout)
+                fd
             } catch (e: Throwable) {
                 closeSocket(fd)
-                sockfd = -1
                 throw e
             }
         } finally {
@@ -122,11 +124,11 @@ class LinuxClientSocket(
     }
 
     private suspend fun connectWithIoUring(
+        fd: Int,
         addr: CPointer<sockaddr>,
         addrLen: socklen_t,
         timeout: Duration,
     ) {
-        val fd = sockfd
         val result =
             IoUringManager.submitAndWait(timeout) { sqe, _ ->
                 io_uring_prep_connect(sqe, fd, addr, addrLen)
