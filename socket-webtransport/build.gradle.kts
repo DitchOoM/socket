@@ -178,7 +178,21 @@ kotlin {
         androidMain.get().dependsOn(http3Main)
         // nativeMain is the default-template parent of appleMain/linuxMain; routing it through
         // http3Main gives every native target the socket-http3 backing in one edge.
-        named("nativeMain").get().dependsOn(http3Main)
+        //
+        // Guarded by the same condition that REGISTERS those targets (above): on a host that is
+        // neither macOS nor Linux — Windows — no native target exists, so the default hierarchy never
+        // creates `nativeMain` and this line failed *configuration* with
+        // `KotlinSourceSet with name 'nativeMain' not found`. That broke `./gradlew :jvmTest` on
+        // Windows entirely, since Gradle configures every project regardless of the task's scope.
+        //
+        // It has been latent since the source set was introduced and nothing caught it: the Windows
+        // lane's only Gradle step is gated on `quiche_jni.dll` being present, and until #515 that DLL
+        // had never been produced on any run, so the step had never executed. Deliberately NOT
+        // `findByName(...)?.` — a null-safe call would also swallow the name going stale on a host
+        // that does have native targets, which is the same class of silence #515 is removing.
+        if (isMacOS || isLinux) {
+            named("nativeMain").get().dependsOn(http3Main)
+        }
 
         jsMain.get().dependsOn(browserMain)
         wasmJsMain.get().dependsOn(browserMain)

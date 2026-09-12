@@ -357,12 +357,12 @@ jobs:
       # later blaming `include-hidden-files`, which was fine. "No shared build was requested" and
       # "the shared build was attempted and threw" had been sharing one exit code. Now every build
       # below reads its own exit status, and the decision is written down per product:
-      #   REQUIRED (fails this job, quoting Gradle's own "What went wrong"): buildQuicheSharedLinux{X64,Arm64},
-      #     the two Linux JNI shim links, buildAndroidJniArm64v8a.
-      #   OPTIONAL (tolerated, but LOUD — a ::warning:: naming the step, with the compiler's output):
-      #     the Windows x64 quiche_jni.dll cross-compile, because review.yaml's build-windows treats
-      #     the DLL as best-effort and skips its tests when it is absent. It has in fact failed on
-      #     every run so far (#515); before this it did so in silence.
+      #   REQUIRED (fails this job, quoting the failing tool's own output): buildQuicheSharedLinux{X64,Arm64},
+      #     the two Linux JNI shim links, buildAndroidJniArm64v8a, and — since #515 — the Windows x64
+      #     quiche_jni.dll cross-compile.
+      #   OPTIONAL: nothing, any more. The Windows DLL was this step's one tolerated product and it had
+      #     failed on literally every run; #516 made that failure loud, #515 fixed the compile (and the
+      #     missing `qlog` feature behind it), so it is now held to the same bar as everything else.
       # And whatever this step produces is asserted file-by-file before anything uploads it — see
       # `Assert the natives artifact is complete` below.
       - name: Build quiche native libs (all platforms from Linux)
@@ -471,22 +471,28 @@ jobs:
           echo "=== Linux arm64 JNI ==="
           build_jni aarch64-linux-gnu-gcc aarch64-linux-gnu-strip "$QUICHE_LIBS/linux-arm64/lib" libquiche_jni.so
 
-          # Windows x64 JNI shim (cross-compile via MinGW) — the ONE optional product of this job.
-          # review.yaml's build-windows downloads quiche_jni.dll with continue-on-error, warns
-          # "Windows DLL missing" and skips :socket-quic-quiche:jvmTest when it is absent, so absence is a
-          # supported state there and tolerated here. Tolerated LOUDLY: cargo's and MinGW's output go to a
-          # log (they went to /dev/null), the exit status is read, and a failure is a ::warning:: that
-          # names this step and quotes the log's tail — not an `&&` chain falling through in silence,
-          # which is how "fails on every run" (#515: quiche_jni.c includes <sys/socket.h> unguarded)
-          # went unnoticed for as long as it did.
-          echo "=== Windows x64 JNI (best-effort, #515) ==="
+          # Windows x64 JNI shim (cross-compile via MinGW). REQUIRED as of #515 — it was the one
+          # optional product of this job, and it had never once been produced: the compile failed on
+          # EVERY run on quiche_jni.c's unguarded <sys/socket.h>, so review.yaml's build-windows
+          # skipped :socket-quic-quiche:jvmTest for the entire life of that lane while both jobs stayed
+          # green. With the shim's POSIX includes guarded the cross-build works, so its absence is a
+          # defect and not a supported state, and #461's rule applies here like everywhere else in this
+          # job: an incomplete artifact never ships under a green job.
+          #
+          # ⚠️ The feature list is `ffi,boringssl-boring-crate,qlog` — the same set every other target
+          # builds (socket-quic-quiche/build.gradle.kts). `qlog` was missing here and was the SECOND
+          # failure, hiding behind the header one: with the includes fixed the link died on an
+          # undefined reference to quiche_conn_set_qlog_path, which this shim's nSetQlogPath forwards
+          # to. Keep it in step with build.gradle.kts's `quicheFeatures`.
+          echo "=== Windows x64 JNI ==="
           WIN_DLL="$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll"
           WIN_LOG="$LOG_DIR/ci-windows-x64-jni.log"
           build_windows_jni() {
             # Called from an `if`, where errexit is suspended — hence the explicit `|| return` per step.
             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
               cargo build --release --package quiche \
-              --target x86_64-pc-windows-gnu --no-default-features --features ffi,boringssl-boring-crate \
+              --target x86_64-pc-windows-gnu --no-default-features \
+              --features ffi,boringssl-boring-crate,qlog \
               --manifest-path "$QUICHE_DIR/Cargo.toml" || return $?
             local lib
             lib=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
@@ -506,9 +512,10 @@ jobs:
             echo "Built Windows x64: $WIN_DLL ($(du -h "$WIN_DLL" | cut -f1))"
           else
             win_rc=$?
-            echo "::warning title=natives: windows-x64 quiche_jni.dll NOT built (tolerated, #515)::the MinGW cross-build exited $win_rc; review.yaml's build-windows will skip :socket-quic-quiche:jvmTest with its own warning. Last lines of $WIN_LOG:"
-            tail -n 20 "$WIN_LOG" | sed 's/^/    /'
             rm -f "$WIN_DLL"   # never ship a half-linked DLL
+            echo "::error title=natives: windows-x64 quiche_jni.dll FAILED (exit $win_rc)::the MinGW cross-build is REQUIRED (#515); the natives job stops here so no incomplete artifact ships (#461). Without this DLL review.yaml's build-windows cannot run :socket-quic-quiche:jvmTest at all. Its output follows; the full transcript is ci-windows-x64-jni.log in the quiche-build-logs-linux artifact."
+            tail -n 20 "$WIN_LOG" | sed 's/^/::error::/'
+            exit "$win_rc"
           fi
 
           # Android arm64 native libs — built via Gradle (buildAndroidJni*) rather than a hand-rolled
@@ -559,7 +566,7 @@ jobs:
       # `.jni-built-<ver>` DOTFILE markers for linux-x64 and linux-arm64, and the arm64-v8a pair for
       # Android — must exist and be non-empty here, or this job fails with one ::error:: per missing
       # file BEFORE any upload step runs. Replaces the warn-only `Verify JNI shims exist` listing, which
-      # printed "WARN" into a green job. The Windows DLL is reported but optional (#515). Run it locally
+      # printed "WARN" into a green job. The Windows DLL is required too as of #515. Run it locally
       # against any tree: .github/scripts/assert-linux-natives-complete.sh <repo-root>.
       - name: Assert the natives artifact is complete before anything uploads it
         run: .github/scripts/assert-linux-natives-complete.sh "${{ github.workspace }}"
@@ -630,8 +637,11 @@ jobs:
       # The Windows x64 JNI shim is cross-compiled above (MinGW) but the
       # conformance suite runs on a separate windows-latest job (review.yaml's
       # build-windows). Hand the DLL across via this artifact so that job can
-      # stage it and run :socket-quic-quiche:jvmTest. if-no-files-found: ignore keeps
-      # the Linux job green if the cross-compile didn't produce the DLL.
+      # stage it and run :socket-quic-quiche:jvmTest. `if-no-files-found: ignore` is NOT a tolerance
+      # for a missing DLL any more (#515 made the cross-build required and the assertion step above
+      # gates on it): this step is `if: always()`, so it also runs after a failure, and `ignore` is
+      # only what keeps a genuinely-failed run from adding a second, derivative red on top of the
+      # ::error:: that named the real cause.
       - name: Upload quiche Windows native lib
         if: always()
         uses: actions/upload-artifact@v7
