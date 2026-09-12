@@ -69,9 +69,12 @@ class LinuxClientSocket(
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         try {
-            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
-                connectCandidate(candidate, port, timeout)
-            }
+            sockfd =
+                connectRace(
+                    candidates = config.nameResolution.candidatesFor(host),
+                    pacing = config.connectPacing,
+                    close = { closeSocket(it) },
+                ) { candidate -> connectCandidate(candidate, port, timeout) }
             // Cache the socket's receive buffer size for efficient read operations
             cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
             if (tlsConfig != null) {
@@ -85,48 +88,48 @@ class LinuxClientSocket(
         }
     }
 
-    /** One connect attempt to a resolved literal: the socket is [sockfd] on success and closed again on failure. */
+    /** One connect attempt to a resolved literal: the connected descriptor on success, closed again on failure. */
     private suspend fun connectCandidate(
         candidate: ResolvedAddress,
         port: Int,
         timeout: Duration,
-    ) = memScoped {
-        val hints = alloc<addrinfo>()
-        memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
-        hints.ai_family = AF_UNSPEC
-        hints.ai_socktype = SOCK_STREAM
-        hints.ai_protocol = IPPROTO_TCP
-        hints.ai_flags = AI_NUMERICHOST
-        val result = allocPointerTo<addrinfo>()
-        val ret = getaddrinfo(candidate.ip, port.toString(), hints.ptr, result.ptr)
-        if (ret != 0) {
-            throw SocketUnknownHostException(candidate.ip, gai_strerror(ret)?.toKString() ?: "Unknown DNS error")
-        }
-        val entry = result.value?.pointed ?: throw SocketUnknownHostException(candidate.ip, "No address found")
-        try {
-            val fd = socket(entry.ai_family, SOCK_STREAM, 0)
-            if (fd < 0) throw mapErrnoToException(errno, "socket")
-            try {
-                setNonBlocking(fd)
-                applySocketOptions(fd, config.io)
-                sockfd = fd
-                connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
-            } catch (e: Throwable) {
-                closeSocket(fd)
-                sockfd = -1
-                throw e
+    ): Int =
+        memScoped {
+            val hints = alloc<addrinfo>()
+            memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
+            hints.ai_family = AF_UNSPEC
+            hints.ai_socktype = SOCK_STREAM
+            hints.ai_protocol = IPPROTO_TCP
+            hints.ai_flags = AI_NUMERICHOST
+            val result = allocPointerTo<addrinfo>()
+            val ret = getaddrinfo(candidate.ip, port.toString(), hints.ptr, result.ptr)
+            if (ret != 0) {
+                throw SocketUnknownHostException(candidate.ip, gai_strerror(ret)?.toKString() ?: "Unknown DNS error")
             }
-        } finally {
-            freeaddrinfo(result.value)
+            val entry = result.value?.pointed ?: throw SocketUnknownHostException(candidate.ip, "No address found")
+            try {
+                val fd = socket(entry.ai_family, SOCK_STREAM, 0)
+                if (fd < 0) throw mapErrnoToException(errno, "socket")
+                try {
+                    setNonBlocking(fd)
+                    applySocketOptions(fd, config.io)
+                    connectWithIoUring(fd, entry.ai_addr!!, entry.ai_addrlen, timeout)
+                    fd
+                } catch (e: Throwable) {
+                    closeSocket(fd)
+                    throw e
+                }
+            } finally {
+                freeaddrinfo(result.value)
+            }
         }
-    }
 
     private suspend fun connectWithIoUring(
+        fd: Int,
         addr: CPointer<sockaddr>,
         addrLen: socklen_t,
         timeout: Duration,
     ) {
-        val fd = sockfd
         val result =
             IoUringManager.submitAndWait(timeout) { sqe, _ ->
                 io_uring_prep_connect(sqe, fd, addr, addrLen)

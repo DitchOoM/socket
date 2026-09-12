@@ -94,7 +94,10 @@ class HostResolverTests {
             val client = ClientSocket.connect(server.port(), hostname = "echo.example", config = config)
             val took = started.elapsedNow()
             try {
-                assertTrue(took < 10.seconds, "one unreachable address costs one attempt, not the run: $took")
+                assertTrue(
+                    took < 1.5.seconds,
+                    "an unreachable first address costs one attempt delay (RFC 8305: 250 ms), not the 2 s connect timeout: $took",
+                )
                 client.writeString("fallback")
                 assertEquals("fallback", client.readString())
             } finally {

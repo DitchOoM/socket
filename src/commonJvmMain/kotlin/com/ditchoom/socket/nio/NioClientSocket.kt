@@ -4,7 +4,7 @@ import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.candidatesFor
-import com.ditchoom.socket.firstReachable
+import com.ditchoom.socket.connectRace
 import com.ditchoom.socket.nio.util.aConfigureBlocking
 import com.ditchoom.socket.nio.util.connect
 import com.ditchoom.socket.nio.util.openSocketChannel
@@ -23,10 +23,12 @@ class NioClientSocket(
         val timeout = config.connectTimeout
         val host = hostname ?: "localhost"
         val socketChannel =
-            firstReachable(config.nameResolution.candidatesFor(host)) { candidate ->
+            connectRace(
+                candidates = config.nameResolution.candidatesFor(host),
+                pacing = config.connectPacing,
+                close = { runCatching { it.close() } },
+            ) { candidate ->
                 val attempt = openSocketChannel()
-                // Assigned before the connect so close() can reach it if the attempt fails.
-                this@NioClientSocket.socket = attempt
                 try {
                     attempt.aConfigureBlocking(blocking)
                     val address = InetSocketAddress(InetAddress.getByName(candidate.ip), port)
@@ -39,6 +41,7 @@ class NioClientSocket(
                     throw e
                 }
             }
+        this.socket = socketChannel
         try {
             applySocketOptions(config.io)
             config.tls?.let { initTls(hostname, port, it, timeout) }

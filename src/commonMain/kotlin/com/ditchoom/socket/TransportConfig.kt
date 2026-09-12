@@ -33,6 +33,10 @@ import kotlin.time.Duration.Companion.seconds
  * - [nameResolution] — how the connect turns a name into the addresses it tries
  *   ([NameResolution], sealed): the platform's own way by default, or a caller's [HostResolver]
  *   whose candidates are tried in order on every platform.
+ * - [connectPacing] — how attempts across those addresses are paced ([ConnectPacing], sealed):
+ *   RFC 8305 §5 staggered by default, so an unreachable first address costs one attempt delay
+ *   rather than one [connectTimeout], or sequential. Apple's default path is Network.framework's
+ *   own race and ignores it; an injected resolver is paced on every platform.
  * - [tls] — the unified [TlsConfig]; `null` = plaintext.
  * - [io] — platform I/O + TCP knobs ([IoTuning]), injected rather than read from a process-global.
  * - [networkId] — typed identity of the network path this connect happens over
@@ -60,6 +64,7 @@ data class TransportConfig(
     val io: IoTuning = IoTuning(),
     val networkId: NetworkId = NetworkId.Unidentified,
     val nameResolution: NameResolution = NameResolution.Platform,
+    val connectPacing: ConnectPacing = ConnectPacing.Staggered.RECOMMENDED,
 ) {
     companion object {
         /** Good defaults for interactive protocols (WebSocket, MQTT, HTTP): TCP_NODELAY on. */

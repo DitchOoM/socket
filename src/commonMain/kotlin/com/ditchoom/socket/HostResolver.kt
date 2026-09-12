@@ -1,8 +1,5 @@
 package com.ditchoom.socket
 
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
-
 /** The IP family of a [ResolvedAddress]. */
 enum class IpFamily {
     V4,
@@ -104,25 +101,5 @@ internal suspend fun NameResolution.candidatesFor(host: String): List<ResolvedAd
         is Resolution.Resolved -> answer.candidates
         is Resolution.NoAddress -> throw SocketUnknownHostException(host, "the name has no address")
         is Resolution.Failed -> throw SocketUnknownHostException(host, cause = answer.cause)
-    }
-}
-
-/**
- * One attempt per candidate, in order; the first that succeeds is the answer and the last failure
- * is the error. A cancelled scope leaves at once; a single attempt's own deadline does not.
- */
-internal suspend fun <C, T> firstReachable(
-    candidates: List<C>,
-    attempt: suspend (C) -> T,
-): T {
-    val attempts = candidates.iterator()
-    while (true) {
-        val candidate = attempts.next()
-        try {
-            return attempt(candidate)
-        } catch (e: Throwable) {
-            currentCoroutineContext().ensureActive()
-            if (!attempts.hasNext()) throw e
-        }
     }
 }
