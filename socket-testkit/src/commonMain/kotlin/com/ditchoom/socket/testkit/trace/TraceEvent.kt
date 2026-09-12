@@ -81,6 +81,7 @@ enum class TraceMigrationOutcome {
     AlreadyInProgress,
     NoSpareConnectionId,
     LocalPathUnavailable,
+    LocalPathOpenTimedOut,
     ProbeRejected,
     PathNotValidated,
     SwitchRejected,

@@ -479,6 +479,11 @@ private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boo
         MigrationResult.Unmoved.Failed.PathNotValidated -> true
         // A bind that failed or collided with the live path's 4-tuple; a later bind lands elsewhere.
         is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> true
+        // The platform was still opening the socket when the budget ran out. The measured case is a
+        // link that cannot reach the peer's address family, which the platform resolves on its own
+        // clock (Network.framework re-homed after 95 s); the decaying cadence asks again without
+        // parking anything in the meantime.
+        is MigrationResult.Unmoved.Failed.LocalPathOpenTimedOut -> true
         // quiche refused this probe, or refused to switch onto a path that did validate. Both carry a
         // code rather than a promise, and both have transient sources (a path table at its limit, a
         // move already under way), so they are worth asking again.

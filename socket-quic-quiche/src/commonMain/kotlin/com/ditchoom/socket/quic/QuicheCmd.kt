@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.time.Duration
 
 /**
  * Where a datagram entered the driver — and therefore which recv_info tells quiche the truth about
@@ -193,6 +194,49 @@ sealed interface QuicheCmd {
         val target: MigrationTarget,
         val result: CompletableDeferred<MigrationResult>,
     ) : QuicheCmd
+}
+
+/**
+ * The socket a [QuicheCmd.Migrate] asked the platform for has settled — opened, failed, or out of
+ * budget. Posted by the open that ran *beside* the loop, so the loop picks the migration up where it
+ * left it without ever having waited on the platform itself (#613). Top-level because a sealed
+ * interface's nested classes cannot be `internal`, and the types this carries are.
+ */
+internal class PathOpened(
+    val migrate: QuicheCmd.Migrate,
+    val attempt: MigrateAttempt,
+    val outcome: PathOpenOutcome,
+) : QuicheCmd
+
+/**
+ * Whether this is the first bind for a migration or the one retry a stale-path collision earns.
+ *
+ * A named pair rather than a `Boolean` parameter: the two are not "on/off", they are "the caller
+ * asked to migrate" and "quiche told us the port we were given still carries a dead path", and only
+ * the second may not retry again. See `QuicheDriver.probeRejection`.
+ */
+internal sealed interface MigrateAttempt {
+    data object First : MigrateAttempt
+
+    data object AfterRebind : MigrateAttempt
+}
+
+/** How a migration path open ended. Sealed, so the loop's continuation cannot forget a way it can end. */
+internal sealed interface PathOpenOutcome {
+    /** The platform handed back a socket; the driver now owns it and must probe or release it. */
+    class Opened(
+        val path: NewPath,
+    ) : PathOpenOutcome
+
+    /** The platform was still opening when [budget] ran out; the open was cancelled. */
+    class TimedOut(
+        val budget: Duration,
+    ) : PathOpenOutcome
+
+    /** The platform refused. */
+    class Failed(
+        val cause: Exception,
+    ) : PathOpenOutcome
 }
 
 /**
