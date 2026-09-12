@@ -1,11 +1,13 @@
 package com.ditchoom.socket
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -32,6 +34,11 @@ class ConnectRaceTests {
 
         /** Connects after [after]. */
         data class Connects(
+            val after: Duration,
+        ) : Address
+
+        /** Connects after [after] even once cancelled, the way a platform callback fires after the race has moved on. */
+        data class ConnectsRegardless(
             val after: Duration,
         ) : Address
 
@@ -69,6 +76,7 @@ class ConnectRaceTests {
                     throw Refused(address)
                 }
                 is Address.Connects -> delay(address.after)
+                is Address.ConnectsRegardless -> withContext(NonCancellable) { delay(address.after) }
                 is Address.Fatal -> {
                     delay(address.after)
                     throw PeerRejected()
@@ -99,7 +107,7 @@ class ConnectRaceTests {
             assertEquals(listOf(0L, 250L), script.startedAt)
             assertEquals(270L, testScheduler.currentTime, "one attempt delay plus one round trip, not one connect timeout")
             assertEquals(Address.Connects(20.milliseconds), connection.address)
-            assertEquals(emptyList(), script.closed, "the silent attempt was cancelled, so there was nothing to close")
+            assertEquals(emptyList<Address>(), script.closed, "the silent attempt was cancelled, so there was nothing to close")
         }
 
     @Test
@@ -136,7 +144,7 @@ class ConnectRaceTests {
                 } else {
                     Address.Connects(300.milliseconds)
                 }
-            assertEquals(listOf(loser), script.closed)
+            assertEquals(listOf<Address>(loser), script.closed)
             assertEquals(false, connection.closed, "the winner stays open")
         }
 
@@ -182,11 +190,18 @@ class ConnectRaceTests {
     @Test
     fun aConnectionThatCompletesAfterAFatalFailureIsClosed() =
         runTest {
+            // The fatal lands at 270 (started at 250); the first attempt still completes at 300.
             val script = Script(this)
-            assertFailsWith<PeerRejected> { race(Address.Connects(300.milliseconds), Address.Fatal(50.milliseconds), script = script) }
+            assertFailsWith<PeerRejected> {
+                race(
+                    Address.ConnectsRegardless(300.milliseconds),
+                    Address.Fatal(20.milliseconds),
+                    script = script,
+                )
+            }
 
-            assertEquals(300L, testScheduler.currentTime)
-            assertEquals(listOf(Address.Connects(300.milliseconds)), script.closed)
+            assertEquals(300L, testScheduler.currentTime, "the race waits for the late completion, so nothing outlives it")
+            assertEquals(listOf<Address>(Address.ConnectsRegardless(300.milliseconds)), script.closed)
         }
 
     @Test
@@ -225,7 +240,7 @@ class ConnectRaceTests {
 
             assertFailsWith<CancellationException> { connect.await() }
             assertEquals(listOf(0L, 250L), script.startedAt)
-            assertEquals(emptyList(), script.closed)
+            assertEquals(emptyList<Address>(), script.closed)
         }
 
     @Test
