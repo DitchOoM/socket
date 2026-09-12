@@ -93,35 +93,36 @@ class LinuxClientSocket(
         candidate: ResolvedAddress,
         port: Int,
         timeout: Duration,
-    ): Int = memScoped {
-        val hints = alloc<addrinfo>()
-        memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
-        hints.ai_family = AF_UNSPEC
-        hints.ai_socktype = SOCK_STREAM
-        hints.ai_protocol = IPPROTO_TCP
-        hints.ai_flags = AI_NUMERICHOST
-        val result = allocPointerTo<addrinfo>()
-        val ret = getaddrinfo(candidate.ip, port.toString(), hints.ptr, result.ptr)
-        if (ret != 0) {
-            throw SocketUnknownHostException(candidate.ip, gai_strerror(ret)?.toKString() ?: "Unknown DNS error")
-        }
-        val entry = result.value?.pointed ?: throw SocketUnknownHostException(candidate.ip, "No address found")
-        try {
-            val fd = socket(entry.ai_family, SOCK_STREAM, 0)
-            if (fd < 0) throw mapErrnoToException(errno, "socket")
-            try {
-                setNonBlocking(fd)
-                applySocketOptions(fd, config.io)
-                connectWithIoUring(fd, entry.ai_addr!!, entry.ai_addrlen, timeout)
-                fd
-            } catch (e: Throwable) {
-                closeSocket(fd)
-                throw e
+    ): Int =
+        memScoped {
+            val hints = alloc<addrinfo>()
+            memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
+            hints.ai_family = AF_UNSPEC
+            hints.ai_socktype = SOCK_STREAM
+            hints.ai_protocol = IPPROTO_TCP
+            hints.ai_flags = AI_NUMERICHOST
+            val result = allocPointerTo<addrinfo>()
+            val ret = getaddrinfo(candidate.ip, port.toString(), hints.ptr, result.ptr)
+            if (ret != 0) {
+                throw SocketUnknownHostException(candidate.ip, gai_strerror(ret)?.toKString() ?: "Unknown DNS error")
             }
-        } finally {
-            freeaddrinfo(result.value)
+            val entry = result.value?.pointed ?: throw SocketUnknownHostException(candidate.ip, "No address found")
+            try {
+                val fd = socket(entry.ai_family, SOCK_STREAM, 0)
+                if (fd < 0) throw mapErrnoToException(errno, "socket")
+                try {
+                    setNonBlocking(fd)
+                    applySocketOptions(fd, config.io)
+                    connectWithIoUring(fd, entry.ai_addr!!, entry.ai_addrlen, timeout)
+                    fd
+                } catch (e: Throwable) {
+                    closeSocket(fd)
+                    throw e
+                }
+            } finally {
+                freeaddrinfo(result.value)
+            }
         }
-    }
 
     private suspend fun connectWithIoUring(
         fd: Int,
