@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.sim.fixtures.SIM_IDLE_TIMEOUT
+import com.ditchoom.socket.quic.sim.fixtures.walk20260910Conn1DeadLinkHandoff
 import com.ditchoom.socket.quic.sim.fixtures.walk20260912Conn7DeadLinkHandoff
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -60,9 +61,13 @@ class WalkFixtureTests {
         runTest { runWalk(walk20260912Conn7DeadLinkHandoff).assertDiesOnItsOwnDeadline(walk20260912Conn7DeadLinkHandoff) }
 
     @Test
-    fun walk_deterministic3x() =
+    fun walk20260910Conn1_deadSocketFaultsNeverEndTheConnectionBeforeItsIdleDeadline() =
+        runTest { runWalk(walk20260910Conn1DeadLinkHandoff).assertDiesOnItsOwnDeadline(walk20260910Conn1DeadLinkHandoff) }
+
+    @Test
+    fun bothWalks_deterministic3x() =
         runTest {
-            for (fixture in listOf(walk20260912Conn7DeadLinkHandoff)) {
+            for (fixture in listOf(walk20260912Conn7DeadLinkHandoff, walk20260910Conn1DeadLinkHandoff)) {
                 val golden = runWalk(fixture).trace.events
                 repeat(3) { assertEquals(golden, runWalk(fixture).trace.events, "${fixture.name} is not deterministic") }
             }

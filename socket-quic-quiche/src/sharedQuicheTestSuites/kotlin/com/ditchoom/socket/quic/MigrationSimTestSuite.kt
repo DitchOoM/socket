@@ -878,6 +878,95 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * **Pinned as the walk recorded it** — the 2026-09-10 iPhone walk, connections 1 and 2, replayed
+     * against real quiche. Green: given the pool the peer granted, every decision the client made was
+     * the right one, and this is the trajectory both traces hold.
+     *
+     * Connection 2's shape, which is connection 1's with one more fact in front: a handoff onto a link
+     * that answers succeeds, the old CID's retirement crosses on the new path and the peer's
+     * replacement lands, so the pool is back at the peer's `limit - 1` — the refill works. Then the
+     * active path dies and the platform reports a link that never answers: exactly `limit - 1` probes
+     * reach the wire, each `PathNotValidated` on the driver's §8.2.4 abandon, and every attempt after
+     * them is `NoSpareConnectionId` decided at `QuicheDriver.handleMigrate` with
+     * `quiche_conn_available_dcids == 0`, until the connection ends on its own idle deadline with a
+     * typed `IdleTimeout` — 30s after the last datagram in, as both phones recorded it.
+     *
+     * The half this does not pin is the link: the phone's traces show zero datagrams arriving on any
+     * probe port for ten seconds, and the next connection reaching the same server over the same
+     * cellular link seconds later. Whether a fourth probe would have been answered is the question the
+     * pool made unaskable — [aLinkThatAnswersFromTheFourthProbeOnIsNeverReachedAgainstThePeerTheWalkHad].
+     */
+    @Test
+    fun aDeadLinkHandoffAgainstThePeerTheWalkHadSpendsExactlyItsSparesThenIdlesOutOnItsOwnDeadline() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 45_306L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    // The first probe path is the handoff that succeeds; everything after it is the dead link.
+                    probeImpairment = { index -> PathImpairment(blackhole = index > 1) },
+                ) {
+                    awaitSpareDcids(count = WALK_PEER_SPARES)
+
+                    monitor.setNetworkId(CELLULAR)
+                    withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                        while (client.attempts.isEmpty()) delay(10.milliseconds)
+                    }
+                    assertIs<MigrationResult.Succeeded>(client.attempts.single(), "the first handoff is onto a live link")
+                    awaitSpareDcids(count = WALK_PEER_SPARES)
+                    delay(REPLENISH_SETTLE)
+                    assertEquals(
+                        WALK_PEER_SPARES,
+                        clientAvailableDcids(),
+                        "the retirement crossed on the live path, so the peer refilled the pool",
+                    )
+
+                    pipe.impair(clientPaths().last(), PathImpairment(blackhole = true))
+                    monitor.setNetworkId(WIFI)
+                    withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                        while (client.attempts.none { it is MigrationResult.Unmoved.Failed.NoSpareConnectionId }) {
+                            delay(100.milliseconds)
+                        }
+                    }
+                    // Read where the walk's NoSpareConnectionId lines are, while the connection lives: the
+                    // driver refused because quiche_conn_available_dcids was 0, and nothing crossing the dead
+                    // path could change that.
+                    assertEquals(0L, clientAvailableDcids(), "nothing replaces a spare retired over a dead path: ${client.attempts}")
+                    withTimeout(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK) {
+                        while (clientDriver.state.value !is QuicConnectionState.Closed) delay(100.milliseconds)
+                    }
+
+                    val handoff = client.attempts.drop(1).filter { it !is MigrationResult.Unmoved.Impossible }
+                    val probed = handoff.take(WALK_PEER_SPARES.toInt())
+                    val refused = handoff.drop(WALK_PEER_SPARES.toInt())
+                    assertEquals(
+                        WALK_PEER_SPARES.toInt(),
+                        clientPaths().size - 1,
+                        "probe paths opened for the dead-link handoff must equal the peer's spares: ${client.attempts}",
+                    )
+                    assertTrue(
+                        probed.size == WALK_PEER_SPARES.toInt() && probed.all { it is MigrationResult.Unmoved.Failed.PathNotValidated },
+                        "the first ${WALK_PEER_SPARES} attempts are real probes the link never answered: ${client.attempts}",
+                    )
+                    assertTrue(
+                        refused.isNotEmpty() && refused.all { it is MigrationResult.Unmoved.Failed.NoSpareConnectionId },
+                        "every attempt past the pool is refused before a socket is opened: ${client.attempts}",
+                    )
+                    val closed = assertIs<QuicConnectionState.Closed>(clientDriver.state.value)
+                    assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason, "the walk recorded `local: IdleTimeout`")
+                }
+            }
+        }
+
+    /**
      * **#459 — an abandoned probe must give its connection id back to the pool.**
      *
      * #447 fixed "the abandoned path never retires its connection id". This is the other half, and it
