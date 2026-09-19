@@ -32,16 +32,21 @@ def parse(line):
 
 
 events = [parse(l) for l in lines]
+# The last STAMPED time: a trailing line without a stamp (a truncated write, a bare DONE) must not
+# read as t=0 and turn every gap that reaches the end of the log negative.
+last_t = max((t for t, _ in events if t is not None), default=0)
 starts = [b for _, b in events if b.startswith("START ")]
 print("START:", starts[0] if starts else "(none)")
-print(f"lines={len(lines)} duration={(events[-1][0] or 0) / 3600000:.2f}h")
+print(f"lines={len(lines)} duration={last_t / 3600000:.2f}h")
 
-# connections
+# connections — a connection ends at the first of: the stream going (peer FIN/RESET, writes stalled),
+# the connection dying, or the scope exiting; the stream lines come first, so they name the real end.
 attempts = [(t, b) for t, b in events if b.startswith("CONNECT-ATTEMPT")]
-ends = [(t, b) for t, b in events if b.startswith(("CONNECTION-ENDED", "CONNECTION-DEAD", "SCOPE-EXITED"))]
+ends = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
+                                                    "CONNECTION-ENDED", "CONNECTION-DEAD", "SCOPE-EXITED"))]
 print(f"\nconnections: attempts={len(attempts)}")
 for i, (t, b) in enumerate(attempts):
-    nxt = attempts[i + 1][0] if i + 1 < len(attempts) else (events[-1][0] or t)
+    nxt = attempts[i + 1][0] if i + 1 < len(attempts) else max(last_t, t)
     end = next(((et, eb) for et, eb in ends if t < et <= nxt), None)
     lived = ((end[0] if end else nxt) - t) / 1000
     why = end[1][:110] if end else "(still up at end of log)"
@@ -142,7 +147,6 @@ QUIET_LIMIT_MS = 10 * 60 * 1000
 print(f"\nECHO-LIVENESS (re-derived — the log's own line may predate #620; limit {QUIET_LIMIT_MS // 60000} min):")
 conn_bounds = [t for t, b in events if b.startswith("CONNECTED ")]
 echo_lines = sorted(t for t, b in events if b.startswith("ECHO-"))
-last_t = events[-1][0] or 0
 
 
 def hours(ms):
