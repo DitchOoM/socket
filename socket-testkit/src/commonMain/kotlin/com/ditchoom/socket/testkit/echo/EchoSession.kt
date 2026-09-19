@@ -75,9 +75,9 @@ public sealed interface EchoStep {
         public val line: String get() = "ECHO-WRITE-TIMEOUT seq=$seq waited=${waited.inWholeMilliseconds}ms consecutive=$consecutive"
     }
 
-    /** Leave the connection scope; [end] is already recorded on the session. */
+    /** Leave the connection scope; [end] is recorded on the session, and every later step answers with it. */
     public data class Reconnect(
-        val end: SessionEnd.StreamGone,
+        val end: SessionEnd,
         val seq: Int,
         val owedBytes: Int,
     ) : EchoStep {
@@ -91,6 +91,8 @@ public sealed interface EchoStep {
                     is SessionEnd.StreamGone.WritesStalled ->
                         "STREAM-WRITES-STALLED seq=$seq consecutiveTimeouts=${end.consecutiveTimeouts} owed=${owedBytes}B — " +
                             "the peer is not draining the stream; leaving scope to reconnect"
+                    SessionEnd.ConnectionDead, SessionEnd.WalkOver, SessionEnd.ScopeFailed ->
+                        "SESSION-ENDED seq=$seq owed=${owedBytes}B ended=${end.label} — the session had already ended; leaving scope"
                 }
     }
 }
@@ -159,28 +161,36 @@ public class EchoSession(
         seq: Int,
         waited: Duration,
         at: Duration,
-    ): EchoStep {
-        consecutiveWriteTimeouts++
-        return if (consecutiveWriteTimeouts >= writeTimeoutStreakLimit) {
-            leave(SessionEnd.StreamGone.WritesStalled(consecutiveWriteTimeouts), seq, at)
-        } else {
-            EchoStep.WriteTimedOut(seq, waited, consecutiveWriteTimeouts)
+    ): EchoStep =
+        when (val life = lifetime) {
+            is Lifetime.Ended -> EchoStep.Reconnect(life.end, seq, ledger.owedBytes)
+            Lifetime.Open -> {
+                consecutiveWriteTimeouts++
+                if (consecutiveWriteTimeouts >= writeTimeoutStreakLimit) {
+                    leave(SessionEnd.StreamGone.WritesStalled(consecutiveWriteTimeouts), seq, at)
+                } else {
+                    EchoStep.WriteTimedOut(seq, waited, consecutiveWriteTimeouts)
+                }
+            }
         }
-    }
 
     public fun reply(
         seq: Int,
         reply: StreamReply,
         at: Duration,
-    ): EchoStep {
-        exchanges++
-        return when (reply) {
-            is StreamReply.Echoed -> EchoStep.Exchanged.Judged(judge(reply.text, at))
-            StreamReply.StillOwed -> EchoStep.Exchanged.StillOwed
-            StreamReply.PeerEnded -> leave(SessionEnd.StreamGone.PeerEndedStream, seq, at)
-            StreamReply.PeerReset -> leave(SessionEnd.StreamGone.PeerResetStream, seq, at)
+    ): EchoStep =
+        when (val life = lifetime) {
+            is Lifetime.Ended -> EchoStep.Reconnect(life.end, seq, ledger.owedBytes)
+            Lifetime.Open -> {
+                exchanges++
+                when (reply) {
+                    is StreamReply.Echoed -> EchoStep.Exchanged.Judged(judge(reply.text, at))
+                    StreamReply.StillOwed -> EchoStep.Exchanged.StillOwed
+                    StreamReply.PeerEnded -> leave(SessionEnd.StreamGone.PeerEndedStream, seq, at)
+                    StreamReply.PeerReset -> leave(SessionEnd.StreamGone.PeerResetStream, seq, at)
+                }
+            }
         }
-    }
 
     /** The exchanges that crossed their own deadline since the last call, oldest first. */
     public fun overdue(at: Duration): List<EchoOverdue> = ledger.overdue(at)

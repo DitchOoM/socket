@@ -46,6 +46,39 @@ class EchoSessionTests {
     }
 
     @Test
+    fun steppingAnEndedSessionReturnsTheRecordedEnd() {
+        val session = EchoSession(connectedAt = Duration.ZERO)
+        val t = session.warm()
+        session.sent(21, "probe-21;", t)
+        assertIs<EchoStep.Reconnect>(session.reply(21, StreamReply.PeerEnded, t + 1.seconds))
+
+        val replyAgain = session.reply(22, StreamReply.PeerReset, t + 2.seconds)
+        val writeAgain = session.writeTimedOut(23, waited = 5.seconds, at = t + 7.seconds)
+
+        assertEquals<EchoStep>(
+            EchoStep.Reconnect(SessionEnd.StreamGone.PeerEndedStream, seq = 22, owedBytes = 9),
+            replyAgain,
+            "a later step answers with the end the session recorded, not a new one",
+        )
+        assertEquals<EchoStep>(EchoStep.Reconnect(SessionEnd.StreamGone.PeerEndedStream, seq = 23, owedBytes = 9), writeAgain)
+        assertEquals(21, session.exchanges, "the FIN was read by exchange 21; stepping an ended session is not one")
+        assertEquals(SessionEnd.StreamGone.PeerEndedStream, session.close(fallback = SessionEnd.WalkOver, at = t + 8.seconds).end)
+    }
+
+    @Test
+    fun aSessionEndedFromOutsideAnswersEveryStepWithThatEnd() {
+        val session = EchoSession(connectedAt = Duration.ZERO)
+        val t = session.warm()
+        session.ended(SessionEnd.ConnectionDead, at = t)
+
+        val step = session.reply(21, StreamReply.Echoed("probe-21;"), t + 58.milliseconds)
+
+        val reconnect = assertIs<EchoStep.Reconnect>(step)
+        assertEquals<SessionEnd>(SessionEnd.ConnectionDead, reconnect.end)
+        assertEquals("SESSION-ENDED seq=21 owed=0B ended=ConnectionDead — the session had already ended; leaving scope", reconnect.line)
+    }
+
+    @Test
     fun aPeerResetIsTerminalToo() {
         val session = EchoSession(connectedAt = Duration.ZERO)
         val t = session.warm()
