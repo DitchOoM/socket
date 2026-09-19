@@ -243,6 +243,7 @@ class NodeClientSocket(
             connectRace(
                 candidates = endpoints,
                 pacing = config.connectPacing,
+                verdict = AttemptVerdict::of,
                 close = { it.destroy() },
             ) { endpoint ->
                 // servername carries the name for SNI whichever endpoint the bytes go to.

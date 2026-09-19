@@ -1,5 +1,6 @@
 package com.ditchoom.socket.nio
 
+import com.ditchoom.socket.AttemptVerdict
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
@@ -26,7 +27,8 @@ class NioClientSocket(
             connectRace(
                 candidates = config.nameResolution.candidatesFor(host),
                 pacing = config.connectPacing,
-                close = { runCatching { it.close() } },
+                verdict = AttemptVerdict::of,
+                close = { it.close() },
             ) { candidate ->
                 val attempt = openSocketChannel()
                 try {

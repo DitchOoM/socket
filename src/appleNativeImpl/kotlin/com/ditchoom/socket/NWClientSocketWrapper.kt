@@ -43,6 +43,7 @@ class NWClientSocketWrapper(
                     connectRace(
                         candidates = resolution.candidatesFor(host),
                         pacing = config.connectPacing,
+                        verdict = AttemptVerdict::of,
                         close = { nw_helper_force_cancel(it) },
                     ) { candidate -> connectTo(candidate.ip, port, host) }
                 }

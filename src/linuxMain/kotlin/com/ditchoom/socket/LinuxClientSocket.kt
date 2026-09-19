@@ -73,6 +73,7 @@ class LinuxClientSocket(
                 connectRace(
                     candidates = config.nameResolution.candidatesFor(host),
                     pacing = config.connectPacing,
+                    verdict = AttemptVerdict::of,
                     close = { closeSocket(it) },
                 ) { candidate -> connectCandidate(candidate, port, timeout) }
             // Cache the socket's receive buffer size for efficient read operations

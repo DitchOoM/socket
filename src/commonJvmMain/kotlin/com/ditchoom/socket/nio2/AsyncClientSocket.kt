@@ -1,5 +1,6 @@
 package com.ditchoom.socket.nio2
 
+import com.ditchoom.socket.AttemptVerdict
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.candidatesFor
@@ -23,7 +24,8 @@ class AsyncClientSocket(
             connectRace(
                 candidates = config.nameResolution.candidatesFor(host),
                 pacing = config.connectPacing,
-                close = { runCatching { it.close() } },
+                verdict = AttemptVerdict::of,
+                close = { it.close() },
             ) { candidate ->
                 val attempt = asyncSocket()
                 try {

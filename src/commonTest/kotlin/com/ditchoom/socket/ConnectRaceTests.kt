@@ -3,7 +3,9 @@ package com.ditchoom.socket
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
@@ -37,22 +39,31 @@ class ConnectRaceTests {
             val after: Duration,
         ) : Address
 
-        /** Connects after [after] even once cancelled, the way a platform callback fires after the race has moved on. */
+        /**
+         * Connects after [after] even once cancelled, the way a platform callback fires after the
+         * race has moved on, and then closes as [closing] says.
+         */
         data class ConnectsRegardless(
             val after: Duration,
+            val closing: Closing = Closing.Quietly,
         ) : Address
 
-        /** Fails in a way no other address can fix. */
+        /** Presents a certificate the client rejects after [after]: about the peer, so no other address can do better. */
         data class Fatal(
             val after: Duration,
         ) : Address
+    }
+
+    private enum class Closing {
+        Quietly,
+        Throwing,
     }
 
     private class Refused(
         val address: Address,
     ) : RuntimeException("refused by $address")
 
-    private class PeerRejected : RuntimeException("the peer rejected us")
+    private class CloseFailed : RuntimeException("close failed")
 
     private class Connection(
         val address: Address,
@@ -66,21 +77,29 @@ class ConnectRaceTests {
     ) {
         val startedAt = ArrayList<Long>()
         val closed = ArrayList<Address>()
+        val cancelled = ArrayList<Address>()
 
         suspend fun attempt(address: Address): Connection {
             startedAt += scope.testScheduler.currentTime
-            when (address) {
-                Address.Silent -> delay(1.seconds * 3600)
-                is Address.Refuses -> {
-                    delay(address.after)
-                    throw Refused(address)
+            try {
+                when (address) {
+                    Address.Silent -> delay(1.seconds * 3600)
+                    is Address.Refuses -> {
+                        delay(address.after)
+                        throw Refused(address)
+                    }
+                    is Address.Connects -> delay(address.after)
+                    is Address.ConnectsRegardless -> withContext(NonCancellable) { delay(address.after) }
+                    is Address.Fatal -> {
+                        delay(address.after)
+                        throw SSLHandshakeFailedException(
+                            "the peer's certificate is not trusted",
+                            reason = ConnectionFailureReason.TlsBadCertificate,
+                        )
+                    }
                 }
-                is Address.Connects -> delay(address.after)
-                is Address.ConnectsRegardless -> withContext(NonCancellable) { delay(address.after) }
-                is Address.Fatal -> {
-                    delay(address.after)
-                    throw PeerRejected()
-                }
+            } finally {
+                if (!currentCoroutineContext().isActive) cancelled += address
             }
             return Connection(address)
         }
@@ -88,16 +107,16 @@ class ConnectRaceTests {
         suspend fun close(connection: Connection) {
             connection.closed = true
             closed += connection.address
+            val address = connection.address
+            if (address is Address.ConnectsRegardless && address.closing == Closing.Throwing) throw CloseFailed()
         }
-
-        fun verdict(error: Throwable): AttemptVerdict = if (error is PeerRejected) AttemptVerdict.Fatal else AttemptVerdict.TryOthers
     }
 
     private suspend fun TestScope.race(
         vararg addresses: Address,
         pacing: ConnectPacing = ConnectPacing.Staggered(250.milliseconds),
         script: Script = Script(this),
-    ): Pair<Connection, Script> = connectRace(addresses.toList(), pacing, script::verdict, script::close, script::attempt) to script
+    ): Pair<Connection, Script> = connectRace(addresses.toList(), pacing, AttemptVerdict::of, script::close, script::attempt) to script
 
     @Test
     fun theNextAttemptStartsOneDelayAfterASilentFirst() =
@@ -131,20 +150,26 @@ class ConnectRaceTests {
     @Test
     fun aConnectionThatCompletesAfterLosingIsClosedNotLeaked() =
         runTest {
-            // Both complete at t=300: the first was started at 0 and takes 300, the second started at
-            // 250 and takes 50. Exactly one wins; the other is closed.
-            val (connection, script) = race(Address.Connects(300.milliseconds), Address.Connects(50.milliseconds))
+            // The second wins at 270; the first, cancelled then, still completes at 300 and is closed.
+            val (connection, script) = race(Address.ConnectsRegardless(300.milliseconds), Address.Connects(20.milliseconds))
 
+            assertEquals(Address.Connects(20.milliseconds), connection.address)
             assertEquals(listOf(0L, 250L), script.startedAt)
-            val loser =
-                if (connection.address ==
-                    Address.Connects(300.milliseconds)
-                ) {
-                    Address.Connects(50.milliseconds)
-                } else {
-                    Address.Connects(300.milliseconds)
-                }
-            assertEquals(listOf<Address>(loser), script.closed)
+            assertEquals(300L, testScheduler.currentTime, "the race waits for the late completion, so nothing outlives it")
+            assertEquals(listOf<Address>(Address.ConnectsRegardless(300.milliseconds)), script.closed)
+            assertEquals(listOf<Address>(Address.ConnectsRegardless(300.milliseconds)), script.cancelled)
+            assertEquals(false, connection.closed, "the winner stays open")
+        }
+
+    @Test
+    fun aLoserWhoseCloseThrowsDoesNotCostTheWinner() =
+        runTest {
+            val (connection, script) =
+                race(Address.ConnectsRegardless(300.milliseconds, Closing.Throwing), Address.Connects(20.milliseconds))
+
+            assertEquals(Address.Connects(20.milliseconds), connection.address)
+            assertEquals(300L, testScheduler.currentTime)
+            assertEquals(listOf<Address>(Address.ConnectsRegardless(300.milliseconds, Closing.Throwing)), script.closed)
             assertEquals(false, connection.closed, "the winner stays open")
         }
 
@@ -171,7 +196,9 @@ class ConnectRaceTests {
     fun aFatalFailureEndsTheRaceBeforeTheNextAttemptStarts() =
         runTest {
             val script = Script(this)
-            assertFailsWith<PeerRejected> { race(Address.Fatal(50.milliseconds), Address.Connects(1.milliseconds), script = script) }
+            assertFailsWith<SSLHandshakeFailedException> {
+                race(Address.Fatal(50.milliseconds), Address.Connects(1.milliseconds), script = script)
+            }
 
             assertEquals(listOf(0L), script.startedAt)
             assertEquals(50L, testScheduler.currentTime)
@@ -181,10 +208,25 @@ class ConnectRaceTests {
     fun aFatalFailureOnALaterAttemptCancelsTheEarlierOne() =
         runTest {
             val script = Script(this)
-            assertFailsWith<PeerRejected> { race(Address.Silent, Address.Fatal(10.milliseconds), script = script) }
+            assertFailsWith<SSLHandshakeFailedException> { race(Address.Silent, Address.Fatal(10.milliseconds), script = script) }
 
             assertEquals(listOf(0L, 250L), script.startedAt)
             assertEquals(260L, testScheduler.currentTime, "the silent attempt did not hold the race open")
+        }
+
+    @Test
+    fun aBadCertificateIsFatalUnderTheDefaultPolicyAndCancelsTheOthers() =
+        runTest {
+            val script = Script(this)
+            val error =
+                assertFailsWith<SSLHandshakeFailedException> {
+                    race(Address.Silent, Address.Fatal(10.milliseconds), Address.Connects(1.milliseconds), script = script)
+                }
+
+            assertEquals(ConnectionFailureReason.TlsBadCertificate, error.reason)
+            assertEquals(listOf(0L, 250L), script.startedAt, "the third address is never tried")
+            assertEquals(260L, testScheduler.currentTime, "the silent attempt did not hold the race open")
+            assertEquals(listOf<Address>(Address.Silent), script.cancelled)
         }
 
     @Test
@@ -192,7 +234,7 @@ class ConnectRaceTests {
         runTest {
             // The fatal lands at 270 (started at 250); the first attempt still completes at 300.
             val script = Script(this)
-            assertFailsWith<PeerRejected> {
+            assertFailsWith<SSLHandshakeFailedException> {
                 race(
                     Address.ConnectsRegardless(300.milliseconds),
                     Address.Fatal(20.milliseconds),
@@ -223,7 +265,7 @@ class ConnectRaceTests {
     fun sequentialPacingStopsAtAFatalFailure() =
         runTest {
             val script = Script(this)
-            assertFailsWith<PeerRejected> {
+            assertFailsWith<SSLHandshakeFailedException> {
                 race(Address.Fatal(5.milliseconds), Address.Connects(1.milliseconds), pacing = ConnectPacing.Sequential, script = script)
             }
 
@@ -240,6 +282,7 @@ class ConnectRaceTests {
 
             assertFailsWith<CancellationException> { connect.await() }
             assertEquals(listOf(0L, 250L), script.startedAt)
+            assertEquals(listOf<Address>(Address.Silent, Address.Silent), script.cancelled)
             assertEquals(emptyList<Address>(), script.closed)
         }
 

@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.transport.DefaultFallbackPolicy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelChildren
@@ -43,17 +44,23 @@ sealed interface AttemptVerdict {
 
     /** The failure is about the peer, not the path: no other address can do better, and the race ends with it. */
     data object Fatal : AttemptVerdict
+
+    companion object {
+        /** [DefaultFallbackPolicy]'s word: a failure it would not fall back from is [Fatal]. */
+        fun of(error: Throwable): AttemptVerdict = if (DefaultFallbackPolicy.classify(error).fallback) TryOthers else Fatal
+    }
 }
 
 /**
  * One connect over [candidates] under [pacing]. [attempt] opens one connection to one candidate and
- * owns its own cleanup on failure or cancellation; [close] releases a connection that completed
- * after the race was decided. The first success is the answer; the last failure is the error.
+ * owns its own cleanup on failure or cancellation; [verdict] says whether a failure ends the race;
+ * [close] releases a connection that completed after the race was decided, and its own failure
+ * never costs the winner. The first success is the answer; the last failure is the error.
  */
 internal suspend fun <C, T> connectRace(
     candidates: List<C>,
     pacing: ConnectPacing,
-    verdict: (Throwable) -> AttemptVerdict = { AttemptVerdict.TryOthers },
+    verdict: (Throwable) -> AttemptVerdict,
     close: suspend (T) -> Unit,
     attempt: suspend (C) -> T,
 ): T {
@@ -70,7 +77,7 @@ internal suspend fun <C, T> connectRace(
  */
 internal suspend fun <C, T> firstReachable(
     candidates: List<C>,
-    verdict: (Throwable) -> AttemptVerdict = { AttemptVerdict.TryOthers },
+    verdict: (Throwable) -> AttemptVerdict,
     attempt: suspend (C) -> T,
 ): T {
     val attempts = candidates.iterator()
@@ -122,7 +129,7 @@ private suspend fun <C, T> staggered(
                     when (outcome) {
                         is Outcome.Connected ->
                             // Decided already, by another attempt or by a fatal failure: this one lost.
-                            if (!winner.complete(outcome.value)) withContext(NonCancellable) { close(outcome.value) }
+                            if (!winner.complete(outcome.value)) withContext(NonCancellable) { runCatching { close(outcome.value) } }
                         is Outcome.Failed ->
                             if (verdict(outcome.cause) is AttemptVerdict.Fatal) winner.completeExceptionally(outcome.cause)
                     }
@@ -135,14 +142,14 @@ private suspend fun <C, T> staggered(
 
         // Exhaustion: every attempt failed, and the last failure is the error.
         launch {
-            lateinit var last: Throwable
-            for (outcome in outcomes) {
-                when (val decided = outcome.await()) {
-                    is Outcome.Connected -> return@launch
-                    is Outcome.Failed -> last = decided.cause
+            val failures =
+                outcomes.map { outcome ->
+                    when (val decided = outcome.await()) {
+                        is Outcome.Connected -> return@launch
+                        is Outcome.Failed -> decided.cause
+                    }
                 }
-            }
-            winner.completeExceptionally(last)
+            winner.completeExceptionally(failures.last())
         }
 
         try {
