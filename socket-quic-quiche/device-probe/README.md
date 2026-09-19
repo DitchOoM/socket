@@ -90,7 +90,13 @@ and reconnects when a route returns.
 ```bash
 device-probe/pull.sh walk
 device-probe/analyze.py device-probe/logs/<stamp>-walk.log
+device-probe/trace-dump.py device-probe/logs/<stamp>-walk-traces/conn-0007.trace --from 12.7 --to 44 --datagrams
 ```
+
+`trace-dump.py` reads one connection's replay trace as a timeline: every non-datagram event, the
+per-path datagram tallies, and with `--datagrams` each datagram's direction, size, local path and the
+DCID from its plaintext header — which is how a failed handoff is read without the TLS keys: a probe
+is a new local port, and its DCID is the spare the pool spent on it.
 
 The analyzer prints every connection and why it ended, every migration and how long it took, the
 echo counts (late and unanswered separately from failed), RTT and lateness percentiles, the memory
