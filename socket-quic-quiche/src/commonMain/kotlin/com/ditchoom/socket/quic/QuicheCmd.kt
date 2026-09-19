@@ -47,15 +47,30 @@ sealed interface PacketSource {
  */
 sealed interface QuicheCmd {
     /**
-     * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after
-     * processing). [source] says where the datagram entered — and therefore which recv_info tells
-     * quiche the truth about it. See [PacketSource].
+     * Feed an incoming UDP packet to quiche. The packet owns [buf] from the moment it is built: the
+     * producer that built it releases it only if the command channel refused it, and after that the
+     * driver does — through [release], after `connRecv` or when the command is failed. [source] says
+     * where the datagram entered — and therefore which recv_info tells quiche the truth about it.
+     * See [PacketSource].
      */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
         val source: PacketSource,
-    ) : QuicheCmd
+    ) : QuicheCmd {
+        /**
+         * The one door every release of this packet goes through: the buffer back to its pool, and
+         * the server's in-flight recv_info reference back to the server. Exhaustive over
+         * [PacketSource], so an ingress that owes a release cannot be forgotten.
+         */
+        fun release() {
+            buf.freeNativeMemory()
+            when (val source = source) {
+                is PacketSource.FromPath -> Unit
+                is PacketSource.FromServerSocket -> source.onConsumed()
+            }
+        }
+    }
 
     /**
      * Allocate the next stream ID and create a [StreamSlot]. [unidirectional] selects the

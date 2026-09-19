@@ -27,10 +27,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
@@ -197,7 +199,7 @@ class QuicheDriver(
      *
      * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
      * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
-     * `freeNativeMemory()` in [execute] or [failCommand]) on a different
+     * `release()` in [execute] or [failCommand]) on a different
      * Dispatchers.Default coroutine — different threads under load.
      * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
      * connection's in-flight datagram count.
@@ -235,7 +237,14 @@ class QuicheDriver(
     private val api: QuicheApi =
         if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock) else rawApi
 
-    val commands = Channel<QuicheCmd>(Channel.UNLIMITED)
+    /**
+     * The command channel — and the owner of every command in it. A command the channel accepted but
+     * can no longer deliver is failed by the channel itself: a receive that resumed into the loop's
+     * own cancellation would otherwise drop the element on the floor (prompt cancellation), leaving a
+     * `RecvPacket`'s pool buffer unreleased and a deferred nobody will ever complete — and the callers
+     * that `join()` such a deferred do so uncancellably (#588).
+     */
+    val commands = Channel<QuicheCmd>(Channel.UNLIMITED, onUndeliveredElement = ::failCommand)
 
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
@@ -1338,6 +1347,16 @@ class QuicheDriver(
                     }
                 // null from onReceiveCatching means channel closed — exit
                 if (cmd == null && commands.isClosedForReceive) break
+                // A dequeue that did not suspend never observed cancellation, so a loop cancelled
+                // while it was busy would go on executing whatever was already queued — against
+                // quiche, and against memory whose ownership the cancellation settled elsewhere
+                // (#588: a RecvPacket dereferenced after its buffer was back in the pool). Cancelled
+                // means nothing more runs: the command in hand is failed the way the teardown drain
+                // fails everything still queued, and the drain takes the rest.
+                if (cmd != null && !currentCoroutineContext().isActive) {
+                    failCommand(cmd)
+                    break
+                }
                 when {
                     cmd is QuicheCmd.Migrate -> {
                         // Guarded like execute() below: a throw with the command already dequeued
@@ -1465,7 +1484,7 @@ class QuicheDriver(
                                 // arrived somewhere it did not (the stale attribution retirement
                                 // exists to end); it is bounded collateral of a path the connection
                                 // already left. Drop it.
-                                cmd.buf.freeNativeMemory()
+                                cmd.release()
                                 return
                             }
                             // The path we live on is carrying traffic: #574's trigger resets here,
@@ -1484,10 +1503,9 @@ class QuicheDriver(
                 } finally {
                     reachabilityFence(cmd.buf)
                 }
-                cmd.buf.freeNativeMemory()
-                // Signal the server it may now release the cached recv_info (quiche copied
-                // what it needs during connRecv; the pointer is no longer referenced).
-                if (source is PacketSource.FromServerSocket) source.onConsumed()
+                // quiche copied what it needs during connRecv: the buffer goes back to its pool and
+                // the server may release the cached recv_info the packet was carrying.
+                cmd.release()
             }
 
             is QuicheCmd.OpenStream -> {
@@ -2071,47 +2089,42 @@ class QuicheDriver(
         if (entry.channel.ownsReceiveBuffer) return ownedBufferReaderLoop(entry)
         val pool = recvBufPool
         var consecutiveFailures = 0
-        try {
-            while (coroutineContext[Job]?.isActive != false) {
-                val buf = pool.allocate(MAX_DATAGRAM_SIZE)
-                val received =
-                    try {
-                        entry.channel.receive(buf)
-                    } catch (e: CancellationException) {
-                        buf.freeNativeMemory()
-                        throw e
-                    } catch (_: Exception) {
-                        buf.freeNativeMemory()
-                        if (commands.isClosedForSend) return
-                        if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
-                        delay(receiveRetryBackoff(consecutiveFailures))
-                        continue
-                    }
-                consecutiveFailures = 0
-                if (received > 0) {
-                    try {
-                        commands.send(QuicheCmd.RecvPacket(buf, received, PacketSource.FromPath(entry.key)))
-                    } catch (e: ClosedSendChannelException) {
-                        // The driver closed between our receive() and this enqueue (an idle-timeout
-                        // or error close racing an inbound datagram). The packet can never be
-                        // processed and cleanup()'s drain never sees it — free it here or the
-                        // buffer leaks at the leaf. Found by the W5 timeline fuzzer
-                        // (datagram-after-close, see ReaderLoopCloseRaceRegressionTests).
-                        buf.freeNativeMemory()
-                        throw e
-                    }
-                } else {
-                    // received <= 0 is NOT necessarily terminal here: io_uring's recv returns a negative
-                    // errno on the routine 1-second submitAndWait timeout (and -ECANCELED/-EBADF on
-                    // re-arm), which the loop must retry — exiting on it would kill the reader after any
-                    // >1s quiet period (breaking keepalive/idle/migration). So free + keep looping. A
-                    // channel that is genuinely, permanently dead must instead suspend in receive() until
-                    // the driver cancels the reader (see AppleNwUdpChannel's terminal park).
+        while (coroutineContext[Job]?.isActive != false) {
+            val buf = pool.allocate(MAX_DATAGRAM_SIZE)
+            val received =
+                try {
+                    entry.channel.receive(buf)
+                } catch (e: CancellationException) {
                     buf.freeNativeMemory()
+                    throw e
+                } catch (_: Exception) {
+                    buf.freeNativeMemory()
+                    if (commands.isClosedForSend) return
+                    if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
+                    delay(receiveRetryBackoff(consecutiveFailures))
+                    continue
                 }
+            consecutiveFailures = 0
+            if (received > 0) {
+                // The packet owns the buffer from here. Accepted, the channel and the driver release it
+                // (execute, failCommand, or the channel's own undelivered hook); refused — the driver
+                // closed between receive() and this offer, an idle-timeout or error close racing an
+                // inbound datagram — nothing else will ever see it, so this loop releases it, and stops.
+                // Found by the W5 timeline fuzzer (see ReaderLoopCloseRaceRegressionTests).
+                val packet = QuicheCmd.RecvPacket(buf, received, PacketSource.FromPath(entry.key))
+                if (commands.trySend(packet).isFailure) {
+                    packet.release()
+                    return
+                }
+            } else {
+                // received <= 0 is NOT necessarily terminal here: io_uring's recv returns a negative
+                // errno on the routine 1-second submitAndWait timeout (and -ECANCELED/-EBADF on
+                // re-arm), which the loop must retry — exiting on it would kill the reader after any
+                // >1s quiet period (breaking keepalive/idle/migration). So free + keep looping. A
+                // channel that is genuinely, permanently dead must instead suspend in receive() until
+                // the driver cancels the reader (see AppleNwUdpChannel's terminal park).
+                buf.freeNativeMemory()
             }
-        } catch (_: ClosedSendChannelException) {
-            // Driver closed
         }
     }
 
@@ -2125,32 +2138,26 @@ class QuicheDriver(
      */
     private suspend fun ownedBufferReaderLoop(entry: PathEntry) {
         var consecutiveFailures = 0
-        try {
-            while (coroutineContext[Job]?.isActive != false) {
-                val owned =
-                    try {
-                        entry.channel.receiveOwned()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        if (commands.isClosedForSend) return
-                        if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
-                        delay(receiveRetryBackoff(consecutiveFailures))
-                        continue
-                    }
-                consecutiveFailures = 0
+        while (coroutineContext[Job]?.isActive != false) {
+            val owned =
                 try {
-                    commands.send(QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromPath(entry.key)))
-                } catch (e: ClosedSendChannelException) {
-                    // Same close race as [udpReaderLoop]: the driver closed between receiveOwned() and
-                    // this enqueue. The packet can never be processed — free its pooled buffer here or
-                    // it leaks (ReaderLoopCloseRaceRegressionTests).
-                    owned.buffer.freeNativeMemory()
+                    entry.channel.receiveOwned()
+                } catch (e: CancellationException) {
                     throw e
+                } catch (_: Exception) {
+                    if (commands.isClosedForSend) return
+                    if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
+                    delay(receiveRetryBackoff(consecutiveFailures))
+                    continue
                 }
+            consecutiveFailures = 0
+            // Same handover as [udpReaderLoop]: the packet owns the pooled buffer, and only a refusal —
+            // the driver closed between receiveOwned() and this offer — leaves it to this loop to release.
+            val packet = QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromPath(entry.key))
+            if (commands.trySend(packet).isFailure) {
+                packet.release()
+                return
             }
-        } catch (_: ClosedSendChannelException) {
-            // Driver closed
         }
     }
 
@@ -2836,11 +2843,8 @@ class QuicheDriver(
 
     private fun failCommand(cmd: QuicheCmd) {
         when (cmd) {
-            is QuicheCmd.RecvPacket -> {
-                cmd.buf.freeNativeMemory()
-                // Dropped without connRecv — still release the server's in-flight ref.
-                (cmd.source as? PacketSource.FromServerSocket)?.onConsumed?.invoke()
-            }
+            // Dropped without connRecv — the buffer and the server's in-flight ref go back all the same.
+            is QuicheCmd.RecvPacket -> cmd.release()
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
                     QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed", attribution = closeAttribution()),
@@ -2892,10 +2896,7 @@ class QuicheDriver(
         cause: Throwable,
     ) {
         when (cmd) {
-            is QuicheCmd.RecvPacket -> {
-                cmd.buf.freeNativeMemory()
-                (cmd.source as? PacketSource.FromServerSocket)?.onConsumed?.invoke()
-            }
+            is QuicheCmd.RecvPacket -> cmd.release()
             is QuicheCmd.OpenStream -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)

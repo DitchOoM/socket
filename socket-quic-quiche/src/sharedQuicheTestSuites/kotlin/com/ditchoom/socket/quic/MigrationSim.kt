@@ -704,7 +704,7 @@ internal suspend fun <R> withMigrationSim(
                 while (true) {
                     val datagram = pipe.receiveAtServer()
                     // Once this datagram leaves the channel the pump is its ONLY owner, and every exit
-                    // from here — a throw building the recv_info, a cancelled `send`, a closed command
+                    // from here — a throw building the recv_info, a refused offer to a closed command
                     // channel — has to free it. A `finally` on a handoff flag covers all of them at once;
                     // enumerating the escapes one at a time is what left exactly one buffer stranded per
                     // run, and a pump that dies inside a SupervisorJob dies silently, so the leak was the
@@ -718,14 +718,14 @@ internal suspend fun <R> withMigrationSim(
                                 api.recvInfoNew(from.address, from.length, serverLocalSock.address, serverLocalSock.length)
                             }
                         serverIngress += ServerIngress(datagram.from.port, shortHeaderDcidHex(owned), serverAudit.retiredScidsSeen)
-                        // The pipe's buffer goes straight to the driver — no second copy. RecvPacket frees
-                        // it (execute and failCommand both do), so ownership TRANSFERS rather than being
-                        // released here.
-                        serverDriver.commands.send(
-                            QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromServerSocket(info) {}),
-                        )
-                        ledger.transfer(owned)
+                        // The pipe's buffer goes straight to the driver — no second copy. Offered exactly as
+                        // the production reader loops offer: an accepted packet is the channel's (and the
+                        // driver's) to release, a refused one is still ours — the channel is closed, so the
+                        // driver is gone and the pump stops.
+                        val packet = QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromServerSocket(info) {})
+                        if (serverDriver.commands.trySend(packet).isFailure) break
                         handedOff = true
+                        ledger.transfer(owned)
                     } finally {
                         if (!handedOff) ledger.release(owned)
                     }
