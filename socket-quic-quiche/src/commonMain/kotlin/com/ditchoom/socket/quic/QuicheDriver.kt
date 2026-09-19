@@ -1531,7 +1531,7 @@ class QuicheDriver(
                                 // arrived somewhere it did not (the stale attribution retirement
                                 // exists to end); it is bounded collateral of a path the connection
                                 // already left. Drop it.
-                                cmd.release()
+                                cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
                                 return
                             }
                             // The path we live on is carrying traffic: #574's trigger resets here,
@@ -1552,7 +1552,7 @@ class QuicheDriver(
                 }
                 // quiche copied what it needs during connRecv: the buffer goes back to its pool and
                 // the server may release the cached recv_info the packet was carrying.
-                cmd.release()
+                cmd.release(QuicheCmd.ReleaseDoor.Executed)
             }
 
             is QuicheCmd.OpenStream -> {
@@ -2159,7 +2159,7 @@ class QuicheDriver(
                 // inbound datagram — nothing else will ever see it, so this loop releases it, and stops.
                 val packet = QuicheCmd.RecvPacket(buf, received, PacketSource.FromPath(entry.key))
                 if (commands.trySend(packet).isFailure) {
-                    packet.release()
+                    packet.release(QuicheCmd.ReleaseDoor.Refused)
                     return
                 }
             } else {
@@ -2201,7 +2201,7 @@ class QuicheDriver(
             // the driver closed between receiveOwned() and this offer — leaves it to this loop to release.
             val packet = QuicheCmd.RecvPacket(owned.buffer, owned.length, PacketSource.FromPath(entry.key))
             if (commands.trySend(packet).isFailure) {
-                packet.release()
+                packet.release(QuicheCmd.ReleaseDoor.Refused)
                 return
             }
         }
@@ -2890,7 +2890,7 @@ class QuicheDriver(
     private fun failCommand(cmd: QuicheCmd) {
         when (cmd) {
             // Dropped without connRecv — the buffer and the server's in-flight ref go back all the same.
-            is QuicheCmd.RecvPacket -> cmd.release()
+            is QuicheCmd.RecvPacket -> cmd.release(QuicheCmd.ReleaseDoor.Failed)
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
                     QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed", attribution = closeAttribution()),
@@ -2942,7 +2942,14 @@ class QuicheDriver(
         cause: Throwable,
     ) {
         when (cmd) {
-            is QuicheCmd.RecvPacket -> cmd.release()
+            // Only while still held: the RecvPacket arm releases as its last step, so a throw after
+            // that is impossible, and a throw *from* the release (a second owner, RecvPacketReleasedTwice)
+            // must reach the caller as itself rather than be masked by a third release here.
+            is QuicheCmd.RecvPacket ->
+                when (cmd.lifetime) {
+                    QuicheCmd.PacketLifetime.Held -> cmd.release(QuicheCmd.ReleaseDoor.Failed)
+                    is QuicheCmd.PacketLifetime.Released -> Unit
+                }
             is QuicheCmd.OpenStream -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)

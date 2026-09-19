@@ -426,19 +426,17 @@ internal class SharedQuicheServer(
                                 }
                             }
                         cached.inFlight.incrementAndGet()
-                        val sendResult =
-                            existingDriver.commands.trySend(
-                                QuicheCmd.RecvPacket(
-                                    recvBuf,
-                                    received,
-                                    PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
-                                ),
+                        // The packet owns the buffer and the in-flight ref from here: accepted, the
+                        // driver releases both; refused, this loop does, through the same door.
+                        val packet =
+                            QuicheCmd.RecvPacket(
+                                recvBuf,
+                                received,
+                                PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
                             )
-                        if (sendResult.isFailure) {
-                            // Not delivered → onRecvInfoConsumed won't fire; release the ref here.
-                            cached.inFlight.decrementAndGet()
+                        if (existingDriver.commands.trySend(packet).isFailure) {
                             serverCapture.record { it.error(ServerDatagramDrop.DriverGone(received, peer)) }
-                            recvBuf.freeNativeMemory()
+                            packet.release(QuicheCmd.ReleaseDoor.Refused)
                             // Remove ALL entries for this dead driver, not just the one we hit.
                             registry.deRouteDriver(existingDriver)
                         }
