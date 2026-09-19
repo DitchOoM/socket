@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.quic.trace.recordOr
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1246,23 +1247,26 @@ class QuicheDriver(
         sampleActivePathLiveness()
     }
 
+    /** Every coroutine this driver launches is named after the connection it serves. */
+    private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
+
     fun start(scope: CoroutineScope) {
         driverScope = scope
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
         capture.record { r ->
-            scope.launch(driverContext) {
+            scope.launch(driverContext + CoroutineName("$coroutineName/trace/state")) {
                 state.collect { s ->
                     r.connectionState(s)
                     if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
-            scope.launch(driverContext) {
+            scope.launch(driverContext + CoroutineName("$coroutineName/trace/path")) {
                 pathState.collect { r.pathState(it) }
             }
         }
-        driverJob = scope.launch(driverContext) { run() }
+        driverJob = scope.launch(driverContext + CoroutineName(coroutineName)) { run() }
 
         if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
@@ -1271,7 +1275,7 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(driverContext) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
     }
 
     /**

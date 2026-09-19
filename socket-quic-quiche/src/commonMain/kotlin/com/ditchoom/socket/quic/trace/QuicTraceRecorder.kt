@@ -25,6 +25,7 @@ import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.udp.DatagramSendException
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -264,7 +265,7 @@ class QuicTraceRecorder(
         monitor: NetworkMonitor,
         scope: CoroutineScope,
     ): Job =
-        scope.launch {
+        scope.launch(CoroutineName("quic-trace/network-observer")) {
             networkCapability(monitor.capability)
             monitor.state.collect { networkState(it) }
         }
