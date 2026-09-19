@@ -13,11 +13,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Common [UdpChannelFactory] over `:socket-udp` (Phase 6). Opens every connected [UdpSocket.connect]
- * channel a client connection uses — the primary path it starts on ([openPrimaryChannel], #519) and
- * each additional path it migrates onto ([openPath]) — each bound to a chosen local endpoint, replacing
- * the per-platform `NioUdpChannelFactory` / `IoUringUdpChannelFactory`. One instance per connection, so
- * every socket it hands out was bound by one source-address discipline.
+ * Common [UdpChannelFactory] over `:socket-udp`. Opens every connected [UdpSocket.connect]
+ * channel a client connection uses — the primary path it starts on ([openPrimaryChannel]) and
+ * each additional path it migrates onto ([openPath]) — each bound to a chosen local endpoint. One
+ * instance per connection, so every socket it hands out is bound by one source-address discipline.
  *
  * [peer] is already resolved, so reconnecting passes its numeric [SocketAddress.host] and is a literal
  * parse to the same address (no DNS). The new path's local sockaddr is encoded via [codec] into pinned
@@ -39,7 +38,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * defaults to the platform's [UdpSocket.connect]. It is a parameter so that a test can refuse a probe
  * the host would happily serve: every member of [RouteProbeFailure] is a condition (no descriptors, a
  * sandbox, a `getsockname` that fails) which cannot be provoked on a real socket on demand, and a
- * decision no test can drive is how #482 lived unnoticed under a green suite.
+ * decision no test can drive stays wrong under a green suite.
  */
 @OptIn(InternalQuicApi::class)
 internal class UdpSocketChannelFactory(
@@ -56,24 +55,20 @@ internal class UdpSocketChannelFactory(
      * sockaddr becomes `recv_info.to`, and which carries every datagram until the connection migrates.
      *
      * The same open as [openPath] with no caller-named source, through the same [bindHostFor] —
-     * deliberately one function of [routeSourceAddress] and not a parallel one. Until #519 the primary
-     * path opened itself with an unnamed bind and an 8-deep `BindException` retry, so the *first* path
-     * of every connection carried the collision #434 removed from every path after it. It is also the
-     * path that carries it longest: a migration path is retired, the primary socket is held for the
-     * connection's life, so every later draw in the process — this connection's own migrations included
-     * — contends with it.
+     * deliberately one function of [routeSourceAddress] and not a parallel one. The primary path is
+     * the one that holds its port longest: a migration path is retired, the primary socket is held for
+     * the connection's life, so every later draw in the process — this connection's own migrations
+     * included — contends with it.
      *
-     * **Why the retry went and nothing replaced it.** Its KDoc blamed a race between concurrent
-     * `bind(0)` calls; the collision is neither concurrent nor a race. `udp6_bind([::]:0)` picks the
-     * port through `in6_pcblookup_local`, which skips every pcb without `INP_IPV6`, and `udp6_connect`
-     * to a v4-mapped peer clears `INP_IPV6` on success — so every socket already connected to that peer
-     * is invisible to the next wildcard bind, and `in_pcbconnect` then finds the exact 4-tuple and
-     * answers `EADDRINUSE` one syscall later. A retry re-draws from the same blind space: with `k`
-     * sockets held to the peer it turns `k / 16384` per draw into `(k / 16384)^8` instead of into zero,
-     * and degrades exactly where #519 says it hurts — a process holding many connections to one server.
-     * Measured on macOS 26.6 / JDK 21, replicating `UdpSocket.connect`'s NIO shape, per 2000 draws:
-     * 250 sockets held → **29** `connect0` refusals unnamed, **0** with the route's source address;
-     * 1000 held → **120** and **0**. Neither variant is ever refused at `bind0`.
+     * **Why there is no `BindException` retry.** The collision is neither concurrent nor a race.
+     * `udp6_bind([::]:0)` picks the port through `in6_pcblookup_local`, which skips every pcb without
+     * `INP_IPV6`, and `udp6_connect` to a v4-mapped peer clears `INP_IPV6` on success — so every socket
+     * already connected to that peer is invisible to the next wildcard bind, and `in_pcbconnect` then
+     * finds the exact 4-tuple and answers `EADDRINUSE` one syscall later. A retry re-draws from the same
+     * blind space: with `k` sockets held to the peer it turns `k / 16384` per draw into `(k / 16384)^n`
+     * instead of into zero, and degrades exactly where it hurts — a process holding many connections to
+     * one server. Naming the route's source address brings the refusal count to zero at any holder
+     * count; neither variant is ever refused at `bind0`.
      *
      * **Why an unresolved route fails the connect** (see [UnresolvedRouteSourceException] for the shared
      * half of the argument, which is about migration paths and does not transfer on its own). Refusing a
@@ -83,14 +78,14 @@ internal class UdpSocketChannelFactory(
      * not buy a connection either.** [RouteProbeFailure.ProbeRefused] is the same call to the same
      * address the real connect is about to make, differing only in a destination port a connected UDP
      * socket never contacts — no descriptor, a sandbox, no route refuse both, and the one refusal that
-     * is a *draw* rather than the environment was made disjoint from the peer's paths by #483.
+     * is a *draw* rather than the environment is disjoint from the peer's paths (see [routeProbePort]).
      * [RouteProbeFailure.SourceAddressUnknown] is a state the primary open already fails on two
      * statements later, because quiche needs that address. And a [RouteProbeFailure.SourceAddressUnnamed]
      * source would be encoded into `quiche_connect`'s local sockaddr and `recv_info.to` for the
      * connection's life, so what the fallback returns is not a degraded connection but a broken one
-     * reporting success. The fallback therefore trades a typed refusal for an untyped one arriving
-     * later — #482's defect — with the aggravation that a connect failure reaches an application that
-     * can retry it, while a wildcard-bound primary socket reaches it looking healthy.
+     * reporting success. The fallback would therefore trade a typed refusal for an untyped one arriving
+     * later, with the aggravation that a connect failure reaches an application that can retry it,
+     * while a wildcard-bound primary socket reaches it looking healthy.
      */
     internal suspend fun openPrimaryChannel(): ConnectedDatagramChannel =
         openChannel.open(peer.host, peer.port, bindHostFor(null), 0, receiveBufferSize, recvBufferFactory)
@@ -120,14 +115,12 @@ internal class UdpSocketChannelFactory(
      * otherwise whatever [routeSourceAddress] answers — never the wildcard because something failed.
      *
      * One function for the primary path and every migration path, because the question is the same one
-     * and #519 is what happens when it is asked twice: the primary path kept its own unnamed bind
-     * through #434, #483 and #523, which each fixed the copy next door.
+     * and two copies of it drift apart.
      *
      * A caller that named a source gets exactly that, unchanged, and no probe is taken on its behalf.
-     * Exhaustive on purpose: the three answers demand opposite handling, and when they shared a `null`
-     * the one that meant "the probe failed" silently took the branch meant for "this platform names the
-     * endpoint itself" — which is the unnamed bind #434 removed (#523). A new member must state its own
-     * answer here rather than inherit one.
+     * Exhaustive on purpose: the three answers demand opposite handling — a `null` shared between "the
+     * probe failed" and "this platform names the endpoint itself" would send the failure down the
+     * unnamed-bind branch. A new member must state its own answer here rather than inherit one.
      */
     private suspend fun bindHostFor(localHost: String?): String? {
         if (localHost != null) return localHost
@@ -142,13 +135,9 @@ internal class UdpSocketChannelFactory(
 
     /**
      * What source address the routing table would choose for [peer] — as a [RouteSource], which says
-     * *which* of the three answers it is.
-     *
-     * This used to be a `String?` whose `null` meant "the platform assigns the endpoint itself" **and**
-     * "the probe failed" **and**, because the failure was swallowed by a bare `catch`, "bind the
-     * wildcard anyway" — the one configuration this whole function exists to avoid. #483 removed the
-     * only trigger that fired in practice; the shape survived, and #523 removes it: the platform's
-     * answer and the probe's failure are different facts and now say so.
+     * *which* of the three answers it is: the platform's answer and the probe's failure are different
+     * facts, and a bare `null` covering both would bind the wildcard on failure — the one configuration
+     * this whole function exists to avoid.
      *
      * **Why an unnamed bind is not good enough.** A bind with no source address chooses the ephemeral
      * port knowing only the *local* side, so the kernel can return a port whose full 4-tuple
@@ -162,10 +151,10 @@ internal class UdpSocketChannelFactory(
      * every reason to succeed.
      *
      * Binding the specific source address lets the kernel exclude exactly the ports already used
-     * against it. Measured on macOS with 3000 sockets connected to one peer: **263 `connect` failures
-     * with an unnamed bind, 0 with the resolved source address.** Skipping the bind entirely does not
-     * help (245 failures) — the JVM binds the unnamed address implicitly first. No retry loop is
-     * needed, and none is wanted: a retry would paper over the collision instead of not causing it.
+     * against it; with thousands of sockets connected to one peer an unnamed bind fails hundreds of
+     * connects per 2000 draws and the resolved source address fails none. Skipping the bind entirely
+     * does not help — the JVM binds the unnamed address implicitly first. No retry loop is needed, and
+     * none is wanted: a retry would paper over the collision instead of not causing it.
      *
      * **Why the bind is never the one refusing, and why the exception says otherwise.** A bind with
      * `port = 0` asks the kernel to pick, and it picks from what it can see; it answers `EADDRNOTAVAIL`
@@ -175,33 +164,19 @@ internal class UdpSocketChannelFactory(
      * matches none of the specific ones — so it hands out a port whose 4-tuple against [peer] is
      * already taken, and the refusal arrives one syscall later. A named source is compared against the
      * sockets that actually hold ports on it. It is the `port = 0` search and not the wildcard address
-     * that skips them: the same wildcard *naming* a held port is refused at the bind, measured 5 of 5.
-     * Measured on macOS/JDK 21, holders wildcard-bound and connected to one peer, 2000 ephemeral draws
-     * to that peer per row:
-     *
-     * | holders | draws | refused at `bind0` | refused at `connect0` |
-     * |---|---|---|---|
-     * | 250, unnamed bind | 2000 | 0 | 159 |
-     * | 250, named bind | 2000 | 0 | 0 |
-     * | 1000, unnamed bind | 2000 | 0 | 230 |
-     * | 1000, named bind | 2000 | 0 | 0 |
+     * that skips them: the same wildcard *naming* a held port is refused at the bind.
      *
      * So do not read the exception class as the answer to "which syscall": the JDK raises
      * `java.net.BindException("Address already in use")` for `EADDRINUSE` from `bind0` and `connect0`
-     * alike, and only the stack frame tells them apart. #463 reads a failure of this fix's own
-     * regression test as bind-side for that reason; on these numbers a bind-side `EADDRINUSE` on an
-     * ephemeral port does not happen, and the two failures of that test whose frame was recorded (#483)
-     * were both `connect0`.
+     * alike, and only the stack frame tells them apart. A bind-side `EADDRINUSE` on an ephemeral port
+     * does not happen; the refusal is `connect0`'s.
      *
      * **Why the probe does not go to [peer]'s own port.** The probe is itself an unnamed bind, so
      * sending it at `peer.port` would put it in the very 4-tuple space the paths contend for — and its
      * exposure would grow with the number of open paths, weakening this fix exactly as the migration it
-     * protects gets harder. Worse, a probe that lost that draw was swallowed to `null`, which handed the
-     * *real* connect the unnamed bind this function exists to avoid: one lost draw silently restored the
-     * defect. Measured on macOS against 1000 paths held to one peer, per 2000 probes:
-     * **127 `EADDRINUSE` at `peer.port`, 0 at any other port** — and the source address reported is the
-     * same, because a route is chosen by destination *address*, not by port. Nothing is ever sent, so
-     * the port is contacted only in the sense that a connected UDP socket names it.
+     * protects gets harder. A probe at any other port never collides, and the source address reported
+     * is the same, because a route is chosen by destination *address*, not by port. Nothing is ever
+     * sent, so the port is contacted only in the sense that a connected UDP socket names it.
      *
      * Only [LocalEndpointSupport.Bindable] actuals probe at all — the JVM and Linux `connect`s, which
      * bind before connecting. Apple's assigns the endpoint through `NWConnection` and documents
@@ -216,11 +191,11 @@ internal class UdpSocketChannelFactory(
      */
     internal suspend fun routeSourceAddress(): RouteSource {
         if (localEndpointSupport != LocalEndpointSupport.Bindable) return RouteSource.PlatformAssigned
-        // One probe alive at a time, process-wide (#547). Every probe binds unnamed — it has to, it
+        // One probe alive at a time, process-wide. Every probe binds unnamed — it has to, it
         // is learning the address it would otherwise name — and every probe aims at the same
         // `peer.host:routeProbePort`, so two alive at once can draw the same ephemeral port and form
-        // the same 4-tuple; the second connect then fails EADDRINUSE and, since #523, fails the open.
-        // Measured at 4–5 lost per 32 000 with 64 threads. A probe sends nothing and lives for
+        // the same 4-tuple; the second connect then fails EADDRINUSE and fails the open.
+        // A probe sends nothing and lives for
         // microseconds, so serialising them costs nothing measurable and removes the collision
         // instead of retrying past it: socket 1 is closed before socket 2 binds, and the kernel is
         // free to hand the same port out again with nothing in the way. Process-wide rather than
@@ -233,9 +208,8 @@ internal class UdpSocketChannelFactory(
             try {
                 openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
             } catch (cancellation: CancellationException) {
-                // Cancellation is not a route answer. The old bare `catch (_: Exception)` swallowed it
-                // too, so cancelling a migration mid-probe reported a resolved-enough route and bound
-                // the wildcard — a cancelled coroutine quietly opening the socket #434 removed.
+                // Cancellation is not a route answer: swallowed into a refusal it would make a
+                // cancelled migration report a resolved-enough route and bind the wildcard.
                 throw cancellation
             } catch (refusal: Exception) {
                 return RouteSource.Unresolved(RouteProbeFailure.ProbeRefused(refusal))
@@ -273,7 +247,7 @@ internal class UdpSocketChannelFactory(
         /**
          * Serialises every route probe in the process — see [routeSourceAddress]. Held only across
          * the probe's open, `getsockname` and close; never across a path's own open, which draws
-         * against a different destination port (#483) and cannot collide with a probe.
+         * against a different destination port and cannot collide with a probe.
          */
         val routeProbeGate = Mutex()
     }

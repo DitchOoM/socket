@@ -48,7 +48,7 @@ internal class AcceptedConnection(
  * [AddressedDatagramChannel]: a dedicated reader coroutine confines the channel's `receive()` (the buffer-flow
  * single-consumer contract) and feeds a central [receiveLoop] that parses each datagram's DCID to route
  * it to its [QuicheDriver] — or [acceptNewConnection]s a new one. All connection-lifecycle bookkeeping
- * (routing table, live-driver ledger, per-source recv_info cache, close sweep — the #179 recv_info-UAF
+ * (routing table, live-driver ledger, per-source recv_info cache, close sweep — the recv_info-UAF
  * invariants) lives in the shared [ServerConnectionRegistry].
  *
  * Everything here is platform-independent; the genuine per-platform differences are hidden behind three
@@ -120,8 +120,9 @@ internal class SharedQuicheServer(
 
     /**
      * PathKey→local resolution for the egress channels (`sendInfo.from` → the address to send *from*),
-     * the #556 half of [peers]. Populated from each datagram's own [com.ditchoom.buffer.flow.Datagram.localAddress],
-     * so it holds exactly the local addresses clients have actually been seen to address — never a
+     * the source-pinning half of [peers]. Populated from each datagram's own
+     * [com.ditchoom.buffer.flow.Datagram.localAddress], so it holds exactly the local addresses clients
+     * have actually been seen to address — never a
      * wildcard, which is the address the kernel would otherwise be left to resolve on its own.
      *
      * Naturally bounded by the host's address count (unlike [peers], which a spraying peer can grow),
@@ -136,11 +137,10 @@ internal class SharedQuicheServer(
      * The encoded `recv_info.to` sockaddr per local address a datagram has arrived on, built lazily and
      * freed in close().
      *
-     * Was a single field holding the server's *bound* address — which on a wildcard bind is `0.0.0.0`,
-     * and telling quiche that every datagram arrived at the wildcard is precisely #556: quiche then
-     * echoes the wildcard back as `send_info.from` and the reply leaves from whichever address the
-     * kernel picks. Keyed by the real arrival address instead, so a multi-homed or aliased host keeps
-     * one entry per address it is actually addressed on.
+     * Keyed by the real arrival address, never the server's *bound* address: on a wildcard bind that
+     * is `0.0.0.0`, and telling quiche that every datagram arrived at the wildcard makes it echo the
+     * wildcard back as `send_info.from`, so the reply leaves from whichever address the kernel picks.
+     * A multi-homed or aliased host keeps one entry per address it is actually addressed on.
      *
      * Receive-loop only, like the recv_info cache it feeds.
      */
@@ -156,11 +156,10 @@ internal class SharedQuicheServer(
      * datagram after that — so three things are structurally invisible to a per-connection trace: the
      * Initial that created the connection (fed to quiche in [acceptNewConnection] before the driver
      * exists), a datagram `quiche_header_info` rejected, and a datagram routed to a driver that has
-     * already stopped. An empty server trace therefore used to have three readings — nothing arrived,
-     * something arrived and was rejected, something arrived and was refused — and #367 / #292 / #450
-     * were each unactionable for exactly that reason (#367's diagnosis needed a `QuicheApi` spy on the
-     * receive loop to count what the trace could not). This records those three at the receive loop,
-     * typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so the next such report says which.
+     * already stopped. An empty server trace would therefore have three readings — nothing arrived,
+     * something arrived and was rejected, something arrived and was refused. This records those three
+     * at the receive loop, typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so a report
+     * says which.
      *
      * Same [QuicheDriverTuning.captureFactory] every accepted connection uses, so with the single-sink
      * [com.ditchoom.socket.quic.trace.QuicTraceCapture] the lines interleave with the connections' own
@@ -193,14 +192,9 @@ internal class SharedQuicheServer(
                         // finishing, not a server fault, and it must not take down an accept loop that is
                         // still serving everyone else. Only this handler stops; why it ended stays
                         // readable on conn.state, and a handler that cares can catch this itself.
-                        //
-                        // Without this the terminal was merely typed, not usable: #488's flake was a
-                        // parked acceptor resumed by teardown, and it failed the suite just as reliably
-                        // when it arrived as a QuicCloseException as when it arrived as a
-                        // ClosedReceiveChannelException.
                     } finally {
                         try {
-                            // Graceful close (#321). Skipped for a connection that never came up or is
+                            // Graceful close. Skipped for a connection that never came up or is
                             // already gone — there is nothing left to deliver on either.
                             if (conn.state.value is QuicConnectionState.Established) lingerBeforeClose(driver)
                         } finally {
@@ -221,7 +215,7 @@ internal class SharedQuicheServer(
 
     /**
      * Hold this connection's CONNECTION_CLOSE until the peer is done with it, or at most the
-     * [QuicCloseLinger.UntilPeerDone.bound] — the graceful-close half of a server's lifetime (#321).
+     * [QuicCloseLinger.UntilPeerDone.bound] — the graceful-close half of a server's lifetime.
      *
      * A handler's last write is only *handed to quiche*; whether it reached the peer is decided on the
      * wire afterwards. Closing the moment the handler returns ends that story early: RFC 9000 §10.2
@@ -252,7 +246,7 @@ internal class SharedQuicheServer(
      * TEST SEAM (do not call in production): delegates to [ServerConnectionRegistry.deRouteAllDriversForTest]
      * — drops every driver from the routing table without destroying it, deterministically reproducing the
      * *live-but-unroutable* state the trySend-failure removal / cleanup-queue drain create in production.
-     * Lets a test assert [close] still reaps such a driver before it frees the recv_info cache (the #179
+     * Lets a test assert [close] still reaps such a driver before it frees the recv_info cache (the
      * recv_info-UAF invariant). Safe only while the receive loop is idle.
      */
     internal fun deRouteAllDriversForTest() {
@@ -268,7 +262,7 @@ internal class SharedQuicheServer(
         receiveJob.join()
         // receiveJob.join() guarantees no new drivers are added/routed and nothing else touches the
         // registry. Destroy+join EVERY live driver (a superset of the routing table) before freeing the
-        // per-source recv_info cache — the #179 UAF invariant.
+        // per-source recv_info cache — the recv_info-UAF invariant.
         registry.reapAllDriversAndFreeRecvInfoCache()
         localSockAddrs.values.forEach { it.free() }
         localSockAddrs.clear()
@@ -351,9 +345,9 @@ internal class SharedQuicheServer(
                     // A channel without DatagramCapabilities.localAddressReceive reports
                     // LocalAddress.Unknown; the server's bound address is then the only answer available.
                     // That fallback is exact for a channel bound to one address and WRONG for a wildcard
-                    // bind (it yields 0.0.0.0) — which is why #556's fix is not complete until each
-                    // platform's receive path reports the arrival address (steps 2 and 3). Until it does,
-                    // this reproduces the pre-#556 behaviour rather than inventing an address.
+                    // bind (it yields 0.0.0.0) — so reply-source pinning is only as good as the
+                    // platform's receive path reporting the arrival address. Where it does not, this
+                    // falls back to the bound address rather than inventing one.
                     val localAddr = datagram.localAddress.orNull() ?: localAddress
                     // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
                     // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
@@ -400,8 +394,8 @@ internal class SharedQuicheServer(
                         // in-flight ref so the cache can't evict+free it while the driver has it queued.
                         // Keyed by (peer, local), not by peer alone: the same client addressing two of
                         // this host's local addresses is two paths to quiche, and one cache entry for
-                        // both would hand the second path the first one's `to` — re-creating #556 from
-                        // inside the cache even once the platform reports arrival addresses correctly.
+                        // both would hand the second path the first one's `to` — a wrong reply source
+                        // from inside the cache even when the platform reports arrival addresses correctly.
                         val recvKey = ServerPathPair(peer = peer, local = localAddr)
                         val cached =
                             registry.lookupRecvInfo(recvKey) ?: run {
@@ -416,7 +410,7 @@ internal class SharedQuicheServer(
                                 val fromKey = api.decodePathKey(from.address)
                                 peers.put(fromKey, peer)
                                 // And the mirror: PathKey→local, so the same reply's sendInfo.from
-                                // resolves to the address it must leave from (#556). Not removed with
+                                // resolves to the address it must leave from. Not removed with
                                 // the recv_info — a local address outlives any one peer's cache entry,
                                 // and re-adding it on every miss would be the only effect.
                                 locals.put(api.decodePathKey(local.address), localAddr)
@@ -448,11 +442,12 @@ internal class SharedQuicheServer(
                         // packets under all other circumstances") carried in a datagram of at least
                         // 1200 bytes (§14.1: "A server MUST discard an Initial packet that is carried
                         // in a UDP datagram with a payload that is smaller"). quiche_accept checks
-                        // neither, so before #563 a stray short-header packet, a stale 1-RTT packet
-                        // after its connection closed, a Handshake packet or a runt Initial each became
-                        // a server connection and a driver that lived until the idle timeout — a cost
-                        // the §14.1 floor exists to deny an attacker, and a spurious PROTOCOL_VIOLATION
-                        // close in every trace someone reads to diagnose a real failure.
+                        // neither, so without this a stray short-header packet, a stale 1-RTT packet
+                        // after its connection closed, a Handshake packet or a runt Initial would each
+                        // become a server connection and a driver that lives until the idle timeout —
+                        // a cost the §14.1 floor exists to deny an attacker, and a spurious
+                        // PROTOCOL_VIOLATION close in every trace someone reads to diagnose a real
+                        // failure.
                         val packetType = QuicPacketType.fromQuiche(typeBuf[0].toInt() and 0xFF)
                         if (packetType !is QuicPacketType.Initial) {
                             serverCapture.record { it.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType)) }
@@ -505,7 +500,7 @@ internal class SharedQuicheServer(
 
         val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
         // The address the Initial arrived on, not the address the server bound. On a wildcard bind the
-        // two differ and only the former is a source the client will accept a reply from (#556); this
+        // two differ and only the former is a source the client will accept a reply from; this
         // connection's whole recv_info/send_info lineage starts here, so getting it wrong here is not
         // recoverable later.
         val localSockAddr = codec.encodeToNative(localAddr, bufferFactory)
@@ -554,7 +549,7 @@ internal class SharedQuicheServer(
         // Feed the initial packet before the driver starts — safe, driver not yet running. quiche
         // rejecting it (undecryptable, malformed past the header) means there is no connection to
         // drive: release everything accept created and report the refusal, instead of starting a
-        // driver over a connection that can only ever idle out (#563).
+        // driver over a connection that can only ever idle out.
         val fed = api.connRecv(conn, recvAddr, received, recvInfo)
         if (fed < 0) {
             api.connFree(conn)
@@ -616,7 +611,7 @@ internal class SharedQuicheServer(
                     localSockAddr.free()
                 },
                 // The routing map is a projection of quiche's own CID table, not a ledger replayed
-                // from issue/retire events (#449). The driver hands over everything quiche currently
+                // from issue/retire events. The driver hands over everything quiche currently
                 // recognises for this connection; snapshot it here (the slot buffer is the driver's
                 // scratch and is valid only for this call) and hand the set to the receive loop, which
                 // owns the map. Poke that loop to apply it promptly, so a migrating peer's new DCID

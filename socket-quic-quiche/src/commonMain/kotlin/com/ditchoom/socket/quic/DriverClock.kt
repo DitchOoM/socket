@@ -20,11 +20,10 @@ import kotlin.time.TimeSource
  * `withTimeoutOrNull` resolves against whatever dispatcher the loop happens to run on, which silently
  * reintroduces the wall clock in the Tier-1 tier this seam exists to keep free of it.
  *
- * Production uses [RealDriverClock]: monotonic time and `onTimeout`, i.e. exactly the behaviour the
- * driver had before the seam existed. A test clock can return a controllable [TimeMark] and replace the
- * timeout with a manually-fired rendezvous, turning the keepalive/idle timing path — previously only
- * reachable through multi-second wall-clock integration tests — into exact, race-free assertions. See
- * `ManualDriverClock` in commonTest.
+ * Production uses [RealDriverClock]: monotonic time and `onTimeout`. A test clock can return a
+ * controllable [TimeMark] and replace the timeout with a manually-fired rendezvous, turning the
+ * keepalive/idle timing path into exact, race-free assertions instead of multi-second wall-clock
+ * integration tests. See `ManualDriverClock` in commonTest.
  */
 interface DriverClock {
     /** A fresh mark for measuring elapsed inactivity. Production: `TimeSource.Monotonic.markNow()`. */

@@ -6,10 +6,9 @@ package com.ditchoom.socket.quic
  *
  * Enumerated rather than passed around as a number, because the two rejections that actually happen
  * call for opposite responses and a number cannot say which: one is retryable from a *different local
- * port* and the other is not retryable at all. #583 is what that costs — a stale-path collision was
- * reported by an assertion narrating #447's exhausted connection-id pool, which is a different defect
- * with a different fix, and the retry that could have absorbed it only recognised the other kind of
- * failure.
+ * port* and the other is not retryable at all. Conflating them reports a stale-path collision as an
+ * exhausted connection-id pool — a different defect with a different fix — and the retry that could
+ * absorb the collision never fires.
  *
  * ⚠️ **Internal on purpose, for now.** [MigrationResult.Unmoved.Failed.ProbeRejected] still publishes
  * the raw code, because replacing it is source- and binary-incompatible and this library is not taking

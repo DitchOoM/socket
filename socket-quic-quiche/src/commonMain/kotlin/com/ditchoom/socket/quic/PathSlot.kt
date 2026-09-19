@@ -13,14 +13,13 @@ package com.ditchoom.socket.quic
  * forever and — because `Path::unused()` demands `active_dcid_seq.is_none()` — is not even evictable
  * from quiche's path table.
  *
- * Before this type the sequence number lived in a separate `ActivePath(entry, dcidSeq)` holder that
- * only the **successful** migration path ever populated. A probe's id was written into native
- * scratch and never read, so the three failure exits (`FailedValidation`, the RFC 9000 §8.2.4 abandon
- * timer, and a `quiche_conn_migrate` that refuses a validated path) had no value to forget — they
- * *could not* retire what they had leaked. That is #447, and it is the reason one unanswered
- * PATH_CHALLENGE on real cellular disables migration for the rest of the connection.
+ * A sequence number held anywhere but the path's own state can be leaked: a probe's id written into
+ * scratch and never read gives the three failure exits (`FailedValidation`, the RFC 9000 §8.2.4
+ * abandon timer, and a `quiche_conn_migrate` that refuses a validated path) no value to forget — they
+ * *cannot* retire what they have leaked, and one unanswered PATH_CHALLENGE on real cellular then
+ * disables migration for the rest of the connection.
  *
- * Keeping the id in the path's own state makes the leak unwritable rather than merely fixed:
+ * Keeping the id in the path's own state makes the leak unwritable:
  * [QuicheDriver.PathEntry.transitionTo] retires whatever the previous state held whenever the next
  * state does not carry it forward, so "this path stopped holding this id" and "this id was retired"
  * are the same event, at one site, for every exit.

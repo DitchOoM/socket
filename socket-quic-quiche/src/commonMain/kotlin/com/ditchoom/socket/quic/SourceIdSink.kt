@@ -9,13 +9,12 @@ import com.ditchoom.buffer.PlatformBuffer
  *
  * ## Why a set and not two events
  * The server's routing map is what decides whether a datagram reaches a connection at all, so a
- * disagreement between it and quiche's CID table is not cosmetic — it is #437 (a packet delivered to
- * a connection that no longer knows the id, answered with PROTOCOL_VIOLATION). That map used to be
- * fed by two independent event streams: an "issued" notification from `quiche_conn_new_scid` and a
- * "retired" notification drained from `quiche_conn_retired_scid_iter`, each queued across a
- * coroutine hop, applied in an order that had to be reasoned about, and each capable of leaving the
- * map permanently wrong if one were dropped, duplicated, or reordered. Nothing ever compared the
- * result against quiche.
+ * disagreement between it and quiche's CID table is not cosmetic — it is a packet delivered to a
+ * connection that no longer knows the id, answered with PROTOCOL_VIOLATION. Feeding that map from two
+ * independent event streams — an "issued" notification from `quiche_conn_new_scid` and a "retired"
+ * notification drained from `quiche_conn_retired_scid_iter`, each queued across a coroutine hop —
+ * means an order that has to be reasoned about, a map left permanently wrong if one event is dropped,
+ * duplicated, or reordered, and nothing that compares the result against quiche.
  *
  * `quiche_conn_source_ids` is a plain, side-effect-free read of the live set, which makes a different
  * shape possible: the driver hands over **everything quiche currently recognises**, and the server
@@ -30,8 +29,7 @@ import com.ditchoom.buffer.PlatformBuffer
  * wake and nothing else.
  *
  * [ids] is the driver's scratch buffer and is **valid only for the duration of the call**: an
- * implementation must snapshot what it needs before returning, exactly as the `onScidIssued`
- * callback this replaces had to.
+ * implementation must snapshot what it needs before returning.
  */
 fun interface SourceIdSink {
     /**

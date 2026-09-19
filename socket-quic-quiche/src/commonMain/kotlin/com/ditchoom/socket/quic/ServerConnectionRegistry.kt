@@ -19,12 +19,10 @@ import kotlinx.coroutines.channels.Channel
  *  - the driver-cleanup and source-CID projection queues, and
  *  - the load-bearing [reapAllDriversAndFreeRecvInfoCache] close sweep.
  *
- * This layer was independently reimplemented in all three server files and drifted — the intermittent
- * `recv_info` use-after-free (#179) had to be fixed three times, and its follow-up `toList()` race fix
- * ([LiveDriverLedger.snapshot]) landed on JVM only because the copies had diverged. Extracting it here
- * is fix-once: the invariants live in one place, and the concurrency primitives that genuinely differ
- * per platform (`java.util.concurrent` on the JVM vs. copy-on-write `kotlin.concurrent` atomics on
- * Kotlin/Native) sit behind the [LiveDriverLedger] / [RecvInfoRefCount] `expect`/`actual` seam.
+ * One implementation for every platform, so the invariants live in one place; the concurrency
+ * primitives that genuinely differ per platform (`java.util.concurrent` on the JVM vs. copy-on-write
+ * `kotlin.concurrent` atomics on Kotlin/Native) sit behind the [LiveDriverLedger] /
+ * [RecvInfoRefCount] `expect`/`actual` seam.
  *
  * @param K the platform's recv_info cache source key — `java.net.InetSocketAddress` on the JVM, an
  *   allocation-free [PathKey] on Kotlin/Native. The registry never inspects it beyond map identity.
@@ -65,8 +63,7 @@ internal class ServerConnectionRegistry<K>(
      * `QuicheCmd.RecvPacket.recvInfoOverride`. [reapAllDriversAndFreeRecvInfoCache] must therefore
      * destroy+join every driver in *this* set (a superset of the routing map), not just those still
      * routing, before it frees the recv_info cache — otherwise a lagging run loop `connRecv`s a
-     * recv_info the sweep already freed. That was the intermittent recv_info use-after-free the JNI
-     * SIGSEGV hunt chased (#179).
+     * recv_info the sweep already freed: an intermittent native use-after-free.
      */
     private val liveDrivers = LiveDriverLedger()
 
@@ -83,12 +80,12 @@ internal class ServerConnectionRegistry<K>(
      * everything quiche currently recognises for it; the receive loop applies it to
      * [connectionsByDcid] in [drainRoutingQueues], because the map belongs to that coroutine.
      *
-     * **One queue, where there used to be two.** Registrations and retirements were separate event
-     * streams whose relative order had to be reasoned about (the old drain applied additions before
-     * removals, precisely so a re-registered id would not be unrouted by an older connection's
-     * retirement), and either of which could leave the map permanently wrong if dropped. A whole set
-     * has no ordering question and no accumulation: applying the same projection twice changes
-     * nothing, and a projection that never lands is superseded by the next one (#449).
+     * **One queue of whole sets, not separate registration and retirement events.** Two event streams
+     * would have a relative order to reason about (additions before removals, so a re-registered id is
+     * not unrouted by an older connection's retirement), and either could leave the map permanently
+     * wrong if dropped. A whole set has no ordering question and no accumulation: applying the same
+     * projection twice changes nothing, and a projection that never lands is superseded by the next
+     * one.
      */
     private val routeProjectionQueue = Channel<RouteProjection>(Channel.UNLIMITED)
 
@@ -163,8 +160,7 @@ internal class ServerConnectionRegistry<K>(
      * Apply the routing queues to [connectionsByDcid]: projections first, cleanup removals last.
      * Receive-loop coroutine only.
      *
-     * **Cleanups last** — the reverse of the old order, and for a stronger reason than the comment it
-     * replaces. A cleanup is a terminal fact about a driver; a projection is a snapshot of a driver
+     * **Cleanups last.** A cleanup is a terminal fact about a driver; a projection is a snapshot of a driver
      * that was live when it was taken. Draining cleanups last means the terminal fact always wins, so
      * a projection taken just before a handler closed its connection cannot resurrect routes for it.
      * (Nothing depends on ordering *within* the projections: each is a whole set, so applying them in
@@ -253,10 +249,8 @@ internal class ServerConnectionRegistry<K>(
             val cached = iterator.next().value
             if (cached.inFlight.get() == 0) {
                 // Unpublish BEFORE freeing, so that no throw between the two steps can leave a freed
-                // handle reachable from the cache for the next lookupRecvInfo to hand out. The
-                // ordering only began to matter on the FFM backend with #397: until recvInfoFree
-                // actually released memory there, a stale entry pointing at a "freed" handle was
-                // inert. JNI and both cinterop backends have always really freed.
+                // handle reachable from the cache for the next lookupRecvInfo to hand out. Every
+                // backend's recvInfoFree really releases the memory, so a stale entry would dangle.
                 iterator.remove()
                 api.recvInfoFree(cached.info)
                 cached.releaseSource()
@@ -274,7 +268,7 @@ internal class ServerConnectionRegistry<K>(
      *
      * Destroys+joins EVERY driver in [liveDrivers] — a superset of [connectionsByDcid] — before freeing
      * the recv_info cache, so a driver dropped from the routing map but still draining buffered packets
-     * can't `connRecv` a recv_info this sweep already freed (the #179 UAF). The [LiveDriverLedger.snapshot]
+     * can't `connRecv` a recv_info this sweep already freed. The [LiveDriverLedger.snapshot]
      * is race-safe against a driver concurrently removing itself via `onCleanup`. `destroy()` is
      * idempotent, so a driver that already finished is harmless here. The `check(inFlight == 0)` tripwire
      * is unreachable given the join — asserted so any future regression trips deterministically instead

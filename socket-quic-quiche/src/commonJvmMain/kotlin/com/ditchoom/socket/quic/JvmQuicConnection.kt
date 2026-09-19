@@ -97,7 +97,7 @@ internal class JvmQuicConnection(
         capacity: Int,
     ): Int {
         val deferred = CompletableDeferred<Int>()
-        // The buffer travels with its address (#366): quiche writes the DER into it on the driver
+        // The buffer travels with its address: quiche writes the DER into it on the driver
         // loop, so what keeps that memory mapped has to reach the driver too. See [QuicheMemory].
         driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred))
         return deferred.await()

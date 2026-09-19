@@ -3,10 +3,9 @@ package com.ditchoom.socket.quic
 /**
  * Result of a quiche stream read operation.
  *
- * Replaces the JNI convention of packing bytes + FIN flag into a single Long.
- * Each [QuicheApi] implementation decodes platform-specific formats into this hierarchy,
- * so the driver never deals with raw packed values. [Reset] and [ConnectionGone] separate the two
- * things the old catch-all [Error] used to lump together: a peer-initiated RESET_STREAM (a real
+ * Each [QuicheApi] implementation decodes platform-specific formats (JNI packs bytes + FIN flag into
+ * a single Long) into this hierarchy, so the driver never deals with raw packed values. [Reset] and
+ * [ConnectionGone] are distinct from the catch-all [Error]: a peer-initiated RESET_STREAM (a real
  * quiche code, -16, that carries an application error code) versus the driver's own "the connection
  * was already gone" sentinel (not a quiche code at all).
  */

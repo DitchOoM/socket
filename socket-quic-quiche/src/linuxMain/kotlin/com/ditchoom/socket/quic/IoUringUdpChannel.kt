@@ -37,12 +37,11 @@ internal class IoUringUdpChannel(
         // (server egress routing to sendInfo.to, pinned to sendInfo.from) does not apply here.
         //
         // This does NOT mean Linux lacks server-side egress routing. This class is not on any
-        // production path: since the Phase 6 :socket-udp adapter cutover the Linux client builds
-        // UdpSocketChannelFactory and the Linux server runs SharedQuicheServer, whose per-connection
+        // production path: the Linux client builds UdpSocketChannelFactory and the Linux server runs
+        // SharedQuicheServer, whose per-connection
         // egress is the shared ServerConnectionUdpChannel (commonMain) — and that one does resolve
         // the destination to a migrated peer, on every platform. What remains here is the userspace proxy
-        // plumbing the linuxTest impairment/passive-migration suites build on. The older comment cited
-        // #374 for "Linux server-side migration is unimplemented", which was wrong about this file.
+        // plumbing the linuxTest impairment/passive-migration suites build on.
         val ptr = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         return sendOutcomeOf {
             IoUringManager.submitAndWait(1.seconds) { sqe, _ ->

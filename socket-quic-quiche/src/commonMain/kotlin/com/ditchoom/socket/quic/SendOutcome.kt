@@ -9,18 +9,15 @@ import kotlin.time.Duration
  * What happened to one outbound datagram: it went, or it did not and here is the typed reason.
  *
  * ## Why this is a return value and not an exception
- * [UdpChannel.send] used to signal failure by throwing, which left `QuicheDriver.flushOutgoing` with
- * an untyped `catch (_: Exception)` and therefore exactly one policy for every possible cause —
- * `transitionToClosed()`. That conflated a full kernel send buffer with a vanished network interface
- * and tore the whole connection down for either. Two consequences, both measured:
+ * A [UdpChannel.send] that throws leaves `QuicheDriver.flushOutgoing` with an untyped catch and
+ * therefore exactly one policy for every possible cause — tearing the connection down — which
+ * conflates a full kernel send buffer with a vanished network interface. Two consequences:
  *
- * - A transient `ENOBUFS`/`EAGAIN` — backpressure that QUIC would ordinarily ride out by
- *   retransmitting — permanently ended the session, reported as `Closed(error = null)`: the *clean
- *   shutdown* value under the nullable this release replaced. A network fault was indistinguishable
- *   from a peer saying goodbye. (That ambiguity is now gone too — see [QuicCloseReason], where a
- *   close with nothing exchanged is `Unspecified` rather than graceful.)
+ * - A transient `ENOBUFS`/`EAGAIN` — backpressure that QUIC ordinarily rides out by retransmitting —
+ *   would permanently end the session, indistinguishable from a peer saying goodbye (see
+ *   [QuicCloseReason], where a close with nothing exchanged is `Unspecified` rather than graceful).
  * - Active connection migration could never work. A handoff happens *because* the old path died, so
- *   the first send afterwards killed the connection before the new path could be validated.
+ *   the first send afterwards would kill the connection before the new path could be validated.
  *
  * RFC 9000 §10 lists the only three ways a QUIC connection ends — idle timeout, immediate close, and
  * stateless reset. A failed local send is not among them. Making the outcome a sealed type turns

@@ -44,7 +44,7 @@ class FfmQuicheApi private constructor(
      * renamed to `allocateFrom` when JEP 454 finalised FFM in JDK 22. This tier is compiled by
      * `jvmToolchain(21)` but selected at runtime by every JDK >= 21 through `META-INF/versions/21`,
      * so either name is wrong for half the supported range: `allocateUtf8String` compiles here and
-     * throws `NoSuchMethodError` on JDK 22+ (issue #287), and `allocateFrom` does not exist on the
+     * throws `NoSuchMethodError` on JDK 22+, and `allocateFrom` does not exist on the
      * JDK 21 that compiles it. `allocate` + `MemorySegment.copy` is spelled identically in both.
      *
      * Do not "simplify" this back to a single call without moving the whole `java21` compilation to a
@@ -1246,15 +1246,12 @@ class FfmQuicheApi private constructor(
     // every other backend gives them (`quiche_jni.c` uses calloc/free; both cinterop backends use
     // `nativeHeap`).
     //
-    // #397: they used to come from two `Arena.ofAuto()` fields, which made both frees no-ops. An
-    // auto arena releases only once the *arena* is unreachable — verified per-arena, not
-    // per-segment: with every segment reference discarded and System.gc() forced, 500 allocations
-    // still produced 500 distinct addresses — and this arena was a field on a singleton that is
-    // process-wide on purpose (#202: dlclosing libquiche crashes BoringSSL's pthread TLS
-    // destructors). Nothing was ever released, so a long-running JDK 21+ server accumulated one
-    // recv_info and one send_info per connection, plus one more recv_info per migration (#395), and
-    // `SharedQuicheServer` caches recv_info per unique *peer source address*, so a public endpoint
-    // leaked per client address.
+    // Not `Arena.ofAuto()` fields: an auto arena releases only once the *arena* is unreachable —
+    // per-arena, not per-segment — and this singleton is process-wide on purpose (dlclosing libquiche
+    // crashes BoringSSL's pthread TLS destructors), so nothing would ever be released: one recv_info
+    // and one send_info per connection, plus one more recv_info per migration, and `SharedQuicheServer`
+    // caches recv_info per unique *peer source address*, so a public endpoint would leak per client
+    // address.
     //
     // Deliberately calloc/free rather than a closeable per-allocation Arena, which is the other
     // obvious shape: `Arena.ofShared()` is the only closeable kind safe here (recvInfoNew and
@@ -1289,11 +1286,11 @@ class FfmQuicheApi private constructor(
     }
 
     /**
-     * `calloc(1, size)` as a [size]-byte segment. Zero-filled, matching both what `Arena.allocate`
-     * guaranteed here before #397 and what `quiche_jni.c` gets from its own `calloc`.
+     * `calloc(1, size)` as a [size]-byte segment. Zero-filled, matching what `quiche_jni.c` gets from
+     * its own `calloc`.
      *
      * The segment is reinterpreted to global scope on purpose: its lifetime is this class's to
-     * manage through [hFree], and tying it to any arena is what #397 was.
+     * manage through [hFree], and tying it to any arena would make that free a no-op.
      */
     private fun callocOrThrow(size: Long): MemorySegment {
         val raw = hCalloc.invokeExact(1L, size) as MemorySegment

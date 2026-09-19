@@ -45,15 +45,15 @@ class StreamSlot(
     /**
      * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
      * cases where quiche moved the receive offset but the `read()` that asked for the bytes is gone:
-     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown (issue #318), and
+     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown, and
      * [DriverStreamAdapter.salvageCancelledRecv] when a read's timeout or cancellation unwound it before
-     * the driver answered its still-queued `StreamRecv` (issue #393).
+     * the driver answered its still-queued `StreamRecv`.
      *
      * The connection dying does not un-receive them (RFC 9000 §10.2: a CONNECTION_CLOSE ends the
      * connection; the stream data the transport already accepted and acknowledged is still the
-     * application's). Without this queue those bytes died with `quiche_conn_free` and the pending
-     * `read()` returned [com.ditchoom.buffer.flow.ReadResult.End] — indistinguishable from a clean FIN
-     * (issue #318: `expected:<[ping]> but was:<[no_data:End]>`).
+     * application's). Without this queue those bytes would die with `quiche_conn_free` and the pending
+     * `read()` would return [com.ditchoom.buffer.flow.ReadResult.End] — indistinguishable from a clean
+     * FIN.
      *
      * UNLIMITED so the drain — which runs on the driver loop, where suspending is not an option — can
      * never block, and because quiche's own flow-control window already bounds how much there can be.

@@ -70,8 +70,8 @@ internal expect fun readNativeSizeT(buf: PlatformBuffer): Int
  * The identity of one server-side path: which client address a datagram came **from**, and which of
  * this host's local addresses it arrived **at**.
  *
- * The key of the shared server's per-source `recv_info` cache. Keying that cache on the peer alone was
- * #556's other half: a client addressing two of a multi-homed host's addresses is two distinct paths to
+ * The key of the shared server's per-source `recv_info` cache. Keying that cache on the peer alone
+ * would be wrong: a client addressing two of a multi-homed host's addresses is two distinct paths to
  * quiche, and a single cache entry would give the second path the first one's `recv_info.to` — so
  * quiche would echo the wrong `send_info.from` and the reply would leave from an address that client
  * never addressed.
@@ -90,7 +90,7 @@ internal data class ServerPathPair(
  *
  *  - **peers** — `sendInfo.to` → the client address to send to, so replies follow a migrated peer; and
  *  - **locals** — `sendInfo.from` → the local address to send *from*, so a wildcard-bound server pins
- *    its own reply source instead of letting the kernel choose (#556).
+ *    its own reply source instead of letting the kernel choose.
  *
  * Both are written only on the receive loop (cache-miss insert, LRU-evict remove) plus the post-join
  * close sweep — never two writers at once — but read concurrently by driver egress coroutines.
