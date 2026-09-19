@@ -42,7 +42,7 @@ import kotlin.time.Duration
  * a [QpackEncoder]. With capacity 0 (default) it stays static-table-only, which is always legal.
  *
  * This server does not initiate server push (RFC 9114 §4.6) — that is the inverse of the client push
- * support and is unimplemented (#375); the client push API in [Http3Connection.pushes] is independent.
+ * support and is unimplemented; the client push API in [Http3Connection.pushes] is independent.
  */
 class Http3ServerConnection internal constructor(
     private val scope: QuicScope,
@@ -102,7 +102,7 @@ class Http3ServerConnection internal constructor(
     //
     // The latch IS the violation that tripped it (the client's [Http3Connection.connectionError] shape),
     // not a separate boolean beside it: "aborted" and "why" can then never disagree, and [serve] needs
-    // the typed code to answer the streams that keep arriving after the CONNECTION_CLOSE (#512).
+    // the typed code to answer the streams that keep arriving after the CONNECTION_CLOSE.
     private val abortMutex = Mutex()
 
     @Volatile
@@ -123,7 +123,7 @@ class Http3ServerConnection internal constructor(
             // The streams flow only completes when the connection closes (QuicScope.streams' contract),
             // so this is the moment every still-parked read stops being able to say anything about the
             // client: from here an end-of-stream on a critical stream is the connection going away, not
-            // the client closing it (#530). The handlers that observe it are launched into [scope], so
+            // the client closing it. The handlers that observe it are launched into [scope], so
             // they outlive this frame and see the flag.
             criticalStreams.connectionEnded()
         }
@@ -139,7 +139,7 @@ class Http3ServerConnection internal constructor(
                     // streams keep arriving, and taking one would mean decoding it against QPACK state we
                     // have already declared broken — a request whose field section references the dynamic
                     // table then blocks on a Required Insert Count nothing will ever raise, and the client
-                    // waits for a response that cannot come (#512). Answer with the connection's own code
+                    // waits for a response that cannot come. Answer with the connection's own code
                     // instead, so the failure the client sees is the one that actually happened.
                     connectionError?.let { return@launch stream.resetQuietly(it.errorCode) }
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(stream)
@@ -197,15 +197,14 @@ class Http3ServerConnection internal constructor(
     /**
      * Read a client unidirectional stream's type prefix (RFC 9114 §6.2) under [config]'s read deadline —
      * the one read in [handleUniStream] that deadline governs. A client that opens a stream and never says
-     * what it is must not be waited on forever (#495 — the unidirectional shape #509 found; this read had
-     * no bound at all), and giving up on it is named and told to the client exactly as [handleRequest]
-     * does for a bidirectional stream: the failure is thrown as the per-stream [Http3StreamException]
-     * that [serve] swallows, so the connection survives.
+     * what it is must not be waited on forever, and giving up on it is named and told to the client
+     * exactly as [handleRequest] does for a bidirectional stream: the failure is thrown as the
+     * per-stream [Http3StreamException] that [serve] swallows, so the connection survives.
      *
      * This is the head of a peer-initiated stream — the read waiting for what the client already owes —
      * which is exactly the set of reads [TransportConfig.readPolicy] governs; [Http3Connection.route]
-     * bounds its mirror of this read the same way since #513, and [drain] and the QPACK pumps, on the
-     * far side of that line, bound nothing.
+     * bounds its mirror of this read the same way, and [drain] and the QPACK pumps, on the far side of
+     * that line, bound nothing.
      */
     private suspend fun readStreamType(
         stream: QuicByteStream,
@@ -230,18 +229,18 @@ class Http3ServerConnection internal constructor(
     ) = readCriticalQpackStream(QpackStream.ENCODER) {
         val reader = QpackInstructionReader.encoder(stream, processor, pool)
         while (true) {
-            // No deadline, on purpose (#495 — the server side of #472). config.readPolicy is a
-            // *caller-facing* policy — the request reads want its 15s default — but this stream is idle
-            // by design between the client's header-block insertions, so arming it here made ordinary
-            // silence look like a failure. Liveness belongs to the connection's idle timeout, which is
-            // what the client control stream has always relied on by reading with no deadline.
+            // No deadline, on purpose. config.readPolicy is a *caller-facing* policy — the request reads
+            // want its 15s default — but this stream is idle by design between the client's header-block
+            // insertions, so arming it here would make ordinary silence look like a failure. Liveness
+            // belongs to the connection's idle timeout, which is what the client control stream relies on
+            // by reading with no deadline.
             val instruction = reader.next()
             if (instruction == null) {
                 // The client FINed its encoder stream. Not this pump's ordinary exit — RFC 9204 §4.2
                 // gives it none: "The sender MUST NOT close either of these streams […] Closure of
                 // either unidirectional stream type MUST be treated as a connection error of type
                 // H3_CLOSED_CRITICAL_STREAM". This stream is the only thing keeping [decoder]'s dynamic
-                // table equal to the client's encoder table (#530).
+                // table equal to the client's encoder table.
                 criticalStreamClosed(CriticalStreamType.QPACK_ENCODER)
                 break
             }
@@ -266,13 +265,13 @@ class Http3ServerConnection internal constructor(
             // 100% CPU for the life of the connection. A conformant client reaches that: §4.2 says both
             // endpoints open a decoder stream, whatever capacity they advertise.
             //
-            // No deadline, for the same reason as the encoder pump above (#495): the client acknowledges
+            // No deadline, for the same reason as the encoder pump above: the client acknowledges
             // only what our encoder inserted, so this stream is quiet whenever we are.
             val instruction = reader.next()
             if (instruction == null) {
                 // §4.2 again, and it names BOTH instruction streams: this one is what acknowledges our
                 // encoder's insertions, so the client closing it strands every dynamic entry we insert
-                // as un-acknowledged and the encoder eventually stops being able to evict (#530).
+                // as un-acknowledged and the encoder eventually stops being able to evict.
                 criticalStreamClosed(CriticalStreamType.QPACK_DECODER)
                 break
             }
@@ -285,7 +284,7 @@ class Http3ServerConnection internal constructor(
      * Run a critical QPACK stream pump [body], turning what comes out of it into a *connection* abort —
      * the server's counterpart of [Http3Connection.readCriticalQpackStream]: the typed
      * [Http3StreamException] the [QpackInstructionReader] / [QpackDecoder] / [QpackEncoder] raises for a
-     * bad instruction, and a read deadline expiring inside the pump (#476's arm). A clean end-of-stream
+     * bad instruction, and a read deadline expiring inside the pump. A clean end-of-stream
      * returns normally; cancellation propagates.
      */
     private suspend inline fun readCriticalQpackStream(
@@ -297,12 +296,11 @@ class Http3ServerConnection internal constructor(
         } catch (e: TimeoutCancellationException) {
             // BEFORE any CancellationException handling — TimeoutCancellation IS a CancellationException,
             // and serve()'s `launch` child completing with one is cancelled rather than failed, so the
-            // parent is never told. That is the whole silent-death mechanism of #472, and it was intact
-            // here (#495): the pump vanished, nothing logged, and the decoder's table desynced from the
-            // client's encoder. Note a generic `catch (t: Throwable)` would not help — the cancellation
-            // arm claims it first.
+            // parent is never told: the pump would vanish, nothing logged, and the decoder's table desync
+            // from the client's encoder. Note a generic `catch (t: Throwable)` would not help — the
+            // cancellation arm claims it first.
             //
-            // Unreachable now that the pumps read with no deadline, and deliberately kept anyway: if a
+            // Unreachable while the pumps read with no deadline, and deliberately kept anyway: if a
             // deadline ever reaches this loop again, a critical QPACK stream dying must be a typed
             // connection abort (RFC 9204 §4.2) rather than something the connection survives blind.
             //
@@ -321,9 +319,9 @@ class Http3ServerConnection internal constructor(
             // dynamic table equal to the client's encoder table, so a refused instruction means the two
             // have already diverged: every later field section referencing the table decodes to the wrong
             // fields or blocks on a Required Insert Count that never arrives. Letting [serve]'s per-stream
-            // catch swallow it — the arm that keeps ONE REQUEST from taking the connection down — left the
-            // server serving requests off a table it knew was wrong (#512). The client has escalated here
-            // since #472; this is the server's half.
+            // catch swallow it — the arm that keeps ONE REQUEST from taking the connection down — would
+            // leave the server serving requests off a table it knows is wrong. [Http3Connection] escalates
+            // the same way; this is the server's half.
             abortConnection(e)
         }
     }
@@ -379,8 +377,8 @@ class Http3ServerConnection internal constructor(
             when (val frame = reader.nextFrame()) {
                 // The client closed its control stream. RFC 9114 §6.2.1: "If either control stream is
                 // closed at any point, this MUST be treated as a connection error of type
-                // H3_CLOSED_CRITICAL_STREAM." Breaking here left this server with no way to ever receive
-                // a MAX_PUSH_ID, a GOAWAY, or a CANCEL_PUSH again, and nothing said (#530).
+                // H3_CLOSED_CRITICAL_STREAM." Breaking here silently would leave this server with no way
+                // to ever receive a MAX_PUSH_ID, a GOAWAY, or a CANCEL_PUSH again.
                 null -> {
                     criticalStreamClosed(CriticalStreamType.CONTROL)
                     break
@@ -425,7 +423,7 @@ class Http3ServerConnection internal constructor(
 
     /**
      * The reader of this connection's [type] stream saw end-of-stream — the server's half of
-     * [Http3Connection.criticalStreamClosed], and the same two RFC sentences (#530).
+     * [Http3Connection.criticalStreamClosed], and the same two RFC sentences.
      *
      * RFC 9114 §6.2.1: *"If either control stream is closed at any point, this MUST be treated as a
      * connection error of type H3_CLOSED_CRITICAL_STREAM."* RFC 9204 §4.2, of the QPACK instruction
@@ -529,12 +527,12 @@ class Http3ServerConnection internal constructor(
                 runCatching { response.finish() }
             }
         } catch (e: TimeoutCancellationException) {
-            // BEFORE the CancellationException arm, which would otherwise claim it (#495 — the server side
-            // of #477): TimeoutCancellation IS a CancellationException, and serve()'s `launch` child
-            // completing with one is cancelled rather than failed. So the WebTransport peek above, or
-            // readRequestHeaders waiting for HEADERS that never come, expiring made this child vanish with
-            // the reader released and nothing else: no name, nothing told to the client, its half of the
-            // stream open until the connection ends. The deadline itself is right — a client that opens a
+            // BEFORE the CancellationException arm, which would otherwise claim it: TimeoutCancellation IS
+            // a CancellationException, and serve()'s `launch` child completing with one is cancelled
+            // rather than failed. So the WebTransport peek above, or readRequestHeaders waiting for
+            // HEADERS that never come, expiring would make this child vanish with the reader released and
+            // nothing else: no name, nothing told to the client, its half of the stream open until the
+            // connection ends. The deadline itself is right — a client that opens a
             // stream and says nothing must not be waited on forever (unlike the idle-by-design QPACK pumps)
             // — so it stays; this arm gives its expiry a name and tells the client (RESET_STREAM +
             // STOP_SENDING carrying H3_REQUEST_CANCELLED, RFC 9114 §4.1.1). One stream's stall is not the
@@ -844,14 +842,14 @@ class Http3ServerConnection internal constructor(
      * or resets it. The point is flow control: nothing else will read those bytes, and unread bytes hold
      * the client's window for that stream shut.
      *
-     * **No deadline** (#513), for the reason the QPACK pumps have none (#472/#495): every stream reaching
-     * here is idle *by design*. A conformant client opens both QPACK streams whatever capacity either
-     * side advertised (RFC 9204 §4.2) and, having advertised `QPACK_MAX_TABLE_CAPACITY: 0`, then never
-     * sends an instruction on them; a reserved stream may carry nothing at all. Under
-     * [TransportConfig.readPolicy] that ordinary silence expired as a `TimeoutCancellationException`,
-     * which — being a `CancellationException` — completed [serve]'s `launch` child as *cancelled rather
-     * than failed*: the drain vanished with nothing logged, and the window it existed to keep open filled
-     * and stayed full. Liveness here belongs to the connection's idle timeout.
+     * **No deadline**, for the reason the QPACK pumps have none: every stream reaching here is idle
+     * *by design*. A conformant client opens both QPACK streams whatever capacity either side advertised
+     * (RFC 9204 §4.2) and, having advertised `QPACK_MAX_TABLE_CAPACITY: 0`, then never sends an
+     * instruction on them; a reserved stream may carry nothing at all. Under
+     * [TransportConfig.readPolicy] that ordinary silence would expire as a `TimeoutCancellationException`,
+     * which — being a `CancellationException` — completes [serve]'s `launch` child as *cancelled rather
+     * than failed*: the drain would vanish with nothing logged, and the window it exists to keep open
+     * would fill and stay full. Liveness here belongs to the connection's idle timeout.
      *
      * Ending is therefore the client's to decide, and a FIN or a RESET_STREAM returns normally. Note this
      * is deliberately **not** [abandonStalledStream]'s arm — that names a stall and sends STOP_SENDING,
@@ -861,7 +859,7 @@ class Http3ServerConnection internal constructor(
      * What a *critical* stream's ending then means is [drainCriticalStream]'s business, not this one's:
      * every caller that hands a QPACK instruction stream here goes through that wrapper, and what is left
      * reaching this function directly — GREASE, a reserved type, WebTransport with WebTransport disabled —
-     * really may end whenever the client likes (#530).
+     * really may end whenever the client likes.
      */
     private suspend fun drain(stream: QuicByteStream) {
         while (true) {
@@ -875,7 +873,7 @@ class Http3ServerConnection internal constructor(
     /**
      * [drain] a stream that is **critical** — a QPACK instruction stream on a static-only server, where
      * `qpackCapacity = 0` means there is no dynamic table to apply its instructions to and so no pump to
-     * read it (#530).
+     * read it.
      *
      * Draining is still required: RFC 9204 §4.2 says "An endpoint MUST allow its peer to create an
      * encoder stream and a decoder stream even if the connection's settings prevent their use", and
