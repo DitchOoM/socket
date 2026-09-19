@@ -67,82 +67,87 @@ fun main(args: Array<String>) {
             System.out.flush()
 
             // Accept connections — each runs in its own coroutine scope
-            connections {
-                // Streams and datagrams are echoed by independent child jobs: a
-                // datagram-only client (e.g. the Apple group path, issue #109) never
-                // opens a stream, and a stream client never sends datagrams. The
-                // connection is held open until the PEER goes away (the datagram loop
-                // observes ConnectionClosed), so a datagram client isn't cut off by the
-                // stream-accept timeout — and per-connection scopes mean one lingering
-                // connection never blocks the server's accept loop.
-                val datagramJob =
-                    launch {
-                        try {
-                            while (true) {
-                                when (val r = datagramChannel().receive()) {
-                                    is DatagramReadResult.Received -> {
-                                        val payload = r.datagram.payload
-                                        datagramChannel().send(payload) // reads zero-copy; we still own it
-                                        payload.freeIfNeeded()
-                                    }
-                                    is DatagramReadResult.Closed -> break
-                                }
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                // Server-initiated stream (issue #112): open one stream TOWARD the client
-                // and write a fixed greeting, so clients can exercise acceptStream() against a
-                // real peer-initiated stream (e.g. an HTTP/3 server's control/QPACK streams).
-                // Independent of the echo path; clients that don't accept it simply ignore it.
-                val pushJob =
-                    launch {
-                        try {
-                            val s = openStream()
-                            val greeting = "HELLO\n"
-                            val buf = BufferFactory.deterministic().allocate(greeting.length)
-                            buf.writeString(greeting, Charset.UTF8)
-                            buf.resetForRead()
-                            s.write(buf, 10.seconds)
-                            buf.freeNativeMemory()
-                            s.close() // FIN, so the client sees the greeting then End
-                        } catch (_: Exception) {
-                        }
-                    }
-                val streamJob =
-                    launch {
-                        try {
-                            // acceptStream has a timeout so a datagram-only / health-check
-                            // connection doesn't keep this job parked forever.
-                            val stream = withTimeout(3.seconds) { acceptStream() }
-                            try {
-                                while (true) {
-                                    val data = stream.read(30.seconds)
-                                    if (data is ReadResult.Data) {
-                                        try {
-                                            stream.writeFully(data.buffer, 10.seconds)
-                                        } finally {
-                                            // read transfers ownership; write is zero-copy and takes none — without this
-                                            // free every echoed chunk leaks, and accumulated echo leaks were the #401
-                                            // corruption's primer. writeFully because a QUIC write may be partial.
-                                            data.buffer.freeIfNeeded()
-                                        }
-                                    } else {
-                                        break
-                                    }
-                                }
-                            } catch (_: Exception) {
-                            } finally {
-                                stream.close()
-                            }
-                        } catch (_: Exception) {
-                            // No stream opened (datagram-only or health-check) — fine.
-                        }
-                    }
-                datagramJob.join()
-                streamJob.cancel()
-                pushJob.cancel()
-            }
+            connections { echoConnection(quicOptions) }
         }
     }
+}
+
+/**
+ * Serve one accepted connection the way the harness echo server does: echo every stream chunk, echo
+ * every datagram, push one greeting stream, and hold the connection until the peer goes away.
+ *
+ * Streams and datagrams are echoed by independent child jobs: a datagram-only client (e.g. the Apple
+ * group path, issue #109) never opens a stream, and a stream client never sends datagrams. The
+ * connection is held open until the PEER goes away (the datagram loop observes ConnectionClosed), so
+ * a datagram client isn't cut off by the stream-accept timeout — and per-connection scopes mean one
+ * lingering connection never blocks the server's accept loop.
+ */
+suspend fun QuicScope.echoConnection(quicOptions: QuicOptions) {
+    val datagramJob =
+        launch {
+            try {
+                while (true) {
+                    when (val r = datagramChannel().receive()) {
+                        is DatagramReadResult.Received -> {
+                            val payload = r.datagram.payload
+                            datagramChannel().send(payload) // reads zero-copy; we still own it
+                            payload.freeIfNeeded()
+                        }
+                        is DatagramReadResult.Closed -> break
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    // Server-initiated stream (issue #112): open one stream TOWARD the client
+    // and write a fixed greeting, so clients can exercise acceptStream() against a
+    // real peer-initiated stream (e.g. an HTTP/3 server's control/QPACK streams).
+    // Independent of the echo path; clients that don't accept it simply ignore it.
+    val pushJob =
+        launch {
+            try {
+                val s = openStream()
+                val greeting = "HELLO\n"
+                val buf = BufferFactory.deterministic().allocate(greeting.length)
+                buf.writeString(greeting, Charset.UTF8)
+                buf.resetForRead()
+                s.write(buf, 10.seconds)
+                buf.freeNativeMemory()
+                s.close() // FIN, so the client sees the greeting then End
+            } catch (_: Exception) {
+            }
+        }
+    val streamJob =
+        launch {
+            try {
+                // acceptStream has a timeout so a datagram-only / health-check
+                // connection doesn't keep this job parked forever.
+                val stream = withTimeout(3.seconds) { acceptStream() }
+                try {
+                    while (true) {
+                        val data = stream.read(30.seconds)
+                        if (data is ReadResult.Data) {
+                            try {
+                                stream.writeFully(data.buffer, 10.seconds)
+                            } finally {
+                                // read transfers ownership; write is zero-copy and takes none — without this
+                                // free every echoed chunk leaks, and accumulated echo leaks were the #401
+                                // corruption's primer. writeFully because a QUIC write may be partial.
+                                data.buffer.freeIfNeeded()
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    stream.close()
+                }
+            } catch (_: Exception) {
+                // No stream opened (datagram-only or health-check) — fine.
+            }
+        }
+    datagramJob.join()
+    streamJob.cancel()
+    pushJob.cancel()
 }
