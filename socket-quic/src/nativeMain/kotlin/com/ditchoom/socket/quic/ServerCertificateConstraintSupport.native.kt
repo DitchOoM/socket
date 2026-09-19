@@ -16,15 +16,11 @@ import kotlin.native.Platform
  *    `:socket-quic-quiche` registers no tvOS/watchOS target and `socket-quic-default` routes those
  *    families to `UnsupportedQuicEngine`, so `connect()` throws before any certificate exists: not even
  *    the leaf hash is checked there, because no leaf is ever presented. Reporting `LeafHashOnly` would
- *    claim a pin check that nothing performs — exactly the class of misstatement issue #339 was about.
+ *    claim a pin check that nothing performs.
  *
- * macOS reported `Enforced` between the constraint work landing and issue #339, while
- * `:socket-quic-quiche`'s Apple connect path still passed `parseLeafFields = null` — a **misstatement,
- * not a behaviour change**, but a load-bearing one, since a caller may skip its own validity check on
- * the strength of what this type advertises. The shared `QuicCertificateHashPinningTestSuite` caught it
- * the first time it ran on Apple (issue #296): on macOS the three constraint-reject cases connected
- * successfully instead of throwing. #339 closed the gap for real by giving every backend a parser, and
- * those three cases re-armed through this value on macOS with no test-side edit.
+ * This value is load-bearing: a caller may skip its own validity check on the strength of what it
+ * advertises, so it must never claim a check the connect path does not run. The shared
+ * `QuicCertificateHashPinningTestSuite` arms its constraint-reject cases through it.
  *
  * The `else` branch is only ever tvOS/watchOS: this module registers no other K/N families (macos*,
  * ios*, tvos*, watchos*, linuxX64, linuxArm64). Resolved from [Platform.osFamily] at runtime so this

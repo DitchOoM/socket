@@ -14,7 +14,7 @@ import kotlin.time.Duration
 
 // Half-close and reset are buffer-flow's cross-platform capability markers
 // ([HalfCloseable] / [Resettable]) — reset is deliberately orthogonal (not a [ByteStream]) so it
-// mixes onto send-only / receive-only streams too. socket-quic no longer defines its own duplicates;
+// mixes onto send-only / receive-only streams too. socket-quic defines no duplicates of its own;
 // every QUIC/WebTransport stream speaks the one capability vocabulary, so an `is`-smart-cast to a
 // capability works uniformly across native and browser backings.
 
@@ -59,13 +59,13 @@ class QuicByteStream(
      * Read the next chunk, **transferring the buffer to the caller**: on [ReadResult.Data] the caller
      * owns `buffer` and must release it with `buffer.freeIfNeeded()` once it is done with the bytes.
      *
-     * There is no factory under which forgetting that is safe (#538). The QUIC read path always draws
+     * There is no factory under which forgetting that is safe. The QUIC read path always draws
      * from a per-connection pool, so an unreleased buffer is a pool slot that never comes back and
      * every later read allocates fresh; and under the default [com.ditchoom.buffer.BufferFactory.Default]
      * the native allocation behind the buffer is owned by the collector, which schedules itself on
      * managed-heap pressure and therefore does not run for a pointer-sized wrapper in front of 64 KB of
-     * native memory. The two compound: a device walk that read and dropped reached 20.8 GB of address
-     * space in 2 h 36 m before it was killed by a native allocation failure.
+     * native memory. The two compound: a reader that drops every buffer grows address space without
+     * bound until a native allocation fails.
      *
      * **Use the scoped [read] (`read(deadline) { … }`, returning [ScopedRead]) unless the bytes have to
      * outlive the call** — it releases on every exit path, exception and cancellation included. This

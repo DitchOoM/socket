@@ -31,7 +31,7 @@ class QuicStreamMux<T> private constructor(
 ) : StreamMux<T> by view {
     /**
      * @param scope writer lifetime, and [outboundCapacity]/[overflowPolicy] the outbound queue policy,
-     *   for every stream this mux mints — see [CodecConnection] and [OverflowPolicy] (#382). Each QUIC
+     *   for every stream this mux mints — see [CodecConnection] and [OverflowPolicy]. Each QUIC
      *   stream gets its own writer, and only the caller knows what a full queue should mean for the
      *   traffic it puts on them.
      */
@@ -58,14 +58,14 @@ class QuicStreamMux<T> private constructor(
     )
 
     /**
-     * Closes every stream this mux minted, draining each one's outbound queue first (#382). A scoped
+     * Closes every stream this mux minted, draining each one's outbound queue first. A scoped
      * session calls this before cancelling the writers' scope, so a caller that queued a frame and did
      * not close the stream itself does not lose it silently.
      */
     suspend fun closeMintedConnections() = view.closeMintedConnections()
 
     /**
-     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * Source-compatible constructor for callers that do not state an outbound queue policy — see
      * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters.
      */
     @Deprecated(

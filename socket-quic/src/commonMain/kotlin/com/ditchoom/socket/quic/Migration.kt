@@ -42,12 +42,11 @@ sealed interface MigrationTarget {
 /**
  * A local UDP endpoint as the platform **resolved** it — never as it was requested.
  *
- * The distinction is the whole point. `migrate()` used to answer `Succeeded(localHost, localPort)` by
- * echoing back the arguments it was handed, so an automatic migration — which always asks for
- * "anywhere, any port" — reported `Succeeded(null, 0)`: a success value that named no endpoint at all,
- * on a platform where the endpoint is precisely the thing the caller cannot otherwise learn. Every
- * backend already resolves the socket's real local sockaddr (it has to: quiche probes and migrates onto
- * that 4-tuple), so this stops discarding it.
+ * The distinction is the whole point. Echoing back the requested arguments would make an automatic
+ * migration — which always asks for "anywhere, any port" — report `Succeeded(null, 0)`: a success
+ * value that names no endpoint at all, on a platform where the endpoint is precisely the thing the
+ * caller cannot otherwise learn. Every backend resolves the socket's real local sockaddr (it has to:
+ * quiche probes and migrates onto that 4-tuple), and this carries it.
  *
  * There is deliberately **no** `Unreported`/`Unknown` case: all four backends can answer, and a variant
  * no backend can produce is worse than absent.
@@ -163,12 +162,12 @@ sealed interface MigrationResult {
             /**
              * The QUIC stack refused to probe the new path, carrying its error number verbatim.
              *
-             * ⚠️ **A known gap, deliberately left open (#583).** A [code] cannot tell a caller whether
+             * ⚠️ **A known gap, deliberately left open.** A [code] cannot tell a caller whether
              * the refusal is worth another attempt, and the two that occur in practice call for
              * opposite responses: a stale-path collision clears only by binding a *different* local
              * port, while an exhausted connection-id pool clears only by waiting for a replacement id.
-             * A caller reading this today can act on neither, and the driver's own retry could not
-             * either until it began classifying the code internally.
+             * A caller reading this can act on neither; the driver's own retry classifies the code
+             * internally.
              *
              * It stays an `Int` because replacing it with the sealed reason the driver already uses is
              * source- and binary-incompatible, and this library is not ready for a major release. **The
@@ -186,10 +185,9 @@ sealed interface MigrationResult {
              * validation, or it validated a path the driver no longer tracks. The third is a **timer**
              * — RFC 9000 §8.2.4's "endpoints SHOULD abandon path validation based on a timer",
              * `3 × max(current PTO, kInitialRtt PTO)` — and it is the one that has to exist, because
-             * quiche's other two answers are not guaranteed to arrive at all. Measured on a real
-             * Wi-Fi↔cellular handoff: a probe sat at [QuicPathState.Probing] with no further event for
-             * the rest of the connection, so without the timer `migrate()` never returned and every
-             * later network change went unmigrated.
+             * quiche's other two answers are not guaranteed to arrive at all. Without the timer a
+             * probe can sit at [QuicPathState.Probing] with no further event for the rest of the
+             * connection, `migrate()` never returns, and every later network change goes unmigrated.
              *
              * Deliberately not a distinct "timed out" leaf: a caller cannot act differently on
              * "unanswered, and quiche said so" versus "unanswered, and quiche said nothing", and an
