@@ -11,6 +11,9 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -124,19 +127,29 @@ suspend fun QuicScope.echoConnection(quicOptions: QuicOptions) {
                 // connection doesn't keep this job parked forever.
                 val stream = withTimeout(3.seconds) { acceptStream() }
                 try {
+                    // The stream lives as long as the connection: only the peer's FIN/RESET or the
+                    // connection's own end closes it. The read deadline is the connection's idle
+                    // timeout, so a quiet stream is re-armed exactly as often as an unkept
+                    // connection would have died — never sooner (#620).
                     while (true) {
-                        val data = stream.read(30.seconds)
-                        if (data is ReadResult.Data) {
+                        val data =
                             try {
-                                stream.writeFully(data.buffer, 10.seconds)
-                            } finally {
-                                // read transfers ownership; write is zero-copy and takes none — without this
-                                // free every echoed chunk leaks, and accumulated echo leaks were the #401
-                                // corruption's primer. writeFully because a QUIC write may be partial.
-                                data.buffer.freeIfNeeded()
+                                stream.read(quicOptions.idleTimeout)
+                            } catch (e: TimeoutCancellationException) {
+                                currentCoroutineContext().ensureActive()
+                                continue
                             }
-                        } else {
-                            break
+                        when (data) {
+                            is ReadResult.Data ->
+                                try {
+                                    stream.writeFully(data.buffer, 10.seconds)
+                                } finally {
+                                    // read transfers ownership; write is zero-copy and takes none — without this
+                                    // free every echoed chunk leaks, and accumulated echo leaks were the #401
+                                    // corruption's primer. writeFully because a QUIC write may be partial.
+                                    data.buffer.freeIfNeeded()
+                                }
+                            ReadResult.End, ReadResult.Reset -> break
                         }
                     }
                 } catch (_: Exception) {

@@ -52,9 +52,17 @@ public sealed interface RunVerdict {
     }
 }
 
-public fun PoolRecoveryVerdict.forConnection(liveness: EchoLivenessVerdict): ConnectionVerdict = ConnectionVerdict.Standing(this)
+public fun PoolRecoveryVerdict.forConnection(liveness: EchoLivenessVerdict): ConnectionVerdict =
+    when (liveness) {
+        is EchoLivenessVerdict.Live -> ConnectionVerdict.Standing(this)
+        is EchoLivenessVerdict.Silent -> ConnectionVerdict.Silenced(this, liveness)
+    }
 
 public fun PoolRecoveryVerdict.forRun(
     connections: Int,
     liveness: RunLiveness,
-): RunVerdict = RunVerdict.Standing(this, connections)
+): RunVerdict =
+    when (liveness) {
+        RunLiveness.NeverConnected, is RunLiveness.Live -> RunVerdict.Standing(this, connections)
+        is RunLiveness.Silent -> RunVerdict.Silenced(this, liveness)
+    }

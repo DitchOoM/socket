@@ -51,9 +51,9 @@ class WalkVerdictTests {
         val run = samsungConnectionOne.forRun(connections = 1, liveness = EchoLivenessTotals().apply { absorb(1, report) }.verdict())
 
         assertIs<ConnectionVerdict.Silenced>(connection, "a connection that echoed nothing for 73 h cannot pass: ${connection.line}")
-        assertTrue(connection.line.startsWith("FAIL — no answered echo for 74h"), connection.line)
+        assertTrue(connection.line.startsWith("FAIL — no answered echo for 3d 2h"), connection.line)
         assertIs<RunVerdict.Silenced>(run, run.line)
-        assertTrue(run.line.startsWith("FAIL — connection 1 went 74h"), run.line)
+        assertTrue(run.line.startsWith("FAIL — connection 1 went 3d 2h"), run.line)
         assertTrue(run.line.contains("on its own it read: PASS"), "the path verdict is still reported, as void: ${run.line}")
     }
 

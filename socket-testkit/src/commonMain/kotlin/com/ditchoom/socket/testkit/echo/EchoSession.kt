@@ -64,13 +64,6 @@ public sealed interface EchoStep {
         ) : Exchanged
 
         public data object StillOwed : Exchanged
-
-        public data class NoData(
-            val seq: Int,
-            val reply: StreamReply,
-        ) : Exchanged {
-            public val line: String get() = "ECHO-NO-DATA seq=$seq result=$reply"
-        }
     }
 
     /** The write did not complete within its deadline: the loop did not go round. */
@@ -168,8 +161,11 @@ public class EchoSession(
         at: Duration,
     ): EchoStep {
         consecutiveWriteTimeouts++
-        exchanges++
-        return EchoStep.Exchanged.StillOwed
+        return if (consecutiveWriteTimeouts >= writeTimeoutStreakLimit) {
+            leave(SessionEnd.StreamGone.WritesStalled(consecutiveWriteTimeouts), seq, at)
+        } else {
+            EchoStep.WriteTimedOut(seq, waited, consecutiveWriteTimeouts)
+        }
     }
 
     public fun reply(
@@ -181,7 +177,8 @@ public class EchoSession(
         return when (reply) {
             is StreamReply.Echoed -> EchoStep.Exchanged.Judged(judge(reply.text, at))
             StreamReply.StillOwed -> EchoStep.Exchanged.StillOwed
-            StreamReply.PeerEnded, StreamReply.PeerReset -> EchoStep.Exchanged.NoData(seq, reply)
+            StreamReply.PeerEnded -> leave(SessionEnd.StreamGone.PeerEndedStream, seq, at)
+            StreamReply.PeerReset -> leave(SessionEnd.StreamGone.PeerResetStream, seq, at)
         }
     }
 
@@ -193,10 +190,7 @@ public class EchoSession(
         end: SessionEnd,
         at: Duration,
     ) {
-        when (lifetime) {
-            Lifetime.Open -> lifetime = Lifetime.Ended(end, at)
-            is Lifetime.Ended -> Unit
-        }
+        settle(end, at)
     }
 
     /** Close the session: [fallback] stands only if it has not already ended. */
@@ -204,23 +198,23 @@ public class EchoSession(
         fallback: SessionEnd,
         at: Duration,
     ): EchoSessionReport {
-        ended(fallback, at)
-        val closedAt =
-            when (val life = lifetime) {
-                Lifetime.Open -> at
-                is Lifetime.Ended -> life.at
-            }
-        noteQuiet(closedAt)
+        val ended = settle(fallback, at)
+        noteQuiet(ended.at)
         return EchoSessionReport(
-            end =
-                when (val life = lifetime) {
-                    Lifetime.Open -> fallback
-                    is Lifetime.Ended -> life.end
-                },
+            end = ended.end,
             unanswered = ledger.abandon(),
             liveness = EchoLivenessVerdict.of(answered, longestQuiet, quietLimit),
         )
     }
+
+    private fun settle(
+        end: SessionEnd,
+        at: Duration,
+    ): Lifetime.Ended =
+        when (val life = lifetime) {
+            Lifetime.Open -> Lifetime.Ended(end, at).also { lifetime = it }
+            is Lifetime.Ended -> life
+        }
 
     private fun judge(
         text: String,
