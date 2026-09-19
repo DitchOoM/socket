@@ -28,6 +28,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.EmptyCoroutineContext
@@ -35,6 +36,7 @@ import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * One-way latency every simulated path carries unless a scenario says otherwise — so the DEFAULT is a
@@ -572,7 +574,12 @@ internal suspend fun <R> withMigrationSim(
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
         val ledger = DatagramLedger(bufferFactory)
-        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger)
+        // The pipe's notion of "now" for a link that comes good at an instant: the test scheduler's
+        // virtual clock when there is one, the wall clock otherwise — the same choice `clock` resolved.
+        val scheduler = coroutineContext[TestCoroutineScheduler]
+        val wallOrigin = TimeSource.Monotonic.markNow()
+        val now: () -> Duration = if (scheduler == null) ({ wallOrigin.elapsedNow() }) else ({ scheduler.currentTime.milliseconds })
+        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger, now)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
         val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
 

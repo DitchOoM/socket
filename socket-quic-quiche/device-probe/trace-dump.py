@@ -14,6 +14,10 @@ library mints is 20 bytes), or the length-prefixed field of a long header.
 
 Repeated ERROR / STATS / SILENCE lines are thinned so a 30-second stall reads as a page, not a scroll;
 `--all` prints every one.
+
+The grammar parsed here — `v1 <offset-ns> <KIND> <fields…>` — is owned by `TraceFormat.kt` in
+`socket-testkit` (`TraceEvent.toString()` writes it, `TraceEvent.parse()` reads it back); this tool only
+splits on the first four spaces and prints any kind it does not know verbatim.
 """
 
 import argparse

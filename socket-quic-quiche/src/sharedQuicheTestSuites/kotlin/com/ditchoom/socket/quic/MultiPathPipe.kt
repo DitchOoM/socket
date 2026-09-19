@@ -31,17 +31,31 @@ import kotlin.time.Duration
  * loopback burst of 12 migrations survives both patched and unpatched quiche (RTT≈0 leaves no window),
  * while a real ~40ms path reproduced it immediately.
  *
- * [blackhole] is the #447 condition: a path that swallows everything in both directions, so the
+ * [reach] is the #447 condition: a [PathReach.Dark] path swallows everything in both directions, so the
  * PATH_CHALLENGE is never answered and validation runs out its RFC 9000 §8.2.4 budget. It is a
  * property of the path rather than of the pipe so one path can die while the others stay healthy —
  * which is what a real handoff looks like and what `ImpairedPipe.blackhole` (whole-pipe) cannot model.
+ * [PathReach.DarkUntil] is the walk's cellular attach: a link that is dark for a while and then
+ * answers every path on it, which no per-path or per-index blackhole can express.
  */
 internal data class PathImpairment(
     val latency: Duration = Duration.ZERO,
     val jitter: Duration = Duration.ZERO,
     val loss: Double = 0.0,
-    val blackhole: Boolean = false,
+    val reach: PathReach = PathReach.Open,
 )
+
+/** Whether a path carries datagrams at all: always, never, or only once the sim's clock reaches an instant. */
+internal sealed interface PathReach {
+    data object Open : PathReach
+
+    data object Dark : PathReach
+
+    /** Dark before [at] (virtual time from the run's t0), open from [at] on. */
+    data class DarkUntil(
+        val at: Duration,
+    ) : PathReach
+}
 
 /**
  * A multi-path in-memory UDP substrate: one server endpoint and N client-side local endpoints, each
@@ -61,7 +75,7 @@ internal data class PathImpairment(
  * One seeded [Random] under a lock draws a **fixed two draws per datagram** (loss roll, jitter
  * fraction) in pipe-arrival order, the same discipline [ImpairmentConfig] documents: the decision
  * sequence is a pure function of the seed and arrival order, never of which impairments are enabled.
- * A [PathImpairment.blackhole] drop consumes **no** draws, so killing a path mid-run does not shift
+ * A dark-path ([PathReach]) drop consumes **no** draws, so killing a path mid-run does not shift
  * the seeded sequence of everything around it.
  *
  * Delivery uses `delay()` on [scope], so under `runTest` the whole substrate runs on virtual time and
@@ -75,6 +89,8 @@ internal class MultiPathPipe(
     private val bufferFactory: BufferFactory,
     private val codec: SocketAddressCodec,
     private val ledger: DatagramLedger,
+    /** The sim's clock, for [PathReach.DarkUntil] — virtual under `runTest`, monotonic on a wall clock. */
+    private val now: () -> Duration,
 ) {
     private val rng = Random(seed)
     private val lock = SynchronizedObject()
@@ -211,7 +227,13 @@ internal class MultiPathPipe(
         val impairment = path.impairment
         var delay = Duration.ZERO
         synchronized(lock) {
-            if (impairment.blackhole) {
+            val dark =
+                when (val reach = impairment.reach) {
+                    PathReach.Open -> false
+                    PathReach.Dark -> true
+                    is PathReach.DarkUntil -> now() < reach.at
+                }
+            if (dark) {
                 // No RNG draws: flipping a blackhole must not shift the seeded sequence around it.
                 path.stats.blackholed++
                 return

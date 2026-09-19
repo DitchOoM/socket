@@ -54,6 +54,29 @@ internal object TraceToFixture {
             }
         }
 
+    /**
+     * The input events of [events] from [from] to [to] inclusive, re-based so [from] is the fixture's
+     * t0 — the failing window of a long capture as a fixture of its own. Observations are dropped here
+     * as [toSimEvents] would drop them, so the window is the fixture's entire input.
+     */
+    fun window(
+        events: List<TraceEvent>,
+        from: Duration,
+        to: Duration = Duration.INFINITE,
+    ): List<TraceEvent> =
+        events.filter { it.isInput && it.at >= from && it.at <= to }.map { event ->
+            val at = event.at - from
+            when (event) {
+                is TraceEvent.DgramIn -> event.copy(at = at)
+                is TraceEvent.Error -> event.copy(at = at)
+                is TraceEvent.Net -> event.copy(at = at)
+                is TraceEvent.NetGap -> event.copy(at = at)
+                is TraceEvent.NetCapability -> event.copy(at = at)
+                is TraceEvent.Liveness -> event.copy(at = at)
+                else -> error("not an input event: $event")
+            }
+        }
+
     /** Build an in-memory [SimFixture] from a recorded trace — the replay-smoke entry point. */
     fun toSimFixture(
         name: String,

@@ -98,6 +98,23 @@ per-path datagram tallies, and with `--datagrams` each datagram's direction, siz
 DCID from its plaintext header — which is how a failed handoff is read without the TLS keys: a probe
 is a new local port, and its DCID is the spare the pool spent on it.
 
+### A failing window as a committed fixture
+
+`TraceToFixture.window(events, from)` (jvmTest) takes the input events from `from` on, re-based so
+`from` is the fixture's t0, and `generateKotlin` writes the `simFixture` source. The two walk fixtures
+in `socket-quic-quiche/src/commonTest/.../sim/fixtures/` were made this way, from the last inbound
+datagram of each connection to its close:
+
+| fixture | trace | `from` (ns) |
+|---|---|---|
+| `Walk20260912Conn7DeadLinkHandoff` | `ios-probe/device/logs/20260919T153909Z-walk-0912-0915-traces/conn-0007.trace` | `13066795292` |
+| `Walk20260910Conn1DeadLinkHandoff` | `ios-probe/device/logs/20260911T155035Z-walk-2026-09-10-traces/conn-0001.trace` | `1572876724625` |
+
+The windows themselves (`awk '$2>=<from>'` over the trace, ~30 KB each) are committed under
+`socket-quic-quiche/src/jvmTest/resources/walk-traces/`, and `WalkFixtureRegenerationTests` proves
+the committed fixture source is byte-identical to `TraceToFixture`'s output over them — so the pulled
+traces are not needed to check or regenerate a fixture, only to cut a new window.
+
 The analyzer prints every connection and why it ended, every migration and how long it took, the
 echo counts (late and unanswered separately from failed), RTT and lateness percentiles, the memory
 trend, a **capture health** section (was the trace budget spent, did the heartbeat ever stop, does
