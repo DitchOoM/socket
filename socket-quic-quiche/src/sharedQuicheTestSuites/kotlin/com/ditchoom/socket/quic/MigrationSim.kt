@@ -28,6 +28,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.EmptyCoroutineContext
@@ -35,6 +36,7 @@ import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * One-way latency every simulated path carries unless a scenario says otherwise — so the DEFAULT is a
@@ -520,6 +522,12 @@ internal class MigrationSimEnv(
  * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
  * each path the driver opens afterwards (argument is the 1-based probe index).
  *
+ * [serverQuicOptions] configures the server side on its own; it defaults to [quicOptions] so the two
+ * ends agree unless a scenario says otherwise. The one that does is a peer at a different
+ * `active_connection_id_limit`: quiche caps the source CIDs it issues at
+ * `min(peer limit, its own limit)`, so the client's spare pool is decided by the SERVER's option, and a
+ * sim that shares one options object between the two ends can never see that.
+ *
  * [clock] defaults to [SimClockChoice.Virtual] rather than the calling dispatcher's clock because this
  * harness exists for virtual time (see the class KDoc: 7.168s of §8.2.4 budget in 0ms of wall); it is
  * resolved against the calling dispatcher before anything native is allocated, so calling this from a
@@ -531,6 +539,7 @@ internal suspend fun <R> withMigrationSim(
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
+    serverQuicOptions: QuicOptions = quicOptions,
     establishTimeout: Duration = 60.seconds,
     clock: SimClockChoice = SimClockChoice.Virtual,
     /**
@@ -565,18 +574,23 @@ internal suspend fun <R> withMigrationSim(
         val simJob = SupervisorJob(coroutineContext[Job])
         val simScope = CoroutineScope(coroutineContext + simJob)
         val ledger = DatagramLedger(bufferFactory)
-        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger)
+        // The pipe's notion of "now" for a link that comes good at an instant: the test scheduler's
+        // virtual clock when there is one, the wall clock otherwise — the same choice `clock` resolved.
+        val scheduler = coroutineContext[TestCoroutineScheduler]
+        val wallOrigin = TimeSource.Monotonic.markNow()
+        val now: () -> Duration = if (scheduler == null) ({ wallOrigin.elapsedNow() }) else ({ scheduler.currentTime.milliseconds })
+        val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger, now)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
         val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
         val clientCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
-        listOf(serverCfg, clientCfg).forEach { cfg ->
-            val alpn = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
+        listOf(serverCfg to serverQuicOptions, clientCfg to quicOptions).forEach { (cfg, options) ->
+            val alpn = encodeAlpnList(options.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(quicOptions, SimQuicConfigCalls(api, cfg))
+            applyQuicOptions(options, SimQuicConfigCalls(api, cfg))
         }
         simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             val rc = api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
