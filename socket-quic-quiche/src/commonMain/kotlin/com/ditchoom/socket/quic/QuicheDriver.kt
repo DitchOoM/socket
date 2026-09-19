@@ -239,10 +239,7 @@ class QuicheDriver(
 
     /**
      * The command channel — and the owner of every command in it. A command the channel accepted but
-     * can no longer deliver is failed by the channel itself: a receive that resumed into the loop's
-     * own cancellation would otherwise drop the element on the floor (prompt cancellation), leaving a
-     * `RecvPacket`'s pool buffer unreleased and a deferred nobody will ever complete — and the callers
-     * that `join()` such a deferred do so uncancellably (#588).
+     * cannot deliver is failed by the channel; a cancelled loop fails the command in hand and exits.
      */
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED, onUndeliveredElement = ::failCommand)
 
@@ -1347,12 +1344,9 @@ class QuicheDriver(
                     }
                 // null from onReceiveCatching means channel closed — exit
                 if (cmd == null && commands.isClosedForReceive) break
-                // A dequeue that did not suspend never observed cancellation, so a loop cancelled
-                // while it was busy would go on executing whatever was already queued — against
-                // quiche, and against memory whose ownership the cancellation settled elsewhere
-                // (#588: a RecvPacket dereferenced after its buffer was back in the pool). Cancelled
-                // means nothing more runs: the command in hand is failed the way the teardown drain
-                // fails everything still queued, and the drain takes the rest.
+                // A command the channel accepted but cannot deliver is failed by the channel; a
+                // cancelled loop fails the command in hand — if any — and exits, whether the wake
+                // that observed the cancellation was a dequeued command or a bare timer firing.
                 if (!currentCoroutineContext().isActive) {
                     cmd?.let(::failCommand)
                     break
@@ -1449,9 +1443,9 @@ class QuicheDriver(
                 // buffer; if it freed that buffer after clear(), the release would re-pool it
                 // into a dead pool (BufferPool has no closed state) and the leaf allocation
                 // would never be freed — a real native leak per connection under the
-                // explicit-free (deterministic/network()) factories QUIC always uses. Found by
-                // the W5 timeline fuzzer (empty-timeline idle close, see SimFuzzSmokeTests).
-                // Awaiting here also stops a self-closed connection's reader from lingering
+                // explicit-free (deterministic/network()) factories QUIC always uses, reachable
+                // from an idle close racing an empty timeline. Awaiting here also stops a
+                // self-closed connection's reader from lingering
                 // until the connection scope dies. Bounded: cancellation unblocks receive() on
                 // every UdpChannel (worst case one io_uring submitAndWait tick on Linux).
                 for (entry in paths.values.toList()) {
@@ -2110,7 +2104,6 @@ class QuicheDriver(
                 // (execute, failCommand, or the channel's own undelivered hook); refused — the driver
                 // closed between receive() and this offer, an idle-timeout or error close racing an
                 // inbound datagram — nothing else will ever see it, so this loop releases it, and stops.
-                // Found by the W5 timeline fuzzer (see ReaderLoopCloseRaceRegressionTests).
                 val packet = QuicheCmd.RecvPacket(buf, received, PacketSource.FromPath(entry.key))
                 if (commands.trySend(packet).isFailure) {
                     packet.release()
