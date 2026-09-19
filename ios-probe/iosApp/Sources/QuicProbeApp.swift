@@ -34,8 +34,11 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var ticker: Timer?
 
-    // Defaults match the Android probe so the two recordings can be read side by side.
-    var host: String = "178.156.248.95"
+    // Defaults match the Android probe so the two recordings can be read side by side. The host is
+    // overridable per launch without a rebuild: `devicectl device process launch … -- -host <addr>`
+    // lands in UserDefaults' argument domain, so an IPv6 literal (or any other server) is one launch
+    // away. A tap on the icon launches with no arguments and gets the default.
+    var host: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95"
     var port: Int32 = 44433
     var minutes: Int32 = 4500
 
