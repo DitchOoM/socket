@@ -10,7 +10,7 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  * name is refused silently and that connection has no qlog. Name it from something the consumer
  * owns and never reuses — a per-connection sequence number, the same one its replay trace carries —
  * not from a native handle, which the allocator hands to the next connection as soon as this one is
- * freed (#621).
+ * freed.
  */
 sealed interface QlogTarget {
     /** No qlog for this connection (a `QUIC_QLOG_DIR` environment, if any, still applies). */

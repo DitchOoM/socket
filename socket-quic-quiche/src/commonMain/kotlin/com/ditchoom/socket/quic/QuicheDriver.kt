@@ -1297,11 +1297,10 @@ class QuicheDriver(
      * Where this connection's qlog goes: the capture's own [QlogTarget] when it named one, else the
      * `QUIC_QLOG_DIR` diagnostics door, else nowhere.
      *
-     * The environment fallback names the file by [sessionId] — quiche's trace id, the SCID this endpoint
-     * chose, unique to this connection for its whole life. It used to be named by the native handle,
-     * which the allocator hands to the next connection the moment this one is freed; with quiche's
-     * `create_new` open every connection after the first was refused silently, and a 75 h iOS walk of
-     * 14 connections pulled one `.sqlog` (#621).
+     * The environment fallback names the file by [sessionId], quiche's trace id, the SCID this endpoint
+     * chose, unique to this connection for its whole life. quiche opens with `create_new`, so a name
+     * that repeats within a process is refused; a name must therefore come from the connection's
+     * identity, never from a reusable handle.
      */
     private fun qlogTarget(): QlogTarget =
         when (val on = capture) {

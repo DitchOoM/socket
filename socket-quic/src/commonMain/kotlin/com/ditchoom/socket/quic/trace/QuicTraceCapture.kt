@@ -22,7 +22,7 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  * buffer) and concurrent connections stay isolated and independently replayable. It mints the
  * connection's [QlogTarget] in the same call, so a consumer that also wants quiche's own frame-level
  * record names the two records together — `conn-0007.trace` beside `conn-0007.sqlog` — from one
- * sequence number it owns (#621). The convenience factory that takes a single
+ * sequence number it owns. The convenience factory that takes a single
  * [com.ditchoom.socket.testkit.trace.TraceSink] is the opposite choice on purpose — it hands the
  * *same* sink to every connection (log-sink semantics), fine for one connection or for aggregate
  * diagnostics but not for per-connection replay.
