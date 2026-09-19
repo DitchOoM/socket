@@ -23,10 +23,11 @@ Three records, kept side by side so a bug in any one instrument leaves the other
   observations. Feed it to `TraceToFixture` and the connection replays through the sim in virtual
   time, on every platform, forever. A field bug becomes a committed regression test instead of
   another walk.
-- `qlog/quiche-client-*.sqlog` — **quiche's own frame-level record** (packets, frames, recovery,
-  congestion, transport parameters), decrypted by quiche itself. This is the one record that does
-  not pass through this library's code, so it is what a bug in the trace or the log is checked
-  against. ~1.4 GB per 75 h at 250 ms.
+- `qlog/conn-NNNN.sqlog` — **quiche's own frame-level record** (packets, frames, recovery,
+  congestion, transport parameters), decrypted by quiche itself, one per connection and named to
+  pair with that connection's `traces/conn-NNNN.trace`. This is the one record that does not pass
+  through this library's code, so it is what a bug in the trace or the log is checked against.
+  ~1.4 GB per 75 h at 250 ms, however many connections the walk splits across.
 
 `pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
 this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
