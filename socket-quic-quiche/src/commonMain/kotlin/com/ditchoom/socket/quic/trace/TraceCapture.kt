@@ -1,11 +1,12 @@
 package com.ditchoom.socket.quic.trace
 
-/** Whether a connection records a trace. */
+/** Whether a connection records a trace, and where quiche writes its qlog beside it. */
 sealed interface TraceCapture {
     data object Off : TraceCapture
 
     class On(
         val recorder: QuicTraceRecorder,
+        val qlog: QlogTarget = QlogTarget.Off,
     ) : TraceCapture
 }
 

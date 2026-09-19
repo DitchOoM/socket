@@ -19,6 +19,8 @@ import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
@@ -51,7 +53,6 @@ import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
-import platform.posix.setenv
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.timeIntervalSince1970
 import kotlin.concurrent.Volatile
@@ -233,10 +234,12 @@ object IosHandoffProbe {
         log.emit("START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
         log.emit(kept)
         // quiche's own frame-level record, one .sqlog per connection: evidence written by quiche
-        // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h. The
-        // driver reads the directory from the environment once per connection.
+        // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h — the
+        // walk's total, however many connections it splits across. Each connection names its own file
+        // from the same sequence number as its trace (conn-NNNN.sqlog beside conn-NNNN.trace); the
+        // environment door used to name it by the native handle, which the next connection reuses, so
+        // quiche's create_new refused every qlog after the first (#621).
         NSFileManager.defaultManager.createDirectoryAtPath(qlogDir(), true, null, null)
-        setenv("QUIC_QLOG_DIR", qlogDir(), 1)
 
         // The in-memory tail the stall watchdog dumps inline. It is NOT the record of the walk: it
         // holds about a minute and is drained only when the echo loop stops, so a migration the
@@ -252,7 +255,7 @@ object IosHandoffProbe {
         val budget = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds)
         log.emit(budget.line)
         val traceFiles =
-            WalkTraceFiles(traceDir(), budget.bytes) { spent ->
+            WalkTraceFiles(traceDir(), qlogDir(), budget.bytes) { spent ->
                 log.emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point.",
@@ -265,14 +268,18 @@ object IosHandoffProbe {
                 verifyPeer = false,
                 trace =
                     QuicTraceCapture(
-                        sinkFor = {
-                            val file = traceFiles.next()
+                        captureFor = {
+                            val connection = traceFiles.next()
                             // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
-                            // keeps this connection's own replayable trace.
-                            TraceSink { event ->
-                                ring.emit(event)
-                                file.emit(event)
-                            }
+                            // keeps this connection's own replayable trace. The qlog rides along unchanged.
+                            connection.copy(
+                                sink =
+                                    TraceSink { event ->
+                                        ring.emit(event)
+                                        connection.sink.emit(event)
+                                        if (event is TraceEvent.QlogRefused) log.emit("QLOG-REFUSED path=${event.path}")
+                                    },
+                            )
                         },
                         // The connectivity stream is half of every migration question — which trigger
                         // fired, and whether the platform had even noticed the link yet. It was off.
@@ -708,13 +715,17 @@ private val WRITE_DEADLINE = 5.seconds
 private const val RING_CAPACITY = 256
 
 /**
- * One file-backed [TraceSink] per connection, under a shared byte budget.
+ * One file-backed [TraceSink] per connection, under a shared byte budget, and beside it the qlog
+ * quiche writes for that connection — both named from one sequence number, `conn-NNNN`, so the two
+ * records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
+ * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
  */
 private class WalkTraceFiles(
     private val dir: String,
+    private val qlogDir: String,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
@@ -743,19 +754,22 @@ private class WalkTraceFiles(
         }
     }
 
-    fun next(): TraceSink {
-        val path = "$dir/conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace"
-        return TraceSink { event ->
-            val line = event.toString() + "\n"
-            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
-            if (charge(line.length)) {
-                val file = fopen(path, "a")
-                if (file != null) {
-                    fputs(line, file)
-                    fclose(file)
+    fun next(): QuicConnectionCapture {
+        val name = "conn-" + connections.incrementAndGet().toString().padStart(4, '0')
+        val path = "$dir/$name.trace"
+        val sink =
+            TraceSink { event ->
+                val line = event.toString() + "\n"
+                // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+                if (charge(line.length)) {
+                    val file = fopen(path, "a")
+                    if (file != null) {
+                        fputs(line, file)
+                        fclose(file)
+                    }
                 }
             }
-        }
+        return QuicConnectionCapture(sink, QlogTarget.File("$qlogDir/$name.sqlog"))
     }
 }
 

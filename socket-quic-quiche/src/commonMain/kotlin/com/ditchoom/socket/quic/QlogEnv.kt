@@ -5,7 +5,10 @@ package com.ditchoom.socket.quic
  * common case).
  *
  * Diagnostics seam: [QuicheDriver] reads this once per connection to decide whether to enable
- * quiche's qlog. Kept as an `expect`/`actual` reader because Kotlin has no multiplatform `getenv` —
+ * quiche's qlog, and names the file by the connection's session id (`quiche-<role>-<session>.sqlog`).
+ * A capture that names its own [com.ditchoom.socket.quic.trace.QlogTarget.File] takes precedence —
+ * that is how a probe pairs `conn-NNNN.sqlog` with `conn-NNNN.trace`. Kept as an `expect`/`actual`
+ * reader because Kotlin has no multiplatform `getenv` —
  * JVM/Android use `System.getenv`, Linux/Native use POSIX `getenv`. Returns `null` on any backend
  * with no environment surface, so qlog simply stays disabled there.
  *

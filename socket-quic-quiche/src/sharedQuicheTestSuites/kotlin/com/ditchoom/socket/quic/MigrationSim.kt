@@ -648,7 +648,10 @@ internal suspend fun <R> withMigrationSim(
 
         // The same opt-in a device sets, on the sim's own clock so offsets are virtual time.
         val simCapture: TraceCapture =
-            quicOptions.trace?.let { TraceCapture.On(QuicTraceRecorder(it.sinkFor(), driverClock)) } ?: TraceCapture.Off
+            quicOptions.trace?.let {
+                val connection = it.captureFor()
+                TraceCapture.On(QuicTraceRecorder(connection.sink, driverClock), connection.qlog)
+            } ?: TraceCapture.Off
 
         val clientDriver =
             QuicheDriver(

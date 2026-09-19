@@ -17,6 +17,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
@@ -162,30 +164,23 @@ class DeviceHandoffProbe {
             return session.reply(seq, reply, now())
         }
 
-        // Frame-level evidence, off by default. The driver's qlog seam reads the `quic.qlog.dir`
-        // system property (or QUIC_QLOG_DIR, which an `am instrument` run cannot set) — so a device is
-        // the one place a real handoff can be recorded and, until that property existed, the one place
-        // qlog could not be turned on. Writes one .sqlog per connection into the app's external files
-        // dir, where `adb pull` can reach it. Off by default because at a 100ms cadence it is megabytes
-        // per minute and it is an instrument, not a feature.
+        // Frame-level evidence, off by default: quiche's own record, one .sqlog per connection in the
+        // app's external files dir where `adb pull` can reach it, named by the same sequence number as
+        // the connection's trace (conn-NNNN.sqlog beside conn-NNNN.trace). Named here, per connection,
+        // rather than through the `quic.qlog.dir` door: that door named the file by the native handle,
+        // which the next connection reuses, so quiche's create_new refused every qlog after the first
+        // (#621). Off by default because at a 100ms cadence it is megabytes per minute and it is an
+        // instrument, not a feature.
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Every walk this rig has lost was lost by a START.
         val kept = PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog"))
-        val qlog = arg("probeQlog", "").isNotEmpty()
-        val qlogDir = File(dir, "qlog")
-        if (qlog) {
-            qlogDir.mkdirs()
-            System.setProperty("quic.qlog.dir", qlogDir.absolutePath)
-        } else {
-            System.clearProperty("quic.qlog.dir")
-        }
+        val qlog = if (arg("probeQlog", "").isNotEmpty()) WalkQlog.Into(File(dir, "qlog").also { it.mkdirs() }) else WalkQlog.Off
 
         log.writeText("")
         emit(kept.line)
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
-                "minutes=$minutes echoIntervalMs=$echoIntervalMs " +
-                "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog",
         )
 
         // The in-memory tail the stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
@@ -213,7 +208,7 @@ class DeviceHandoffProbe {
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
         val traceFiles =
-            WalkTraceFiles(traceDir, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir, qlog, budget.bytes) { spent ->
                 emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
@@ -226,14 +221,18 @@ class DeviceHandoffProbe {
                 verifyPeer = false,
                 trace =
                     QuicTraceCapture(
-                        sinkFor = {
-                            val file = traceFiles.next()
+                        captureFor = {
+                            val connection = traceFiles.next()
                             // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
-                            // keeps this connection's own replayable trace.
-                            TraceSink { event ->
-                                ring.emit(event)
-                                file.emit(event)
-                            }
+                            // keeps this connection's own replayable trace. The qlog rides along unchanged.
+                            connection.copy(
+                                sink =
+                                    TraceSink { event ->
+                                        ring.emit(event)
+                                        connection.sink.emit(event)
+                                        if (event is TraceEvent.QlogRefused) emit("QLOG-REFUSED path=${event.path}")
+                                    },
+                            )
                         },
                         // The connectivity stream is half of every migration question — which trigger
                         // fired, and whether the platform had even noticed the link yet. It was off.
@@ -879,14 +878,31 @@ private class RingTraceSink(
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
 
+/** Whether this walk records quiche's qlog, and into which directory. */
+private sealed interface WalkQlog {
+    data object Off : WalkQlog {
+        override fun toString(): String = "off"
+    }
+
+    data class Into(
+        val dir: File,
+    ) : WalkQlog {
+        override fun toString(): String = dir.absolutePath
+    }
+}
+
 /**
- * One file-backed [TraceSink] per connection, under a shared byte budget.
+ * One file-backed [TraceSink] per connection, under a shared byte budget, and beside it the qlog
+ * quiche writes for that connection — both named from one sequence number, `conn-NNNN`, so the two
+ * records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
+ * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
  */
 private class WalkTraceFiles(
     private val dir: File,
+    private val qlog: WalkQlog,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
@@ -911,13 +927,21 @@ private class WalkTraceFiles(
         }
     }
 
-    fun next(): TraceSink {
-        val file = File(dir, "conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace")
-        return TraceSink { event ->
-            val line = event.toString() + "\n"
-            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
-            if (charge(line.length)) runCatching { file.appendText(line) }
-        }
+    fun next(): QuicConnectionCapture {
+        val name = "conn-" + connections.incrementAndGet().toString().padStart(4, '0')
+        val file = File(dir, "$name.trace")
+        val sink =
+            TraceSink { event ->
+                val line = event.toString() + "\n"
+                // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+                if (charge(line.length)) runCatching { file.appendText(line) }
+            }
+        val target =
+            when (qlog) {
+                WalkQlog.Off -> QlogTarget.Off
+                is WalkQlog.Into -> QlogTarget.File(File(qlog.dir, "$name.sqlog").absolutePath)
+            }
+        return QuicConnectionCapture(sink, target)
     }
 }
 

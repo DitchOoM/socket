@@ -109,6 +109,30 @@ The single-`TraceSink` convenience constructor (`QuicTraceCapture(sink = …)`) 
 on purpose: it hands the **same** sink to every connection (log-sink semantics) — fine for a single
 connection or aggregate diagnostics, but it interleaves concurrent connections onto one stream.
 
+## Pairing quiche's qlog with the trace
+
+quiche can write its own frame-level record of a connection (a `.sqlog`) beside the replay trace.
+The `captureFor` factory mints both for a connection in one call, so one sequence number the
+consumer owns names the two records together:
+
+```kotlin
+val connections = AtomicInteger(0)
+val capture = QuicTraceCapture(
+    captureFor = {
+        val name = "conn-%04d".format(connections.incrementAndGet())
+        QuicConnectionCapture(
+            sink = fileSink("$dir/$name.trace"),
+            qlog = QlogTarget.File("$dir/$name.sqlog"),
+        )
+    },
+)
+```
+
+quiche opens the qlog with `create_new`, so the path must be unique per connection — a repeated
+name is refused and that connection has no qlog. `QUIC_QLOG_DIR` (or the `quic.qlog.dir` system
+property on the JVM) is the door for a capture that names no qlog: every connection then writes
+`quiche-<role>-<session id>.sqlog` there.
+
 ## Event types
 
 Each `TraceEvent` is either a replayable **input** or an observed **observation** (RFC §2):
