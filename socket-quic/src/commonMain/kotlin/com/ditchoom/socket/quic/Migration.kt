@@ -153,12 +153,8 @@ sealed interface MigrationResult {
              * attempt was abandoned before a probe was ever sent.
              *
              * Distinct from [LocalPathUnavailable] because nothing failed: the platform was still
-             * trying. Measured on iOS with a v4-only Wi-Fi joining under a connection to an IPv6 peer,
-             * Network.framework held the new socket in `waiting` for 95 s before re-homing it — and
-             * for those 95 s the driver that awaited it inline sent nothing on the path it already
-             * had, so the peer's stateful path expired underneath a perfectly good connection. The
-             * budget is the same one path validation gets (RFC 9000 §8.2.4), and a socket that is not
-             * open by then is treated exactly like a probe that was not answered by then.
+             * trying. The budget is the same one path validation gets (RFC 9000 §8.2.4), and a socket
+             * that is not open by then is treated exactly like a probe that was not answered by then.
              */
             data class LocalPathOpenTimedOut(
                 val budget: Duration,

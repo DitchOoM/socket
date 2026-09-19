@@ -697,11 +697,8 @@ class QuicheDriver(
     private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
     /**
-     * Where the connection's one migration lane stands — one path move at a time (RFC 9000 §9).
-     *
-     * Three states, exhaustive. The nullable [PendingMigration] this replaces could not say "the
-     * platform is still opening the socket", and that is the state #613 lived in for 95 s: the open
-     * was awaited inline in the loop, so nothing could name it and nothing else could run.
+     * Three states, exhaustive: nothing in flight; the platform is opening the socket beside the
+     * loop; the socket is probed and the peer's answer is being timed (RFC 9000 §8.2.4).
      */
     private sealed interface MigrationLane {
         data object Idle : MigrationLane
@@ -1347,7 +1344,7 @@ class QuicheDriver(
                         // would otherwise leave its deferred permanently uncompleted (see
                         // failCommandExceptionally).
                         try {
-                            handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop (#613)
+                            handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
                         } catch (t: Throwable) {
                             failCommandExceptionally(cmd, t)
                             throw t
@@ -2162,11 +2159,8 @@ class QuicheDriver(
      * socket **beside** the loop. [continueMigration] probes the socket once it exists and arms
      * validation; [drainPathEvents] completes the switch once the peer validates the path.
      *
-     * Never suspends. Its predecessor awaited `openPath` inline, and on iOS a v4-only Wi-Fi joining
-     * under an IPv6 peer held that open in Network.framework's `waiting` state for 95 s — 95 s in
-     * which this loop sent nothing on the path the connection still had, so the peer's stateful path
-     * expired beneath a healthy connection (#613). The open now runs as its own job under the same
-     * budget path validation gets, and posts [PathOpened] to the loop when it settles.
+     * Never suspends: a platform open has no bound of its own, so it runs as its own job under
+     * path validation's budget and posts [PathOpened] when it settles.
      */
     private fun handleMigrate(
         cmd: QuicheCmd.Migrate,

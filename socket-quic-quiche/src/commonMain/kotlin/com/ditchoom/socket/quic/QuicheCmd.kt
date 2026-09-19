@@ -199,8 +199,7 @@ sealed interface QuicheCmd {
 /**
  * The socket a [QuicheCmd.Migrate] asked the platform for has settled — opened, failed, or out of
  * budget. Posted by the open that ran *beside* the loop, so the loop picks the migration up where it
- * left it without ever having waited on the platform itself (#613). Top-level because a sealed
- * interface's nested classes cannot be `internal`, and the types this carries are.
+ * left it. Top-level: it carries `internal` types.
  */
 internal class PathOpened(
     val migrate: QuicheCmd.Migrate,
