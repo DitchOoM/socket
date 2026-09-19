@@ -94,8 +94,8 @@ class NetworkMonitorScript(
          * replay that advanced [NetworkMonitor.observationCount] by `droppedBefore + 1` while the relay
          * kept stamping contiguous sequences would emit a stream whose
          * [ObservationSequence.droppedSince] is `0` everywhere, and re-recording that ride would produce
-         * a trace with no gap in it at all — the second-generation loss issue #315 exists to close. With
-         * the jump, a recorded gap survives replay and re-recording unchanged.
+         * a trace with no gap in it at all. With the jump, a recorded gap survives replay and
+         * re-recording unchanged.
          *
          * A plain [Long] and not a sealed "no claim"/"confirmed zero" pair: on the *script* side the two
          * replay identically (a plain `+1`), so the distinction would be a difference with no behaviour.

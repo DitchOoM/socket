@@ -96,7 +96,7 @@ class ScriptedNetworkMonitor(
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
             // recordAfterGap, not record: a scripted gap has to jump the sequence, or the replayed
-            // stream comes out contiguous and a re-recording of it carries no gap at all (issue #315).
+            // stream comes out contiguous and a re-recording of it carries no gap at all.
             observationRelay.recordAfterGap(transition.state, transition.droppedBefore)
         }
     }

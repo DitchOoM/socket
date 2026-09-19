@@ -18,8 +18,8 @@ package com.ditchoom.socket
  * ```
  *
  * `private` would also avoid it, but then the two callers above each need their own copy. This is the
- * general hazard of the two modules sharing the `com.ditchoom.socket` package (issue #269 kept it that
- * way so nothing downstream changed an import): any `internal` or public top-level added here must not
+ * general hazard of the two modules sharing the `com.ditchoom.socket` package (kept so that no
+ * downstream import changes): any `internal` or public top-level added here must not
  * collide by name with one in `:socket`. Note the failure surfaces only at the JS **IR link**
  * (`compileTestDevelopmentExecutableKotlinJs` / `jsNodeTest`), not at `compileTestKotlinJs`.
  */

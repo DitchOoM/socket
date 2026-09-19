@@ -147,8 +147,8 @@ class ObservationRelay(
      * This is what makes a recorded gap replayable rather than merely reportable. A replay that bumped a
      * side-channel count by `dropped + 1` while [record] kept stamping contiguous sequences underneath
      * would produce a stream whose [ObservationSequence.droppedSince] is `0` between every pair — so
-     * re-recording a replayed ride would erase exactly the information the capture was taken for
-     * (issue #315). Jumping the sequence instead means a re-recording measures the same `dropped` back
+     * re-recording a replayed ride would erase exactly the information the capture was taken for.
+     * Jumping the sequence instead means a re-recording measures the same `dropped` back
      * out, and [count] follows for free: it is assigned from the observation's own sequence, so density
      * and sequence cannot drift apart.
      *

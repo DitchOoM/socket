@@ -473,9 +473,9 @@ internal fun androidLinkQuality(signalStrength: Int?): LinkQuality =
  * Why a gate exists at all: below O the monitor registers an `INTERNET` [NetworkRequest], and
  * `registerNetworkCallback` fires for **every** network satisfying the request — with Wi-Fi associated
  * and cell data enabled (the ordinary phone state), `onCapabilitiesChanged` interleaves for two live
- * networks on a completely stable device. Publishing each one flapped [NetworkMonitor.state] between
- * two [NetworkId.Link]s; on the old two-flow surface that only jittered the identity flow, but now the
- * same flap drives `pathChanges()` — and QUIC auto-migration — into spurious migrations. The process's
+ * networks on a completely stable device. Publishing each one flaps [NetworkMonitor.state] between
+ * two [NetworkId.Link]s, and that flap drives `pathChanges()` — and QUIC auto-migration — into spurious
+ * migrations. The process's
  * **default** network is the tie-break authority (the same one `seedInitialState` already uses to
  * answer "which network are we on"), so a non-default network's chatter is ignored.
  *
