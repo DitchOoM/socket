@@ -327,6 +327,20 @@ sealed interface TraceEvent {
     }
 
     /**
+     * quiche refused to open this connection's qlog at [path] — `create_new` found a file already
+     * there, or a missing directory. Diagnostics only, never fatal to the connection: without this
+     * line a refused qlog is silent past a console print, so a walk's replay trace is the only
+     * durable record that a connection ran with no frame-level capture. Observation: it describes
+     * what this endpoint's own filesystem did, not a network input replay can inject.
+     */
+    data class QlogRefused(
+        override val at: Duration,
+        val path: String,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * True for the replayable input-event subset (RFC §2), false for observations.
      *
      * The exhaustive `when` is load-bearing, not stylistic: it is what makes adding a variant a
@@ -339,8 +353,11 @@ sealed interface TraceEvent {
                 is DgramIn, is Error, is Net, is NetGap, is NetCapability, is Liveness -> true
                 // StreamLoss is an OBSERVATION: it records what this endpoint did with bytes it had
                 // already received. Replay drives the transport from the far side, so feeding one back
-                // in would be replaying our own reaction, not the input that caused it.
-                is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence -> false
+                // in would be replaying our own reaction, not the input that caused it. QlogRefused is
+                // the same shape: a local filesystem fact, not something the far side caused.
+                is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence,
+                is QlogRefused,
+                -> false
             }
 
     /**

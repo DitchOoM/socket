@@ -230,6 +230,7 @@ class DeviceHandoffProbe {
                                     TraceSink { event ->
                                         ring.emit(event)
                                         connection.sink.emit(event)
+                                        if (event is TraceEvent.QlogRefused) emit("QLOG-REFUSED path=${event.path}")
                                     },
                             )
                         },

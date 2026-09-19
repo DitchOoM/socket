@@ -68,6 +68,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *                                                                       ;   before the NEXT "NET" line
  *             | "NET_CAP" SP mechanism SP resolution                    ; input: MonitorCapability, once
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
+ *             | "QLOG_REFUSED" SP path                                  ; observation: quiche's
+ *                                                                       ;   `create_new` open refused
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
  * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
  * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"
@@ -234,6 +236,16 @@ class QuicTraceRecorder(
     /** Record a liveness probe outcome (LIVENESS). */
     fun livenessResult(result: TransportLiveness.Result) {
         record(TraceEvent.Liveness(now(), result))
+    }
+
+    /**
+     * Record that quiche refused to open this connection's qlog at [path] (QLOG_REFUSED) — the
+     * `create_new` guard found a file already there, or a missing directory. Diagnostics only: the
+     * connection runs on unaffected, but a refused qlog is otherwise visible only on stdout, so a
+     * walk's own replay trace would carry no evidence a connection ran with no frame-level capture.
+     */
+    fun qlogRefused(path: String) {
+        record(TraceEvent.QlogRefused(now(), path))
     }
 
     /**

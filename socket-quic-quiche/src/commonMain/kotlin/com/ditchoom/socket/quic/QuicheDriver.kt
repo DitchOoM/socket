@@ -1343,8 +1343,12 @@ class QuicheDriver(
             when (val qlog = enableQlog()) {
                 QlogOutcome.Off -> Unit
                 is QlogOutcome.Tracing -> println("[qlog] tracing ${role.label} connection $sessionId to ${qlog.path}")
-                is QlogOutcome.Refused ->
+                is QlogOutcome.Refused -> {
                     println("[qlog] refused ${qlog.path} for ${role.label} connection $sessionId — a file already there, or no directory")
+                    // stdout alone does not reach the walk record: without this the replay trace has no
+                    // evidence this connection ran with no frame-level capture.
+                    capture.record { it.qlogRefused(qlog.path) }
+                }
             }
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
