@@ -297,8 +297,8 @@ internal class IoUringServerConnectionUdpChannel(
         // the fixed peer.
         //
         // Its `from` (sendInfo.from) is deliberately NOT honoured here — this legacy proxy channel
-        // sends through a single `serverChannel` fd with no per-send source control, so #556's reply
-        // pinning belongs to the io_uring cmsg work (step 2), not to this class. The shared
+        // sends through a single `serverChannel` fd with no per-send source control, so reply-source
+        // pinning belongs to the io_uring cmsg path, not to this class. The shared
         // ServerConnectionUdpChannel is what the Linux server actually runs.
         val dest = (target as? SendTarget.ServerReply)?.to
         if (dest != null && dest.family != 0) {

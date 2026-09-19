@@ -24,13 +24,13 @@ package com.ditchoom.socket.quic
  *
  * ## The invariant the type carries
  * In [Supported] the sockaddrs are real by construction — [PinnedSockAddr] rejects the null pointer and
- * a non-positive length — so no code downstream re-checks them, and `0L` can no longer mean "absent".
+ * a non-positive length — so no code downstream re-checks them, and `0L` cannot mean "absent".
  * In every other case there are no addresses at all, rather than addresses that happen to be zero.
  *
  * ## Why "cannot migrate" is three cases, not one
- * A single `Unsupported` conflated three genuinely different facts — *this is a server*, *the caller
- * forbade it*, and *this backend has no path factory* — and `QuicScope.migrate()` therefore answered one
- * opaque value for all of them. Each maps 1:1 onto an [MigrationResult.Unmoved.Impossible] leaf, so
+ * A single `Unsupported` would conflate three genuinely different facts — *this is a server*, *the
+ * caller forbade it*, and *this backend has no path factory* — and `QuicScope.migrate()` would answer
+ * one opaque value for all of them. Each maps 1:1 onto an [MigrationResult.Unmoved.Impossible] leaf, so
  * `handleMigrate`'s answer is a translation rather than a judgement.
  */
 @InternalQuicApi

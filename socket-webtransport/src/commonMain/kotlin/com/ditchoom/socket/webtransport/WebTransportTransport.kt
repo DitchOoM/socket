@@ -131,9 +131,8 @@ class WebTransportTransport(
             try {
                 mux.block()
             } finally {
-                // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
-                // let this block return would otherwise lose it silently — and before #382, send()
-                // returning meant written, so that was a correct program (#382, review finding M3).
+                // Drain before cancelling. send() is a hand-off, not a write, so a caller that queued a
+                // frame and let this block return would otherwise lose it silently.
                 mux.closeMintedConnections()
                 muxScope.cancel()
             }

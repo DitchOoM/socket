@@ -69,11 +69,11 @@ internal suspend fun buildLinuxQuicConnection(
     requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
-    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
-    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production uses the defaults; the sim
+    // harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
     // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
-    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): LinuxQuicConnection {
     // GREASE is forced off on a shared port before anything reads these — see
@@ -104,7 +104,7 @@ internal suspend fun buildLinuxQuicConnection(
 
             applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
 
-            // Pinned CA trust anchors (#99): load the PEM bundle as the verification
+            // Pinned CA trust anchors: load the PEM bundle as the verification
             // anchors so Linux enforces the same private-CA trust as Apple. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads
             // eagerly; we unlink it immediately after. verifyPeer is forced on in
@@ -122,16 +122,15 @@ internal suspend fun buildLinuxQuicConnection(
                 // paths resolve the system CA store on a normal distro, but a bare K/N Linux container
                 // may keep its trust store outside those defaults. Probe the standard system bundle/dir
                 // and load the first present, so verifyPeer=true works without the caller pinning anchors
-                // — the K/N-Linux companion to the JVM/Android default-anchor fix (#182). Best-effort: if
-                // none exist we fall through to BoringSSL's built-in defaults (prior behaviour, unchanged).
+                // — the K/N-Linux companion to the JVM/Android default-anchor fallback. Best-effort: if
+                // none exist we fall through to BoringSSL's built-in defaults.
                 loadSystemCaTrust(config)
             }
 
             // Resolve the peer once (numeric literal → no DNS), then open the connection's primary
-            // :socket-udp path (Phase 6 adapter-first cutover) with a QUIC-sized receive staging buffer,
-            // through the same factory that opens every migration path — so the first path binds the
-            // route's source address like all the others, instead of the unnamed bind #434 removed from
-            // the rest (#519).
+            // :socket-udp path with a QUIC-sized receive staging buffer, through the same factory that
+            // opens every migration path — so the first path binds the route's source address like all
+            // the others, never an unnamed bind.
             val peer = UdpSocket.resolve(hostname, port)
             val codec = SocketAddressCodec(linuxSockAddrLayout)
             val path =
@@ -176,8 +175,8 @@ internal suspend fun buildLinuxQuicConnection(
                     peerSockAddr.length.convert(),
                     config,
                 ) ?: run {
-                    // The sockaddr encodings and the channel are the SockAddrsPinned arm's to release
-                    // (#544); only what that stage does not know about is freed here.
+                    // The sockaddr encodings and the channel are the SockAddrsPinned arm's
+                    // to release; only what that stage does not know about is freed here.
                     scidBuf.freeNativeMemory()
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
@@ -213,7 +212,7 @@ internal suspend fun buildLinuxQuicConnection(
                     // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned via
                     // onCleanup for the driver's life) and the same factory that opened the primary path
                     // above — one per connection, so every path it holds was bound by one source-address
-                    // discipline (#519). Mirrors the JVM client.
+                    // discipline. Mirrors the JVM client.
                     migration =
                         path.origin.migrationCapability(quicOptions.migration) { factory ->
                             MigrationCapability.Supported(
@@ -278,7 +277,7 @@ internal suspend fun buildLinuxQuicConnection(
                 runCatching { reached.channel.close() }
                 parentScope.cancel()
             }
-            // Encoded and unowned: no driver exists to free the two pinned sockaddrs (#544).
+            // Encoded and unowned: no driver exists to free the two pinned sockaddrs.
             is ConnectProgress.SockAddrsPinned -> {
                 reached.peer.free()
                 reached.local.free()
@@ -371,7 +370,7 @@ internal class LinuxQuicConnection(
         capacity: Int,
     ): Int {
         val deferred = CompletableDeferred<Int>()
-        // The buffer travels with its address (#366): quiche writes the DER into it on the driver
+        // The buffer travels with its address: quiche writes the DER into it on the driver
         // loop, so what keeps that memory mapped has to reach the driver too. See [QuicheMemory].
         driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred))
         return deferred.await()
@@ -525,8 +524,7 @@ internal class LinuxQuicConfigCalls(
 /**
  * Effective peer-verification decision, mirroring [applyQuicOptions]'s policy: pinned hashes verify the
  * chain only under RequireBoth; otherwise verify unless explicitly disabled, and always when CA anchors
- * are pinned. Kept local to the connect path deliberately — the shared `resolveVerifyPeer` helper lands
- * with the JVM/Android default-anchor fix (#182); dedupe against it on rebase.
+ * are pinned.
  */
 private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
     if (o.serverCertificateHashes.isNotEmpty()) {
@@ -559,7 +557,7 @@ private fun loadSystemCaTrust(config: CPointer<cnames.structs.quiche_config>) {
 }
 
 /**
- * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path (#99).
+ * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path.
  *
  * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
  * must land on disk; the caller `unlink`s it once `load_verify_locations` has read it. The

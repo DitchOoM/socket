@@ -158,14 +158,13 @@ class QuicheDriver(
      * whose raw pointers are cached inside the recv_info struct. The closure itself
      * keeps those Kotlin-side holders strongly reachable for the driver's lifetime —
      * without it, JVM `DirectByteBuffer`-backed sockaddr buffers can be reclaimed by
-     * GC mid-connection, leaving recvInfo.from dangling. See: socket-quic JVM panic at
-     * quiche/src/ffi.rs:2059 ("unsupported address type").
+     * GC mid-connection, leaving recvInfo.from dangling.
      */
     private val onCleanup: () -> Unit = {},
     /**
      * Server-only: where this connection's **current** source-connection-id set is published, so the
      * server's DCID→driver routing map is a projection of quiche's own table rather than a ledger
-     * replayed from events (#449). Clients leave it null — they demux incoming packets by their
+     * replayed from events. Clients leave it null — they demux incoming packets by their
      * per-path socket, not by an app-level DCID map.
      *
      * The map is load-bearing: it is what decides whether a datagram reaches this connection at all.
@@ -174,14 +173,14 @@ class QuicheDriver(
      * RETIRE_CONNECTION_ID travelling a fast new path routinely overtakes data still in flight on the
      * slow old one. A map that still routes it hands quiche a CID it no longer knows, which quiche
      * reports as `InvalidState` and whose `to_wire()` catch-all becomes PROTOCOL_VIOLATION, killing a
-     * healthy connection over a packet RFC 9000 §5.2.2 says to drop (#437). And a CID quiche has
+     * healthy connection over a packet RFC 9000 §5.2.2 says to drop. And a CID quiche has
      * issued but the map has not learned is the mirror failure: a migrating peer's packets on the new
      * DCID miss the demux entirely, so the PATH_CHALLENGE never arrives and validation fails.
      *
-     * This replaces a pair of `onScidIssued`/`onScidRetired` notifications. Two event streams meant
-     * the map could be wrong forever if either were dropped or applied out of order, and nothing ever
-     * compared the result with quiche. One set-sync has no order to get wrong and repairs itself on
-     * the next projection. See [SourceIdSink].
+     * A single set-sync rather than issued/retired event notifications: two event streams can leave
+     * the map wrong forever if either is dropped or applied out of order, and nothing compares the
+     * result with quiche. One set-sync has no order to get wrong and repairs itself on the next
+     * projection. See [SourceIdSink].
      */
     private val onSourceIds: SourceIdSink? = null,
     /**
@@ -197,7 +196,7 @@ class QuicheDriver(
      * the channel then allocates each datagram straight from this pool and, for an [UdpChannel] that
      * [UdpChannel.ownsReceiveBuffer], hands the pooled buffer to [udpReaderLoop] with no copy — the B2
      * receive-copy elimination. Server-accepted drivers and every test double omit it and get the
-     * default per-connection pool, exactly as before.
+     * default per-connection pool.
      *
      * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
      * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
@@ -208,21 +207,20 @@ class QuicheDriver(
      *
      * Ownership invariant: [bufferFactory] is a **leaf** factory per the
      * `TransportConfig.bufferFactory` contract — this pool is built *from* it.
-     * Never pass an already-pooled factory: wrapping a pool in a pool is the
-     * `80575c1` double-wrap regression (the inner pool reclaims on
-     * `freeNativeMemory()` while the outer pool's accounting still counts the
-     * buffer, so the cap stops bounding RSS). Same shape as the server-side pool
-     * in CommonJvmWithQuicServer.
+     * Never pass an already-pooled factory: wrapping a pool in a pool means the
+     * inner pool reclaims on `freeNativeMemory()` while the outer pool's
+     * accounting still counts the buffer, so the cap stops bounding RSS. Same
+     * shape as the server-side pool in CommonJvmWithQuicServer.
      */
     internal val recvBufPool: BufferPool = newRecvBufPool(bufferFactory),
     /**
-     * When the active path counts as having stopped answering — the data-plane half of #574's trigger.
+     * When the active path counts as having stopped answering — the data-plane half of the migration
+     * trigger.
      *
      * Defaults to [SILENT_PATH_THRESHOLD], the shipped specification; production never passes anything
      * else. It is a parameter rather than a direct read of the constants because those are `const val`
-     * and therefore inlined at every use site, so the only way to vary them was to edit the source and
-     * rebuild: the sweep that chose them could run on exactly one platform, and the margin around them
-     * could not be asserted anywhere. See [SilenceThreshold].
+     * and therefore inlined at every use site, so a test could not vary them or assert the margin
+     * around them. See [SilenceThreshold].
      *
      * ⚠️ Deliberately **last**: inserting it mid-list changes the constructor descriptor for every
      * positional caller, and this repo has no `.api` dump or binary-compatibility gate that would catch
@@ -281,8 +279,8 @@ class QuicheDriver(
      * teardown hands out — and both identity reads dereference the live conn: [sessionId] is
      * initialized lazily and [wireConnectionId] reads fresh by design. Without the latch, a caller
      * building its close exception after cleanup() has run reads connTraceId/connSourceId off a
-     * freed (and possibly reallocated) quiche_conn — a use-after-free observed live during the
-     * #401 hunt. Once non-null, the conn may be gone; identity must come from here.
+     * freed (and possibly reallocated) quiche_conn — a use-after-free. Once non-null, the conn may
+     * be gone; identity must come from here.
      */
     @kotlin.concurrent.Volatile
     private var latchedIdentity: QuicConnectionIdentity? = null
@@ -367,10 +365,9 @@ class QuicheDriver(
      * the driver, [DriverStreamAdapter], and every platform facade funnel through here so a
      * [QuicCloseException] always carries the most specific reason available.
      *
-     * Returns the reason, not a bare [QuicError], so **which side closed** survives the throw. It is
-     * resolved here, from quiche's `peer_error`/`local_error` (see [resolveCloseReason]), and used to
-     * be discarded one line later at every throw site — which is why a post-migration
-     * `PROTOCOL_VIOLATION` (#437) could not be told from one the peer sent us.
+     * Returns the reason, not a bare [QuicError], so **which side closed** survives the throw: it is
+     * resolved here from quiche's `peer_error`/`local_error` (see [resolveCloseReason]), which is what
+     * tells a locally raised `PROTOCOL_VIOLATION` from one the peer sent us.
      */
     fun closeReasonOr(fallback: QuicError): QuicCloseReason {
         val recorded = (state.value as? QuicConnectionState.Closed)?.reason
@@ -378,7 +375,7 @@ class QuicheDriver(
         if (recorded is QuicCloseReason.ByPeer || recorded is QuicCloseReason.ByLocal) return recorded
         // No recorded failure. A NoError fallback names none either, so the recorded shape stands
         // (Graceful when the protocol said so, Unspecified when nothing did, and Unspecified for a
-        // state that is not Closed at all) — the same answer this returned under the old nullable.
+        // state that is not Closed at all).
         if (fallback is QuicError.NoError) return recorded ?: QuicCloseReason.Unspecified
         // The caller computed this error itself, here, so it is a local one: this endpoint failed the
         // operation, whatever the connection state does or does not say.
@@ -396,26 +393,21 @@ class QuicheDriver(
      * has already closed [commands] — so the real reason (idle timeout, crypto error, protocol
      * violation) surfaces as a confusing mid-session `QuicCloseException` from whatever the caller
      * happened to do first, several frames removed from the connect call that actually failed.
+     * Failing here instead keeps the typed [QuicError] attached to the operation that owns it —
+     * establishment — so callers can tell "never came up" from "came up, then broke", and an
+     * establishment-scoped retry can be written without also swallowing genuine mid-session errors.
      *
-     * That misreporting is what made a linuxX64 `:socket-http3` handshake idle-timeout read as an
-     * `openUniStream` failure inside `Http3Connection.bootstrap` (release run `30954202211`). Failing
-     * here instead keeps the typed [QuicError] attached to the operation that owns it — establishment —
-     * so callers can tell "never came up" from "came up, then broke", and an establishment-scoped
-     * retry can be written without also swallowing genuine mid-session errors.
-     *
-     * ## The bound is a close, not a cancellation (#480)
+     * ## The bound is a close, not a cancellation
      * The handshake can also fail to settle at all: nothing closes it and [timeout] — the caller's
      * establishment bound — elapses first. With the production shape (a 15s bound against the 30s
-     * default idle timeout) that is the timer that actually fires, and this used to let `withTimeout`
-     * report it as a bare `TimeoutCancellationException`. That is a `CancellationException`: a
-     * `launch` that dies of one is *cancelled*, not failed, so the establishment failure reached no
-     * handler (the #472 silent-death mechanism, here on the connect path); the connection was then torn
-     * down by scope cancellation and read `Closed(Unspecified)` — the "honest unknown" — for a close
-     * whose reason was perfectly well known. The bound now ends the handshake the way every other
-     * establishment failure ends it: [abandonHandshake] closes the connection with
-     * [QuicError.HandshakeTimeout] and this throws the same reason, so the state channel and the thrown
-     * channel agree. The bound is still the caller's — it fires at exactly [timeout], never at the idle
-     * timeout — and when quiche's idle timer is the shorter of the two it still wins, exactly as before.
+     * default idle timeout) that is the timer that actually fires. A bare `TimeoutCancellationException`
+     * would be a `CancellationException`: a `launch` that dies of one is *cancelled*, not failed, so the
+     * establishment failure would reach no handler, and the connection torn down by scope cancellation
+     * would read `Closed(Unspecified)` for a close whose reason is perfectly well known. So the bound
+     * ends the handshake the way every other establishment failure ends it: [abandonHandshake] closes
+     * the connection with [QuicError.HandshakeTimeout] and this throws the same reason, so the state
+     * channel and the thrown channel agree. The bound is the caller's — it fires at exactly [timeout],
+     * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
     suspend fun awaitEstablished(timeout: Duration) {
         val settled =
@@ -443,10 +435,10 @@ class QuicheDriver(
      * [execute] records as this driver's [LocalCloseVerdict] and sends as NO_ERROR — see
      * [QuicheCmd.Close]), then run the driver down so [transitionToClosed] publishes it.
      *
-     * The close command, not a scope cancellation, because only a close leaves a reason behind:
-     * cancelling the driver is how this case used to end, and it is what produced `Closed(Unspecified)`.
-     * A closed command channel means the connection settled on its own first; that reason is already
-     * recorded and outranks the bound in [closeReasonOr].
+     * The close command, not a scope cancellation, because only a close leaves a reason behind;
+     * cancelling the driver produces `Closed(Unspecified)`. A closed command channel means the
+     * connection settled on its own first; that reason is already recorded and outranks the bound in
+     * [closeReasonOr].
      */
     private suspend fun abandonHandshake(reason: QuicError.HandshakeTimeout) {
         try {
@@ -509,7 +501,7 @@ class QuicheDriver(
      * `deterministic()` factory they churn malloc/free per read.
      *
      * The pool is a recycling optimisation, **not** a leak guard, and the direction of the coupling is
-     * worth stating because #538 got it backwards: a consumer that never releases what `streamRead`
+     * worth stating: a consumer that never releases what `streamRead`
      * handed it is *worse* off with the pool than without, because the slot never returns and every
      * later read misses. Nothing downstream saves such a consumer either. The production leaf is
      * `BufferFactory.network()` = `deterministic()`, whose memory is released by an explicit
@@ -570,11 +562,10 @@ class QuicheDriver(
          * happens here, inside the transition, since "this path stopped holding this id" and "this id
          * was retired" are one event. Every exit from a probe — `FailedValidation`, the RFC 9000
          * §8.2.4 abandon timer, a `quiche_conn_migrate` that refuses an already-validated path, and
-         * the ordinary supersede-by-the-next-migration — goes through it, which is what closes #447.
-         * Only the *success* exit used to retire anything, and it did so at a separate call site with
-         * a sequence number kept in a separate holder.
+         * the ordinary supersede-by-the-next-migration — goes through it, so no exit can leave the id
+         * unretired.
          *
-         * Best-effort by design, exactly as the post-migration §9.5 retirement always was: a refusal
+         * Best-effort by design, like the post-migration §9.5 retirement: a refusal
          * (`OutOfIdentifiers` when this is the last usable id, or a re-retirement of an id quiche has
          * already dropped) costs one pinned slot, not the transition that has already happened. The
          * systemic check that it works is the conformance suite, not this line.
@@ -674,15 +665,13 @@ class QuicheDriver(
      * The path the connection is currently living on — [primary] until the first successful
      * migration, then whatever the latest `Validated` arm switched to.
      *
-     * Every fallback that used to name [primary] ([flushOutgoing]'s single-path egress, the
-     * [PacketSource.Unattributed] recv_info) names this instead: after the primary is retired,
-     * [primary] points at a closed socket and a recv_info the connection no longer uses.
+     * Every fallback ([flushOutgoing]'s single-path egress, the [PacketSource.Unattributed] recv_info)
+     * names this, never [primary]: after the primary is retired, [primary] points at a closed socket
+     * and a recv_info the connection no longer uses.
      *
-     * The DCID sequence in use here is **not** a second field beside this one. It used to be — an
-     * `ActivePath(entry, dcidSeq)` holder — and that shape is precisely why only the active path ever
-     * had an id anyone could retire (#447). It now lives in [PathEntry.slot], where every path has
-     * one, so the §9.5 retirement is a property of leaving a path rather than of one code path
-     * remembering to.
+     * The DCID sequence in use here is **not** a second field beside this one. It lives in
+     * [PathEntry.slot], where every path has one, so the §9.5 retirement is a property of leaving a
+     * path rather than of one code path remembering to.
      */
     private var active: PathEntry = primary
 
@@ -692,7 +681,7 @@ class QuicheDriver(
      * byte-for-byte what it always was. Once true, every datagram's egress is decoded: after an
      * abandoned probe, quiche keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs
      * (`MAX_PROBING_TIMEOUTS`) with the driver's `paths` map back to a single entry — so "one path in
-     * the map" stops implying "quiche only schedules on that path" (#395 item 4).
+     * the map" stops implying "quiche only schedules on that path".
      *
      * Derived, not stored: [pathState] leaves [QuicPathState.Original] in the same command that arms
      * the first successful probe (`handleMigrate` publishes `Probing` before any flush can run) and
@@ -740,8 +729,8 @@ class QuicheDriver(
     private val mutablePathLiveness = MutableStateFlow<PathLiveness>(PathLiveness.Answering)
 
     /**
-     * Whether the path this connection lives on is still answering — the data-plane migration trigger
-     * (#574), read by [wireAutoMigration] beside the platform's reachability signal. See [PathLiveness]
+     * Whether the path this connection lives on is still answering — the data-plane migration trigger,
+     * read by [wireAutoMigration] beside the platform's reachability signal. See [PathLiveness]
      * for what the two values mean and [SILENT_PATH_EXPIRY_THRESHOLD] for what separates them.
      *
      * Published from [sampleActivePathLiveness] on the driver coroutine, so every value it carries was
@@ -922,7 +911,7 @@ class QuicheDriver(
      * another, which on a floor wake meant sending an ack-eliciting PING that answers the very silence
      * being measured.
      *
-     * Ties break on [priority], lowest first, reproducing the chain this replaces: [ProbeAbandon] over
+     * Ties break on [priority], lowest first: [ProbeAbandon] over
      * [KeepAlive] over [QuicheTimeout], because a wake that falls through to `connOnTimeout` hands quiche
      * a timeout it did not ask for and silently swallows an expired probe. [SilenceVerdict] ranks last, so
      * a tie still hands quiche its own timeout.
@@ -1000,8 +989,7 @@ class QuicheDriver(
      * Expiries back off exponentially, so on a 120ms round trip they land at 245 / 735 / 1715 / 3675ms.
      * The run's clock starts at the **first** unanswered expiry, so a 2s floor is met at ≈2.245s, while
      * the fourth expiry — where a verdict evaluated only at expiry wakes must wait — is at 3.675s. This
-     * removes that gap without moving the floor, which is the constant #385 is closed by. Measured end to
-     * end on a 20ms one-way path: 3.062s without it, 2.099s with.
+     * removes that gap without moving the floor.
      *
      * ## ⚠️ Why [SilenceThreshold.patience] gets no arm of its own, measured
      * The obvious symmetry — arm the ceiling too, so a count-short run is declared *at* it rather than at
@@ -1010,8 +998,7 @@ class QuicheDriver(
      * them to be armed about. A path that blips once and heals leaves a `Building(1, …)` run behind that
      * nothing will ever advance or clear: no further expiry to grow it, no datagram to reset it, because
      * the application had nothing more to say. A wall-clock ceiling then declares a **healthy idle path
-     * dead** purely because time passed — measured on the #385 guard at 2ms one-way, which failed with
-     * `expiries=1 elapsed=6s` against a 6s ceiling.
+     * dead** purely because time passed.
      *
      * The floor is immune to that in a way the ceiling is not, which is why one is armed and the other is
      * not: it is offered only once the count is already met, and four unanswered expiries is the evidence
@@ -1055,14 +1042,12 @@ class QuicheDriver(
      * The floor deadline fired: the run has met both halves, so declare it here rather than leaving it to
      * the next sampler read.
      *
-     * ⚠️ **This is what disarms the deadline, and it must not depend on a stats read.** An earlier cut
-     * left the promotion to [publishActivePathLiveness], which needs [sampleActivePathLiveness] to find a
-     * path with `active == true`. quiche clears that flag in `on_failed_validation()` and only picks a
-     * replacement on the *next* `on_timeout` — so the deadline stayed armed, recomputed as `ZERO` on
-     * every iteration, and the spin starved the very `connOnTimeout` that would have restored the active
-     * path. Measured before the fix: **105s of CPU in this loop**, one core pegged, the test scheduler
-     * never going idle. An unanswered probe on cellular is the ordinary case for #574, so that was a
-     * phone-side livelock rather than a test artefact.
+     * ⚠️ **This is what disarms the deadline, and it must not depend on a stats read.** Leaving the
+     * promotion to [publishActivePathLiveness] would need [sampleActivePathLiveness] to find a path with
+     * `active == true`; quiche clears that flag in `on_failed_validation()` and only picks a replacement
+     * on the *next* `on_timeout` — so the deadline would stay armed, recomputed as `ZERO` on every
+     * iteration, and the spin would starve the very `connOnTimeout` that restores the active path: a
+     * livelock, and an unanswered probe on cellular is the ordinary case.
      */
     private fun declareSilenceReached() {
         val progress = activePathProgress
@@ -1078,7 +1063,7 @@ class QuicheDriver(
 
     /**
      * Re-read the **active** path's counters and publish whether it is still answering — the driver
-     * half of #574's data-plane migration trigger. See [PathLiveness] for why a connection needs an
+     * half of the data-plane migration trigger. See [PathLiveness] for why a connection needs an
      * opinion of its own and [SilenceThreshold.isMetBy] for where the line is drawn.
      *
      * ## The evidence, and why it is already here
@@ -1093,7 +1078,7 @@ class QuicheDriver(
      * ## Called on timer wakes, and only for a connection something is watching
      * A loss-detection timer expiring *is* a driver wake, so sampling where the loop already woke adds
      * no timer of its own and costs **nothing at all** on the datagram path, where an extra call per
-     * received datagram would be a real cost (#366). It is not free on the timer path: one
+     * received datagram would be a real cost. It is not free on the timer path: one
      * `quiche_conn_stats` plus up to `pathsCount` `quiche_conn_path_stats` reads, the first of which
      * duplicates the one the trace recorder makes a line above (deliberately — the recorder wants path
      * 0 and this wants the active one, and fusing them would tie an opt-in diagnostic to a shipped
@@ -1168,10 +1153,9 @@ class QuicheDriver(
         // only on expiries, so without `expired > 0` the *elapsed* half of the threshold could be met by
         // a run that has stopped growing — a path that blipped once and healed over an application with
         // nothing more to send leaves a `Building(1, …)` run that no expiry will advance and no datagram
-        // will reset. Time would then be the whole of the evidence. Measured on the #385 guard at 2ms
-        // one-way: `expiries=1 elapsed=6s`, a healthy idle path declared dead, and a migration bought on
-        // nothing at all. The floor deadline is the one deliberate exception, and [floorWake] says why it
-        // is safe there and not here.
+        // will reset. Time would then be the whole of the evidence: a healthy idle path declared dead,
+        // and a migration bought on nothing at all. The floor deadline is the one deliberate exception,
+        // and [floorWake] says why it is safe there and not here.
         val settled =
             when (run) {
                 SilentRun.None, is SilentRun.Declared -> run
@@ -1212,17 +1196,15 @@ class QuicheDriver(
      * This is the reset half of the trigger, and it lives on the datagram path rather than in the
      * sampler because **only here is the ordering known**. A sampler comparing quiche's `recv` counter
      * between two timer wakes learns that a packet arrived somewhere inside the interval, and an
-     * interval that also contains an expiry is ambiguous — measured: detection slipped a whole
-     * doubling, to the fifth expiry at 7.635s instead of the fourth at 3.695s, because the connect-time
-     * baseline's interval contained both.
+     * interval that also contains an expiry is ambiguous: detection slips a whole doubling, to the
+     * fifth expiry instead of the fourth, when the connect-time baseline's interval contains both.
      *
      * It costs two field reads and a comparison on the receive hot path, and allocates only on the
-     * transition out of a run — which is once per episode, not once per datagram (#366's standard for
-     * this path).
+     * transition out of a run — which is once per episode, not once per datagram.
      *
      * A datagram quiche then rejects still counts. That is deliberate: the question this trigger asks
      * is whether the *path* is carrying anything, and the bias of being wrong here is toward not
-     * migrating, which is the side #385 says to err on.
+     * migrating, which is the safe side.
      */
     private fun activePathAnswered() {
         val previous = activePathProgress as? ActivePathProgress.Read ?: return
@@ -1467,7 +1449,7 @@ class QuicheDriver(
                 if (cmd == null) {
                     capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
                     // …and the same wake is where the loss-detection timer expires, which is the whole
-                    // of #574's data-plane migration trigger. Gated on there being a collector, which
+                    // of the data-plane migration trigger. Gated on there being a collector, which
                     // is the honest test of "could anyone act on this": the reactor subscribes only
                     // under MigrationPolicy.Automatic with a monitor whose identity can change, so
                     // Manual, Forbidden, AlwaysAvailable and every server connection pay nothing.
@@ -1483,22 +1465,20 @@ class QuicheDriver(
                 // Publish the terminal state FIRST, while `conn` is still alive (cleanup() frees it
                 // below) so quiche's peer/local CONNECTION_CLOSE and its timed-out flag are still
                 // readable. The loop also exits on paths quiche never reports via connIsClosed — the
-                // connection scope being cancelled, or a throw unwinding the loop — and on those only
-                // cleanup() used to run, which closes `commands` while leaving `state` on Established
-                // forever. Every caller that then hit the closed channel resolved its reason through
-                // closeReasonOr, documented as reading `state` as the single source of truth, and so
-                // got the NoError fallback: the opaque `QuicCloseException: connection closed` that
-                // made the API-35 emulator failure in run 31027926910 undiagnosable. Idempotent — a
-                // no-op when the loop already exited through the normal connIsClosed transition.
+                // connection scope being cancelled, or a throw unwinding the loop — and cleanup() alone
+                // would close `commands` while leaving `state` on Established forever: every caller
+                // that then hit the closed channel would resolve its reason through closeReasonOr,
+                // which reads `state` as the single source of truth, and get the opaque NoError
+                // fallback. Idempotent — a no-op when the loop already exited through the normal
+                // connIsClosed transition.
                 transitionToClosed()
                 // Readers FIRST: cancel and await every reader loop (primary included) before
                 // cleanup() clears the recv pool. A reader parked in receive() holds a pool
                 // buffer; if it freed that buffer after clear(), the release would re-pool it
                 // into a dead pool (BufferPool has no closed state) and the leaf allocation
                 // would never be freed — a real native leak per connection under the
-                // explicit-free (deterministic/network()) factories QUIC always uses, reachable
-                // from an idle close racing an empty timeline. Awaiting here also stops a
-                // self-closed connection's reader from lingering
+                // explicit-free (deterministic/network()) factories QUIC always uses.
+                // Awaiting here also stops a self-closed connection's reader from lingering
                 // until the connection scope dies. Bounded: cancellation unblocks receive() on
                 // every UdpChannel (worst case one io_uring submitAndWait tick on Linux).
                 for (entry in paths.values.toList()) {
@@ -1534,7 +1514,7 @@ class QuicheDriver(
                                 cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
                                 return
                             }
-                            // The path we live on is carrying traffic: #574's trigger resets here,
+                            // The path we live on is carrying traffic: the silence trigger resets here,
                             // where the arrival is observed rather than inferred. Ungated on purpose,
                             // unlike the sampler — with no collector no run is ever built, so this
                             // returns on its first field read. See [activePathAnswered].
@@ -1544,7 +1524,7 @@ class QuicheDriver(
                     }
                 // No QuicheMemory here, deliberately: this command already carries the buffer itself,
                 // so the owner needs no re-pairing — only the fence, which costs nothing per datagram
-                // where an extra object on the receive hot path would not (#366).
+                // where an extra object on the receive hot path would not.
                 try {
                     api.connRecv(conn, addr, cmd.len, info)
                 } finally {
@@ -1564,33 +1544,28 @@ class QuicheDriver(
                     }
                 val slot = StreamSlot(id)
                 streams[id.id] = slot
-                // Make the stream real to quiche now, so that openStream() means what its name says
-                // (#423). A QUIC stream becomes known to quiche on its first stream_send; reserving the
-                // id here and nowhere else meant a read before the first write asked quiche about a
-                // stream it had never heard of, which answered INVALID_STREAM_STATE — reported to the
-                // caller first as a clean end-of-stream and then, after #421 stopped that laundering, as
-                // a transport failure. Both are wrong for the same reason: the stream has not finished
-                // and it has not failed, it has not started. Starting a reader before writing the
-                // request is an ordinary shape and simply did not work.
+                // Make the stream real to quiche now, so that openStream() means what its name says.
+                // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
+                // here and nowhere else would make a read before the first write ask quiche about a
+                // stream it has never heard of, which answers INVALID_STREAM_STATE — a transport
+                // failure for a stream that has not finished and has not failed, it has not started.
+                // Starting a reader before writing the request is an ordinary shape.
                 //
                 // A zero-length, non-fin send is the whole materialisation: quiche creates the stream
                 // and, with no data and no FIN, the stream is not flushable, so nothing is put on the
-                // wire. (Verified separately against quiche's `stream_do_send`, and by the connection
-                // byte counters being unchanged across an openStream that is never written to.)
+                // wire (quiche's `stream_do_send`; the connection byte counters are unchanged across
+                // an openStream that is never written to).
                 //
                 // The result is CHECKED, not discarded. At the peer's initial_max_streams this send is
-                // the call that fails, with QUICHE_ERR_STREAM_LIMIT — and swallowing it put the #423
-                // bug straight back at the boundary: openStream() returned a slot quiche had refused to
-                // create, and the next read on it answered INVALID_STREAM_STATE, which is exactly the
-                // answer this change exists to remove. The typed error is in hand here, so it is
-                // reported here.
+                // the call that fails, with QUICHE_ERR_STREAM_LIMIT — swallowing it would return a slot
+                // quiche had refused to create, and the next read on it would answer
+                // INVALID_STREAM_STATE. The typed error is in hand here, so it is reported here.
                 val materialised = api.connStreamSend(conn, id, sendAddr, 0, false)
                 // Only STREAM_LIMIT. That is the one code which means "this stream cannot be created",
                 // which is the only thing this call is here to find out. Every other negative code
                 // describes the state of an *existing* stream — STREAM_STOPPED, STREAM_RESET, DONE —
                 // and cannot truthfully apply to an id quiche has never seen; treating them as fatal
-                // here would move error reporting for cases #423 was never about, off the first real
-                // write where it has always belonged.
+                // here would move their error reporting off the first real write where it belongs.
                 if (materialised.result == QUICHE_ERR_STREAM_LIMIT) {
                     // Give the id back: nothing was put on the wire and quiche holds no state for it,
                     // so burning it would leak stream ids on a connection that is merely at its limit.
@@ -1613,7 +1588,7 @@ class QuicheDriver(
 
             is QuicheCmd.StreamRecv -> {
                 // endBorrow AFTER the call, always: quiche writes into this memory, and on a managed
-                // runtime nothing else is keeping it mapped by the time the driver loop gets here (#366).
+                // runtime nothing else is keeping it mapped by the time the driver loop gets here.
                 val result =
                     try {
                         api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
@@ -1624,9 +1599,9 @@ class QuicheDriver(
             }
 
             is QuicheCmd.StreamSend -> {
-                // The caller-fed write buffer (#366): quiche copies from this address, and the writer
-                // that enqueued the command stopped naming its buffer the moment it handed the address
-                // over. See [QuicheMemory] for what that cost.
+                // The caller-fed write buffer: quiche copies from this address, and the writer that
+                // enqueued the command stopped naming its buffer the moment it handed the address
+                // over. See [QuicheMemory] for why the borrow matters.
                 val sent =
                     try {
                         api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen, cmd.fin)
@@ -1642,7 +1617,7 @@ class QuicheDriver(
             }
 
             is QuicheCmd.DgramSend -> {
-                // Caller-fed, same lifetime rule as StreamSend (#366).
+                // Caller-fed, same lifetime rule as StreamSend.
                 val written =
                     try {
                         api.connDgramSend(conn, cmd.buf.address, cmd.bufLen)
@@ -1819,18 +1794,18 @@ class QuicheDriver(
             // sample is: the reactor subscribes just after this, from the engine's connect(), so a
             // gate here would lose the one baseline that is guaranteed to be taken on a healthy path.
             // One pair of reads per connection, against a threshold that would otherwise silently
-            // become N+1 — measured at 7.635s instead of 3.695s. See [sampleActivePathLiveness].
+            // become N+1. See [sampleActivePathLiveness].
             if (migrationEnabled) sampleActivePathLiveness()
         }
         // Not once, but whenever capacity exists: RFC 9000 §5.1.1 says supply a new CID when the peer
-        // retires one — which a migrating peer now does on every move (§9.5). Behind a one-shot flag,
-        // the peer of a migrating client ran dry after ~MAX_SPARE_SCIDS migrations (#395). The steady
-        // state costs one connScidsLeft read per wake, alongside the two state reads above.
+        // retires one — which a migrating peer does on every move (§9.5). Behind a one-shot flag the
+        // peer of a migrating client would run dry after ~MAX_SPARE_SCIDS migrations. The steady state
+        // costs one connScidsLeft read per wake, alongside the two state reads above.
         if (_state.value is QuicConnectionState.Established) {
             val issued = issueSpareCids()
             val retired = drainRetiredScids()
             // The routing table is set to what quiche says, not adjusted by what just happened: the
-            // two counts only decide WHETHER to look, never what the answer is (#449).
+            // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
         }
         if (api.connIsClosed(conn)) {
@@ -1894,11 +1869,10 @@ class QuicheDriver(
      * The connection ending does not un-receive stream data: quiche keeps a stream's receive buffer
      * readable while the connection drains (`do_stream_recv` has no closed-connection guard), and
      * RFC 9000 §10.2 makes a CONNECTION_CLOSE the end of the *connection*, not a licence to discard
-     * bytes the transport already accepted and acknowledged. Before this drain those bytes died with
-     * `quiche_conn_free` and the pending `read()` returned `End` — a clean-EOF verdict over data we
-     * were still holding. That is issue #318: the client half-closed, the peer replied `ping` and then
-     * closed the connection, and a reader whose wakeup lost the race to the teardown reported
-     * `no_data:End`; the same window swallows any unread tail on an idle-timeout or peer-close.
+     * bytes the transport already accepted and acknowledged. Without this drain those bytes die with
+     * `quiche_conn_free` and the pending `read()` returns `End` — a clean-EOF verdict over data we
+     * are still holding — whenever a reader's wakeup loses the race to the teardown; the same window
+     * swallows any unread tail on an idle-timeout or peer-close.
      *
      * Runs on the driver loop with `conn` still alive (every [transitionToClosed] caller precedes
      * [cleanup]), so the quiche calls honour the single-threaded contract. Streams quiche reports as
@@ -1926,7 +1900,7 @@ class QuicheDriver(
             val buffer = streamReadPool.allocate(STREAM_READ_BUFFER_SIZE)
             val result = api.connStreamRecv(conn, slot.id, addr(buffer), STREAM_READ_BUFFER_SIZE)
             // Not Data => the drain for this stream is over. A Reset still latches the verdict
-            // (with the peer's code) so a post-teardown read reports the abort, not a clean End (#398);
+            // (with the peer's code) so a post-teardown read reports the abort, not a clean End;
             // Done and everything else deliver nothing further.
             if (result !is StreamRecvResult.Data) {
                 if (result is StreamRecvResult.Reset && slot.end == StreamEnd.Open) {
@@ -1966,11 +1940,11 @@ class QuicheDriver(
      * CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams or
      * transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
      * protocol violation), since the peer's reason is the more actionable one when both exist; the
-     * result records which side it came from, which the old bare-[QuicError] return discarded. quiche is
-     * single-threaded; this runs on the driver loop alongside [updateState], so the reads are safe.
+     * result records which side it came from. quiche is single-threaded; this runs on the driver loop
+     * alongside [updateState], so the reads are safe.
      *
      * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop). A test double that
-     * reports neither error nor timeout now yields [QuicCloseReason.Unspecified] rather than looking
+     * reports neither error nor timeout yields [QuicCloseReason.Unspecified] rather than looking
      * like a clean shutdown.
      */
     private fun resolveCloseReason(): QuicCloseReason {
@@ -2025,7 +1999,7 @@ class QuicheDriver(
                             // 4-tuple; sending it out any other one answers the peer from an address
                             // it never probed (the misroute), and a dead fallback socket would abort
                             // this whole flush (the stall). It is already lost: skip it and keep
-                            // draining — RFC 9002 loss recovery owns it (#395 item 4).
+                            // draining — RFC 9002 loss recovery owns it.
                             continue
                         }
                         entry.channel
@@ -2034,7 +2008,7 @@ class QuicheDriver(
             // Server egress follows the peer and pins its own source: send to the destination quiche
             // chose (sendInfo.to) so a migrated client's new source receives replies, and leave from the
             // local address quiche recorded for that path (sendInfo.from) so a wildcard-bound server does
-            // not answer from whichever address the kernel prefers (#556). The two are read together and
+            // not answer from whichever address the kernel prefers. The two are read together and
             // carried together — a reply that names one and not the other is what this type removes.
             // Clients send to their connected/path sockets and name neither. NioUdpChannel caches the
             // destination reconstruction (steady state targets one address), so the non-migrating server
@@ -2089,22 +2063,21 @@ class QuicheDriver(
                     // three ways a connection may terminate — idle timeout, immediate close, and
                     // stateless reset — and a failed send is not one of them.
                     //
-                    // This site used to call transitionToClosed(), which made two things impossible:
-                    // riding out transient backpressure (ENOBUFS/EAGAIN), and active connection
-                    // migration at all — a handoff happens *because* the old path died, so the first
-                    // send afterwards killed the connection before the new path could be validated.
-                    // Termination is left to quiche's idle timer, which reports the truthful
-                    // QuicError.IdleTimeout (pinned by IdleTimeoutTerminationTests).
+                    // Closing the connection here would make two things impossible: riding out
+                    // transient backpressure (ENOBUFS/EAGAIN), and active connection migration at all
+                    // — a handoff happens *because* the old path died, so the first send afterwards
+                    // would kill the connection before the new path could be validated. Termination
+                    // is left to quiche's idle timer, which reports the truthful QuicError.IdleTimeout.
                     return
                 }
                 is SendOutcome.Stalled -> {
                     // Close this socket before anything else. The timeout above cancelled our *wait*,
                     // not the platform operation, and that operation was handed the raw address of
                     // [udpSendBuf] — the one buffer every datagram reuses. Leaving it outstanding
-                    // would let a late completion read memory the next flush has already overwritten,
-                    // which is the send-path use-after-free class of #366/#401 reintroduced by the fix
-                    // for a hang. Closing the socket is what ends the operation and releases the
-                    // reference; it is also the honest verdict, since a channel that did not answer is
+                    // would let a late completion read memory the next flush has already overwritten
+                    // — a send-path use-after-free. Closing the socket is what ends the operation and
+                    // releases the reference; it is also the honest verdict, since a channel that did
+                    // not answer is
                     // one this driver can no longer reason about.
                     channel.close()
                     // Record it. A stall is the one send outcome the recording UdpChannel decorator
@@ -2221,7 +2194,7 @@ class QuicheDriver(
     ) {
         // One translation, not a judgement: each non-Supported capability names exactly one
         // "and never will" outcome, so the caller learns *which* permanent condition applies rather
-        // than the single opaque `Unsupported` that used to cover all three.
+        // than a single opaque `Unsupported`.
         val wiring =
             when (migration) {
                 MigrationCapability.ServerConnection -> {
@@ -2366,9 +2339,9 @@ class QuicheDriver(
         if (paths.containsKey(key)) {
             // The platform bound the probe to a 4-tuple already in `paths` — with retirement in place
             // and AlreadyInProgress answered above, that can only be the path the connection is living
-            // on (a wildcard bind resolving to the active local endpoint after connect). The old
-            // unguarded `paths[key] = entry` silently replaced the live entry, orphaning its socket,
-            // reader and recv_info with no owner (#395 item 3). Refuse instead: release what the probe
+            // on (a wildcard bind resolving to the active local endpoint after connect). An unguarded
+            // `paths[key] = entry` would silently replace the live entry, orphaning its socket,
+            // reader and recv_info with no owner. Refuse instead: release what the probe
             // acquired (no recv_info exists yet — the guard sits before recvInfoNew on purpose) and
             // report a retryable local failure, since a later bind can land elsewhere.
             releaseUnprobedPath(newPath)
@@ -2383,9 +2356,8 @@ class QuicheDriver(
         }
 
         // Probe BEFORE the path entry exists, because the entry cannot be built without the DCID this
-        // call returns (see [PathSlot]). The old order — insert, then probe, then read nothing —
-        // is what made #447 writable: the sequence number went into `seqScratch` and no failure exit
-        // had a value to retire. On the `create_path_on_client` failures a rejected probe allocates
+        // call returns (see [PathSlot]); inserting first would leave every failure exit without a
+        // value to retire. On the `create_path_on_client` failures a rejected probe allocates
         // nothing, so there is no recv_info, no map entry and no connection ID to unwind here; see
         // [probeRejection] for the one branch where that is not true.
         val probe =
@@ -2445,7 +2417,7 @@ class QuicheDriver(
     }
 
     /**
-     * What quiche's refusal to probe a path actually means (#583).
+     * What quiche's refusal to probe a path actually means.
      *
      * The two codes below are the ones `quiche_conn_probe_path` can return, and they are reached by
      * different routes in quiche 0.29.3 (`lib.rs:7175`):
@@ -2467,7 +2439,7 @@ class QuicheDriver(
      *
      * ⚠️ Note `request_validation()` runs **before** the failing check, so on that branch quiche has
      * already put the existing path into requesting-validation. A rejected probe is therefore not
-     * always inert, which is what the older "a rejected probe allocates nothing" comment claimed.
+     * always inert.
      */
     private fun probeRejection(code: Int): ProbeRejection =
         when (code) {
@@ -2564,11 +2536,11 @@ class QuicheDriver(
                             // that moves `active`. See [rebaselineActivePathLiveness].
                             rebaselineActivePathLiveness()
                             // RFC 9000 §9.5: retire the DCID used on the old path — done by the
-                            // teardown itself now, not by a separate call with a separately-tracked
+                            // teardown itself, not by a separate call with a separately-tracked
                             // sequence number. This — with the retire-no-relink source patch — is what
                             // clears the old path's `active_dcid_seq` inside quiche, making its slot
                             // evictable; without it the table fills at active_conn_id_limit and the
-                            // 4th probe is refused (#395).
+                            // next probe is refused.
                             teardownPath(previous)
                             completeMigration(
                                 pending,
@@ -2580,8 +2552,8 @@ class QuicheDriver(
                             // quiche validated the path and then refused to switch to it. Nothing will
                             // ever retry *this* path — the lane clears below and the next
                             // migrate() opens a fresh socket — so leaving it in `paths` pins its DCID
-                            // and its slot in quiche's path table for the connection's life, exactly
-                            // as a failed validation used to (#447). Tear it down, which retires.
+                            // and its slot in quiche's path table for the connection's life. Tear it
+                            // down, which retires.
                             teardownPath(entry)
                             completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
                         }
@@ -2601,8 +2573,8 @@ class QuicheDriver(
                     val key = api.decodePathKey(addr(peLocalOut))
                     // Never tear down the path the connection lives on. quiche 0.29 only emits Closed
                     // for paths make_room_for_new_path evicted — which are never active — so this
-                    // guard is a backstop, replacing the old `!isPrimary` (post-migration the entry
-                    // to protect is `active`, which need not be the primary).
+                    // guard is a backstop. It compares against `active`, not the primary: post-migration
+                    // the entry to protect need not be the primary.
                     paths[key]?.let { if (it !== active) teardownPath(it) }
                 }
 
@@ -2651,9 +2623,8 @@ class QuicheDriver(
      * pinned sockaddr. The primary's exemption is an *ownership* fact, not a lifecycle one: its
      * recv_info is the driver-level [recvInfo] freed once in [cleanup], and its sockaddr belongs to
      * the connection setup's [onCleanup] — freeing either here would be a use-after-free later, but
-     * its reader and socket retire exactly like any other path's when a migration moves off it
-     * (the old `if (entry.isPrimary) return` guard is precisely how the original path could never be
-     * released, #395).
+     * its reader and socket retire exactly like any other path's when a migration moves off it —
+     * exempting the primary wholesale would mean the original path could never be released.
      */
     private fun teardownPath(entry: PathEntry) {
         // First, and unconditionally: the path stops holding its destination CID, which retires it
@@ -2714,8 +2685,8 @@ class QuicheDriver(
      * Drain the source CIDs the peer has retired, returning how many quiche yielded.
      *
      * `quiche_conn_retired_scid_iter` **drains** — an id this never collects stays queued inside
-     * quiche forever — so this must keep running even though the routing table no longer learns
-     * retirements from it. Since #449 the ids themselves are not what the server needs: it takes the
+     * quiche forever — so this must keep running even though the routing table does not learn
+     * retirements from it. The ids themselves are not what the server needs: it takes the
      * live set from [projectSourceIds] instead, and a CID the peer retired is already absent from
      * `quiche_conn_source_ids` (quiche removes it from `ids.scids` in the same call that queues it
      * here). What this call still provides is the *fact* that the set moved, which is why the count
@@ -2985,11 +2956,9 @@ class QuicheDriver(
      * yields them. Empty once the connection is gone — the same honest answer
      * [peerTransportParams] gives for a freed handle.
      *
-     * This is the read-back half of the CID API (`quiche_conn_source_ids`), which this project
-     * issued and retired against for years without ever asking quiche what the live set IS. Until it
-     * existed there was no second opinion to reconcile our own routing table against, so a
-     * divergence could only ever be discovered downstream — as a dropped packet (#437) or a path
-     * slot pinned forever (#395, #447).
+     * This is the read-back half of the CID API (`quiche_conn_source_ids`): the second opinion the
+     * routing table is reconciled against. Without it a divergence could only be discovered
+     * downstream — as a dropped packet or a path slot pinned forever.
      */
     suspend fun sourceIds(): List<ByteArray> =
         try {
@@ -3052,7 +3021,7 @@ class QuicheDriver(
         const val MAX_DATAGRAM_SIZE = 1350
 
         /**
-         * What every driver-backed connection declares to its callers (#502). All three bindings —
+         * What every driver-backed connection declares to its callers. All three bindings —
          * FFM, JNI, cinterop — pass `quiche_conn_stream_send` / `quiche_conn_dgram_send` a raw
          * address and a length, so a caller-supplied buffer must expose one; there is no copy at the
          * boundary on any platform. Stated once here, and answered identically by the client
@@ -3062,18 +3031,17 @@ class QuicheDriver(
         val capabilities: QuicCapabilities = QuicCapabilities(requiresNativeMemoryBuffers = true)
 
         /**
-         * How many consecutive receive failures a path's reader tolerates before it stops (#396).
+         * How many consecutive receive failures a path's reader tolerates before it stops.
          *
-         * The loops previously retried a failed `receive` with `continue` — no delay, no bound. A
-         * *persistent* socket error makes `selector.select()` return immediately every time, so the
-         * reader span the dispatcher at full tilt for the rest of the connection's life; combined with
-         * a path that is never retired (#395) it was still running 101 minutes later. Android's netd
+         * Retrying a failed `receive` unbounded and without delay spins: a *persistent* socket error
+         * makes `selector.select()` return immediately every time, so the reader would run the
+         * dispatcher at full tilt for the rest of the connection's life. Android's netd
          * `SOCK_DESTROY` produces exactly that when a network goes away under a live socket.
          *
          * A bound plus backoff is deliberately generous: a genuinely transient error clears within a
          * few milliseconds, so ~2s of retrying costs nothing, while a dead socket stops instead of
-         * burning a core indefinitely. Escalating a stopped reader into a path teardown belongs to
-         * #395, which owns path lifecycle; this only stops the spin and the per-iteration leak.
+         * burning a core indefinitely. Path lifecycle owns escalating a stopped reader into a path
+         * teardown; this only stops the spin and the per-iteration leak.
          */
         private const val MAX_CONSECUTIVE_RECEIVE_FAILURES = 20
 
@@ -3183,14 +3151,14 @@ class QuicheDriver(
 
         /**
          * `QUICHE_ERR_INVALID_STREAM_STATE` (quiche.h) — one of only two `stream_recv` codes
-         * reachable on a live connection; previously had no Kotlin name anywhere.
+         * reachable on a live connection.
          */
         const val QUICHE_ERR_INVALID_STREAM_STATE = -7
 
         /**
          * `QUICHE_ERR_STREAM_LIMIT` (quiche.h): the peer's `initial_max_streams` is reached, so quiche
          * will not create another stream of this kind. Surfaced by the materialising send in
-         * [QuicheCmd.OpenStream] (#423) rather than being discovered later by the first real write.
+         * [QuicheCmd.OpenStream] rather than being discovered later by the first real write.
          */
         const val QUICHE_ERR_STREAM_LIMIT = -12
     }
@@ -3209,8 +3177,8 @@ class DriverStreamAdapter(
      *
      * Consulted **before** every terminal verdict: bytes the transport already accepted outrank both
      * the FIN (RFC 9000 §2.4 — a final size marks where the data ends, it does not discard it) and the
-     * connection's death (§10.2). Returning End while this queue is non-empty is exactly the #318
-     * data loss. Ownership of the buffer transfers to the caller, like the [streamRead] data path.
+     * connection's death (§10.2). Returning End while this queue is non-empty is silent data loss.
+     * Ownership of the buffer transfers to the caller, like the [streamRead] data path.
      */
     private fun pendingData(): ReadResult.Data? =
         slot.pendingData
@@ -3242,17 +3210,13 @@ class DriverStreamAdapter(
      * caller, and by the time [streamRead]'s non-cancellable join returns quiche may **already** have
      * answered [StreamRecvResult.Data]. quiche has by then advanced the stream's receive offset and
      * credited flow control, so the peer will never resend those bytes: freeing the buffer at that point
-     * — what the cancellation path used to do unconditionally — punches a permanent hole in the stream.
-     * A FIN riding on the same chunk was lost with it, because `slot.end` is latched inside the
-     * `when` the cancellation skipped, after which no `read()` can ever report a clean end.
+     * would punch a permanent hole in the stream, and a FIN riding on the same chunk would be lost with
+     * it, because `slot.end` is latched inside the `when` the cancellation skips, after which no
+     * `read()` could ever report a clean end. A migration only makes read timeouts likely; the timeout
+     * is what would lose the data.
      *
-     * That is issue #393: on a 124-minute on-device Android handoff run the stream died on exactly the
-     * two migrations that a read timeout preceded (8.6s and 6.0s before), and stayed dead for the
-     * remaining 101 minutes while the connection itself kept exchanging keepalives. The migration only
-     * makes read timeouts likely; the timeout is what loses the data.
-     *
-     * The salvage is the cancellation-edge mirror of [drainStreamIntoSlot]'s teardown-edge drain (issue
-     * #318) and keeps its conventions: bytes go to [StreamSlot.pendingData] so the next `read()` hands
+     * The salvage is the cancellation-edge mirror of [drainStreamIntoSlot]'s teardown-edge drain
+     * and keeps its conventions: bytes go to [StreamSlot.pendingData] so the next `read()` hands
      * them out ahead of any terminal verdict, the FIN is published *after* the chunk is queued so an
      * `End` verdict can never race ahead of the data it is supposed to follow, and whatever is left
      * undelivered is released by [releaseUndeliveredReads].
@@ -3269,7 +3233,7 @@ class DriverStreamAdapter(
         val answered = completed.getCompleted()
         // A Reset answered into a read that already gave up must still latch: quiche collects the
         // stream on delivery, so nothing re-answers it — dropping it here would leave the next read
-        // parked until its own deadline and the peer's abort lost for good (#398, the #393 shape).
+        // parked until its own deadline and the peer's abort lost for good.
         if (answered is StreamRecvResult.Reset) {
             if (slot.end == StreamEnd.Open) slot.end = StreamEnd.Reset(answered.applicationErrorCode)
             return false
@@ -3285,8 +3249,8 @@ class DriverStreamAdapter(
             queued = slot.pendingData.trySend(buffer).isSuccess
             if (!queued) {
                 // The caller frees the buffer on this branch, so these bytes are gone. quiche already
-                // advanced the receive offset for them — this is the #393 shape, named at the moment
-                // it happens instead of being inferred later from a short stream.
+                // advanced the receive offset for them — a permanent hole in the stream, named at the
+                // moment it happens instead of being inferred later from a short stream.
                 driver.capture.record { it.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed) }
             }
         }
@@ -3306,7 +3270,7 @@ class DriverStreamAdapter(
         // leaf factory that passed requireNativeMemory() at setup) at every production construction
         // site, so this is an invariant — contrast the caller's buffer in [streamWrite].
         val buffer = bufferFactory.allocate(bufferSize)
-        // Address AND owner (#366): the driver loop writes into this memory long after this
+        // Address AND owner: the driver loop writes into this memory long after this
         // coroutine suspends, and on a managed runtime "the local is still in scope" is not a
         // lifetime. See [QuicheMemory].
         val memory = buffer.driverOwnedMemory()
@@ -3325,13 +3289,11 @@ class DriverStreamAdapter(
         var transferred = false
         // The chunk this read produced, kept for the same reason [pendingTaken] is: `withTimeout` can
         // discard the value its block returns when the deadline lands in the gap between producing it and
-        // delivering it. For a chunk taken off [StreamSlot.pendingData] that gap was closed by #414. This
-        // is the other edge — bytes quiche delivered into OUR buffer — and it was still open: `transferred`
-        // is set on the line before the return, so a deadline that won the race left the chunk owned by
-        // nobody. The caller never saw it, and the finally below skipped [salvageCancelledRecv] precisely
-        // BECAUSE `transferred` said the caller had it, so not even a STREAM_LOSS was recorded. One
-        // 64-byte chunk vanished from a healthy stream, and the byte-continuity ledger reported it as the
-        // peer sending the wrong bytes (#433).
+        // delivering it. [pendingTaken] covers a chunk taken off [StreamSlot.pendingData]; this is the
+        // other edge — bytes quiche delivered into OUR buffer. `transferred` is set on the line before
+        // the return, so a deadline that wins the race would otherwise leave the chunk owned by nobody:
+        // the caller never sees it, and the finally below skips [salvageCancelledRecv] precisely BECAUSE
+        // `transferred` says the caller has it, so not even a STREAM_LOSS would be recorded.
         var delivered: ReadResult.Data? = null
         // A chunk already taken out of slot.pendingData but not yet handed to the caller.
         //
@@ -3342,7 +3304,7 @@ class DriverStreamAdapter(
         // suspension points: its TimeoutCoroutine is cancelled by a scheduled task, and a block that
         // completes at the same instant loses the race and its result — a non-suspending
         // `take(); return` sequence is not safe from it.) Recording the take is what lets the catch
-        // below hand those bytes over anyway, and the finally put them back if it cannot. (#414)
+        // below hand those bytes over anyway, and the finally put them back if it cannot.
         var pendingTaken: ReadResult.Data? = null
 
         // pendingData(), but remembering what it took. Every destructive take inside withTimeout goes
@@ -3362,7 +3324,7 @@ class DriverStreamAdapter(
                         StreamEnd.Fin -> return@withTimeout takePending() ?: ReadResult.End
                         // The peer's abort outlives the read that observed it: quiche collects the stream
                         // once the reset is delivered, so the slot's latched verdict — not a fresh
-                        // stream_recv — is the only truthful answer a later read can give (#398).
+                        // stream_recv — is the only truthful answer a later read can give.
                         is StreamEnd.Reset -> return@withTimeout takePending() ?: ReadResult.Reset
                     }
                     while (true) {
@@ -3372,7 +3334,7 @@ class DriverStreamAdapter(
                         // send). Unlike send it is not a suspend call, so there is no state in which the
                         // command is buffered yet the call throws CancellationException — the gap that
                         // would leave `inFlight` unset and let the finally below skip its join while the
-                        // driver still holds this buffer's borrowed memory (#401 hunt).
+                        // driver still holds this buffer's borrowed memory.
                         driver.commands.trySend(QuicheCmd.StreamRecv(streamId.id, memory, bufferSize, deferred)).getOrThrow()
                         // Mark in-flight only AFTER a successful enqueue: if trySend threw (channel closed)
                         // the command never reached the driver, so there is nothing to join (joining it would hang).
@@ -3395,7 +3357,7 @@ class DriverStreamAdapter(
                                 }
                                 // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
                                 // the same driver wake that answers this FIN, and End must never overtake
-                                // them (the #318 shape — this was the one terminal arm that skipped it).
+                                // them.
                                 if (result.fin) {
                                     return@withTimeout takePending() ?: ReadResult.End
                                 }
@@ -3421,17 +3383,16 @@ class DriverStreamAdapter(
                             }
                             is StreamRecvResult.Error -> {
                                 // Bytes quiche already handed over outrank the failure, exactly as they
-                                // outrank a FIN (RFC 9000 §2.4) and the connection's death (§10.2) — the
-                                // #318/#393 ordering rule. Only once the slot is dry does the failure surface.
+                                // outrank a FIN (RFC 9000 §2.4) and the connection's death (§10.2).
+                                // Only once the slot is dry does the failure surface.
                                 takePending()?.let { return@withTimeout it }
-                                // ...and it surfaces AS a failure. Mapping this onto ReadResult.End told every
-                                // caller the peer had finished politely, which is a contract — stop reading,
-                                // release the stream — and the wrong response to an error. It is also
-                                // undiagnosable: 30 minutes of `End` in the #393 device recording could not say
-                                // whether the peer closed the stream or quiche was failing every read, and those
-                                // have opposite fixes. Throwing matches what streamWrite already does for a
-                                // stream-scoped failure; the complete fix is a typed failure in the read RESULT,
-                                // which needs buffer's ReadResult to gain a case (DitchOoM/buffer#376, v7). #421.
+                                // ...and it surfaces AS a failure. Mapping this onto ReadResult.End would tell
+                                // every caller the peer had finished politely, which is a contract — stop
+                                // reading, release the stream — and the wrong response to an error; it would
+                                // also make "the peer closed the stream" indistinguishable from "quiche fails
+                                // every read", which have opposite fixes. Throwing matches what streamWrite
+                                // already does for a stream-scoped failure; a typed failure in the read RESULT
+                                // needs buffer's ReadResult to gain a case.
                                 throw QuicStreamReadException(
                                     streamId = streamId.id,
                                     error =
@@ -3447,8 +3408,8 @@ class DriverStreamAdapter(
                                 // The peer sent RESET_STREAM. Latch the abort (with its application error
                                 // code) so every later read reports it — quiche collects the stream now, so
                                 // nothing re-delivers this — and report Reset, never End: an abnormal,
-                                // code-carrying abort is not the peer finishing politely (#398). Bytes the
-                                // transport already accepted still outrank the verdict (the #318/#393 rule).
+                                // code-carrying abort is not the peer finishing politely. Bytes the
+                                // transport already accepted still outrank the verdict.
                                 if (slot.end == StreamEnd.Open) {
                                     slot.end = StreamEnd.Reset(result.applicationErrorCode)
                                 }
@@ -3473,8 +3434,8 @@ class DriverStreamAdapter(
             // (RFC 9000 §2.4 — a final size marks where the data ends, it does not discard it) and the
             // connection's death (§10.2). quiche has already advanced this stream's receive offset and
             // credited flow control for these bytes, so the peer will never resend them: throwing here
-            // would punch a permanent hole in the stream — #393's failure mode reached through the
-            // delivery edge instead of the cancellation edge. The read did not time out; it had an
+            // would punch a permanent hole in the stream, reached through the delivery edge instead
+            // of the cancellation edge. The read did not time out; it had an
             // answer, and the answer arrived before the deadline did.
             pendingTaken?.let {
                 pendingTaken = null
@@ -3497,8 +3458,7 @@ class DriverStreamAdapter(
             return pendingData() ?: ReadResult.End
         } finally {
             // Taken from the queue but never delivered — an external cancellation unwound us after the
-            // take (the timeout case returned it above). Put it back so the next read() still gets it,
-            // rather than dropping it as the pre-#414 code did.
+            // take (the timeout case returned it above). Put it back so the next read() still gets it.
             //
             // Ordered BEFORE salvageCancelledRecv deliberately: this chunk came off the front of the
             // queue and is therefore older than anything the salvage is about to append. Requeueing
@@ -3512,8 +3472,8 @@ class DriverStreamAdapter(
                 if (slot.pendingData.trySend(undelivered.buffer).isFailure) {
                     // Unexpected on a healthy stream, and the reason this is worth a trace line: the
                     // queue is closed, so nothing will ever drain this chunk and freeing is the only
-                    // alternative to a leak. A STREAM_LOSS/QueueClosed line is the first direct
-                    // evidence the #414 window is reachable rather than only real by construction.
+                    // alternative to a leak. A STREAM_LOSS/QueueClosed line is direct evidence this
+                    // window is reachable rather than only real by construction.
                     driver.capture.record {
                         it.streamLoss(slot.id.id, undelivered.buffer.remaining(), StreamLossCause.QueueClosed)
                     }
@@ -3546,12 +3506,12 @@ class DriverStreamAdapter(
         // Empty input: nothing to send (quiche would report 0). Return before touching the buffer's
         // native address — a zero-length buffer may not expose one — and never park on an empty write.
         if (remaining == 0) return 0
-        // Caller-fed buffer (#502) — with the datagram send, one of the two addresses in this driver that
+        // Caller-fed buffer — with the datagram send, one of the two addresses in this driver that
         // come from a public API rather than from the driver's own vetted factory. A buffer without native
         // memory is rejected BY TYPE here, before any command is enqueued: the stream and the connection
-        // are untouched and a correctly allocated write can follow. This was `nativeMemoryAccess!!` — a
-        // NullPointerException with no message, reachable by any consumer writing a BufferFactory.Default
-        // buffer on Linux Kotlin/Native (or a managed() buffer anywhere, the JVM included).
+        // are untouched and a correctly allocated write can follow — not a bare NullPointerException,
+        // which any consumer writing a BufferFactory.Default buffer on Linux Kotlin/Native (or a
+        // managed() buffer anywhere, the JVM included) could reach.
         val memory =
             buffer.callerFedMemory()
                 ?: throw QuicNativeMemoryRequiredException.forBuffer(
@@ -3676,9 +3636,8 @@ class DriverStreamAdapter(
  * answered the probe natively and then handed out a heap buffer — never a caller's mistake. Hence
  * [checkNotNull] with the invariant spelled out, in contrast to the typed
  * [QuicNativeMemoryRequiredException] that [DriverStreamAdapter.streamWrite] and
- * [DriverDatagramAdapter.send] give a **caller-fed** buffer (#502). That split is the audit result:
- * of this driver's former `nativeMemoryAccess!!` sites, exactly those two took a buffer from a
- * public API; every other one is on memory the driver allocated.
+ * [DriverDatagramAdapter.send] give a **caller-fed** buffer: exactly those two take a buffer from a
+ * public API; every other site is on memory the driver allocated.
  */
 internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
     checkNotNull(nativeMemoryAccess) {
@@ -3688,8 +3647,7 @@ internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
 
 /**
  * quiche yielded more retired connection IDs than the count it reported a moment earlier, so the
- * excess was lost — and a lost id keeps routing to a connection that no longer recognises it, which
- * is #437 returning silently.
+ * excess was lost — and a lost id keeps routing to a connection that no longer recognises it.
  *
  * Unreachable by construction: [QuicheDriver.drainRetiredScids] reads the count and drains on the same
  * driver coroutine, the only one allowed to touch the connection. It exists so the impossible case is

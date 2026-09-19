@@ -84,7 +84,7 @@ actual object UdpSocket {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
         val peer = resolve(remoteHost, remotePort)
-        // A refusal anywhere on the way — open, bind, connect — reports typed (#534): the JDK's own
+        // A refusal anywhere on the way — open, bind, connect — reports typed: the JDK's own
         // BindException / NoRouteToHostException / SocketException phrase is classified onto
         // UdpConnectError and kept as the cause, so a caller can branch on the reason on every backend.
         return try {
@@ -137,22 +137,16 @@ actual object UdpSocket {
      *
      * A UDP socket exists from `open()`, before it is bindable, connectable or wrappable, and every
      * step after that can be refused: the bind (an explicitly requested endpoint another socket holds),
-     * the connect (a 4-tuple another socket holds — the #434 collision), `getsockname` reporting no
-     * address. Without this guard the channel was abandoned where it stood, and with it the ephemeral
-     * port a successful bind had already reserved: the descriptor stayed allocated until a GC `Cleaner`
-     * happened to run, which no failure path guarantees. Measured on macOS/JDK 21, 64 refusals of each
-     * kind:
-     *
-     * | refused at | leaked descriptors, unguarded | with this guard |
-     * |---|---|---|
-     * | `Net.bind0` | 64 of 64 | 0 |
-     * | `Net.connect0` | 64 of 64 | 0 |
+     * the connect (a 4-tuple another socket holds), `getsockname` reporting no address. Without this
+     * guard the channel would be abandoned where it stood, and with it the ephemeral port a successful
+     * bind had already reserved: the descriptor stays allocated until a GC `Cleaner` happens to run,
+     * which no failure path guarantees.
      *
      * The guard wraps construction too, so the addressed channels' fail-fast on an unreportable
      * `getsockname` needs no close of its own: it throws inside [setup] like any refused syscall.
      *
-     * Two of the other actuals already did this — the Linux one `close(fd)`s on either failure, the
-     * Apple one cancels the `NWConnection`. The Node one does not, and leaks the same way (#521).
+     * The other actuals do the same — the Linux one `close(fd)`s on either failure, the Apple one
+     * cancels the `NWConnection`, the Node one closes its `dgram` socket.
      */
     private inline fun <T> NioChannel.closedIfSetupFails(setup: NioChannel.() -> T): T {
         try {
@@ -175,19 +169,16 @@ actual object UdpSocket {
      * — one socket meant to serve both families (`udp46`). On BSD/Darwin it does not own the IPv4 half
      * of its port: a plain `AF_INET` socket may already hold `0.0.0.0:port`, the dual-stack bind
      * **still succeeds**, and every datagram addressed to `127.0.0.1:port` is delivered to the more
-     * specific IPv4 socket. Measured directly on macOS 15 — `socket(AF_INET)` bound to `0.0.0.0:P`,
-     * then `socket(AF_INET6, V6ONLY=0)` bound to `[::]:P`: the second bind succeeds and reads nothing,
-     * while Linux refuses it outright. The caller is handed a socket that is open, healthy, parked in
-     * `select()`, and permanently deaf over IPv4, with no error anywhere.
+     * specific IPv4 socket: `socket(AF_INET)` bound to `0.0.0.0:P`, then `socket(AF_INET6, V6ONLY=0)`
+     * bound to `[::]:P` — the second bind succeeds and reads nothing, while Linux refuses it outright.
+     * The caller is handed a socket that is open, healthy, parked in `select()`, and permanently deaf
+     * over IPv4, with no error anywhere.
      *
      * With an ephemeral port that is a lottery nobody can see: `bind(0)` picks from the IPv6 table, so
-     * it can hand out a port whose IPv4 half belongs to an unrelated daemon (`homed`, `adb`, …).
-     * Measured at roughly 1 bind in 4 000 on a developer Mac, which is what made
-     * [#450](https://github.com/DitchOoM/socket/issues/450) look load-dependent: a QUIC server bound
-     * that way never receives its client's Initial, the client PTO-retransmits for the whole idle
-     * timeout and closes with `local: IdleTimeout`, and the server's trace is empty because no
-     * connection was ever created (#367). Only the suite that binds a fresh ephemeral port per test
-     * drew often enough to hit it.
+     * it can hand out a port whose IPv4 half belongs to an unrelated daemon (`homed`, `adb`, …). A QUIC
+     * server bound that way never receives its client's Initial, the client PTO-retransmits for the
+     * whole idle timeout and closes with `local: IdleTimeout`, and the server's trace is empty because
+     * no connection was ever created.
      *
      * So the port comes from the IPv4 table before the real socket exists. `bind(0)` on an `AF_INET`
      * probe is handed a port that is free for IPv4 by definition; the probe is closed — UDP has no
@@ -195,8 +186,8 @@ actual object UdpSocket {
      * explicitly requested port whose IPv4 half is taken fails here with the same [BindException]
      * Linux already raises for the real bind, rather than succeeding into a deaf socket.
      *
-     * The probe must come **first**: measured on the same host, an `AF_INET` bind *after* a dual-stack
-     * bind on the same port is refused, so probing afterwards would report a conflict with ourselves.
+     * The probe must come **first**: an `AF_INET` bind *after* a dual-stack bind on the same port is
+     * refused, so probing afterwards would report a conflict with ourselves.
      */
     private fun wildcardPortOwnedForIpv4(requestedPort: Int): Int =
         NioChannel.open(StandardProtocolFamily.INET).closedIfSetupFails {

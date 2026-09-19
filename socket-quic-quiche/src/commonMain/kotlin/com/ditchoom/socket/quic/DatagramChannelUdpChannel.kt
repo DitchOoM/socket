@@ -31,8 +31,7 @@ import kotlinx.coroutines.awaitCancellation
  * ## Destination
  * The client is a *connected* channel: the driver only supplies a [SendTarget.ServerReply] on the
  * **server** egress path, so this adapter always sends to the channel's fixed peer (the connected
- * send has no destination parameter) and ignores [SendTarget], exactly as the old connected
- * `NioUdpChannel`/`IoUringUdpChannel` clients did. The server egress adapter is a separate type (per
+ * send has no destination parameter) and ignores [SendTarget]. The server egress adapter is a separate type (per
  * platform), because turning a `PathKey` back into a packed `SocketAddress` needs platform machinery
  * this connected client never touches.
  */

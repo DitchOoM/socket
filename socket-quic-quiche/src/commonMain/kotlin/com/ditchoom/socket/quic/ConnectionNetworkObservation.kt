@@ -14,17 +14,15 @@ import kotlin.time.TimeMark
  *
  * ## Why the monitor is shared, not re-resolved
  * The connection's engine resolves [QuicOptions.networkMonitor] **once** and hands that one instance to
- * automatic migration, to the trace tap, and to this. Sharing the instance is the invariant Phase 3b
- * wrote down and deferred: a second monitor would report an `ObservationSequence` indexing a different
+ * automatic migration, to the trace tap, and to this. Sharing the instance is the invariant: a second
+ * monitor would report an `ObservationSequence` indexing a different
  * stream than the one that triggered the migration — two unrelated counters that look joinable.
  *
  * ## Why this is sealed rather than a nullable field
- * A server-accepted connection observes no network, and `QuicheDriverTuning.networkObservation` used to
- * say so with `null`, read back as `networkObservation?.atClose ?: NetworkAtClose.NotObserved`. But
- * [NetworkAtClose] already *has* a truthful case for that — [NetworkAtClose.NotObserved] — so the
- * nullable was a second, redundant encoding of a state the type models properly, and every reader had to
- * remember to translate it. [Unobserved] is that state as an ordinary value: it collects nothing,
- * freezes to nothing, and reports `NotObserved`. Both the `?` and the `?:` disappear.
+ * A server-accepted connection observes no network. [NetworkAtClose] already *has* a truthful case for
+ * that — [NetworkAtClose.NotObserved] — so a nullable field would be a second, redundant encoding of a
+ * state the type models properly, one every reader has to remember to translate. [Unobserved] is that
+ * state as an ordinary value: it collects nothing, freezes to nothing, and reports `NotObserved`.
  */
 @InternalQuicApi
 sealed interface ConnectionNetworkObservation {

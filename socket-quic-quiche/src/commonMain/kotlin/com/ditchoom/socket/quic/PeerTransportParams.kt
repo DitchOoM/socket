@@ -85,7 +85,7 @@ sealed interface PeerMigrationPermission {
      * encoding/decoding it on the wire (verified against 0.29.3). So the short-circuit in
      * `QuicheDriver.handleMigrate` is the only thing implementing RFC 9000 §9's "MUST NOT initiate
      * migration if the peer sent `disable_active_migration`" anywhere in this stack — which is why the
-     * check stays, and why the ABI it reads through has a regression guard (DitchOoM/socket#388).
+     * check stays, and why the ABI it reads through has a regression guard.
      */
     data object Forbidden : PeerMigrationPermission
 

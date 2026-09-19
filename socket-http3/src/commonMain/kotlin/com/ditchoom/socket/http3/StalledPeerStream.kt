@@ -8,9 +8,9 @@ import kotlinx.coroutines.ensureActive
 import kotlin.time.Duration
 
 /**
- * Abandon a peer-initiated [stream] whose read expired the caller's [deadline] (#477 on the client,
- * #495 on the server), returning the named failure for whoever was waiting on the stream. Shared by
- * both roles: they face the same peer behaviour and the same trap.
+ * Abandon a peer-initiated [stream] whose read expired the caller's [deadline], returning the named
+ * failure for whoever was waiting on the stream. Shared by both roles: they face the same peer
+ * behaviour and the same trap.
  *
  * The trap: `QuicheDriver` implements a read deadline as `withTimeout`, whose
  * `TimeoutCancellationException` IS a `CancellationException`, and a `launch` child completing with one

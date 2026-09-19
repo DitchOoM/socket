@@ -12,15 +12,14 @@ import kotlin.jvm.JvmInline
  *
  * ## Why this is a type and not a `Long`
  *
- * The QPACK bug fixed in #353 was, at its core, *a delta passed where a value derived from two
- * absolutes was required*: the decoder emitted `InsertCountIncrement(1)` — a flat delta — when the
- * correct increment is `insertCount - acknowledgedInsertCount`. Every quantity involved was a bare
- * `Long`, so the type system had nothing to say about it, and neither did review.
+ * The characteristic QPACK counting bug is *a delta passed where a value derived from two absolutes
+ * is required*: a decoder that emits `InsertCountIncrement(1)` — a flat delta — when the correct
+ * increment is `insertCount - acknowledgedInsertCount`. With every quantity a bare `Long` the type
+ * system has nothing to say about it.
  *
- * `QpackEncoder.processDecoderInstruction` still shows both kinds in adjacent branches — one *adds*
- * a delta, the next *jumps* to an absolute — and with bare `Long`s nothing stopped an absolute
- * being added or a delta being assigned. Now the confusion is unrepresentable rather than
- * merely tested-for.
+ * `QpackEncoder.processDecoderInstruction` shows both kinds in adjacent branches — one *adds* a
+ * delta, the next *jumps* to an absolute. With distinct types the confusion is unrepresentable
+ * rather than merely tested-for.
  */
 @JvmInline
 value class InsertCount(
@@ -83,8 +82,8 @@ value class InsertCount(
  *
  * Deliberately has no `plus(InsertCount)`: a delta added to an absolute yields an absolute, and
  * that direction is spelled [InsertCount.plus] so the result lands in the right type. There is no
- * conversion from a delta to an [InsertCount] at all, which is what makes the #353 bug — emitting a
- * bare `1` where a difference belonged — unwriteable.
+ * conversion from a delta to an [InsertCount] at all, which is what makes emitting a bare `1` where
+ * a difference belongs unwriteable.
  */
 @JvmInline
 value class InsertCountDelta(

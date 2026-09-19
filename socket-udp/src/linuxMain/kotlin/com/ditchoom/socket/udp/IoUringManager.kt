@@ -89,10 +89,8 @@ internal object IoUringManager {
     // Unique ID generator for user_data (starts at 1; 0 is reserved for eventfd)
     private val nextUserDataCounter = AtomicLong(1L)
 
-    // Reference counting for auto-cleanup when all sockets are closed.
-    // On Kotlin/Native, newSingleThreadContext creates a non-daemon thread
-    // that prevents process exit. By cleaning up when the last socket closes,
-    // we ensure the event loop thread is stopped and the process can terminate.
+    // Reference counting for auto-cleanup when all sockets are closed: the last close destroys the
+    // ring and closes the eventfd. The poller worker thread itself is kept (see cleanup).
     private val activeSocketCount = AtomicInt(0)
 
     /**
@@ -153,18 +151,17 @@ internal object IoUringManager {
     /**
      * How many poller worker threads this manager has actually created.
      *
-     * The regression guard for #302/#307, and deliberately not a wall clock: keeping the worker across
-     * [cleanup] is the fix, so a bind/close/cleanup cycle must not allocate a new one. Re-adding
-     * `dispatcher?.close()` there makes this grow once per cycle, which a test can assert exactly —
-     * where the ~100 ms it costs could only be asserted with a timing budget this suite has already
-     * (rightly) refused to add elsewhere.
+     * A regression guard, and deliberately not a wall clock: the worker is kept across [cleanup], so a
+     * bind/close/cleanup cycle must not allocate a new one. Closing the dispatcher there would make this
+     * grow once per cycle, which a test can assert exactly — where the ~100 ms it costs could only be
+     * asserted with a timing budget.
      */
     internal val pollerDispatchersCreated = AtomicInt(0)
 
     /**
      * Rings this manager has created and released over the process lifetime. `created - released`
      * is the number alive right now, and is what turns an `io_uring_setup` `ENOMEM` from "the kernel
-     * said no" into a named leak or a named non-leak (#561): every ring is charged to the process
+     * said no" into a named leak or a named non-leak: every ring is charged to the process
      * until `io_uring_queue_exit`, so a count that grows across bind/close cycles is the defect, and a
      * count of one at the failure is proof the budget was exhausted by something else.
      */
@@ -240,16 +237,15 @@ internal object IoUringManager {
         // an ENOMEM only under DEFER_TASKRUN.
         val attempts = StringBuilder()
 
-        // ⚠️ The ladder is retried on ENOMEM, because that errno here does not mean "out of memory"
-        // (#561). Three independent captures of the #562 ledger — 153/153, 141/141, 131/131 — all show
-        // `created == released`, `live = 0` and `io_uring_disabled = 0` at the moment the kernel
-        // refused *every* flag set including `flags=0x0`. Nothing was leaked; the rings had been
-        // released and the kernel's accounting for them had not yet settled. That is a race against
-        // teardown, and the only thing that clears it is a moment of waiting.
+        // ⚠️ The ladder is retried on ENOMEM, because that errno here does not mean "out of memory":
+        // the ring ledger shows `created == released`, `live = 0` and `io_uring_disabled = 0` at the
+        // moment the kernel refuses *every* flag set including `flags=0x0`. Nothing is leaked; the
+        // rings have been released and the kernel's accounting for them has not yet settled. That is
+        // a race against teardown, and the only thing that clears it is a moment of waiting.
         //
         // Bounded and errno-scoped on purpose: ENOSYS (no io_uring at all) and EPERM (seccomp, or
         // `io_uring_disabled=1`) are permanent, and retrying them would turn a clear diagnosis into a
-        // slow one. Only ENOMEM — the transient the ledger measured — buys another pass.
+        // slow one. Only ENOMEM — the transient — buys another pass.
         for (attempt in 0 until ENOMEM_SETUP_ATTEMPTS) {
             for (flags in flagSets) {
                 // Zero out params for each attempt
@@ -696,35 +692,27 @@ internal object IoUringManager {
                 runBlocking { job.join() }
             }
 
-            // The poller's scope and its worker thread are deliberately KEPT (#302/#307).
+            // The poller's scope and its worker thread are deliberately KEPT.
             //
             // Everything the kernel knows about is already gone: the event loop's own `finally` closed
             // the eventfd, destroyed the ring and drained the pending ops before the join above
-            // returned. What used to follow was `scope.cancel()` + `dispatcher.close()`, and that pair
-            // cost a flat **~100 ms** on every last-socket close — measured step by step on the unfixed
-            // code: eventfd write → the loop's `finally` 18–60 µs, the join 73–157 µs, `scope.cancel()`
-            // 48–108 µs, and `dispatcher.close()` **99.71–100.05 ms**.
+            // returned. A `scope.cancel()` + `dispatcher.close()` here would cost a flat **~100 ms** on
+            // every last-socket close, and none of it is io_uring: on Kotlin/Native
+            // `CloseableCoroutineDispatcher.close()` blocks the caller until the backing worker
+            // terminates, and the worker only notices shutdown after its own ~100 ms bounded park
+            // expires (closing a dispatcher whose worker never ran a task is ~1 µs).
             //
-            // It was never io_uring. On Kotlin/Native `CloseableCoroutineDispatcher.close()` blocks the
-            // caller until the backing worker terminates, and the worker only notices shutdown after its
-            // own ~100 ms bounded park expires. Isolated: closing a dispatcher whose worker ran at least
-            // one task is a flat 100.03 ms; one whose worker was never allocated is ~1 µs. That is also
-            // why the original strace showed a 100 ms *timed* futex with no eventfd traffic and no
-            // `io_uring_enter` in the window — the ring was already destroyed and what remained was the
-            // coroutine worker being torn down.
-            //
-            // The premise the teardown was written for — the comment on [activeSocketCount], that a
-            // `newSingleThreadContext` thread is non-daemon and would prevent process exit — no longer
-            // holds: a linuxX64 binary that leaks a started dispatcher exits in single-digit ms with
-            // code 0. So one idle worker thread is retained for the process lifetime, and because the
-            // refs are kept rather than nulled, [getOrCreatePollerDispatcher] reuses it: a bind/close
-            // cycle no longer allocates a thread per cycle either. [pollerDispatchersCreated] is the
-            // regression guard on exactly that, and it needs no wall clock to fire.
+            // A started `newSingleThreadContext` worker does not keep the process alive — a linuxX64
+            // binary that leaks one exits in single-digit ms with code 0 — so one idle worker thread
+            // is retained for the process lifetime, and because the refs are kept rather than nulled,
+            // [getOrCreatePollerDispatcher] reuses it: a bind/close cycle allocates no thread either.
+            // [pollerDispatchersCreated] is the regression guard on exactly that, and it needs no wall
+            // clock to fire.
         }
 }
 
 /**
- * Passes over the whole flag ladder before an `io_uring_setup` ENOMEM is treated as real (#561).
+ * Passes over the whole flag ladder before an `io_uring_setup` ENOMEM is treated as real.
  *
  * Five, because the failure is a race against asynchronous ring teardown rather than a resource limit:
  * the ledger shows `live = 0` at the moment of refusal, so what is missing is time, not memory. The

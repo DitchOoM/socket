@@ -4,10 +4,8 @@ import com.ditchoom.buffer.flow.ByteStream
 
 /**
  * A bidirectional socket as a [ByteStream] (read + write + the injected read/write policies +
- * [close]), plus socket-level addressing.
- *
- * Replaces the old `SocketController : Reader, Writer` shape — `isOpen`, `read`, `write`,
- * `writeGathered`, and `close` now come from the byte trichotomy in `buffer-flow`.
+ * [close]), plus socket-level addressing. `isOpen`, `read`, `write`, `writeGathered`, and `close`
+ * come from the byte trichotomy in `buffer-flow`.
  */
 interface SocketController : ByteStream {
     suspend fun localPort(): Int

@@ -273,9 +273,8 @@ class QpackEncoder(
             when (instruction) {
                 // These two branches are why the counts are typed. This one ADDS a delta; the
                 // SectionAck branch below JUMPS to an absolute. With both quantities as bare `Long`s
-                // nothing stopped an absolute being added here or a delta being assigned there — and
-                // the #353 bug was exactly a delta appearing where a difference of absolutes belonged.
-                // `plus` is now the only operator that accepts a delta, and it returns an InsertCount.
+                // nothing would stop an absolute being added here or a delta being assigned there.
+                // `plus` is the only operator that accepts a delta, and it returns an InsertCount.
                 is QpackDecoderInstruction.InsertCountIncrement -> {
                     val updated = knownReceivedCount + instruction.increment
                     if (instruction.increment <= InsertCountDelta.ZERO || updated > table.insertCount) {

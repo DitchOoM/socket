@@ -159,9 +159,9 @@ interface QuicScope : CoroutineScope {
     /**
      * Current migration/path state. Defaults to a connection that has never migrated.
      *
-     * One shared, immutable flow rather than a fresh `MutableStateFlow` per read: the old default
-     * allocated a new flow on **every** access, so two reads of the same connection's `pathState` were
-     * different objects and a collector on one could never see the other's value.
+     * One shared, immutable flow rather than a fresh `MutableStateFlow` per read: a default that
+     * allocates a new flow on **every** access makes two reads of the same connection's `pathState`
+     * different objects, so a collector on one can never see the other's value.
      */
     val pathState: StateFlow<QuicPathState>
         get() = NeverMigratedPath

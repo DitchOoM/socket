@@ -3,19 +3,15 @@ package com.ditchoom.socket.testkit.echo
 import kotlin.text.CharacterCodingException
 
 /**
- * Evidence capture for the echo-corruption family (#401, #366, #415, #462).
+ * Evidence capture for echo corruption: the peer returned bytes that were never sent.
  *
  * ## Why this is shared rather than local to one suite
  *
  * An echo test that decodes as it reads dies inside the decoder with a bare
- * `MalformedInputException: Input length = 1` and **discards the bytes that would explain it**. #402
- * fixed that for one suite — `QuicConcurrencySoakTestSuite` — by reading all the bytes first and
- * decoding last, which is what unblocked #291/#292. It stayed private to that class, so every other
- * echo site kept throwing the evidence away.
- *
- * That cost a release. `StaleConnectionDiagnosticTests` failed on the v4.10.0 release run
- * (`build-linux / QUIC quiche JVM (JNI)`, 1 of 344 tests) and the artifact contained a stack trace and
- * **zero characters** of captured output, because the decode happened inside the assertion path.
+ * `MalformedInputException: Input length = 1` and **discards the bytes that would explain it** — the
+ * failure artifact then holds a stack trace and zero characters of captured output. Reading all the
+ * bytes first and decoding last keeps the evidence, and keeping that in one place means every echo
+ * site keeps it.
  *
  * The rule this encodes is worth stating on its own:
  *
@@ -24,17 +20,17 @@ import kotlin.text.CharacterCodingException
  *
  * ## Why it classifies rather than only dumping
  *
- * Three explanations fit every sighting so far, and they have different root causes and different
- * fixes. A hex dump alone does not choose between them; the *shape* of the received bytes does:
+ * Three explanations fit a corrupted echo, and they have different root causes and different fixes.
+ * A hex dump alone does not choose between them; the *shape* of the received bytes does:
  *
  * | received bytes look like | reading |
  * |---|---|
  * | another payload that was in flight | cross-connection or cross-stream leak |
  * | a payload from an earlier generation on this connection | pool refcount reuse (the buffer 6.30.4 family) |
- * | neither — non-text noise | freed-chunk bytes from quiche's recv path (#415's hypothesis) |
+ * | neither — non-text noise | freed-chunk bytes from quiche's recv path |
  *
  * So [describeEchoCorruption] takes the other payloads that were in flight when it can, and says which
- * reading the bytes actually support. That is the datum nobody has had.
+ * reading the bytes actually support.
  *
  * Tests may use `ByteArray` freely; the no-ByteArray rule is production-only.
  */
@@ -115,7 +111,7 @@ public object EchoCorruption {
 
         /**
          * The bytes ARE another live payload, whole: a buffer reached the wrong reader.
-         * Cross-connection or cross-stream leak — a different defect from #415's freed-chunk theory.
+         * Cross-connection or cross-stream leak — a different defect from a freed chunk.
          */
         public data class AnotherPayloadWhole(
             val payload: String,
@@ -152,7 +148,7 @@ public object EchoCorruption {
                     "outside this test's view."
         }
 
-        /** Non-text noise: the shape a freed allocator chunk has, which is what #415 predicts. */
+        /** Non-text noise: the shape a freed allocator chunk has. */
         public data class NonTextNoise(
             val printableBytes: Int,
             val totalBytes: Int,

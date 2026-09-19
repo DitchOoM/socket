@@ -151,9 +151,9 @@ sealed interface QuicError : DatagramCloseReason {
      * arms it on the first ack-eliciting send, so it governs a stalled handshake too, and when it is the
      * shorter of the two it is the one that ends the connection. This is the application's deadline, the
      * one that fires when the caller's bound is shorter than the idle timeout — the production-shaped
-     * case, a 15s bound against the 30s default. Until it was named, that connection surfaced as the
-     * caller's bare `TimeoutCancellationException`: a `CancellationException`, which a `launch` completes
-     * *cancelled* on rather than failed, so the establishment failure reached nobody (#480).
+     * case, a 15s bound against the 30s default. Named so that the connection never surfaces as the
+     * caller's bare `TimeoutCancellationException`: that is a `CancellationException`, which a `launch`
+     * completes *cancelled* on rather than failed, so the establishment failure would reach nobody.
      */
     data class HandshakeTimeout(
         val bound: Duration,

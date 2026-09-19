@@ -71,10 +71,10 @@ internal class CriticalStreamGuard {
      * **The distinction is not visible in the read result**, which is why it is made here rather than at
      * each reader. `QuicheDriver` answers a read parked on a stream whose connection has gone away with
      * `ReadResult.End` — its `StreamRecvResult.ConnectionGone` arm, byte-for-byte the value a peer's FIN
-     * produces (a typed connection-gone read result needs buffer's `ReadResult` to gain a case,
-     * DitchOoM/buffer#376). Reading `End` as the peer's FIN unconditionally would therefore report every
-     * clean close as a protocol violation the peer never committed — which is worse than the silence
-     * #530 fixed, because it accuses. [connectionEnded] is the fact that tells them apart.
+     * produces (a typed connection-gone read result needs buffer's `ReadResult` to gain a case).
+     * Reading `End` as the peer's FIN unconditionally would therefore report every
+     * clean close as a protocol violation the peer never committed — worse than silence, because it
+     * accuses. [connectionEnded] is the fact that tells them apart.
      *
      * Returning the violation rather than a `Boolean` for the same reason [claim] does: the caller
      * cannot end up choosing the error code itself.

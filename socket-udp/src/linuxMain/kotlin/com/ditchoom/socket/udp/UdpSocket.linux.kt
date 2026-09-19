@@ -38,8 +38,7 @@ import platform.posix.socklen_tVar
 /**
  * The Linux/K-N default: a native deterministic factory (`malloc`/`free` `NativeBuffer`). io_uring
  * `recvmsg` writes into the payload's raw native memory, so — unlike the JVM — `BufferFactory.Default`
- * (a GC `ByteArrayBuffer` with no native address) is *not* usable here; this is the exact strategy
- * [IoUringDatagramChannelCore] has always used (formerly `PlatformBuffer.allocateNative`).
+ * (a GC `ByteArrayBuffer` with no native address) is *not* usable here.
  */
 internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.deterministic()
 
@@ -94,8 +93,7 @@ actual object UdpSocket {
     ): ConnectedDatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
         // Every refusal on the way to a connected socket is reported typed, with the errno read at the
-        // failing call (#534): this path used to throw one IllegalStateException("connect to … failed")
-        // with the errno discarded, which made a sealed reason unconstructible on Linux.
+        // failing call, so a sealed reason is constructible on Linux.
         val fd = socket(if (peer.family == AddressFamily.IPv6) AF_INET6 else AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         if (fd < 0) throw UdpConnectException(connectErrnoToError())
         // NO SO_REUSEADDR here — see [reuseAddrIsMulticastOnly].

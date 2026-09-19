@@ -17,10 +17,9 @@ package com.ditchoom.socket
  *
  * This lives in `com.ditchoom:network-monitor`, the module that also owns the [NetworkMonitor] contract
  * and every implementation of it. That is not tidiness — `expect`/`actual` cannot span a module
- * boundary, so as long as any monitor lived elsewhere this declaration and its actuals were split in
- * two and the native monitors could not be reached without depending on `:socket`. Issue #269 gave this
- * module its own netlink and `NWPathMonitor` cinterops so the Linux and Apple monitors could come home;
- * `:socket` re-exports all of it via `api(project(":network-monitor"))`.
+ * boundary, so this declaration and all of its actuals must share one module, which is why the module
+ * carries its own netlink and `NWPathMonitor` cinterops; `:socket` re-exports all of it via
+ * `api(project(":network-monitor"))`.
  *
  * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished.
  */

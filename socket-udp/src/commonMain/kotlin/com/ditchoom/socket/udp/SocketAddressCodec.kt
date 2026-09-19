@@ -1,11 +1,9 @@
 /*
  * The type-safe sockaddr SPI for the QUIC cutover (RFC §4). A resolved SocketAddress is passed
  * around as the currency; only at a native-engine FFI wall (quiche's recv_info.from / send_info.to)
- * is it materialized into C-sockaddr bytes, via this buffer-codec Codec. This replaces the RFC's
- * hand-wavy `nativeSockAddr(): Pair<Long, Int>` (allocating, untyped, raw-pointer-as-currency) and
- * supersedes the hand-rolled byte-poking previously duplicated in quiche's SockAddrUtil (JVM) and
- * writeSockaddr (native). One tested codec, differential-checked byte-for-byte against the proven
- * originals. Reusable by ../webrtc (ICE/DTLS also hand sockaddrs to a native engine).
+ * is it materialized into C-sockaddr bytes, via this buffer-codec Codec. One tested codec shared by
+ * every backend, so no engine carries its own byte-poking. Reusable by ../webrtc (ICE/DTLS also hand
+ * sockaddrs to a native engine).
  */
 package com.ditchoom.socket.udp
 

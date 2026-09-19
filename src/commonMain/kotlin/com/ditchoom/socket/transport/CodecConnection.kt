@@ -43,20 +43,19 @@ import kotlin.time.TimeSource
 /**
  * A typed message connection over a [ByteStream], framed by a [Codec].
  *
- * ## The connection owns its writer (#382)
+ * ## The connection owns its writer
  *
  * [send] does not touch the socket. It hands the message to a bounded outbound queue drained by a
- * single writer coroutine that this connection owns, which buys three properties that used to depend
- * on callers being careful and were silently absent:
+ * single writer coroutine that this connection owns, which guarantees three properties no caller
+ * has to be careful about:
  *
  * > A frame reaches the wire whole or not at all; concurrent sends to one connection cannot
  * > interleave; and no caller ever waits on the peer's socket.
  *
- * Previously `send` encoded and then called `stream.write` **on the caller's own coroutine**. That
- * gave the API three failure modes, none visible in its signature: two concurrent sends interleaved
- * their bytes under a length-prefix header (measured: `0x00 0x3c AAAA 0x00 0x3c BBBB AAAAAA BBBBBB…`);
- * cancelling a caller mid-write left a truncated frame whose header still promised the full length, so
- * the peer read on into the *next* frame and went quietly deaf; and one slow peer blocked the sending
+ * Writing **on the caller's own coroutine** would give the API three failure modes, none visible in
+ * its signature: two concurrent sends interleave their bytes under a length-prefix header; cancelling
+ * a caller mid-write leaves a truncated frame whose header still promises the full length, so the
+ * peer reads on into the *next* frame and goes quietly deaf; and one slow peer blocks the sending
  * coroutine and anything joined to it.
  *
  * The fan-out case is where all three land at once. `coroutineScope { for (c in conns) launch { c.send(f) } }`
@@ -70,9 +69,9 @@ import kotlin.time.TimeSource
  *
  * This is strictly stronger than [com.ditchoom.buffer.flow.Connection]'s documented contract, which
  * says implementations are not assumed to be thread-safe and concurrent sends need external
- * synchronisation. Callers of *this* implementation need none, and per-send time bounds added
- * defensively against the old behaviour can be deleted — with a hand-off, slowness becomes queue
- * depth, which can be generous precisely because nobody is waiting on it.
+ * synchronisation. Callers of *this* implementation need none, and need no per-send time bound —
+ * with a hand-off, slowness becomes queue depth, which can be generous precisely because nobody is
+ * waiting on it.
  *
  * @param scope the writer's lifetime. Required, and deliberately not defaulted: the writer lives as
  *   long as the connection, so its parent must be a scope the caller controls rather than whichever
@@ -94,16 +93,15 @@ class CodecConnection<T>(
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
     /**
-     * Source-compatible constructor for callers written against the pre-#382 signature.
+     * Source-compatible constructor for callers that do not state an outbound queue policy.
      *
-     * Deprecated rather than removed so that the fix reaches existing consumers without a migration:
-     * code that compiled before this change still compiles, and immediately stops being able to
-     * interleave or truncate frames. What it does **not** get is a say in the two decisions the primary
-     * constructor exists to force.
+     * Deprecated rather than removed so that the owned writer reaches existing consumers without a
+     * migration: their code still compiles, and cannot interleave or truncate frames. What it does
+     * **not** get is a say in the two decisions the primary constructor exists to force.
      *
      * The defaults it fills in are the conservative ones:
-     * - [OverflowPolicy.Suspend], the only policy that never discards a message, and the closest
-     *   analogue to the old behaviour where a caller waited rather than shedding.
+     * - [OverflowPolicy.Suspend], the only policy that never discards a message: a caller waits
+     *   rather than sheds.
      * - [DEFAULT_OUTBOUND_CAPACITY] messages of queue depth.
      * - A writer scope this connection creates and owns. [close] cancels and joins the *writer*, so no
      *   coroutine keeps running — but the `SupervisorJob` behind that scope is never itself completed,
@@ -115,7 +113,7 @@ class CodecConnection<T>(
      * something the caller controls, which is what "the connection owns its writer" is supposed to mean.
      *
      * Note what is *not* offered here: a way to keep writing on the caller's own coroutine. That
-     * behaviour is the defect (#382), not a compatibility mode.
+     * behaviour is the defect, not a compatibility mode.
      */
     @Deprecated(
         message =
@@ -206,11 +204,11 @@ class CodecConnection<T>(
             } finally {
                 // However this writer ended — failure, or [scope] being cancelled out from under it —
                 // nothing can reach the wire any more, so the queue must stop accepting. Without this,
-                // a cancelled scope left a connection that looked alive: `send` queued "successfully"
-                // into a queue nobody drains, then suspended forever once it filled (Suspend), or
-                // cycled messages into onOverflow for ever (DropOldest), or blamed the peer (Fail).
-                // Writer *failure* already closed the channel; writer *cancellation* did not, and that
-                // asymmetry was the bug.
+                // a cancelled scope leaves a connection that looks alive: `send` queues "successfully"
+                // into a queue nobody drains, then suspends forever once it fills (Suspend), or
+                // cycles messages into onOverflow for ever (DropOldest), or blames the peer (Fail).
+                // Writer *failure* already closes the channel; writer *cancellation* does not, and
+                // that asymmetry is the trap.
                 //
                 // Both calls are no-ops once the channel is already closed and drained, which is the
                 // normal [close] path — so this only bites the abnormal one. `cancel` hands anything
@@ -226,16 +224,15 @@ class CodecConnection<T>(
         }
 
     /**
-     * MultiThreaded, not the default SingleThreaded, because #382 made this pool genuinely shared: the
+     * MultiThreaded, not the default SingleThreaded, because this pool is genuinely shared: the
      * writer allocates and frees encode buffers on [scope]'s dispatcher, `receive()` acquires on
      * whichever thread collects it, and [close] clears it from a third. A SingleThreaded pool is
      * documented as "faster but NOT thread-safe" — plain ArrayDeque buckets and non-atomic refcounts —
      * and using one this way corrupts its structure (`ArrayIndexOutOfBoundsException` out of
      * `popAtLeast`) or livelocks on a double-handed-out buffer.
      *
-     * Before #382 this was latent and avoidable: `send` ran on the caller's coroutine, so a
-     * single-threaded consumer never crossed a thread. Now the writer is on another thread always, and
-     * this class advertises that callers need no external synchronisation — so the pool has to mean it.
+     * The writer is on another thread always, and this class advertises that callers need no external
+     * synchronisation — so the pool has to mean it.
      * Every other pool in this repository that is shared this way already says MultiThreaded
      * ([com.ditchoom.socket.ReadBufferSource], QuicheDriver's stream/recv pools).
      */
@@ -250,11 +247,10 @@ class CodecConnection<T>(
      * The fence [send], [preSeed] and [receive] fast-fail on — "this connection is closed, your call
      * is a mistake" — read through [teardown] so it cannot disagree with it.
      *
-     * It used to be both fence and latch, and that conflation was the defect:
-     * `if (closed) return; closed = true` is check-then-act, so concurrent closers all ran the whole
-     * teardown — measured at 223/300 attempts, worst case all eight closers, each calling
-     * `streamProcessor.release()` on a deque that is not thread-safe. The roles are still distinct;
-     * see [TeardownOnce.begun] for why one field can serve both once the latch is real.
+     * It is a fence, never a latch: `if (closed) return; closed = true` would be check-then-act, so
+     * concurrent closers would all run the whole teardown, each calling `streamProcessor.release()` on
+     * a deque that is not thread-safe. The roles are distinct; see [TeardownOnce.begun] for why one
+     * field can serve both once the latch is real.
      */
     private val closed: Boolean get() = teardown.begun
 
@@ -320,8 +316,8 @@ class CodecConnection<T>(
         check(!closed) { "CodecConnection is closed" }
         return flow {
             // Re-checked at COLLECTION time, not just at flow creation. `receive()` returns a cold
-            // flow, so `val f = receive(); close(); f.collect { }` is a legal ordering that used to
-            // walk straight into a released processor and a cleared pool with no guard at all.
+            // flow, so `val f = receive(); close(); f.collect { }` is a legal ordering that would
+            // otherwise walk straight into a released processor and a cleared pool with no guard.
             check(!closed) { "CodecConnection is closed" }
             check(collecting.tryLock()) { "receive() is already being collected concurrently" }
             try {
@@ -483,7 +479,7 @@ class CodecConnection<T>(
     private suspend fun fillFromTransport(): Boolean =
         // Adapter rule: propagate, don't clobber. Call the leaf's no-arg read() so its injected
         // readPolicy governs the deadline. A WebTransport stream's UntilClosed survives; an HTTP/3
-        // request stream's Bounded survives. Injecting a deadline here was the v5 footgun.
+        // request stream's Bounded survives.
         when (val result = stream.read()) {
             is ReadResult.Data -> {
                 _lastDataReceived.value = TimeSource.Monotonic.markNow()
@@ -571,10 +567,10 @@ class CodecConnection<T>(
 
     companion object {
         /**
-         * Queue depth the deprecated pre-#382 constructor fills in.
+         * Queue depth the deprecated constructor fills in.
          *
-         * Deep enough that an ordinary sender never reaches it, so the deprecated overload behaves like
-         * the unbounded-feeling old API in practice, and shallow enough that a peer which has genuinely
+         * Deep enough that an ordinary sender never reaches it, so the deprecated overload feels
+         * unbounded in practice, and shallow enough that a peer which has genuinely
          * stopped draining applies back-pressure rather than growing without limit. Callers who care
          * should state their own — which is what the primary constructor is for.
          */

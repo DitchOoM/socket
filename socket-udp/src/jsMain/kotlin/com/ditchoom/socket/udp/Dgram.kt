@@ -196,7 +196,7 @@ internal fun nodeBufferToInt8Array(obj: Any?): Int8Array =
  * [JsBuffer] (a typed-array view over its backing `ArrayBuffer`); a composite/decorated [ReadBuffer]
  * falls back to a one-shot materialize (the only allocation), the same as root `:socket`'s write path.
  * Callable straight on the caller's payload: neither branch leaves the cursor moved, so the payload is
- * not consumed (send-does-not-consume) and no reference is taken on it (#277).
+ * not consumed (send-does-not-consume) and no reference is taken on it.
  */
 internal fun ReadBuffer.asUint8ArrayForSend(): Uint8Array {
     val length = remaining()

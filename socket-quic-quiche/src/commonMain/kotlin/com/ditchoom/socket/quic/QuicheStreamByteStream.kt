@@ -41,7 +41,7 @@ interface QuicheStreamAdapter {
      * production construction site passes — [QuicheDriver.streamReadPool]), and
      * an actual free for off-heap `deterministic()` buffers.
      *
-     * **Skipping the release is never harmless, on any factory** (#538). Under
+     * **Skipping the release is never harmless, on any factory.** Under
      * the default [BufferFactory.Default] the native allocation behind the
      * buffer is owned by the *collector* — an `Arena.ofAuto()` segment on
      * JDK 21+, a `Cleaner`-backed direct `ByteBuffer` on JDK 17 / Android — and
@@ -50,8 +50,7 @@ interface QuicheStreamAdapter {
      * produce. And because production always reads through a pool, a buffer
      * that is never released is a pool slot that is never returned, so every
      * later read misses the pool and allocates fresh. That compounds without
-     * bound: a device walk that read and dropped reached 20.8 GB of address
-     * space in 2 h 36 m and died of `std::bad_alloc`.
+     * bound until the process dies of `std::bad_alloc`.
      *
      * Callers that do not keep the bytes should not be releasing anything by
      * hand — use the scoped `read(deadline) { … }` (`ScopedRead`, in
@@ -143,8 +142,7 @@ class QuicheStreamByteStream(
      * collector and whose collector will not run on native pressure, and
      * especially under the pool this stream is always constructed with, where
      * an unreleased buffer permanently costs a pool slot. See
-     * [QuicheStreamAdapter.streamRead] for the full contract and #538 for what
-     * it cost to believe otherwise.
+     * [QuicheStreamAdapter.streamRead] for the full contract.
      *
      * **Prefer the scoped `read(deadline) { … }`** (`ScopedRead`, in
      * `:socket-quic`) unless the bytes genuinely have to outlive the call: it

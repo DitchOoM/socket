@@ -166,12 +166,11 @@ class JsNetworkMonitor(
  * | a link exists (`navigator.onLine`, a non-loopback interface) | `Routable(id, Unobserved)` |
  * | no link | [NetworkState.Offline] |
  *
- * The optimistic rung is the point (RFC §9.2). The draft had [ReachResolution.LinkOnly] report
- * [NetworkState.LinkLocal], which was the one outright contradiction in it: asserting "a link is up but
- * nothing routes off it" *requires* route visibility, which neither Node nor a browser has — and browsers
- * route off-link and cannot multicast at all, so `LinkLocal` is precisely the wrong rung for them. Under
- * that reading an online browser would have reported [canRouteOffLink] `== false` and refused to connect.
- * [ReachResolution.permits] enforces this, and `jsNetworkStateNeverReportsLinkLocal` proves it.
+ * The optimistic rung is the point (RFC §9.2). [ReachResolution.LinkOnly] must never report
+ * [NetworkState.LinkLocal]: asserting "a link is up but nothing routes off it" *requires* route
+ * visibility, which neither Node nor a browser has — and browsers route off-link and cannot multicast at
+ * all, so `LinkLocal` is precisely the wrong rung for them. Under that reading an online browser would
+ * report [canRouteOffLink] `== false` and refuse to connect. [ReachResolution.permits] enforces this.
  */
 internal fun jsNetworkState(
     hasLink: Boolean,

@@ -38,7 +38,7 @@ interface UdpChannel {
      * connected/fixed peer (the common case). [SendTarget.ServerReply] — set by the server egress path from quiche's
      * `sendInfo.to`/`sendInfo.from` — names both the destination, so replies follow a migrated peer to
      * its new source address, and the local address to leave from, so a wildcard-bound server does not
-     * let the kernel pick a source the client will drop (#556). Channels bound to exactly one 4-tuple
+     * let the kernel pick a source the client will drop. Channels bound to exactly one 4-tuple
      * ignore [target] entirely; a channel that can target a destination but cannot select a source
      * honours the destination and ignores the source.
      *

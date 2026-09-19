@@ -22,13 +22,13 @@ import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
 
 /**
- * A wildcard server bind that answers **from the address the client dialled** (#556).
+ * A wildcard server bind that answers **from the address the client dialled**.
  *
  * ## The defect
  *
  * A wildcard-bound UDP socket receives datagrams sent to any of the host's addresses, but when it
  * replies the kernel picks the source address by route lookup — and the choice differs per OS.
- * Measured, same server and same `connect()`ed client, on the two addresses of one interface:
+ * Same server and same `connect()`ed client, on the two addresses of one interface:
  *
  * | host | client local addr | reply source | connected client |
  * |---|---|---|---|
@@ -37,8 +37,8 @@ import kotlin.concurrent.Volatile
  *
  * Darwin selects the source matching the destination, Linux the interface primary. A client whose
  * socket is `connect()`ed — which is correct, and is what [NioUdpChannelFactory.openPath] does —
- * discards a reply from any other source, so it presents as a silent timeout. #555 was this,
- * reported as `PathNotValidated` after the path-validation deadline.
+ * discards a reply from any other source, so it presents as a silent timeout — `PathNotValidated`
+ * after the path-validation deadline.
  *
  * ## The fix, and why it is sockets rather than ancillary data
  *
@@ -56,12 +56,9 @@ import kotlin.concurrent.Volatile
  *
  * ## How a reply finds its socket
  *
- * By the peer: the socket its most recent datagram arrived on. That is a heuristic standing in for
- * the exact answer, which is quiche's own `send_info.from` handed down as
- * [DatagramSendOptions.fromLocal] — honoured here when present, but the shared server does not yet
- * send it (it also feeds quiche a single fixed `recv_info.to`, so quiche could not yet supply a
- * per-path `from` even if asked). Threading that through is the cross-platform half of #556; once it
- * lands this class routes statelessly and the [replyRoute] map goes away.
+ * By quiche's own `send_info.from`, handed down as [DatagramSendOptions.fromLocal], when the server
+ * names one. Otherwise by the peer: the socket its most recent datagram arrived on, remembered in the
+ * [replyRoute] map.
  *
  * ## What this narrows
  *
@@ -79,7 +76,7 @@ import kotlin.concurrent.Volatile
  * consumer applies backpressure to the readers rather than accumulating pooled receive buffers, and
  * there is no queue to leak on close. The one datagram a reader may be holding when the scope is
  * cancelled is freed by that reader, because a pooled payload whose consumer never arrives is
- * exactly the native leak #538 was.
+ * native memory leaked for good.
  *
  * A receive on a closed composite **yields** [DatagramReadResult.Closed] rather than throwing — the
  * contract every member keeps (`NioDatagramChannel` spells it out at its own close race) and the
@@ -139,7 +136,7 @@ internal class PerLocalAddressServerChannel private constructor(
                         inbound.send(member to result)
                     } catch (e: CancellationException) {
                         // Nobody will take this datagram, so nobody will free it. Pooled receive
-                        // buffers are native memory (#538): free it here or it is gone for good.
+                        // buffers are native memory: free it here or it is gone for good.
                         (result as? DatagramReadResult.Received)?.datagram?.payload?.freeNativeMemory()
                         throw e
                     } catch (_: Throwable) {

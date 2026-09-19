@@ -123,7 +123,7 @@ internal class WebTransportMux(
      * Take ownership of a peer-opened **bidirectional** stream whose leading `0x41` signal was just
      * observed: read the Session ID, hand the stream (with any bytes already buffered after the header)
      * to the owning session's [WebTransportSession.incomingBidiStreams], or reset it if no live session
-     * owns it. Always consumes [processor] and [stream] — on every exit, not only success (#496): the
+     * owns it. Always consumes [processor] and [stream] — on every exit, not only success: the
      * routers flag the pair as this mux's *before* calling, so their own `finally` neither releases nor
      * closes, and a Session ID read that throws (its deadline expiring, the peer resetting the stream, a
      * FIN mid-varint) would otherwise leave the processor's buffered chunk out of the pool for good and
@@ -160,7 +160,7 @@ internal class WebTransportMux(
      * Take ownership of a peer-opened **unidirectional** stream whose `0x54` type prefix was just
      * consumed: read the Session ID, hand the receive stream to the owning session's
      * [WebTransportSession.incomingUniStreams], or reset it if no live session owns it. Always consumes
-     * [processor] and [stream] on every exit, exactly as [acceptIncomingBidi] does (#496).
+     * [processor] and [stream] on every exit, exactly as [acceptIncomingBidi] does.
      */
     suspend fun acceptIncomingUni(
         stream: QuicByteStream,
@@ -188,9 +188,9 @@ internal class WebTransportMux(
 
     /**
      * Dispose of a peer stream this mux could not hand to a session because reading its header threw
-     * [cause] (#496). The peer is told with RESET_STREAM + STOP_SENDING carrying `H3_REQUEST_CANCELLED` —
+     * [cause]. The peer is told with RESET_STREAM + STOP_SENDING carrying `H3_REQUEST_CANCELLED` —
      * the code RFC 9114 §4.1.1 gives for data no longer needed, and the one [Http3Connection]'s router
-     * already uses for a peer stream that stalls before it can be routed (#477) — unless [cause] is this
+     * already uses for a peer stream that stalls before it can be routed — unless [cause] is this
      * coroutine's own cancellation rather than a read deadline, which gets the bare close a cancelled
      * router leaves too: a read deadline's `TimeoutCancellationException` leaves the coroutine active, a
      * cancellation does not. Quietly either way; the connection may already be gone.

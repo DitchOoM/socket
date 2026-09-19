@@ -27,7 +27,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  *   each datagram's `Datagram.peer`) for a *migrated* client whose source address changed (RFC 9000 §9).
  * A lookup miss falls back to [fixedPeer].
  *
- * ## Pinning the reply's source address (#556)
+ * ## Pinning the reply's source address
  * [localFor] is the same trick for the *local* side: a lookup into the server's PathKey→local map,
  * populated by the receive loop from each datagram's `Datagram.localAddress`. Its result becomes
  * [DatagramSendOptions.fromLocal], so a wildcard-bound server answers from the address the client
@@ -35,7 +35,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  * another local address of the same host would otherwise drop as off-path.
  *
  * A miss, or a `from` whose family is 0 (a backend that decodes no egress address), leaves the source
- * unnamed and lets the platform choose. That is the pre-#556 behaviour, kept deliberately as the
+ * unnamed and lets the platform choose. That is kept deliberately as the
  * fallback: it is what a channel without [com.ditchoom.buffer.flow.DatagramCapabilities.sourceAddressSelect]
  * can do, and naming a source such a channel would silently ignore is a worse lie than not naming one.
  */

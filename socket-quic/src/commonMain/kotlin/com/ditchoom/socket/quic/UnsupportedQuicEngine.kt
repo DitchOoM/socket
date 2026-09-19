@@ -6,7 +6,7 @@ import kotlin.time.Duration
 /**
  * A [QuicEngine] for platforms with no raw-UDP / QUIC capability (browser JS, wasmJs). Every entry
  * throws [UnsupportedOperationException] — not [TODO] — so callers using `catch (Exception)` get a
- * cleanly catchable signal. This replaces the old per-platform throwing `withQuicConnection` actuals.
+ * cleanly catchable signal.
  *
  * @param connectReason explanation surfaced when a client [connect] is attempted.
  * @param bindReason explanation surfaced when a server [bind] is attempted.

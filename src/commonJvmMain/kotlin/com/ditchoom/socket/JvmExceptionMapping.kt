@@ -73,7 +73,7 @@ internal fun wrapJvmException(
                 ex,
             )
         is SSLHandshakeException ->
-            // Distinguish a certificate rejection from a generic handshake failure (issue #166): JSSE
+            // Distinguish a certificate rejection from a generic handshake failure: JSSE
             // surfaces cert problems as an SSLHandshakeException whose cause chain holds a
             // CertificateException / CertPathValidatorException, or whose message names the cert path.
             SSLHandshakeFailedException(
@@ -103,7 +103,7 @@ internal fun wrapJvmException(
 
 /**
  * True if [ex]'s cause chain (or message) indicates a certificate-validation failure rather than a
- * generic handshake failure — used to pick [ConnectionFailureReason.TlsBadCertificate] (issue #166).
+ * generic handshake failure — used to pick [ConnectionFailureReason.TlsBadCertificate].
  */
 private fun isCertificateFailure(ex: Throwable): Boolean {
     var cur: Throwable? = ex

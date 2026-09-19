@@ -18,10 +18,10 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /*
- * Convenience helpers over the v6 byte trichotomy (ByteSource / ByteSink).
+ * Convenience helpers over the byte trichotomy (ByteSource / ByteSink).
  *
- * These replace the old Reader / Writer interfaces' sugar methods. They are plain extensions —
- * not part of the type — and they bridge the ReadResult trichotomy back to the exception-throwing
+ * They are plain extensions — not part of the type — and they bridge the ReadResult trichotomy back
+ * to the exception-throwing
  * shape (SocketClosedException on clean EOF / reset) that string- and flow-oriented callers expect.
  *
  * Each overload defaults its deadline to the receiver's injected policy (readPolicy / writePolicy),

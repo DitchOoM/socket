@@ -44,9 +44,8 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  *   the trace alongside its QUIC traffic. The monitor recorded is **the connection's own** — the one
  *   [com.ditchoom.socket.quic.QuicOptions.networkMonitor] resolves — so a captured trace, an automatic
  *   migration, and [com.ditchoom.socket.quic.QuicConnection.networkAtClose] all describe the same
- *   observation stream. This used to be a second, independent `NetworkMonitor?` on the same options
- *   object, which meant a caller could (and one test did) hand two different fields two different
- *   monitors and get a trace that indexed a stream nothing else had seen.
+ *   observation stream. A second, independent monitor field here would let a caller hand two fields
+ *   two different monitors and get a trace that indexed a stream nothing else had seen.
  *
  *   A plain `Boolean` because that is the whole truth here: *which* monitor is a separate, already-typed
  *   decision ([com.ditchoom.socket.quic.NetworkMonitorSource]), and this only says whether to write it

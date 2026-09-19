@@ -3,8 +3,8 @@ package com.ditchoom.socket.quic
 /**
  * Result of a `quiche_conn_probe_path` call.
  *
- * Replaces the write-only `seqOut` out-param for the same reason [MigrateOutcome] did, and with more
- * at stake: probing a new path **consumes a spare destination connection ID**. quiche's
+ * The sequence number is a value the caller owns, not a diagnostic: probing a new path **consumes a
+ * spare destination connection ID**. quiche's
  * `create_path_on_client` takes `lowest_available_dcid_seq()` and links it to the path it just
  * created, so `available_dcids()` drops by one and stays down until that id is retired. When the
  * probe then fails validation, quiche's `on_failed_validation()` marks the path `Failed` and leaves
@@ -13,8 +13,8 @@ package com.ditchoom.socket.quic
  *
  * A driver that never reads the sequence number therefore has **no value to forget**: one
  * unanswered PATH_CHALLENGE permanently costs the connection one CID, and a handful of them park
- * migration for the rest of its life with `NoSpareConnectionId` (#447 — observed live against Google
- * on 2026-08-22). Returning the sequence as a value rather than writing it into scratch memory is
+ * migration for the rest of its life with `NoSpareConnectionId`.
+ * Returning the sequence as a value rather than writing it into scratch memory is
  * what makes that leak impossible to write: [QuicheDriver] cannot open a path entry without the id
  * that path holds.
  *
@@ -40,7 +40,7 @@ sealed interface ProbeOutcome {
      * ⚠️ That reasoning covers the `create_path_on_client` failures only. [QUICHE_ERR_INVALID_STATE]
      * is reached on a path that already existed — quiche calls `request_validation()` on it *before*
      * the check that fails — so on that branch the refusal is not inert, and the caller owes the
-     * rebind rather than a retry. See `QuicheDriver.probeRejection` (#583).
+     * rebind rather than a retry. See `QuicheDriver.probeRejection`.
      */
     class Rejected(
         val code: Int,

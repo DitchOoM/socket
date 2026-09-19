@@ -5,9 +5,7 @@ package com.ditchoom.socket.quic
  *
  * The exception already carries *why* as its [QuicCloseException.closeReason]. This adds the other half —
  * identity, and what the network was doing — because a caught exception is what most callers actually
- * log, and in a process holding several connections a reason alone cannot say which one died. That is
- * precisely why consumer issue #1152 (133.5s ± 0.2s reconnect cycles) stayed unresolved: the logs had
- * reasons and no way to attribute them.
+ * log, and in a process holding several connections a reason alone cannot say which one died.
  *
  * ## Why this does not carry the reason as well
  * It would duplicate [QuicCloseException.closeReason], and two fields describing one fact can disagree —

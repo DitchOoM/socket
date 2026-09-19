@@ -29,11 +29,11 @@ import kotlin.time.Duration.Companion.seconds
  * never escapes this scope, so there is nothing to leak on a dropped error path.
  * The scope-only block boundary remains the lifecycle.
  *
- * [timeout] bounds establishment *and* the block, preserving the pre-engine behavior.
+ * [timeout] bounds establishment *and* the block.
  *
  * A handshake that stalls past [timeout] fails with a [QuicCloseException] whose reason is
  * [QuicCloseReason.ByLocal] of [QuicError.HandshakeTimeout] — the same typed close every other
- * establishment failure throws — never a bare `TimeoutCancellationException` (#480). The engine already
+ * establishment failure throws — never a bare `TimeoutCancellationException`. The engine already
  * reports it that way; the conversion here exists because this function's own deadline is armed first
  * and therefore always fires first, and what it would report is a `CancellationException` that a
  * `launch` completes *cancelled* on rather than failed. A deadline that fires once the connection is up
@@ -87,7 +87,7 @@ suspend fun <R> withQuicConnection(
         // handshake still in flight, and converting it would swallow a cancellation into a failure
         // naming a bound that never fired. The enclosing coroutine tells them apart — still active
         // after our own deadline, cancelled after a parent's — so a parent's rethrows untouched here.
-        // Same closure as Http3Connection.route() (#494).
+        // Same closure as Http3Connection.route().
         currentCoroutineContext().ensureActive()
         if (established) throw e
         throw QuicCloseException(
@@ -108,8 +108,8 @@ suspend fun <T, R> withQuicMux(
     quicOptions: QuicOptions,
     codec: Codec<T>,
     /**
-     * Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy] (#382).
-     * Defaulted to the conservative pair so existing callers keep compiling and get the fix; state
+     * Outbound queue depth and full-queue policy for every stream — see [OverflowPolicy].
+     * Defaulted to the conservative pair so existing callers need no migration; state
      * them when a lagging peer should shed rather than apply back-pressure.
      */
     outboundCapacity: Int = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
@@ -125,9 +125,8 @@ suspend fun <T, R> withQuicMux(
         try {
             mux.block()
         } finally {
-            // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
-            // let this block return would otherwise lose it silently — and before #382, send()
-            // returning meant written, so that was a correct program (#382, review finding M3).
+            // Drain before cancelling. send() is a hand-off, so a caller that queued a frame and
+            // let this block return would otherwise lose it silently — and that is a correct program.
             mux.closeMintedConnections()
             muxScope.cancel()
         }

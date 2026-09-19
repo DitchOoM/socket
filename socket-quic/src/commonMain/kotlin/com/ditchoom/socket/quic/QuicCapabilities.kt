@@ -27,7 +27,7 @@ data class QuicCapabilities(
      * platform-specific because the JVM's `BufferFactory.Default` happens to allocate direct memory
      * while Linux Kotlin/Native's allocates a managed `ByteArray`. A consumer that writes
      * `BufferFactory.Default` buffers therefore gets a working JVM app and a first-byte failure on
-     * Linux — the exact bug #502 recorded — unless it honours this flag.
+     * Linux unless it honours this flag.
      *
      * When `true`, [QuicByteStream.write] and `datagramChannel().send` reject a buffer without native
      * memory with a [QuicNativeMemoryRequiredException] **before** anything is enqueued; the stream

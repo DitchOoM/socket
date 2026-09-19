@@ -124,12 +124,11 @@ class QuicTraceRecorder(
     /**
      * Record a [QuicPathState] (migration) transition (PATH_STATE).
      *
-     * The v1 wire tokens are frozen — `None`/`Probing`/`Validated`/`Migrated`/`Failed`, the names the
-     * long-deleted `MigrationPhase` enum happened to have — and this is the boundary that translates
-     * onto them, exactly as `PathKey.toTracePath()` translates the path types a few lines below. Keeping
-     * the translation here is what lets `:socket-quic` reshape its path model without invalidating a
-     * single recorded trace: `Original` still writes `None`, and a state that names no endpoint still
-     * writes the `-`/`0` pair a `PathInfo` with a null host used to.
+     * The v1 wire tokens are frozen — `None`/`Probing`/`Validated`/`Migrated`/`Failed` — and this is the
+     * boundary that translates onto them, exactly as `PathKey.toTracePath()` translates the path types a
+     * few lines below. Keeping the translation here is what lets `:socket-quic` reshape its path model
+     * without invalidating a single recorded trace: `Original` writes `None`, and a state that names no
+     * endpoint writes the `-`/`0` pair.
      */
     fun pathState(state: QuicPathState) {
         val (token, endpoint) =

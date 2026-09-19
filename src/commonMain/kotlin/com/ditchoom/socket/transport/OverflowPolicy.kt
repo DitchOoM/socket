@@ -1,7 +1,7 @@
 package com.ditchoom.socket.transport
 
 /**
- * What a [CodecConnection] does when its outbound queue is full (#382).
+ * What a [CodecConnection] does when its outbound queue is full.
  *
  * Once `send` is a hand-off to the connection's own writer, a slow peer stops blocking its callers and
  * becomes queue depth instead — which means the queue is bounded, which means there is a decision to
@@ -10,9 +10,9 @@ package com.ditchoom.socket.transport
  * answer depends on whether the traffic is recoverable at a higher layer.
  *
  * The primary [CodecConnection] constructor deliberately has no default, so a new consumer has to
- * answer this. The deprecated pre-#382 overloads and the scoped `withMux` entry points do default it,
- * to [Suspend] — the only arm that never discards a message — so that existing callers receive the fix
- * without a migration. That is a compatibility affordance, not the recommendation: a caller that has
+ * answer this. The deprecated overloads and the scoped `withMux` entry points do default it, to
+ * [Suspend] — the only arm that never discards a message — so that existing callers need no
+ * migration. That is a compatibility affordance, not the recommendation: a caller that has
  * not chosen has not thought about what a lagging peer should cost it.
  *
  * A lagging peer is the case worth thinking about concretely. Evicting it with an untyped close reads

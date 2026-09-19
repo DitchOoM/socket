@@ -9,7 +9,7 @@ import kotlin.reflect.KClass
  * cause the repository has agreed is legitimate, and every cause carries the specifics needed to
  * tell a real environment gap from a bug that happens to look like one.
  *
- * The alternative — the free-form early `return` this replaces — is worse than untyped, because on
+ * The alternative — a free-form early `return` — is worse than untyped, because on
  * Kotlin/Native it is *invisible*: there is no `assume` on K/N, so the only skip available is
  * returning early, and the report records that as a **pass**. A suite that silently stopped running
  * and a suite that passed are the same green tick.
@@ -27,8 +27,8 @@ sealed interface SkipReason {
      *
      * On CI this should never happen: the pipeline builds the natives and every consuming lane
      * gets them as an artifact. That is exactly why those lanes set [REQUIRE_ALL_TESTS_ENV] — a
-     * missing native there means the artifact plumbing broke, and it used to surface as ~38 test
-     * classes quietly vanishing from a green run.
+     * missing native there means the artifact plumbing broke, and without the marker it surfaces as
+     * whole test classes quietly vanishing from a green run.
      */
     data class NativeLibraryUnavailable(
         override val detail: String,

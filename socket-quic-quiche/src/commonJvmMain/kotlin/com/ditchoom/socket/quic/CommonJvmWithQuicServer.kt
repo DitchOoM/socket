@@ -69,12 +69,12 @@ internal suspend fun buildJvmQuicServer(
 
         applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
-        // Bind the shared unconnected server socket via :socket-udp (Phase 6 adapter-first cutover), sized
-        // to QUIC datagrams (not the 64 KB UDP ceiling). One channel serves every accepted connection.
+        // Bind the shared unconnected server socket via :socket-udp, sized to QUIC datagrams (not the
+        // 64 KB UDP ceiling). One channel serves every accepted connection.
         // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
-        // Not openServerChannel: a wildcard bind must answer from the address the client dialled (#556).
+        // Not openServerChannel: a wildcard bind must answer from the address the client dialled.
         val channel = binding.openReplySourcePinnedServerChannel(recvBufPool)
         val localAddress = channel.localAddress
 

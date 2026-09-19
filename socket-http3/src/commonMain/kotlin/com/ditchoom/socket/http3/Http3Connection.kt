@@ -218,7 +218,7 @@ class Http3Connection private constructor(
      * The first fatal connection-level protocol error detected on a critical stream (the peer's
      * control stream — RFC 9114 §8), or null if none. Carries the [Http3ErrorCode] the endpoint
      * would put on a CONNECTION_CLOSE. Once non-null the connection is unusable: a [request] or
-     * [connectWebTransport] issued after it fails with this very exception (#537), so a caller that
+     * [connectWebTransport] issued after it fails with this very exception, so a caller that
      * did not check first still learns the recorded reason rather than a transport close. See
      * [awaitConnectionError] to suspend until one occurs.
      */
@@ -353,14 +353,13 @@ class Http3Connection private constructor(
     }
 
     /**
-     * Refuse to open a stream on a connection this endpoint has already aborted (#537).
+     * Refuse to open a stream on a connection this endpoint has already aborted.
      *
-     * The mirror of the arm #529 gave the server. Once [abortConnection] has recorded a violation the
-     * connection is unusable, and a fresh [request] or [connectWebTransport] used to try anyway: the
-     * transport is closing underneath it, so it failed — but *untyped and late*, as a
-     * `QuicCloseException` from the stream open, rather than with the violation this endpoint already
-     * holds. Failing with [connectionError] itself is what lets a caller tell "the peer sent a
-     * malformed QPACK instruction" from "the network went away".
+     * Once [abortConnection] has recorded a violation the connection is unusable; a fresh [request] or
+     * [connectWebTransport] that tried anyway would fail *untyped and late*, as a `QuicCloseException`
+     * from the stream open, rather than with the violation this endpoint already holds. Failing with
+     * [connectionError] itself is what lets a caller tell "the peer sent a malformed QPACK instruction"
+     * from "the network went away". [Http3ServerConnection] has the same arm.
      */
     private fun refuseIfAborted() {
         connectionErrorOrNull?.let { throw it }
@@ -686,7 +685,7 @@ class Http3Connection private constructor(
                 // The streams flow only completes when the connection closes (QuicScope.streams'
                 // contract), so this is the moment every still-parked read stops being able to say
                 // anything about the peer: from here an end-of-stream on a critical stream is the
-                // connection going away, not the peer closing it (#530). Recorded BEFORE the join
+                // connection going away, not the peer closing it. Recorded BEFORE the join
                 // below, because the routes being joined are exactly the readers that will see it.
                 criticalStreams.connectionEnded()
                 // Let any in-flight route() finish first (one may be resolving SETTINGS), then — if
@@ -708,10 +707,10 @@ class Http3Connection private constructor(
      * control stream is parsed; QPACK/push/reserved streams are drained so the peer isn't
      * flow-control stalled. A single stream's failure is swallowed — it must not cancel the
      * connection scope — and the control handler resolves [peerSettings] on its own error path. A
-     * read deadline expiring is one such failure, named and told to the peer (#477), not a cancellation.
+     * read deadline expiring is one such failure, named and told to the peer, not a cancellation.
      *
      * Which of these reads carries a deadline is [com.ditchoom.socket.TransportConfig.readPolicy]'s rule,
-     * settled for both roles by #513: the *head* of a peer-initiated stream — the bidi WebTransport peek,
+     * the same on both roles: the *head* of a peer-initiated stream — the bidi WebTransport peek,
      * the uni type prefix, a push stream's Push ID — is bounded, because the peer already owes those
      * bytes; [drain] and the QPACK pumps are not, because those streams are idle by design.
      * [Http3ServerConnection.readStreamType] is the same read on the other role.
@@ -739,9 +738,8 @@ class Http3Connection private constructor(
             }
             // The stream's type prefix (RFC 9114 §6.2) under [config]'s read deadline — the head of a
             // peer-initiated stream, the read that waits for what the peer already owes us. Bounded on
-            // both roles since #513; the server has bounded it since #511/#509, while this read had no
-            // bound at all, so a peer that opened a unidirectional stream and never said what it was
-            // parked this router child for the life of the connection. Its expiry lands in the
+            // both roles: without a bound, a peer that opens a unidirectional stream and never says what
+            // it is would park this router child for the life of the connection. Its expiry lands in the
             // TimeoutCancellationException arm below, which names it and tells the peer.
             when (Http3StreamReader(stream, processor).nextVarInt(config.readPolicy.toDeadline())) {
                 Http3StreamType.CONTROL ->
@@ -775,12 +773,12 @@ class Http3Connection private constructor(
                 else -> drain(stream)
             }
         } catch (e: TimeoutCancellationException) {
-            // BEFORE any CancellationException handling (#477): TimeoutCancellation IS a
+            // BEFORE any CancellationException handling: TimeoutCancellation IS a
             // CancellationException, and a `launch` child completing with one is cancelled rather than
-            // failed — so the bidi peek above (or a WebTransport handler's Session ID read) expiring made
-            // this child vanish with a bare close, indistinguishable from a cancelled router, and nothing
-            // told the peer. The deadline itself is right — a peer that opens a stream and says nothing
-            // must not be waited on forever (unlike #472's idle-by-design QPACK pumps) — so it stays;
+            // failed — so the bidi peek above (or a WebTransport handler's Session ID read) expiring would
+            // make this child vanish with a bare close, indistinguishable from a cancelled router, with
+            // nothing telling the peer. The deadline itself is right — a peer that opens a stream and says
+            // nothing must not be waited on forever (unlike the idle-by-design QPACK pumps) — so it stays;
             // this arm gives its expiry a name and tells the peer. One stream's stall is not the
             // connection's: swallow, exactly as the arm below does.
             //
@@ -822,15 +820,14 @@ class Http3Connection private constructor(
     }
 
     /**
-     * The reader of this connection's [type] stream saw end-of-stream (#530).
+     * The reader of this connection's [type] stream saw end-of-stream.
      *
      * RFC 9114 §6.2.1: *"The sender MUST NOT close the control stream, and the receiver MUST NOT request
      * that the sender close the control stream. If either control stream is closed at any point, this
      * MUST be treated as a connection error of type H3_CLOSED_CRITICAL_STREAM."* RFC 9204 §4.2 says the
-     * same of the QPACK encoder and decoder streams. Each of these readers used to treat the peer's FIN
-     * as its ordinary exit — the pump returned, the control handler returned — and the connection kept
-     * running without the stream it depends on, until some later dynamic-table reference failed or
-     * blocked with nothing to explain it.
+     * same of the QPACK encoder and decoder streams. A reader that treated the peer's FIN as its
+     * ordinary exit would leave the connection running without the stream it depends on, until some
+     * later dynamic-table reference failed or blocked with nothing to explain it.
      *
      * Called wherever the FIN is *observed*, not from one place: the pumps and the control handler are
      * genuinely different readers of genuinely different streams, and on a static-only endpoint a
@@ -859,18 +856,18 @@ class Http3Connection private constructor(
     ) = readCriticalQpackStream(QpackStream.ENCODER) {
         val reader = QpackInstructionReader.encoder(stream, processor, pool)
         while (true) {
-            // No deadline, on purpose (#472). config.readPolicy is a *caller-facing* policy — the
+            // No deadline, on purpose. config.readPolicy is a *caller-facing* policy — the
             // request/response reads want its 15s default — but this stream is idle by design between
-            // the peer's header-block insertions, so arming it here made ordinary silence look like a
-            // failure. Liveness belongs to the connection's idle timeout, which is what the peer
-            // control stream a few lines down has always relied on by reading with no deadline.
+            // the peer's header-block insertions, so arming it here would make ordinary silence look like
+            // a failure. Liveness belongs to the connection's idle timeout, which is what the peer
+            // control stream a few lines down relies on by reading with no deadline.
             val instruction = reader.next()
             if (instruction == null) {
                 // The peer FINed its encoder stream. Not this pump's ordinary exit — RFC 9204 §4.2 has
                 // no ordinary exit for it: "The sender MUST NOT close either of these streams […]
                 // Closure of either unidirectional stream type MUST be treated as a connection error of
                 // type H3_CLOSED_CRITICAL_STREAM". This stream is the only thing keeping our decoder's
-                // dynamic table equal to the peer's encoder table (#530).
+                // dynamic table equal to the peer's encoder table.
                 criticalStreamClosed(CriticalStreamType.QPACK_ENCODER)
                 break
             }
@@ -889,12 +886,12 @@ class Http3Connection private constructor(
     ) = readCriticalQpackStream(QpackStream.DECODER) {
         val reader = QpackInstructionReader.decoder(stream, processor)
         while (true) {
-            // No deadline, for the same reason as the encoder pump above (#472).
+            // No deadline, for the same reason as the encoder pump above.
             val instruction = reader.next()
             if (instruction == null) {
                 // §4.2 again, and it names BOTH instruction streams: this one is what acknowledges our
                 // encoder's insertions, so the peer closing it strands every dynamic entry we insert as
-                // un-acknowledged and the encoder eventually stops being able to evict (#530).
+                // un-acknowledged and the encoder eventually stops being able to evict.
                 criticalStreamClosed(CriticalStreamType.QPACK_DECODER)
                 break
             }
@@ -917,15 +914,15 @@ class Http3Connection private constructor(
         } catch (e: TimeoutCancellationException) {
             // BEFORE the CancellationException arm, which would otherwise claim it — TimeoutCancellation
             // IS a CancellationException, and a `launch` child completing with one is cancelled rather
-            // than failed, so the parent is never told. That is the whole silent-death mechanism in
-            // #472: the pump vanished, nothing logged, and the decoder's table desynced from the peer's.
-            // Note a generic `catch (t: Throwable)` would not help — the cancellation arm claims it first.
+            // than failed, so the parent is never told: the pump would vanish, nothing logged, and the
+            // decoder's table desync from the peer's. Note a generic `catch (t: Throwable)` would not
+            // help — the cancellation arm claims it first.
             //
-            // Unreachable now that the pumps read with no deadline, and deliberately kept anyway: if a
+            // Unreachable while the pumps read with no deadline, and deliberately kept anyway: if a
             // deadline ever reaches this loop again, a critical QPACK stream dying must be a typed
             // connection abort (RFC 9204 §4.2) rather than something the connection survives blind.
             //
-            // But not on the type alone (#495): a parent's withTimeout cancels this child WITH its own
+            // But not on the type alone: a parent's withTimeout cancels this child WITH its own
             // TimeoutCancellationException, and aborting on that would send QPACK_*_STREAM_ERROR to a
             // peer that did nothing wrong. The job tells them apart — a read deadline leaves this
             // coroutine active, a cancellation does not, and that one stays the cancellation it is.
@@ -976,7 +973,7 @@ class Http3Connection private constructor(
 
     /**
      * Reads control frames after SETTINGS until end-of-stream, enforcing §7.2.4 frame rules — and
-     * treating that end-of-stream as the §6.2.1 connection error it is (#530), rather than as this
+     * treating that end-of-stream as the §6.2.1 connection error it is, rather than as this
      * reader's ordinary exit.
      */
     private suspend fun readControlFrames(reader: Http3StreamReader) {
@@ -984,8 +981,8 @@ class Http3Connection private constructor(
             when (val frame = reader.nextFrame()) {
                 // The peer closed its control stream. RFC 9114 §6.2.1: "If either control stream is
                 // closed at any point, this MUST be treated as a connection error of type
-                // H3_CLOSED_CRITICAL_STREAM." Breaking here left the connection with no way to ever
-                // receive a GOAWAY, a CANCEL_PUSH, or any other control frame, and nothing said (#530).
+                // H3_CLOSED_CRITICAL_STREAM." Breaking here silently would leave the connection with no
+                // way to ever receive a GOAWAY, a CANCEL_PUSH, or any other control frame.
                 null -> {
                     criticalStreamClosed(CriticalStreamType.CONTROL)
                     break
@@ -1044,15 +1041,15 @@ class Http3Connection private constructor(
      * type (RFC 9114 §6.2/§9), a WebTransport stream with WebTransport disabled — until the peer ends or
      * resets it, so its flow-control window stays open.
      *
-     * **No deadline** (#513), the mirror of [Http3ServerConnection.drain] and for the same reason: a
-     * stream that reaches here is idle by design, and the connection's idle timeout is its liveness. The
-     * bound this had was not visible as one — the no-arg [ByteStream.read] consults the *stream's*
+     * **No deadline**, the mirror of [Http3ServerConnection.drain] and for the same reason: a stream
+     * that reaches here is idle by design, and the connection's idle timeout is its liveness. The
+     * deadline must be passed explicitly because the no-arg [ByteStream.read] consults the *stream's*
      * [com.ditchoom.buffer.flow.ReadPolicy], and a QUIC stream carries the transport's
-     * `ReadPolicy.Bounded`, so an ordinary quiet GREASE stream expired at 15s and [route]'s stalled-stream
-     * arm reported it as a stall.
+     * `ReadPolicy.Bounded`, under which an ordinary quiet GREASE stream would expire at 15s and [route]'s
+     * stalled-stream arm would report it as a stall.
      *
      * No **critical** stream reaches here on this role, which is why — unlike
-     * [Http3ServerConnection.drainCriticalStream] — there is nothing to escalate on end-of-stream (#530):
+     * [Http3ServerConnection.drainCriticalStream] — there is nothing to escalate on end-of-stream:
      * [route] gives each of the three a reader unconditionally. The server's drain is the one that has to
      * care, because a static-only server has no pump for the QPACK streams to hand them to.
      */
@@ -1179,7 +1176,7 @@ class Http3Connection private constructor(
             entry.responseDeferred.complete(response)
             response.awaitClosed()
         } catch (e: TimeoutCancellationException) {
-            // BEFORE the CancellationException arm, which would otherwise claim it (#477): the Push ID,
+            // BEFORE the CancellationException arm, which would otherwise claim it: the Push ID,
             // or the response HEADERS after it, never came. Name the stall, tell the peer (RFC 9114 §4.6),
             // and fail the push that was waiting on it — once the Push ID has arrived there is one; before
             // that there is nothing to fail, and the reset is the only report the stall can get.
