@@ -360,6 +360,34 @@ afterEvaluate {
     }
 }
 
+// Robolectric fetches each test SDK's android-all-instrumented jar itself, at TEST time, through its own
+// MavenArtifactFetcher: outside Gradle's dependency cache and outside every CI cache, so each runner pulls
+// it from Central again and one reset connection fails the first sandboxed test class. Declaring the same
+// jars as a Gradle dependency routes them through Gradle's cache (retries, ~/.gradle/caches on CI) and
+// `robolectric.offline` forbids the fetcher outright: a jar missing from this directory is a loud error
+// naming the file, never a download. Keyed by the SDK level each jar serves (robolectric.properties and
+// every @Config(sdk)); the `-i7` suffix is Robolectric 4.17's PREINSTRUMENTED_VERSION and moves with it.
+// One configuration per SDK: Gradle keeps a single version of a module per resolved graph, so four
+// versions in one configuration would collapse to the newest.
+val robolectricAndroidAll =
+    mapOf(
+        23 to "6.0.1_r3-robolectric-r1",
+        25 to "7.1.0_r7-robolectric-r1",
+        28 to "9-robolectric-4913185-2",
+        36 to "16-robolectric-13921718",
+    ).map { (sdk, version) ->
+        configurations.create("robolectricAndroidAllSdk$sdk") {
+            isCanBeConsumed = false
+            isTransitive = false
+            dependencies.add(project.dependencies.create("org.robolectric:android-all-instrumented:$version-i7"))
+        }
+    }
+val robolectricDependencyDir = layout.buildDirectory.dir("robolectric-deps")
+val syncRobolectricAndroidAll by tasks.registering(Sync::class) {
+    from(robolectricAndroidAll)
+    into(robolectricDependencyDir)
+}
+
 android {
     compileSdk = 37
     (this as com.android.build.api.dsl.LibraryExtension)
@@ -395,6 +423,9 @@ android {
             // Robolectric 4.17+ patches JDK internals reflectively at sandbox bootstrap and requires
             // these opens on JDK 17+ (its documented jvmFlags list).
             all { test ->
+                test.dependsOn(syncRobolectricAndroidAll)
+                test.systemProperty("robolectric.offline", "true")
+                test.systemProperty("robolectric.dependency.dir", robolectricDependencyDir.get().asFile.absolutePath)
                 test.jvmArgs(
                     "--add-opens=java.base/java.lang=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",
