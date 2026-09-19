@@ -2914,10 +2914,7 @@ class QuicheDriver(
             is QuicheCmd.SourceIdsRead -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
-            is PathOpened -> {
-                releaseIfOpened(cmd.outcome)
-                cmd.migrate.result.completeExceptionally(cause)
-            }
+            is PathOpened -> cmd.migrate.result.completeExceptionally(cause)
         }
     }
 
