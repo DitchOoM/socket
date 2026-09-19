@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 
 /**
@@ -47,15 +51,69 @@ sealed interface PacketSource {
  */
 sealed interface QuicheCmd {
     /**
-     * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after
-     * processing). [source] says where the datagram entered — and therefore which recv_info tells
-     * quiche the truth about it. See [PacketSource].
+     * Feed an incoming UDP packet to quiche. The packet owns [buf] from the moment it is built: the
+     * producer that built it releases it only if the command channel refused it, and after that the
+     * driver does — through [release], after `connRecv` or when the command is failed. [source] says
+     * where the datagram entered — and therefore which recv_info tells quiche the truth about it.
+     * See [PacketSource].
      */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
         val source: PacketSource,
-    ) : QuicheCmd
+    ) : QuicheCmd {
+        private val lifetimeRef = AtomicReference<PacketLifetime>(PacketLifetime.Held)
+
+        /** Whether this packet still owns its buffer, or which door already took it. */
+        val lifetime: PacketLifetime get() = lifetimeRef.load()
+
+        /**
+         * The one door every release of this packet goes through, once: the buffer back to its pool,
+         * and the server's in-flight recv_info reference back to the server. Exhaustive over
+         * [PacketSource], so an ingress that owes a release cannot be forgotten.
+         *
+         * A second release is [RecvPacketReleasedTwice], naming both doors — the packet is the only
+         * owner of its buffer, so a second door can only mean a second owner, and that is a defect to
+         * be named where it happens rather than found later as a pool guard tripping under someone
+         * else (#588).
+         */
+        fun release(door: ReleaseDoor) {
+            when (val previous = lifetimeRef.exchange(PacketLifetime.Released(door))) {
+                PacketLifetime.Held -> {
+                    buf.freeNativeMemory()
+                    when (val source = source) {
+                        is PacketSource.FromPath -> Unit
+                        is PacketSource.FromServerSocket -> source.onConsumed()
+                    }
+                }
+                is PacketLifetime.Released -> throw RecvPacketReleasedTwice(previous.door, door)
+            }
+        }
+    }
+
+    /** Where a [RecvPacket]'s single release happened. */
+    enum class ReleaseDoor {
+        /** `connRecv` consumed it on the driver loop. */
+        Executed,
+
+        /** It arrived on a path the connection had already retired; dropped unfed. */
+        RetiredPath,
+
+        /** The driver failed it unexecuted: the teardown drain, a cancelled loop, or the channel's undelivered hook. */
+        Failed,
+
+        /** The command channel refused it, so the producer that built it released it. */
+        Refused,
+    }
+
+    /** A [RecvPacket]'s ownership of its buffer: held until exactly one [ReleaseDoor] takes it. */
+    sealed interface PacketLifetime {
+        data object Held : PacketLifetime
+
+        data class Released(
+            val door: ReleaseDoor,
+        ) : PacketLifetime
+    }
 
     /**
      * Allocate the next stream ID and create a [StreamSlot]. [unidirectional] selects the
@@ -249,3 +307,13 @@ internal sealed interface PathOpenOutcome {
  * as `u64::MAX`. The driver keeps the original as its `LocalCloseVerdict` so the connection still reports it.
  */
 internal fun QuicError.wireCloseError(): QuicError = if (code < 0) QuicError.NoError else this
+
+/**
+ * A [QuicheCmd.RecvPacket] was released through a second door. The packet is the single owner of its
+ * buffer, so this is always a second owner — the defect behind #588 and #578, named at the release
+ * that is one too many instead of surfacing later as a pool guard under whichever command came next.
+ */
+internal class RecvPacketReleasedTwice(
+    first: QuicheCmd.ReleaseDoor,
+    second: QuicheCmd.ReleaseDoor,
+) : IllegalStateException("a queued receive was released twice: first $first, then $second")

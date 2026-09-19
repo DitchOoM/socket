@@ -5,12 +5,16 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -31,6 +35,12 @@ import kotlin.time.Duration.Companion.seconds
  * With `close()` racing that state: the fix's driver-ledger sweep must join the frozen driver before
  * freeing the cache. On the pre-fix code this test trips the `check(inFlight == 0)` tripwire (or the
  * native UAF); on the fixed code it closes cleanly. Verified both directions locally.
+ *
+ * The server's drivers run with a recording [CoroutineExceptionHandler] in their `driverContext`, and
+ * the test asserts nothing escaped them. Without that, a driver that dies *after* `close()` has
+ * joined it — the frozen loop finishing its command and then executing the next buffered packet —
+ * reaches the global handler instead, and kotlinx-coroutines-test replays it against whichever
+ * `runTest` class starts next (#588's victims were bystanders for exactly that reason).
  */
 class ServerCloseRecvInfoRaceTest {
     private fun certPath(name: String): String {
@@ -42,91 +52,111 @@ class ServerCloseRecvInfoRaceTest {
 
     @Test
     fun serverCloseReapsDeRoutedLiveDriverWithoutRecvInfoUseAfterFree() =
-        runQuicTest(timeout = 40.seconds) {
+        runQuicTest(timeout = 40.seconds * iterations) {
             try {
-                val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
-                val gated = GatedConnRecvQuicheApi(loadQuicheApi())
-                val server =
-                    buildJvmQuicServer(
-                        QuicPortBinding.Own(port = 0, host = "127.0.0.1"),
-                        tlsConfig = tls,
-                        requestedOptions = opts,
-                        api = gated,
-                    )
-                val serverPort = server.port
-
-                val established = CompletableDeferred<Unit>()
-                val startWrites = CompletableDeferred<Unit>()
-                val writesDone = CompletableDeferred<Unit>()
-                val holdOpen = CompletableDeferred<Unit>()
-
-                val clientJob =
-                    launch {
-                        try {
-                            commonJvmWithQuicConnection(
-                                hostname = "127.0.0.1",
-                                port = serverPort,
-                                quicOptions = opts,
-                                connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
-                                timeout = 15.seconds,
-                            ) {
-                                val stream = openStream()
-                                established.complete(Unit)
-                                startWrites.await()
-                                // A short burst is enough to make the server run loop enter connRecv; the
-                                // one-shot gate freezes the first, the rest buffer in the frozen driver.
-                                repeat(3) {
-                                    val b = BufferFactory.deterministic().allocate(4)
-                                    b.writeString("ping", Charset.UTF8)
-                                    b.resetForRead()
-                                    try {
-                                        stream.write(b, 5.seconds)
-                                    } finally {
-                                        b.freeNativeMemory()
-                                    }
-                                    delay(30)
-                                }
-                                writesDone.complete(Unit)
-                                // Keep the connection open + idle so no stray packet arrives after the de-route.
-                                holdOpen.await()
-                            }
-                        } catch (_: Throwable) {
-                            // The connection is torn down by server.close() below — expected.
-                        }
-                    }
-
-                established.await()
-                gated.arm()
-                startWrites.complete(Unit)
-                assertTrue(
-                    gated.awaitConnRecvBlocked(20_000),
-                    "server never froze in a post-accept connRecv — cannot exercise the close/connRecv race",
-                )
-                // Client is now sending its burst; wait for it to stop and for in-flight packets to be
-                // absorbed by the frozen (still-routed) driver, so the de-route leaves nothing in flight.
-                writesDone.await()
-                delay(200)
-
-                // Live driver, frozen mid-connRecv, still holding a recv_info cache ref — now make it
-                // unroutable exactly as the production trySend-failure removeIf does.
-                server.deRouteAllDriversForTest()
-
-                // Race close() against the frozen driver. Pre-fix: close() misses the de-routed driver and
-                // trips check(inFlight==0) / UAFs the cache. Post-fix: it joins the driver via liveDrivers.
-                val closeResult = async(Dispatchers.IO) { runCatching { server.close() } }
-                delay(500) // let close() reach the driver sweep / cache free (its critical section)
-                gated.releaseGate()
-                val result = closeResult.await()
-                holdOpen.complete(Unit)
-                clientJob.cancel()
-
-                assertTrue(
-                    result.isSuccess,
-                    "server.close() must reap the de-routed live driver and free the recv_info cache " +
-                        "without a use-after-free, but failed with: ${result.exceptionOrNull()}",
-                )
+                repeat(iterations) { raceServerCloseAgainstAFrozenDriver() }
             } catch (e: UnsatisfiedLinkError) {
                 recordMissingNativeLib(ServerCloseRecvInfoRaceTest::class, e)
             }
         }
+
+    private suspend fun CoroutineScope.raceServerCloseAgainstAFrozenDriver() {
+        val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
+        val gated = GatedConnRecvQuicheApi(loadQuicheApi())
+        val escaped = CopyOnWriteArrayList<Throwable>()
+        val server =
+            buildJvmQuicServer(
+                QuicPortBinding.Own(port = 0, host = "127.0.0.1"),
+                tlsConfig = tls,
+                requestedOptions = opts,
+                tuning =
+                    QuicheDriverTuning(
+                        driverContext = Dispatchers.Default + CoroutineExceptionHandler { _, t -> escaped += t },
+                    ),
+                api = gated,
+            )
+        val serverPort = server.port
+
+        val established = CompletableDeferred<Unit>()
+        val startWrites = CompletableDeferred<Unit>()
+        val writesDone = CompletableDeferred<Unit>()
+        val holdOpen = CompletableDeferred<Unit>()
+
+        val clientJob =
+            launch {
+                try {
+                    commonJvmWithQuicConnection(
+                        hostname = "127.0.0.1",
+                        port = serverPort,
+                        quicOptions = opts,
+                        connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
+                        timeout = 15.seconds,
+                    ) {
+                        val stream = openStream()
+                        established.complete(Unit)
+                        startWrites.await()
+                        // A short burst is enough to make the server run loop enter connRecv; the
+                        // one-shot gate freezes the first, the rest buffer in the frozen driver.
+                        repeat(3) {
+                            val b = BufferFactory.deterministic().allocate(4)
+                            b.writeString("ping", Charset.UTF8)
+                            b.resetForRead()
+                            try {
+                                stream.write(b, 5.seconds)
+                            } finally {
+                                b.freeNativeMemory()
+                            }
+                            delay(30)
+                        }
+                        writesDone.complete(Unit)
+                        // Keep the connection open + idle so no stray packet arrives after the de-route.
+                        holdOpen.await()
+                    }
+                } catch (_: Throwable) {
+                    // The connection is torn down by server.close() below — expected.
+                }
+            }
+
+        established.await()
+        gated.arm()
+        startWrites.complete(Unit)
+        assertTrue(
+            gated.awaitConnRecvBlocked(20_000),
+            "server never froze in a post-accept connRecv — cannot exercise the close/connRecv race",
+        )
+        // Client is now sending its burst; wait for it to stop and for in-flight packets to be
+        // absorbed by the frozen (still-routed) driver, so the de-route leaves nothing in flight.
+        writesDone.await()
+        delay(200)
+
+        // Live driver, frozen mid-connRecv, still holding a recv_info cache ref — now make it
+        // unroutable exactly as the production trySend-failure removeIf does.
+        server.deRouteAllDriversForTest()
+
+        // Race close() against the frozen driver. Pre-fix: close() misses the de-routed driver and
+        // trips check(inFlight==0) / UAFs the cache. Post-fix: it joins the driver via liveDrivers.
+        val closeResult = async(Dispatchers.IO) { runCatching { server.close() } }
+        delay(500) // let close() reach the driver sweep / cache free (its critical section)
+        gated.releaseGate()
+        val result = closeResult.await()
+        holdOpen.complete(Unit)
+        clientJob.cancel()
+
+        assertTrue(
+            result.isSuccess,
+            "server.close() must reap the de-routed live driver and free the recv_info cache " +
+                "without a use-after-free, but failed with: ${result.exceptionOrNull()}",
+        )
+        // close() joined every driver, so anything a driver threw has reached the handler by now.
+        assertEquals(
+            emptyList(),
+            escaped.map { "${it::class.simpleName}: ${it.message}" },
+            "a server driver died after close() joined it — the packets it still had queued were not its to run",
+        )
+    }
+
+    private companion object {
+        /** Local hunt knob: `QUIC_RACE_ITERATIONS=50` repeats the race in one JVM; CI runs it once. */
+        val iterations: Int = System.getenv("QUIC_RACE_ITERATIONS")?.toIntOrNull()?.coerceIn(1, 500) ?: 1
+    }
 }
