@@ -6,13 +6,16 @@
 Prints: run parameters, connections (lifetime, why it ended), migrations (Probing → Migrated
 latency, failed paths), echo counts — late and unanswered apart from failed — with RTT and lateness
 percentiles and the longest echo gap, the memory trend from heartbeats, every
-STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, and a RE-DERIVED #447 verdict.
+STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, a RE-DERIVED ECHO-LIVENESS verdict and a
+RE-DERIVED #447 verdict gated by it.
 
-The re-derived verdict exists because a probe build before #601 printed its own `447-VERDICT` line
+The re-derived verdicts exist because a probe build before #601 printed its own `447-VERDICT` line
 using logic that counted the retries of a failing episode as recovery — it reported PASS for a
-connection whose every probe went unanswered and which then died. Any log written by such a build
-still carries the *evidence* (the MIGRATION-ATTEMPT sequence), so the verdict can be recomputed here
-without reinstalling the probe and restarting a walk.
+connection whose every probe went unanswered and which then died — and a build before #620 printed
+PASS for a connection whose stream had not carried an answered echo for 68 h, because the path layer
+kept validating while the peer had long since FIN'd the stream. Any log written by such a build
+still carries the *evidence* (the MIGRATION-ATTEMPT sequence, the ECHO-OK/LATE timestamps), so both
+verdicts can be recomputed here without reinstalling the probe and restarting a walk.
 """
 import re
 import sys
@@ -73,7 +76,10 @@ rtts = sorted(int(m.group(1)) for b in timed for m in [re.search(r"rtt=(\d+)ms",
 lateness = sorted(int(m.group(1)) for _, b in late for m in [re.search(r"late=\+(\d+)ms", b)] if m)
 gaps = [(answered[i][0] - answered[i - 1][0], answered[i][0]) for i in range(1, len(answered))]
 worst = sorted(gaps, reverse=True)[:5]
+write_timeouts = [t for t, b in events if b.startswith("ECHO-WRITE-TIMEOUT")]
+stream_gone = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED"))]
 print(f"\nechoes: ok={len(ok)} late={len(late)} overdue={len(overdue)} unanswered={unanswered} fail={len(fail)} no-data={len(nodata)}"
+      f" write-timeouts={len(write_timeouts)} stream-gone={len(stream_gone)}"
       + (f" in-sync={len(timed)} one-behind={len(ok) - len(timed)} (pre-#599 grammar)" if legacy else ""))
 if rtts:
     print(f"  rtt{' (in-sync only)' if legacy else ''} p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
@@ -110,7 +116,8 @@ else:
     print(f"  replay traces: no {os.path.basename(traces_dir)}/ beside the log — pull.sh puts it there")
 
 # verbatim: the lines that matter
-for tag in ("STREAM-INTEGRITY-BROKEN", "CONNECTION-DEAD", "WAKELOCK", "DONE", "MIGRATION-"):
+for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
+            "STALL-SUSPECTED", "CONNECTION-DEAD", "WAKELOCK", "DONE", "MIGRATION-", "ECHO-LIVENESS"):
     hits = [(t, b) for t, b in events if b.startswith(tag)]
     if hits:
         print(f"\n{tag}: {len(hits)}")
@@ -122,28 +129,88 @@ for tag in ("STREAM-INTEGRITY-BROKEN", "CONNECTION-DEAD", "WAKELOCK", "DONE", "M
 # Recovery means a probe armed AFTER an unanswered one was itself ANSWERED. Another probe merely
 # being sent is the retry ladder of the same failure, and a migration that succeeded BEFORE the
 # first unanswered probe says nothing about the pool afterwards.
-print("\n#447 verdict (re-derived — the log's own line may predate #601):")
+# --- ECHO-LIVENESS, re-derived from the answered-echo timestamps (see the module docstring) ---
+#
+# A connection is SILENT if it went longer than QUIET_LIMIT without an answered echo (ECHO-OK or
+# ECHO-LATE), measured from CONNECTED to the first answer, between answers, and from the last answer
+# to the connection's end. The limit is the probe's own (EchoLivenessVerdict.QUIET_LIMIT): longer than
+# any silence a healthy walk produces, since a reconnect backoff is 60 s and a dead radio ends the
+# connection at its 30 s idle timeout. The loop's own silence — no echo line of ANY kind — is printed
+# beside it: a pre-#620 probe logged ECHO-NO-DATA on every FIN it re-read, then nothing at all once
+# the write blocked, so the two figures differ exactly where the old build went quiet.
+QUIET_LIMIT_MS = 10 * 60 * 1000
+print(f"\nECHO-LIVENESS (re-derived — the log's own line may predate #620; limit {QUIET_LIMIT_MS // 60000} min):")
 conn_bounds = [t for t, b in events if b.startswith("CONNECTED ")]
+echo_lines = sorted(t for t, b in events if b.startswith("ECHO-"))
+last_t = events[-1][0] or 0
+
+
+def hours(ms):
+    return f"{ms / 3600000:.1f}h" if ms >= 3600000 else f"{ms / 1000:.0f}s"
+
+
+def longest_gap(points, start, end):
+    """(gap_ms, gap_from_ms) over start → points… → end; the whole life if there are no points."""
+    edges = [start] + points + [end]
+    gaps = [(edges[k + 1] - edges[k], edges[k]) for k in range(len(edges) - 1)]
+    return max(gaps)
+
+
+silent_connections = []
+for i, start in enumerate(conn_bounds):
+    nxt = conn_bounds[i + 1] if i + 1 < len(conn_bounds) else float("inf")
+    end = next((et for et, eb in ends if start < et <= nxt), None)
+    if end is None:
+        end = last_t if nxt == float("inf") else nxt
+    answers = [t for t, _ in answered if start <= t < end]
+    gap, gap_from = longest_gap(answers, start, end)
+    loop_gap, loop_from = longest_gap([t for t in echo_lines if start <= t < end], start, end)
+    word = "SILENT" if gap > QUIET_LIMIT_MS else "LIVE"
+    if word == "SILENT":
+        silent_connections.append((i + 1, gap, gap_from))
+    print(f"  connection {i + 1}: {word} — answered={len(answers)} no answered echo for {hours(gap)} (from t+{gap_from / 1000:.0f}s);"
+          f" no echo line at all for {hours(loop_gap)} (from t+{loop_from / 1000:.0f}s)")
+if not conn_bounds:
+    print("  never connected")
+
+# --- #447 verdict, re-derived from the attempt sequence (see the module docstring) ---
+#
+# Recovery means a probe armed AFTER an unanswered one was itself ANSWERED. Another probe merely
+# being sent is the retry ladder of the same failure, and a migration that succeeded BEFORE the
+# first unanswered probe says nothing about the pool afterwards. And a connection whose stream went
+# SILENT cannot pass at all: a path that answers no echo has not been validated, whatever its probes
+# said, so the path layer's verdict is printed as void.
+print("\n#447 verdict (re-derived — the log's own line may predate #601/#620):")
 attempt_lines = [(t, b) for t, b in events if b.startswith("MIGRATION-ATTEMPT")]
 OUTCOME = re.compile(r"outcome=(\w+)")
+silent_by_connection = {c: (gap, gap_from) for c, gap, gap_from in silent_connections}
 for i, start in enumerate(conn_bounds):
     end = conn_bounds[i + 1] if i + 1 < len(conn_bounds) else float("inf")
     outcomes = [OUTCOME.search(b).group(1) for t, b in attempt_lines if start <= t < end and OUTCOME.search(b)]
     lost = [j for j, o in enumerate(outcomes) if o == "PathNotValidated"]
-    if not outcomes:
+    if not outcomes and (i + 1) not in silent_by_connection:
         continue
     if not lost:
-        print(f"  connection {i + 1}: INCONCLUSIVE — no probe went unanswered ({len(outcomes)} attempt(s), #445 only)")
-        continue
-    after = outcomes[lost[0] + 1:]
-    answered = [o for o in after if o == "Succeeded"]
-    no_spare = [o for o in after if o == "NoSpareConnectionId"]
-    if answered:
-        verdict = f"PASS — {len(lost)} unanswered, then {len(answered)} later probe(s) ANSWERED: pool recovered"
-    elif no_spare:
-        verdict = f"REGRESSION — {len(lost)} unanswered, then {len(no_spare)} NoSpareConnectionId: pool did not come back"
-    elif after:
-        verdict = f"FAIL — {len(lost)} unanswered and {len(after)} later probe(s), none answered: never regained a path"
+        verdict = f"INCONCLUSIVE — no probe went unanswered ({len(outcomes)} attempt(s), #445 only)"
     else:
-        verdict = f"INCONCLUSIVE — {len(lost)} unanswered, nothing attempted afterwards"
-    print(f"  connection {i + 1}: {verdict}  [{','.join(outcomes)}]")
+        after = outcomes[lost[0] + 1:]
+        answered_after = [o for o in after if o == "Succeeded"]
+        no_spare = [o for o in after if o == "NoSpareConnectionId"]
+        if answered_after:
+            verdict = f"PASS — {len(lost)} unanswered, then {len(answered_after)} later probe(s) ANSWERED: pool recovered"
+        elif no_spare:
+            verdict = f"REGRESSION — {len(lost)} unanswered, then {len(no_spare)} NoSpareConnectionId: pool did not come back"
+        elif after:
+            verdict = f"FAIL — {len(lost)} unanswered and {len(after)} later probe(s), none answered: never regained a path"
+        else:
+            verdict = f"INCONCLUSIVE — {len(lost)} unanswered, nothing attempted afterwards"
+    if (i + 1) in silent_by_connection:
+        gap, _ = silent_by_connection[i + 1]
+        verdict = f"FAIL — no answered echo for {hours(gap)}, so the path layer's verdict is void; on its own it read: {verdict}"
+    print(f"  connection {i + 1}: {verdict}  [{','.join(outcomes) or 'no attempts'}]")
+if silent_connections:
+    worst = max(silent_connections, key=lambda c: c[1])
+    print(f"  run: FAIL — connection {worst[0]} went {hours(worst[1])} without an answered echo (from t+{worst[2] / 1000:.0f}s);"
+          f" {len(silent_connections)} of {len(conn_bounds)} connection(s) SILENT")
+elif conn_bounds:
+    print(f"  run: every connection LIVE — the path layer's verdict stands")
