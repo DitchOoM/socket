@@ -52,7 +52,10 @@ class NWClientSocketWrapper(
         this.connectionReady = true
     }
 
-    /** One connect to [endpoint], a name or a literal; [hostname] is what errors name. The ready connection is returned, not adopted. */
+    /**
+     * One connect to [endpoint], a name or a literal; [hostname] is what errors name. The ready
+     * connection is returned, not adopted; one that failed or was cancelled is cancelled here.
+     */
     private suspend fun connectTo(
         endpoint: String,
         port: Int,
@@ -73,39 +76,38 @@ class NWClientSocketWrapper(
                 no_delay = NSNumber(bool = config.io.tcpNoDelay == true),
             ) ?: throw SocketIOException("Failed to create NW connection")
 
-        suspendCancellableCoroutine { continuation ->
-            var resumed = false
+        try {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                var resumed = false
 
-            nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
-                if (resumed) return@nw_helper_set_state_handler
+                nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
+                    if (resumed) return@nw_helper_set_state_handler
 
-                when (state) {
-                    3 -> { // ready
-                        resumed = true
-                        continuation.resume(Unit)
-                    }
-                    1, 4 -> { // waiting or failed
-                        resumed = true
-                        continuation.resumeWithException(
-                            mapSocketException(errorDomain, errorDesc, hostname = hostname),
-                        )
-                    }
-                    5 -> { // cancelled
-                        resumed = true
-                        continuation.resumeWithException(
-                            SocketIOException(errorDesc ?: "Connection cancelled"),
-                        )
+                    when (state) {
+                        3 -> { // ready
+                            resumed = true
+                            continuation.resume(Unit)
+                        }
+                        1, 4 -> { // waiting or failed
+                            resumed = true
+                            continuation.resumeWithException(
+                                mapSocketException(errorDomain, errorDesc, hostname = hostname),
+                            )
+                        }
+                        5 -> { // cancelled
+                            resumed = true
+                            continuation.resumeWithException(
+                                SocketIOException(errorDesc ?: "Connection cancelled"),
+                            )
+                        }
                     }
                 }
-            }
 
-            nw_helper_start(conn)
-
-            continuation.invokeOnCancellation {
-                if (!resumed) {
-                    nw_helper_force_cancel(conn)
-                }
+                nw_helper_start(conn)
             }
+        } catch (e: Throwable) {
+            nw_helper_force_cancel(conn)
+            throw e
         }
         return conn
     }
