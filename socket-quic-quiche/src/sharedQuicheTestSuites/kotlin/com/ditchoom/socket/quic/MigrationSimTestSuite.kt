@@ -778,6 +778,106 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * **The walk's peer decides the pool, not the client's option** — the 2026-09-12 iPhone walk,
+     * connection 7, replayed against real quiche.
+     *
+     * quiche issues at most `min(peer active_connection_id_limit, its own)` source CIDs
+     * (`Connection::scids_left`), so a client at the shipped 8 talking to a server still on the old
+     * default of 4 holds **three** spares — and the field server was exactly that: the walk's qlog has
+     * the server advertising `active_connection_id_limit: 4` and issuing `NEW_CONNECTION_ID` 1, 2, 3
+     * and nothing more. The trace then reads as the old-default row of [QuicOptions.activeConnectionIdLimit]'s
+     * table: three probes from three fresh cellular ports, none answered, every one retiring a spare
+     * whose `RETIRE_CONNECTION_ID` rode the dead Wi-Fi socket (`errno=57`, 94 times) and so was never
+     * replaced, then `NoSpareConnectionId` at t+24.6/26.6/30.6/38.6s and `local: IdleTimeout` at
+     * t+43.3s. The next connection came up over that same cellular link three seconds later.
+     *
+     * Here the link answers from the fourth probe on. Against a peer at the shipped limit that is a
+     * re-home; against the walk's peer the fourth probe is never sent, because the reactor spent the
+     * whole pool inside the first ten seconds of a thirty-second window and has nothing left to
+     * probe with. [AutoMigrationWiring]'s contract (and the option's KDoc) size the pool as the
+     * client's own limit minus one; the peer's limit is the number that actually binds, and it is
+     * readable (`PeerTransportParams.activeConnIdLimit`).
+     */
+    @Test
+    fun aLinkThatAnswersFromTheFourthProbeOnIsNeverReachedAgainstThePeerTheWalkHad() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 45_305L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    probeImpairment = { index -> PathImpairment(blackhole = index <= WALK_UNANSWERED_PROBES) },
+                ) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.write(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+
+                        suspend fun echo(payload: String): String {
+                            val out = BufferFactory.network().allocate(payload.length)
+                            out.writeString(payload, Charset.UTF8)
+                            out.resetForRead()
+                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
+                            out.freeNativeMemory()
+                            // Past the connection's own deadline, so what ends a failed handoff is the
+                            // typed close and never this bound.
+                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
+                            if (r !is ReadResult.Data) return "NO_DATA ($r)"
+                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                        }
+
+                        assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitSpareDcids(count = WALK_PEER_SPARES)
+                        delay(REPLENISH_SETTLE)
+                        assertEquals(
+                            WALK_PEER_SPARES,
+                            clientAvailableDcids(),
+                            "the sim is not the walk: a peer at active_connection_id_limit=$WALK_PEER_CID_LIMIT grants " +
+                                "${WALK_PEER_CID_LIMIT - 1} spares whatever the client's own limit says",
+                        )
+
+                        pipe.impair(pipe.paths().first().local, PathImpairment(blackhole = true))
+                        monitor.setNetworkId(CELLULAR)
+
+                        val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
+                        val opened = clientPaths().size
+                        val refused = client.attempts.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
+                        assertEquals(
+                            "after",
+                            after,
+                            "the link answered every probe after the third, yet the connection never re-homed. " +
+                                "The peer's active_connection_id_limit=$WALK_PEER_CID_LIMIT capped the spare pool at " +
+                                "$WALK_PEER_SPARES whatever the client's own limit says; the handoff spent all of them " +
+                                "on the $WALK_UNANSWERED_PROBES probes the link swallowed, their RETIRE_CONNECTION_ID " +
+                                "rode the dead path so nothing came back, and every later attempt was refused before a " +
+                                "socket was opened: $opened probe path(s) opened, ${refused.size} attempt(s) refused " +
+                                "for want of a spare connection id, attempts=${client.attempts}, " +
+                                "state=${clientDriver.state.value}",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
      * **#459 — an abandoned probe must give its connection id back to the pool.**
      *
      * #447 fixed "the abandoned path never retires its connection id". This is the other half, and it
@@ -2024,5 +2124,27 @@ abstract class MigrationSimTestSuite {
 
         /** Bounded retries for the RETIRE -> NEW_CONNECTION_ID round trip, as the real suite does. */
         const val REPLENISH_RETRIES = 40
+
+        /**
+         * The `active_connection_id_limit` the field echo server advertised on the 2026-09-10 and
+         * 2026-09-12 iPhone walks (read from the walk qlog's remote `parameters_set`): the old default,
+         * which caps the client's spare pool at [WALK_PEER_SPARES] regardless of the client's own limit.
+         */
+        const val WALK_PEER_CID_LIMIT = 4L
+
+        /** Spares a client holds against [WALK_PEER_CID_LIMIT]: the limit minus the id in use. */
+        const val WALK_PEER_SPARES = WALK_PEER_CID_LIMIT - 1
+
+        /** Probes both walks put on a link that never answered before the pool ran dry — one per spare. */
+        const val WALK_UNANSWERED_PROBES = 3
+
+        /** The walk's server side: same ALPN and idle window as the client, the old CID limit. */
+        fun walkPeerOptions(): QuicOptions =
+            QuicOptions(
+                alpnProtocols = listOf("migsim"),
+                verifyPeer = false,
+                idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                activeConnectionIdLimit = WALK_PEER_CID_LIMIT,
+            )
     }
 }

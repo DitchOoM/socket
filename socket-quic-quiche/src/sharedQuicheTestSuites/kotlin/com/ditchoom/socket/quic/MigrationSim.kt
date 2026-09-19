@@ -520,6 +520,12 @@ internal class MigrationSimEnv(
  * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
  * each path the driver opens afterwards (argument is the 1-based probe index).
  *
+ * [serverQuicOptions] configures the server side on its own; it defaults to [quicOptions] so the two
+ * ends agree unless a scenario says otherwise. The one that does is a peer at a different
+ * `active_connection_id_limit`: quiche caps the source CIDs it issues at
+ * `min(peer limit, its own limit)`, so the client's spare pool is decided by the SERVER's option, and a
+ * sim that shares one options object between the two ends can never see that.
+ *
  * [clock] defaults to [SimClockChoice.Virtual] rather than the calling dispatcher's clock because this
  * harness exists for virtual time (see the class KDoc: 7.168s of §8.2.4 budget in 0ms of wall); it is
  * resolved against the calling dispatcher before anything native is allocated, so calling this from a
@@ -531,6 +537,7 @@ internal suspend fun <R> withMigrationSim(
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     quicOptions: QuicOptions = migrationSimOptions(),
+    serverQuicOptions: QuicOptions = quicOptions,
     establishTimeout: Duration = 60.seconds,
     clock: SimClockChoice = SimClockChoice.Virtual,
     /**
@@ -572,11 +579,11 @@ internal suspend fun <R> withMigrationSim(
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
         val clientCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
-        listOf(serverCfg, clientCfg).forEach { cfg ->
-            val alpn = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
+        listOf(serverCfg to serverQuicOptions, clientCfg to quicOptions).forEach { (cfg, options) ->
+            val alpn = encodeAlpnList(options.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(quicOptions, SimQuicConfigCalls(api, cfg))
+            applyQuicOptions(options, SimQuicConfigCalls(api, cfg))
         }
         simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             val rc = api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
