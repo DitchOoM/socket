@@ -113,7 +113,7 @@ class NetworkMonitorRecorder(
      * `observations` preserves those repeats, [networkMonitorScriptFromTrace] turns each into its own
      * transition, and [com.ditchoom.socket.ScriptedNetworkMonitor] replays them as the platform chatter
      * they were, bumping [NetworkMonitor.observationCount] once each. A monitor that does not report
-     * density defaults `observations` to `state`, so this is exactly the old behaviour there.
+     * density defaults `observations` to `state`, so the two collapse there.
      */
     fun observe(
         monitor: NetworkMonitor,

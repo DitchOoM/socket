@@ -145,9 +145,9 @@ sealed interface TraceEvent {
      *
      * WHY this exists: by the time the transport hands a chunk up, quiche has already advanced the
      * stream's receive offset and credited flow control for it, so the peer will never resend — a
-     * chunk released without being delivered is a PERMANENT hole in the stream. Every release site in
-     * the read path used to be silent, which is why #393 could only ever be seen from the far end, as
-     * an application-level ledger noticing bytes that never came back.
+     * chunk released without being delivered is a PERMANENT hole in the stream. A silent release site
+     * can only ever be seen from the far end, as an application-level ledger noticing bytes that never
+     * came back.
      *
      * This makes the loss self-reporting at the moment and place it happens. It is deliberately
      * recorded even where the release is *correct* (the reader closed the stream, so queued chunks
@@ -245,16 +245,10 @@ sealed interface TraceEvent {
     /**
      * A `NetworkMonitor.state` emission — the whole [NetworkState], identity included. Input event.
      *
-     * This one variant replaced the former `NetAvail` + `Net` pair, and that is what fixed the defect it
-     * was recording. `NetworkMonitorRecorder.observe()` used to launch **one collector per flow**, so
-     * two independently-stamped streams interleaved by scheduling rather than by time — the 2026-07-29
-     * device capture emitted an earlier `NET_AVAIL` *after* a later `NET_ID`:
-     * ```
-     * v1 40948500 NET_ID    Link:Wifi:458672230413
-     * v1 40845500 NET_AVAIL AVAILABLE                 <- earlier timestamp, later in the stream
-     * ```
-     * One flow means one collector, so the stream is monotonic by construction rather than by
-     * discipline (RFC_NETWORK_REACHABILITY §1.2 / §7).
+     * One variant for the whole state, not one per field: two independently-stamped streams collected
+     * by two collectors interleave by scheduling rather than by time, so an earlier reachability line
+     * can land *after* a later identity line. One flow means one collector, so the stream is monotonic
+     * by construction rather than by discipline (RFC_NETWORK_REACHABILITY §1.2 / §7).
      */
     data class Net(
         override val at: Duration,
@@ -270,8 +264,8 @@ sealed interface TraceEvent {
      * **It precedes the [Net] it modifies**: dropped observations happened, *then* this state was seen.
      * A recorded burst deep enough to overrun the relay's `DROP_OLDEST` buffer would otherwise read back
      * as a quiet network — the failure mode a live subscriber can already detect
-     * ([com.ditchoom.socket.ObservationSequence.droppedSince]) and a recorded artifact could not
-     * (issue #315).
+     * ([com.ditchoom.socket.ObservationSequence.droppedSince]) and a recorded artifact otherwise
+     * cannot.
      *
      * **A new sealed case rather than a field on [Net]**, for two reasons that both cut this way:
      *  - [isInput]'s exhaustive `when` is the safety net that forces every call site over the hierarchy
