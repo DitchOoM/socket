@@ -25,6 +25,7 @@ import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.udp.DatagramSendException
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -67,6 +68,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *                                                                       ;   before the NEXT "NET" line
  *             | "NET_CAP" SP mechanism SP resolution                    ; input: MonitorCapability, once
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
+ *             | "QLOG_REFUSED" SP path                                  ; observation: quiche's
+ *                                                                       ;   `create_new` open refused
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
  * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
  * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"
@@ -236,6 +239,16 @@ class QuicTraceRecorder(
     }
 
     /**
+     * Record that quiche refused to open this connection's qlog at [path] (QLOG_REFUSED) — the
+     * `create_new` guard found a file already there, or a missing directory. Diagnostics only: the
+     * connection runs on unaffected, but a refused qlog is otherwise visible only on stdout, so a
+     * walk's own replay trace would carry no evidence a connection ran with no frame-level capture.
+     */
+    fun qlogRefused(path: String) {
+        record(TraceEvent.QlogRefused(now(), path))
+    }
+
+    /**
      * Decorate a [UdpChannel] so every datagram through it is recorded (DGRAM_OUT / DGRAM_IN with
      * [path] as the PathKey, when known) and every non-cancellation IO failure is recorded typed
      * (ERROR) before rethrowing. The driver wraps its per-path channels here — the single
@@ -264,7 +277,7 @@ class QuicTraceRecorder(
         monitor: NetworkMonitor,
         scope: CoroutineScope,
     ): Job =
-        scope.launch {
+        scope.launch(CoroutineName("quic-trace/network-observer")) {
             networkCapability(monitor.capability)
             monitor.state.collect { networkState(it) }
         }

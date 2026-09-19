@@ -21,7 +21,10 @@ import kotlinx.coroutines.CoroutineScope
  * defaults to — so trace timestamps and driver timers share one clock (RFC §5 "one clock").
  */
 internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
-    quicOptions.trace?.let { TraceCapture.On(QuicTraceRecorder(it.sinkFor())) } ?: TraceCapture.Off
+    quicOptions.trace?.let {
+        val connection = it.captureFor()
+        TraceCapture.On(QuicTraceRecorder(connection.sink), connection.qlog)
+    } ?: TraceCapture.Off
 
 /**
  * Client-side connectivity tap (RFC §5.1): when the capture opt-in asked for network observations,

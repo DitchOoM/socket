@@ -1506,7 +1506,7 @@ jobs:
             /tmp/cores/core.*
             /tmp/cores/bt/*.txt
             socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
-          retention-days: 7
+          retention-days: 90
           if-no-files-found: ignore
 
   # ── Stage 2c: link the native test binaries + package quic-echo for the integration jobs ─────

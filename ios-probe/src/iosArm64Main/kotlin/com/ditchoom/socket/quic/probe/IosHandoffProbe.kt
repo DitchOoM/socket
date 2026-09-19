@@ -2,8 +2,9 @@
 
 package com.ditchoom.socket.quic.probe
 
-import com.ditchoom.socket.testkit.migration.runLine
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
+import com.ditchoom.socket.testkit.migration.forConnection
+import com.ditchoom.socket.testkit.migration.forRun
 import kotlin.concurrent.AtomicReference
 import kotlin.concurrent.AtomicInt
 import com.ditchoom.buffer.BufferFactory
@@ -12,15 +13,24 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationResult
+import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
-import com.ditchoom.socket.testkit.echo.EchoLedger
+import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
+import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
 import com.ditchoom.socket.testkit.echo.EchoRead
-import com.ditchoom.socket.testkit.echo.EchoUnanswered
+import com.ditchoom.socket.testkit.echo.EchoSession
+import com.ditchoom.socket.testkit.echo.EchoStep
+import com.ditchoom.socket.testkit.echo.RunLiveness
+import com.ditchoom.socket.testkit.echo.SessionEnd
+import com.ditchoom.socket.testkit.echo.SilenceWatchdog
+import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -43,7 +53,6 @@ import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
-import platform.posix.setenv
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.timeIntervalSince1970
 import kotlin.concurrent.Volatile
@@ -100,12 +109,11 @@ object IosHandoffProbe {
     private var locUpdates: Int = 0
 
     /**
-     * Bumped once per echo-loop iteration, whatever the outcome — OK, no-data, or failure.
+     * Exchanges completed across every connection — what the silence watchdog compares beat to beat.
      *
-     * The walk that motivated this recorded 48.6 hours in which this loop produced **nothing at all**:
-     * not an echo, not a timeout, not an error. Every existing counter measured what the loop *did*,
-     * so a loop that did nothing was indistinguishable from one that was never asked to. This one
-     * measures that it *ran*, which is what the heartbeat compares against to notice its own silence.
+     * Every other counter measures what the loop *did*, which makes a loop that did nothing
+     * indistinguishable from one that was never asked to. This one measures that it is still going
+     * round; a write the peer never drained does not advance it (#620).
      */
     @Volatile
     private var loopTicks: Int = 0
@@ -128,6 +136,49 @@ object IosHandoffProbe {
     private fun now() = NSDate().timeIntervalSince1970.seconds
 
     private fun elapsedMs(since: Double): Long = ((NSDate().timeIntervalSince1970 - since) * 1000).toLong()
+
+    /**
+     * One exchange: the write, then the read the session judges. A write that times out is the
+     * session's to decide; every other failure is the loop's to classify.
+     */
+    private suspend fun exchange(
+        stream: QuicByteStream,
+        session: EchoSession,
+        seq: Int,
+        payload: String,
+        sentAt: Double,
+    ): EchoStep {
+        // Write takes no ownership, so this buffer is ours to free; read transfers it, so the scoped
+        // form frees that one for us (#538) — a K/N buffer is explicitly freed with no collector
+        // behind it at all.
+        val out = BufferFactory.Default.allocate(payload.length)
+        try {
+            out.writeString(payload, Charset.UTF8)
+            out.resetForRead()
+            stream.write(out, WRITE_DEADLINE)
+        } catch (e: TimeoutCancellationException) {
+            // Only this scope's own cancellation, which wears the same type, gets out of here.
+            currentCoroutineContext().ensureActive()
+            return session.writeTimedOut(seq, waited = elapsedMs(sentAt).milliseconds, at = now())
+        } finally {
+            out.freeIfNeeded()
+        }
+        session.sent(seq, payload, now())
+        val reply =
+            try {
+                when (val resp = stream.read(session.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }) {
+                    is ScopedRead.Data -> StreamReply.Echoed(resp.value)
+                    ScopedRead.End -> StreamReply.PeerEnded
+                    ScopedRead.Reset -> StreamReply.PeerReset
+                }
+            } catch (e: TimeoutCancellationException) {
+                // The deadline is where "late" begins, not where an exchange fails: the reply is still
+                // owed and is judged when it arrives.
+                currentCoroutineContext().ensureActive()
+                StreamReply.StillOwed
+            }
+        return session.reply(seq, reply, now())
+    }
 
     private fun documents(): String = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
 
@@ -183,10 +234,12 @@ object IosHandoffProbe {
         log.emit("START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
         log.emit(kept)
         // quiche's own frame-level record, one .sqlog per connection: evidence written by quiche
-        // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h. The
-        // driver reads the directory from the environment once per connection.
+        // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h — the
+        // walk's total, however many connections it splits across. Each connection names its own file
+        // from the same sequence number as its trace (conn-NNNN.sqlog beside conn-NNNN.trace); the
+        // environment door used to name it by the native handle, which the next connection reuses, so
+        // quiche's create_new refused every qlog after the first (#621).
         NSFileManager.defaultManager.createDirectoryAtPath(qlogDir(), true, null, null)
-        setenv("QUIC_QLOG_DIR", qlogDir(), 1)
 
         // The in-memory tail the stall watchdog dumps inline. It is NOT the record of the walk: it
         // holds about a minute and is drained only when the echo loop stops, so a migration the
@@ -202,7 +255,7 @@ object IosHandoffProbe {
         val budget = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds)
         log.emit(budget.line)
         val traceFiles =
-            WalkTraceFiles(traceDir(), budget.bytes) { spent ->
+            WalkTraceFiles(traceDir(), qlogDir(), budget.bytes) { spent ->
                 log.emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point.",
@@ -215,14 +268,18 @@ object IosHandoffProbe {
                 verifyPeer = false,
                 trace =
                     QuicTraceCapture(
-                        sinkFor = {
-                            val file = traceFiles.next()
+                        captureFor = {
+                            val connection = traceFiles.next()
                             // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
-                            // keeps this connection's own replayable trace.
-                            TraceSink { event ->
-                                ring.emit(event)
-                                file.emit(event)
-                            }
+                            // keeps this connection's own replayable trace. The qlog rides along unchanged.
+                            connection.copy(
+                                sink =
+                                    TraceSink { event ->
+                                        ring.emit(event)
+                                        connection.sink.emit(event)
+                                        if (event is TraceEvent.QlogRefused) log.emit("QLOG-REFUSED path=${event.path}")
+                                    },
+                            )
                         },
                         // The connectivity stream is half of every migration question — which trigger
                         // fired, and whether the platform had even noticed the link yet. It was off.
@@ -237,6 +294,9 @@ object IosHandoffProbe {
 
         val deadline = startedAt + minutes * 60.0
         val totals = MigrationTotals()
+        // ...and whether the stream those migrations carried was actually being echoed (#620): a path
+        // layer that keeps validating while every echo goes unanswered must not read as a pass.
+        val liveness = EchoLivenessTotals()
         var attempt = 0
 
         // A heartbeat once a minute whatever the connection is doing: residency (locUpdates), the
@@ -244,38 +304,20 @@ object IosHandoffProbe {
         // one line that says the probe was alive at 03:00 even while the network was gone.
         val heartbeat =
             GlobalScope.launch(Dispatchers.Default) {
-                var lastTicks = -1
-                var quietHeartbeats = 0
-                var dumped = false
+                // The silence watchdog: a live process is not a live echo loop, so [loopTicks] counts completed exchanges.
+                val watchdog = SilenceWatchdog(QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
                 while (NSDate().timeIntervalSince1970 < deadline) {
                     delay(HEARTBEAT_INTERVAL_MS)
                     log.emit("HEARTBEAT attempt=$attempt locUpdates=$locUpdates ${residentMemory()} ${battery()}")
-
-                    // The silence watchdog. A heartbeat that only says "the process is alive" is what
-                    // let a wedged echo loop look healthy for two days: the process WAS alive, and
-                    // that was the least interesting true thing about it. Comparing [loopTicks]
-                    // against the previous heartbeat asks the question that actually matters — is the
-                    // loop still going round? — and answers it in the recording rather than leaving it
-                    // to be inferred, months later, from the absence of lines.
-                    val ticks = loopTicks
-                    if (ticks == lastTicks) {
-                        quietHeartbeats++
-                        if (quietHeartbeats >= QUIET_HEARTBEATS_BEFORE_ALARM && !dumped) {
-                            dumped = true
-                            log.emit(
-                                "STALL-SUSPECTED loopTicks=$ticks unchanged for " +
-                                    "${quietHeartbeats * (HEARTBEAT_INTERVAL_MS / 1000)}s attempt=$attempt — " +
-                                    "the echo loop is not running. Dumping the last ${ring.size()} trace events.",
-                            )
+                    when (val beat = watchdog.beat(loopTicks)) {
+                        SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
+                        is SilenceWatchdog.Beat.Stalled -> {
+                            log.emit(beat.line(attempt, ring.size()))
                             ring.drain().forEach { log.emit("STALL-TRACE $it") }
                             log.emit("STALL-TRACE-END")
                             statusLine = "\u26a0 STALL SUSPECTED — echo loop has not run"
                         }
-                    } else {
-                        if (dumped) log.emit("STALL-RECOVERED loopTicks=$ticks after ${quietHeartbeats} quiet heartbeat(s)")
-                        lastTicks = ticks
-                        quietHeartbeats = 0
-                        dumped = false
+                        is SilenceWatchdog.Beat.Recovered -> log.emit(beat.line)
                     }
                 }
             }
@@ -287,8 +329,9 @@ object IosHandoffProbe {
             // Per CONNECTION, not per walk: a reconnect negotiates a brand-new CID pool, so a pool
             // exhausted on the previous connection says nothing about this one.
             val ledger = MigrationLedger(log::emit)
-            // Per connection too: what is still owed when a connection ends is what failed on it.
-            val echoes = EchoLedger()
+            // Per connection too: what is still owed when a connection ends is what failed on it,
+            // and how long it went without an answered echo is its own verdict.
+            val session = EchoSession(connectedAt = now())
             try {
                 withQuicConnection(host, port, options, timeout = (minutes + 2).minutes) {
                     log.emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
@@ -296,10 +339,13 @@ object IosHandoffProbe {
                     val stream = openStream()
                     var seq = 0
                     var lastWire = identity.wire
+                    val ticksAtConnect = loopTicks
 
-                    // Every exchange is judged by [echoes] when its reply arrives (#393, #599): the
+                    // Every exchange is judged by [session] when its reply arrives (#393, #599): the
                     // invariant is that everything received is an in-order prefix of everything sent,
                     // and a missed read deadline is where "late" begins, not where an exchange fails.
+                    // A FIN or RESET from the peer, or a run of writes it will not drain, ends the
+                    // session instead: the stream is no longer being echoed (#620).
                     var integrityBroken = false
 
                     // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
@@ -320,9 +366,6 @@ object IosHandoffProbe {
                         }
 
                         seq++
-                        // Before anything that can park, so a loop wedged *inside* an iteration still
-                        // shows the tick that proves it got that far.
-                        loopTicks++
                         // Periodic residency heartbeat: locUpdates==0 after the screen locks means
                         // the walk is being recorded by a process iOS has stopped scheduling, and
                         // every gap in the log below is an artefact rather than a network event.
@@ -332,42 +375,37 @@ object IosHandoffProbe {
                         val sentAt = NSDate().timeIntervalSince1970
                         val payload = "probe-$seq;"
                         try {
-                            // Write takes no ownership, so this buffer is ours to free; read transfers
-                            // it, so the scoped form frees that one for us (#538). The Android sibling
-                            // of this loop did neither and died at VmSize 20.8 GB, 2 h 36 m into a
-                            // 5-hour walk — a K/N buffer is explicitly freed with no collector behind
-                            // it at all, so this probe had even less to fall back on.
-                            val out = BufferFactory.Default.allocate(payload.length)
-                            try {
-                                out.writeString(payload, Charset.UTF8)
-                                out.resetForRead()
-                                stream.write(out, 5.seconds)
-                            } finally {
-                                out.freeIfNeeded()
-                            }
-                            echoes.sent(seq, payload, now())
-                            val resp = stream.read(echoes.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }
-                            when (resp) {
-                                is ScopedRead.Data ->
-                                    when (val read = echoes.received(resp.value, now())) {
-                                        is EchoRead.Consumed -> read.outcomes.forEach { log.emit(it.line(read.owedBytes)) }
-                                        is EchoRead.Diverged ->
-                                            if (integrityBroken) {
-                                                log.emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
-                                            } else {
-                                                integrityBroken = true
-                                                log.emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
-                                                statusLine = "\u26a0 STREAM INTEGRITY BROKEN at byte ${read.atByte}"
+                            when (val step = exchange(stream, session, seq, payload, sentAt)) {
+                                is EchoStep.Exchanged -> {
+                                    when (step) {
+                                        is EchoStep.Exchanged.Judged ->
+                                            when (val read = step.read) {
+                                                is EchoRead.Consumed -> read.outcomes.forEach { log.emit(it.line(read.owedBytes)) }
+                                                is EchoRead.Diverged ->
+                                                    if (integrityBroken) {
+                                                        log.emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
+                                                    } else {
+                                                        integrityBroken = true
+                                                        log.emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                                        statusLine = "\u26a0 STREAM INTEGRITY BROKEN at byte ${read.atByte}"
+                                                    }
                                             }
+                                        EchoStep.Exchanged.StillOwed -> Unit
                                     }
-                                ScopedRead.End, ScopedRead.Reset ->
-                                    log.emit("ECHO-NO-DATA seq=$seq after=${elapsedMs(sentAt)}ms result=$resp")
+                                    // Progress is a completed exchange: a write the peer never drained
+                                    // is not one, so the silence watchdog sees it.
+                                    loopTicks = ticksAtConnect + session.exchanges
+                                }
+                                is EchoStep.WriteTimedOut -> log.emit(step.line)
+                                // The peer stopped echoing this stream. Leave the scope and let the outer
+                                // loop reconnect, exactly as a dead connection does — and say which of
+                                // the two it was, because they are different events.
+                                is EchoStep.Reconnect -> {
+                                    log.emit(step.line)
+                                    statusLine = "${step.end.label} — reconnecting"
+                                    return@withQuicConnection
+                                }
                             }
-                        } catch (e: TimeoutCancellationException) {
-                            // The deadline is where "late" begins, not where an exchange fails: the reply
-                            // is still owed and is judged when it arrives. Only this scope's own
-                            // cancellation, which wears the same type, gets out of here.
-                            currentCoroutineContext().ensureActive()
                         } catch (e: Throwable) {
                             log.emit("ECHO-FAIL seq=$seq after=${elapsedMs(sentAt)}ms err=${e::class.simpleName} msg=${e.message}")
                             // A dead connection makes "keep going" a loop spinning against a closed
@@ -376,25 +414,26 @@ object IosHandoffProbe {
                             // "migrated" from "had to start over".
                             if (e is QuicCloseException) {
                                 val why = e.closeReason.describe()
+                                session.ended(SessionEnd.ConnectionDead, now())
                                 log.emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
                                 statusLine = "connection dead ($why) — reconnecting"
                                 return@withQuicConnection
                             }
                         }
-                        echoes.overdue(now()).forEach { log.emit(it.line) }
+                        session.overdue(now()).forEach { log.emit(it.line) }
                         delay(echoIntervalMs)
                     }
                 }
                 log.emit("SCOPE-EXITED cleanly")
+                session.ended(SessionEnd.WalkOver, now())
             } catch (e: Throwable) {
                 log.emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
             }
-            when (val unanswered = echoes.abandon()) {
-                EchoUnanswered.None -> Unit
-                is EchoUnanswered.Some -> log.emit(unanswered.line)
-            }
-            ledger.report("connection=$attempt")
+            val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
+            report.lines("connection=$attempt").forEach(log::emit)
+            ledger.report("connection=$attempt", report.liveness)
             totals.absorb(ledger)
+            liveness.absorb(attempt, report)
             if (NSDate().timeIntervalSince1970 < deadline) {
                 // Back off while attempts die young — a flight in airplane mode is hours of "no
                 // route", and a fixed 3 s retry would be thousands of connects for nothing. A
@@ -407,7 +446,7 @@ object IosHandoffProbe {
         }
         heartbeat.cancel()
 
-        totals.report(log::emit)
+        totals.report(log::emit, liveness.verdict())
         log.emit("DONE attempts=$attempt log=${logPath()}")
         statusLine = "done — ${totals.attempts} migration attempt(s), ${totals.succeeded} succeeded"
     }
@@ -599,10 +638,14 @@ private class MigrationLedger(
     /** The one line an operator mid-walk can act on: has it moved, and has the new path carried traffic. */
     fun oneLine(path: String): String = "$succeeded migration(s) · path=${path.substringBefore('(')} · unanswered probes=$unanswered"
 
-    fun report(tag: String) {
+    /** The path layer's verdict, gated by whether the stream it carried was actually echoed (#620). */
+    fun report(
+        tag: String,
+        liveness: EchoLivenessVerdict,
+    ) {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit("MIGRATION-LEDGER $tag attempts=$attempts succeeded=$succeeded outcomes=[$breakdown]")
-        emit("447-VERDICT $tag ${history().verdict().line}")
+        emit("447-VERDICT $tag ${history().verdict().forConnection(liveness).line}")
     }
 
     fun fold(into: MigrationTotals) {
@@ -632,7 +675,10 @@ private class MigrationTotals {
 
     fun absorb(ledger: MigrationLedger) = ledger.fold(this)
 
-    fun report(emit: (String) -> Unit) {
+    fun report(
+        emit: (String) -> Unit,
+        liveness: RunLiveness,
+    ) {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit(
             "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
@@ -640,6 +686,7 @@ private class MigrationTotals {
                 "answeredAfterUnanswered=$answeredAfterUnanswered " +
                 "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
         )
+        emit(liveness.line)
         // Every "after" counter only ever advanced inside the connection whose probe was lost, so
         // summing them cannot let a RECONNECT's fresh pool answer for the old one.
         val history =
@@ -651,11 +698,14 @@ private class MigrationTotals {
                 succeededAfterUnanswered = succeededAfterUnanswered,
                 noSpareAfterUnanswered = noSpareAfterUnanswered,
             )
-        emit("447-VERDICT walk ${history.verdict().runLine(connections)}")
+        emit("447-VERDICT run ${history.verdict().forRun(connections, liveness).line}")
     }
 }
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
+
+/** Bounds one write; [EchoSession.WRITE_TIMEOUT_STREAK_LIMIT] of these in a row ends the session. */
+private val WRITE_DEADLINE = 5.seconds
 
 /**
  * How many trace events the post-mortem ring keeps. At this cadence roughly the last minute of
@@ -665,13 +715,17 @@ private const val HEARTBEAT_INTERVAL_MS = 60_000L
 private const val RING_CAPACITY = 256
 
 /**
- * One file-backed [TraceSink] per connection, under a shared byte budget.
+ * One file-backed [TraceSink] per connection, under a shared byte budget, and beside it the qlog
+ * quiche writes for that connection — both named from one sequence number, `conn-NNNN`, so the two
+ * records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
+ * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
  */
 private class WalkTraceFiles(
     private val dir: String,
+    private val qlogDir: String,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
@@ -700,19 +754,22 @@ private class WalkTraceFiles(
         }
     }
 
-    fun next(): TraceSink {
-        val path = "$dir/conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace"
-        return TraceSink { event ->
-            val line = event.toString() + "\n"
-            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
-            if (charge(line.length)) {
-                val file = fopen(path, "a")
-                if (file != null) {
-                    fputs(line, file)
-                    fclose(file)
+    fun next(): QuicConnectionCapture {
+        val name = "conn-" + connections.incrementAndGet().toString().padStart(4, '0')
+        val path = "$dir/$name.trace"
+        val sink =
+            TraceSink { event ->
+                val line = event.toString() + "\n"
+                // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+                if (charge(line.length)) {
+                    val file = fopen(path, "a")
+                    if (file != null) {
+                        fputs(line, file)
+                        fclose(file)
+                    }
                 }
             }
-        }
+        return QuicConnectionCapture(sink, QlogTarget.File("$qlogDir/$name.sqlog"))
     }
 }
 

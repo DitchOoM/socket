@@ -15,6 +15,7 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.udp.SocketAddressCodec
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -167,7 +168,7 @@ internal class SharedQuicheServer(
      */
     private val serverCapture: TraceCapture = tuning.captureFactory()
 
-    private val receiveJob = scope.launch(serverReceiveDispatcher) { receiveLoop() }
+    private val receiveJob = scope.launch(serverReceiveDispatcher + CoroutineName("quic-server/receive/$port")) { receiveLoop() }
 
     override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
         // Bind handler lifetime to the caller's coroutine: cancelling the coroutine that called
@@ -176,7 +177,8 @@ internal class SharedQuicheServer(
         coroutineScope {
             for (accepted in registry.acceptedDrivers) {
                 val driver = accepted.driver
-                launch(serverReceiveDispatcher) {
+                val peer = accepted.remoteAddress
+                launch(serverReceiveDispatcher + CoroutineName("quic-server/handler/${peer.host}:${peer.port}")) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
                     val conn = DriverQuicConnection(driver, bufferFactory, accepted.remoteAddress, connScope)
@@ -295,7 +297,7 @@ internal class SharedQuicheServer(
 
             val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS)
             val reader =
-                launch(serverReceiveDispatcher) {
+                launch(serverReceiveDispatcher + CoroutineName("quic-server/receive/$port/reader")) {
                     try {
                         while (true) {
                             val r =

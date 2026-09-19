@@ -17,14 +17,23 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
-import com.ditchoom.socket.testkit.echo.EchoLedger
+import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
+import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
 import com.ditchoom.socket.testkit.echo.EchoOutcome
 import com.ditchoom.socket.testkit.echo.EchoRead
-import com.ditchoom.socket.testkit.echo.EchoUnanswered
+import com.ditchoom.socket.testkit.echo.EchoSession
+import com.ditchoom.socket.testkit.echo.EchoStep
+import com.ditchoom.socket.testkit.echo.RunLiveness
+import com.ditchoom.socket.testkit.echo.SessionEnd
+import com.ditchoom.socket.testkit.echo.SilenceWatchdog
+import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
-import com.ditchoom.socket.testkit.migration.runLine
+import com.ditchoom.socket.testkit.migration.forConnection
+import com.ditchoom.socket.testkit.migration.forRun
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -88,7 +97,7 @@ class DeviceHandoffProbe {
         assumeTrue("hand-driven probe — pass -e probeHost <ip> to run it (see class KDoc)", host.isNotEmpty())
         val port = arg("probePort", "14433").toInt()
         val minutes = arg("probeMinutes", "12").toInt()
-        // The read deadline is not an argument: each connection's [EchoLedger] derives it from the
+        // The read deadline is not an argument: each connection's [EchoSession] derives it from the
         // round trips it measures, the path's own probe timeout (#599). That keeps the #393 salvage
         // path armed by the path's real tail rather than by a guess about it.
         // Echo cadence, injectable for the same reason the read deadline is. At the 2s default the
@@ -113,30 +122,65 @@ class DeviceHandoffProbe {
             android.util.Log.i("QuicHandoffProbe", rendered)
         }
 
-        // Frame-level evidence, off by default. The driver's qlog seam reads the `quic.qlog.dir`
-        // system property (or QUIC_QLOG_DIR, which an `am instrument` run cannot set) — so a device is
-        // the one place a real handoff can be recorded and, until that property existed, the one place
-        // qlog could not be turned on. Writes one .sqlog per connection into the app's external files
-        // dir, where `adb pull` can reach it. Off by default because at a 100ms cadence it is megabytes
-        // per minute and it is an instrument, not a feature.
+        // One exchange: the write, then the read the session judges. A write that times out is the
+        // session's to decide; every other failure is the loop's to classify.
+        suspend fun exchange(
+            stream: QuicByteStream,
+            session: EchoSession,
+            seq: Int,
+            payload: String,
+            sentAt: Long,
+        ): EchoStep {
+            // Write takes no ownership, so this one IS ours to free — and on a multi-hour walk a
+            // 10-byte-per-round leak is still a leak.
+            val out = BufferFactory.Default.allocate(payload.length)
+            try {
+                out.writeString(payload, Charset.UTF8)
+                out.resetForRead()
+                stream.write(out, WRITE_DEADLINE)
+            } catch (e: TimeoutCancellationException) {
+                // Only this scope's own cancellation, which wears the same type, gets out of here.
+                currentCoroutineContext().ensureActive()
+                return session.writeTimedOut(seq, waited = (System.currentTimeMillis() - sentAt).milliseconds, at = now())
+            } finally {
+                out.freeIfNeeded()
+            }
+            session.sent(seq, payload, now())
+            // Scoped read (#538): the echoed bytes are decoded inside the block and the buffer is
+            // released on the way out.
+            val reply =
+                try {
+                    when (val resp = stream.read(session.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }) {
+                        is ScopedRead.Data -> StreamReply.Echoed(resp.value)
+                        ScopedRead.End -> StreamReply.PeerEnded
+                        ScopedRead.Reset -> StreamReply.PeerReset
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    // The deadline is where "late" begins, not where an exchange fails: the reply is
+                    // still owed and is judged when it arrives.
+                    currentCoroutineContext().ensureActive()
+                    StreamReply.StillOwed
+                }
+            return session.reply(seq, reply, now())
+        }
+
+        // Frame-level evidence, off by default: quiche's own record, one .sqlog per connection in the
+        // app's external files dir where `adb pull` can reach it, named by the same sequence number as
+        // the connection's trace (conn-NNNN.sqlog beside conn-NNNN.trace). Named here, per connection,
+        // rather than through the `quic.qlog.dir` door: that door named the file by the native handle,
+        // which the next connection reuses, so quiche's create_new refused every qlog after the first
+        // (#621). Off by default because at a 100ms cadence it is megabytes per minute and it is an
+        // instrument, not a feature.
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Every walk this rig has lost was lost by a START.
         val kept = PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog"))
-        val qlog = arg("probeQlog", "").isNotEmpty()
-        val qlogDir = File(dir, "qlog")
-        if (qlog) {
-            qlogDir.mkdirs()
-            System.setProperty("quic.qlog.dir", qlogDir.absolutePath)
-        } else {
-            System.clearProperty("quic.qlog.dir")
-        }
+        val qlog = if (arg("probeQlog", "").isNotEmpty()) WalkQlog.Into(File(dir, "qlog").also { it.mkdirs() }) else WalkQlog.Off
 
         log.writeText("")
         emit(kept.line)
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
-                "minutes=$minutes echoIntervalMs=$echoIntervalMs " +
-                "qlog=${if (qlog) qlogDir.absolutePath else "off"}",
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog",
         )
 
         // The in-memory tail the stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
@@ -164,7 +208,7 @@ class DeviceHandoffProbe {
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
         val traceFiles =
-            WalkTraceFiles(traceDir, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir, qlog, budget.bytes) { spent ->
                 emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
@@ -177,14 +221,18 @@ class DeviceHandoffProbe {
                 verifyPeer = false,
                 trace =
                     QuicTraceCapture(
-                        sinkFor = {
-                            val file = traceFiles.next()
+                        captureFor = {
+                            val connection = traceFiles.next()
                             // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
-                            // keeps this connection's own replayable trace.
-                            TraceSink { event ->
-                                ring.emit(event)
-                                file.emit(event)
-                            }
+                            // keeps this connection's own replayable trace. The qlog rides along unchanged.
+                            connection.copy(
+                                sink =
+                                    TraceSink { event ->
+                                        ring.emit(event)
+                                        connection.sink.emit(event)
+                                        if (event is TraceEvent.QlogRefused) emit("QLOG-REFUSED path=${event.path}")
+                                    },
+                            )
                         },
                         // The connectivity stream is half of every migration question — which trigger
                         // fired, and whether the platform had even noticed the link yet. It was off.
@@ -219,6 +267,9 @@ class DeviceHandoffProbe {
         // so a run of thirty clean migrations proves #445 and says nothing whatever about #447, while
         // reading exactly as if it had validated both. See [MigrationLedger].
         val totals = MigrationTotals()
+        // ...and whether the stream those migrations carried was actually being echoed (#620): a path
+        // layer that keeps validating while every echo goes unanswered must not read as a pass.
+        val liveness = EchoLivenessTotals()
 
         runBlocking(Dispatchers.IO) {
             // A heartbeat once a minute, whatever the connection is doing: the process's own memory
@@ -227,36 +278,19 @@ class DeviceHandoffProbe {
             // cannot give, and the one line a reader can grep to see the probe was alive at 03:00.
             val heartbeat =
                 launch {
-                    var lastTicks = -1
-                    var quietHeartbeats = 0
-                    var dumped = false
+                    // The silence watchdog: a live process is not a live echo loop, so [loopTicks] counts completed exchanges.
+                    val watchdog = SilenceWatchdog(QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
                     while (isActive && System.currentTimeMillis() < deadline) {
                         delay(HEARTBEAT_INTERVAL_MS)
                         emit("HEARTBEAT attempt=$attempt ${processMemory()} ${battery(ctx)} ${transport(ctx)}")
-
-                        // The silence watchdog. "The process is alive" was the least interesting true
-                        // thing about the iOS walk that wedged for 48.6 hours — its heartbeat kept
-                        // logging the whole time. [loopTicks] answers the question that matters: is the
-                        // echo loop still going round? The same wedge is reachable here, so the same
-                        // alarm belongs here.
-                        val ticks = loopTicks
-                        if (ticks == lastTicks) {
-                            quietHeartbeats++
-                            if (quietHeartbeats >= QUIET_HEARTBEATS_BEFORE_ALARM && !dumped) {
-                                dumped = true
-                                emit(
-                                    "STALL-SUSPECTED loopTicks=$ticks unchanged for " +
-                                        "${quietHeartbeats * (HEARTBEAT_INTERVAL_MS / 1000)}s attempt=$attempt — " +
-                                        "the echo loop is not running. Dumping the last ${ring.size()} trace events.",
-                                )
+                        when (val beat = watchdog.beat(loopTicks)) {
+                            SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
+                            is SilenceWatchdog.Beat.Stalled -> {
+                                emit(beat.line(attempt, ring.size()))
                                 ring.drain().forEach { emit("STALL-TRACE $it") }
                                 emit("STALL-TRACE-END")
                             }
-                        } else {
-                            if (dumped) emit("STALL-RECOVERED loopTicks=$ticks after $quietHeartbeats quiet heartbeat(s)")
-                            lastTicks = ticks
-                            quietHeartbeats = 0
-                            dumped = false
+                            is SilenceWatchdog.Beat.Recovered -> emit(beat.line)
                         }
                     }
                 }
@@ -269,8 +303,9 @@ class DeviceHandoffProbe {
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
                 // exhausted on the previous connection says nothing about this one.
                 val ledger = MigrationLedger(::emit)
-                // Per connection too: what is still owed when a connection ends is what failed on it.
-                val echoes = EchoLedger()
+                // Per connection too: what is still owed when a connection ends is what failed on it,
+                // and how long it went without an answered echo is its own verdict.
+                val session = EchoSession(connectedAt = now())
                 try {
                     // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
                     // measured, the first run of this probe tore the connection down every 15s with
@@ -282,11 +317,13 @@ class DeviceHandoffProbe {
                         val stream = openStream()
                         var seq = 0
                         var lastWire = identity.wire
+                        val ticksAtConnect = loopTicks
 
-                        // Every exchange is judged by [echoes] when its reply arrives (#393, #599): the
+                        // Every exchange is judged by [session] when its reply arrives (#393, #599): the
                         // invariant is that everything received is an in-order prefix of everything
                         // sent, and a missed read deadline is where "late" begins, not where an
-                        // exchange fails.
+                        // exchange fails. A FIN or RESET from the peer, or a run of writes it will not
+                        // drain, ends the session instead: the stream is no longer being echoed (#620).
                         var integrityBroken = false
 
                         // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
@@ -312,64 +349,54 @@ class DeviceHandoffProbe {
                             }
 
                             seq++
-                            // Before anything that can park, so a loop wedged *inside* an iteration
-                            // still shows the tick proving it got that far.
-                            loopTicks++
                             val sentAt = System.currentTimeMillis()
                             // Delimited so payload boundaries stay visible in a coalesced read.
                             val payload = "probe-$seq;"
                             try {
-                                // Write takes no ownership, so this one IS ours to free — and on a
-                                // multi-hour walk a 10-byte-per-round leak is still a leak.
-                                val out = BufferFactory.Default.allocate(payload.length)
-                                try {
-                                    out.writeString(payload, Charset.UTF8)
-                                    out.resetForRead()
-                                    stream.write(out, 5.seconds)
-                                } finally {
-                                    out.freeIfNeeded()
-                                }
-                                echoes.sent(seq, payload, now())
-                                // Scoped read (#538): the echoed bytes are decoded inside the block and
-                                // the buffer is released on the way out. This loop used to take the
-                                // transferring read and drop the buffer — 45 382 times, on the walk that
-                                // filed the issue, until the process died at VmSize 20.8 GB with a
-                                // std::bad_alloc raised inside the unwinder. Nothing about the probe's
-                                // own logic was wrong; it did exactly what the KDoc of the day permitted.
-                                val resp = stream.read(echoes.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }
-                                when (resp) {
-                                    is ScopedRead.Data ->
-                                        when (val read = echoes.received(resp.value, now())) {
-                                            is EchoRead.Consumed -> {
-                                                read.outcomes.forEach { emit(it.line(read.owedBytes)) }
-                                                status.onRead(read)
-                                            }
-                                            is EchoRead.Diverged ->
-                                                if (integrityBroken) {
-                                                    emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
-                                                } else {
-                                                    integrityBroken = true
-                                                    // The whole point of the run: both sides at the divergence.
-                                                    status.onBroken(read.atByte)
-                                                    emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                when (val step = exchange(stream, session, seq, payload, sentAt)) {
+                                    is EchoStep.Exchanged -> {
+                                        when (step) {
+                                            is EchoStep.Exchanged.Judged ->
+                                                when (val read = step.read) {
+                                                    is EchoRead.Consumed -> {
+                                                        read.outcomes.forEach { emit(it.line(read.owedBytes)) }
+                                                        status.onRead(read)
+                                                    }
+                                                    is EchoRead.Diverged ->
+                                                        if (integrityBroken) {
+                                                            emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
+                                                        } else {
+                                                            integrityBroken = true
+                                                            // The whole point of the run: both sides at the divergence.
+                                                            status.onBroken(read.atByte)
+                                                            emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                                        }
                                                 }
+                                            EchoStep.Exchanged.StillOwed -> Unit
                                         }
-                                    ScopedRead.End, ScopedRead.Reset -> {
-                                        emit("ECHO-NO-DATA seq=$seq after=${System.currentTimeMillis() - sentAt}ms result=$resp")
-                                        status.onNoData(echoes.owedBytes)
+                                        // Progress is a completed exchange: a write the peer never
+                                        // drained is not one, so the silence watchdog sees it.
+                                        loopTicks = ticksAtConnect + session.exchanges
+                                    }
+                                    is EchoStep.WriteTimedOut -> {
+                                        emit(step.line)
+                                        status.onWriteTimeout(session.owedBytes)
+                                    }
+                                    // The peer stopped echoing this stream. Leave the scope and let the
+                                    // outer loop reconnect, exactly as a dead connection does — and say
+                                    // which of the two it was, because they are different events.
+                                    is EchoStep.Reconnect -> {
+                                        emit(step.line)
+                                        status.onEnded("${step.end.label} — reconnecting")
+                                        return@withQuicConnection
                                     }
                                 }
-                            } catch (e: TimeoutCancellationException) {
-                                // The deadline is where "late" begins, not where an exchange fails: the
-                                // reply is still owed and is judged when it arrives. Only this scope's own
-                                // cancellation, which wears the same type, gets out of here.
-                                currentCoroutineContext().ensureActive()
                             } catch (e: Throwable) {
                                 emit(
                                     "ECHO-FAIL seq=$seq after=${System.currentTimeMillis() - sentAt}ms " +
                                         "err=${e::class.simpleName} msg=${e.message}",
                                 )
-                                status.onFailure(echoes.owedBytes)
+                                status.onFailure(session.owedBytes)
                                 // A dead connection makes "keep going" a loop spinning against a closed
                                 // connection for the rest of the run. Leave the scope and let the outer
                                 // loop reconnect — a reconnect is itself data, being precisely what
@@ -379,12 +406,13 @@ class DeviceHandoffProbe {
                                     // rejected" and "the peer sent us one" are opposite bugs, and a
                                     // device log is all we get from a real handoff (#437).
                                     val why = e.closeReason.describe()
+                                    session.ended(SessionEnd.ConnectionDead, now())
                                     status.onEnded("connection dead ($why) — reconnecting")
                                     emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
                                     return@withQuicConnection
                                 }
                             }
-                            echoes.overdue(now()).forEach {
+                            session.overdue(now()).forEach {
                                 emit(it.line)
                                 status.onOverdue()
                             }
@@ -392,15 +420,15 @@ class DeviceHandoffProbe {
                         }
                     }
                     emit("SCOPE-EXITED cleanly")
+                    session.ended(SessionEnd.WalkOver, now())
                 } catch (e: Throwable) {
                     emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
                 }
-                when (val unanswered = echoes.abandon()) {
-                    EchoUnanswered.None -> Unit
-                    is EchoUnanswered.Some -> emit(unanswered.line)
-                }
-                ledger.report("connection=$attempt")
+                val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
+                report.lines("connection=$attempt").forEach(::emit)
+                ledger.report("connection=$attempt", report.liveness)
                 totals.absorb(ledger)
+                liveness.absorb(attempt, report)
                 if (System.currentTimeMillis() < deadline) {
                     // Back off while attempts die young — a flight in airplane mode is hours of
                     // "network unreachable", and a fixed 3 s retry would be thousands of connects (each
@@ -417,7 +445,7 @@ class DeviceHandoffProbe {
 
         if (wakeLock.isHeld) wakeLock.release()
         emit("WAKELOCK released")
-        totals.report(::emit)
+        totals.report(::emit, liveness.verdict())
         emit("DONE attempts=$attempt log=${log.absolutePath}")
     }
 }
@@ -512,7 +540,7 @@ private class ProbeStatus(
         post()
     }
 
-    fun onNoData(owedBytes: Int) {
+    fun onWriteTimeout(owedBytes: Int) {
         pending.set(owedBytes)
         post()
     }
@@ -726,11 +754,15 @@ private class MigrationLedger(
             noSpareAfterUnanswered = noSpareAfterUnanswered,
         )
 
+    /** The path layer's verdict, gated by whether the stream it carried was actually echoed (#620). */
     @Synchronized
-    fun report(tag: String) {
+    fun report(
+        tag: String,
+        liveness: EchoLivenessVerdict,
+    ) {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit("MIGRATION-LEDGER $tag attempts=$attempts succeeded=$succeeded outcomes=[$breakdown]")
-        emit("447-VERDICT $tag ${verdict().line}")
+        emit("447-VERDICT $tag ${verdict().forConnection(liveness).line}")
     }
 
     @Synchronized
@@ -764,7 +796,10 @@ private class MigrationTotals {
 
     fun absorb(ledger: MigrationLedger) = ledger.fold(this)
 
-    fun report(emit: (String) -> Unit) {
+    fun report(
+        emit: (String) -> Unit,
+        liveness: RunLiveness,
+    ) {
         val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
         emit(
             "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
@@ -772,6 +807,7 @@ private class MigrationTotals {
                 "answeredAfterUnanswered=$answeredAfterUnanswered " +
                 "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
         )
+        emit(liveness.line)
         // Every "after" counter only ever advanced inside the connection whose probe was lost, so
         // summing them cannot let a RECONNECT's fresh pool answer for the old one — the over-read
         // this roll-up was caught making after the 2026-08-23 walk.
@@ -784,19 +820,22 @@ private class MigrationTotals {
                 succeededAfterUnanswered = succeededAfterUnanswered,
                 noSpareAfterUnanswered = noSpareAfterUnanswered,
             )
-        emit("447-VERDICT run ${history.verdict().runLine(connections)}")
+        emit("447-VERDICT run ${history.verdict().forRun(connections, liveness).line}")
     }
 }
 
 /**
- * Bumped once per echo-loop iteration, whatever the outcome.
+ * Exchanges completed across every connection — what the silence watchdog compares beat to beat.
  *
  * Every other counter here measures what the loop *did*, which makes a loop that did nothing
- * indistinguishable from one that was never asked to — the ambiguity that cost two days on the
- * 2026-09-03 walk. This one measures that it *ran*.
+ * indistinguishable from one that was never asked to. This one measures that it is still going
+ * round; a write the peer never drained does not advance it (#620).
  */
 @Volatile
 private var loopTicks: Int = 0
+
+/** Bounds one write; [EchoSession.WRITE_TIMEOUT_STREAK_LIMIT] of these in a row ends the session. */
+private val WRITE_DEADLINE = 5.seconds
 
 /**
  * The last [capacity] trace events, and nothing older.
@@ -839,14 +878,31 @@ private class RingTraceSink(
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
 
+/** Whether this walk records quiche's qlog, and into which directory. */
+private sealed interface WalkQlog {
+    data object Off : WalkQlog {
+        override fun toString(): String = "off"
+    }
+
+    data class Into(
+        val dir: File,
+    ) : WalkQlog {
+        override fun toString(): String = dir.absolutePath
+    }
+}
+
 /**
- * One file-backed [TraceSink] per connection, under a shared byte budget.
+ * One file-backed [TraceSink] per connection, under a shared byte budget, and beside it the qlog
+ * quiche writes for that connection — both named from one sequence number, `conn-NNNN`, so the two
+ * records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
+ * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
  */
 private class WalkTraceFiles(
     private val dir: File,
+    private val qlog: WalkQlog,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
@@ -871,13 +927,21 @@ private class WalkTraceFiles(
         }
     }
 
-    fun next(): TraceSink {
-        val file = File(dir, "conn-" + connections.incrementAndGet().toString().padStart(4, '0') + ".trace")
-        return TraceSink { event ->
-            val line = event.toString() + "\n"
-            // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
-            if (charge(line.length)) runCatching { file.appendText(line) }
-        }
+    fun next(): QuicConnectionCapture {
+        val name = "conn-" + connections.incrementAndGet().toString().padStart(4, '0')
+        val file = File(dir, "$name.trace")
+        val sink =
+            TraceSink { event ->
+                val line = event.toString() + "\n"
+                // The walk is the expensive part; the trace is the instrument. It never takes the walk down.
+                if (charge(line.length)) runCatching { file.appendText(line) }
+            }
+        val target =
+            when (qlog) {
+                WalkQlog.Off -> QlogTarget.Off
+                is WalkQlog.Into -> QlogTarget.File(File(qlog.dir, "$name.sqlog").absolutePath)
+            }
+        return QuicConnectionCapture(sink, target)
     }
 }
 

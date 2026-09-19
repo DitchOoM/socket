@@ -121,6 +121,10 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append("LIVENESS ")
                 append(event.result.name)
             }
+            is TraceEvent.QlogRefused -> {
+                append("QLOG_REFUSED ")
+                append(flattenLine(event.path))
+            }
         }
     }
 
@@ -223,6 +227,10 @@ internal fun decodeTraceLine(line: String): TraceEvent {
             TraceEvent.NetCapability(at, MonitorCapability(decodeMechanism(mechanism), decodeResolution(resolution)))
         }
         "LIVENESS" -> TraceEvent.Liveness(at, TransportLiveness.Result.valueOf(fields))
+        // `v1` still: QLOG_REFUSED is a new line kind in the existing version, exactly as NET_GAP was
+        // added after the format shipped. A reader predating it fails the unknown-event branch below
+        // rather than mis-parsing.
+        "QLOG_REFUSED" -> TraceEvent.QlogRefused(at, fields)
         else -> throw IllegalArgumentException("unknown trace event '$eventName': $line")
     }
 }

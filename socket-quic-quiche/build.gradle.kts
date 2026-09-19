@@ -3674,10 +3674,23 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
                 testDescriptor: org.gradle.api.tasks.testing.TestDescriptor,
                 result: org.gradle.api.tasks.testing.TestResult,
             ) {
-                logger.lifecycle(
-                    "TEST ${result.resultType} ${testDescriptor.className}.${testDescriptor.name} " +
-                        "(${result.endTime - result.startTime}ms)",
-                )
+                val test = "${testDescriptor.className}.${testDescriptor.name}"
+                logger.lifecycle("TEST ${result.resultType} $test (${result.endTime - result.startTime}ms)")
+                // Gradle's console formatter walks an exception's cause chain but never its suppressed
+                // exceptions; printStackTrace prints both. kotlinx-coroutines-test's
+                // UncaughtExceptionsBeforeTest carries the leaker's stack only as a suppressed exception.
+                if (result.resultType == org.gradle.api.tasks.testing.TestResult.ResultType.FAILURE) {
+                    result.exceptions.forEach { logger.lifecycle("TEST FAILURE $test threw:\n${it.stackTraceToString()}") }
+                }
+            }
+        },
+    )
+    // Worker stderr is where an uncaught coroutine exception lands (UncaughtCoroutineReporter and the
+    // JVM's final-resort handler both print there); Gradle forwards none of it unless asked.
+    addTestOutputListener(
+        org.gradle.api.tasks.testing.TestOutputListener { descriptor, event ->
+            if (event.destination == org.gradle.api.tasks.testing.TestOutputEvent.Destination.StdErr) {
+                logger.lifecycle("TEST STDERR ${descriptor.className}.${descriptor.name}: ${event.message.trimEnd()}")
             }
         },
     )

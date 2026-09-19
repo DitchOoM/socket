@@ -13,6 +13,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.SendStalledException
 import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.quic.trace.recordOr
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1252,23 +1254,26 @@ class QuicheDriver(
         sampleActivePathLiveness()
     }
 
+    /** Every coroutine this driver launches is named after the connection it serves. */
+    private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
+
     fun start(scope: CoroutineScope) {
         driverScope = scope
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
         capture.record { r ->
-            scope.launch(driverContext) {
+            scope.launch(driverContext + CoroutineName("$coroutineName/trace/state")) {
                 state.collect { s ->
                     r.connectionState(s)
                     if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
-            scope.launch(driverContext) {
+            scope.launch(driverContext + CoroutineName("$coroutineName/trace/path")) {
                 pathState.collect { r.pathState(it) }
             }
         }
-        driverJob = scope.launch(driverContext) { run() }
+        driverJob = scope.launch(driverContext + CoroutineName(coroutineName)) { run() }
 
         if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
@@ -1277,24 +1282,63 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(driverContext) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
+    }
+
+    /** Whether quiche was told to write this connection's qlog, and where. */
+    private sealed interface QlogOutcome {
+        data object Off : QlogOutcome
+
+        data class Tracing(
+            val path: String,
+        ) : QlogOutcome
+
+        /** quiche opens a qlog with `create_new`: a file already at [path], or no directory, is refused. */
+        data class Refused(
+            val path: String,
+        ) : QlogOutcome
     }
 
     /**
-     * Enable quiche qlog tracing for this connection when `QUIC_QLOG_DIR` is set (diagnostics only).
-     * Writes one `<dir>/quiche-<role>-<conn-handle-hex>.sqlog` per connection — `conn.handle` is the
-     * connection's native pointer, unique per live connection, so files never collide. Best-effort: a
-     * write/dir failure (or an older libquiche without qlog) just means no trace; it never disrupts the
-     * connection. Called once from [run] on the driver coroutine before any packet I/O, honouring quiche's
-     * single-threaded contract.
+     * Where this connection's qlog goes: the capture's own [QlogTarget] when it named one, else the
+     * `QUIC_QLOG_DIR` diagnostics door, else nowhere.
+     *
+     * The environment fallback names the file by [sessionId], quiche's trace id, the SCID this endpoint
+     * chose, unique to this connection for its whole life. quiche opens with `create_new`, so a name
+     * that repeats within a process is refused; a name must therefore come from the connection's
+     * identity, never from a reusable handle.
      */
-    private fun maybeEnableQlog() {
-        val dir = qlogDir() ?: return
-        val label = role.label
-        val path = "$dir/quiche-$label-${conn.handle.toString(16)}.sqlog"
-        val enabled = api.connSetQlogPath(conn, path, "ditchoom-socket $label", "QUIC_QLOG_DIR trace")
-        if (enabled) println("[qlog] tracing $label connection to $path")
-    }
+    private fun qlogTarget(): QlogTarget =
+        when (val on = capture) {
+            TraceCapture.Off -> qlogFromEnvironment()
+            is TraceCapture.On ->
+                when (val named = on.qlog) {
+                    is QlogTarget.File -> named
+                    QlogTarget.Off -> qlogFromEnvironment()
+                }
+        }
+
+    private fun qlogFromEnvironment(): QlogTarget =
+        qlogDir()
+            ?.let { QlogTarget.File("$it/quiche-${role.label}-$sessionId.sqlog") }
+            ?: QlogTarget.Off
+
+    /**
+     * Diagnostics only: quiche's own frame-level record, beside the replay trace. Called once from [run]
+     * on the driver coroutine before any packet I/O, honouring quiche's single-threaded contract; a
+     * refusal (or an older libquiche without qlog) never disrupts the connection. The qlog header's
+     * description carries the session id, so a file names its connection even when its path does not.
+     */
+    private fun enableQlog(): QlogOutcome =
+        when (val target = qlogTarget()) {
+            QlogTarget.Off -> QlogOutcome.Off
+            is QlogTarget.File ->
+                if (api.connSetQlogPath(conn, target.path, "ditchoom-socket ${role.label}", "session $sessionId")) {
+                    QlogOutcome.Tracing(target.path)
+                } else {
+                    QlogOutcome.Refused(target.path)
+                }
+        }
 
     /**
      * The reactive driver loop. Suspends on command channel or quiche timeout — zero CPU when idle.
@@ -1302,7 +1346,16 @@ class QuicheDriver(
      */
     private suspend fun run() {
         try {
-            maybeEnableQlog() // diagnostics: env-gated, on the driver coroutine before any packet I/O
+            when (val qlog = enableQlog()) {
+                QlogOutcome.Off -> Unit
+                is QlogOutcome.Tracing -> println("[qlog] tracing ${role.label} connection $sessionId to ${qlog.path}")
+                is QlogOutcome.Refused -> {
+                    println("[qlog] refused ${qlog.path} for ${role.label} connection $sessionId — a file already there, or no directory")
+                    // stdout alone does not reach the walk record: without this the replay trace has no
+                    // evidence this connection ran with no frame-level capture.
+                    capture.record { it.qlogRefused(qlog.path) }
+                }
+            }
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
             // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner

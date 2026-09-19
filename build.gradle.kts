@@ -814,6 +814,39 @@ kotlin.sourceSets.named("commonTest") {
 
 tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     dependsOn(generateHarnessConfig)
+    // Gradle's console formatter walks an exception's cause chain but never its suppressed exceptions;
+    // printStackTrace prints both. kotlinx-coroutines-test's UncaughtExceptionsBeforeTest carries the
+    // leaker's stack only as a suppressed exception.
+    addTestListener(
+        object : org.gradle.api.tasks.testing.TestListener {
+            override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+
+            override fun afterSuite(
+                suite: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) = Unit
+
+            override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+
+            override fun afterTest(
+                testDescriptor: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) {
+                if (result.resultType != org.gradle.api.tasks.testing.TestResult.ResultType.FAILURE) return
+                val test = "${testDescriptor.className}.${testDescriptor.name}"
+                result.exceptions.forEach { logger.lifecycle("TEST FAILURE $test threw:\n${it.stackTraceToString()}") }
+            }
+        },
+    )
+    // Worker stderr is where an uncaught coroutine exception lands (a CoroutineExceptionHandler service
+    // and the JVM's final-resort handler both print there); Gradle forwards none of it unless asked.
+    addTestOutputListener(
+        org.gradle.api.tasks.testing.TestOutputListener { descriptor, event ->
+            if (event.destination == org.gradle.api.tasks.testing.TestOutputEvent.Destination.StdErr) {
+                logger.lifecycle("TEST STDERR ${descriptor.className}.${descriptor.name}: ${event.message.trimEnd()}")
+            }
+        },
+    )
     // Surface assertion messages and exception traces in the gradle test
     // output. Default `events("failed")` only logs "FAILED" + the top-frame
     // class name (e.g. `AssertionError at Assert.java:89`) which makes CI
