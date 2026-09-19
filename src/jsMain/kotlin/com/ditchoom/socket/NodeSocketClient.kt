@@ -240,7 +240,12 @@ class NodeClientSocket(
                 is NameResolution.Via -> resolution.candidatesFor(host).map { it.ip }
             }
         val netSocket =
-            firstReachable(endpoints) { endpoint ->
+            connectRace(
+                candidates = endpoints,
+                pacing = config.connectPacing,
+                verdict = AttemptVerdict::of,
+                close = { it.destroy() },
+            ) { endpoint ->
                 // servername carries the name for SNI whichever endpoint the bytes go to.
                 val options =
                     Options(

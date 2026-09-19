@@ -7,6 +7,7 @@ import com.ditchoom.socket.nwhelpers.nw_helper_start
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.Foundation.NSNumber
+import platform.Network.nw_connection_t
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -28,27 +29,39 @@ class NWClientSocketWrapper(
         hostname: String?,
     ) {
         val host = hostname ?: "localhost"
-        when (val resolution = config.nameResolution) {
-            // Network.framework resolves the name and races the families itself (RFC 8305).
-            NameResolution.Platform -> connectTo(host, port, host)
-            is NameResolution.Via -> {
-                if (config.tls != null) {
-                    throw UnsupportedOperationException(
-                        "NameResolution.Via with TLS is not supported on Apple: Network.framework verifies the " +
-                            "certificate against the endpoint it is given, and a resolved literal is not the name",
-                    )
+        val ready =
+            when (val resolution = config.nameResolution) {
+                // Network.framework resolves the name and races the families itself (RFC 8305).
+                NameResolution.Platform -> connectTo(host, port, host)
+                is NameResolution.Via -> {
+                    if (config.tls != null) {
+                        throw UnsupportedOperationException(
+                            "NameResolution.Via with TLS is not supported on Apple: Network.framework verifies the " +
+                                "certificate against the endpoint it is given, and a resolved literal is not the name",
+                        )
+                    }
+                    connectRace(
+                        candidates = resolution.candidatesFor(host),
+                        pacing = config.connectPacing,
+                        verdict = AttemptVerdict::of,
+                        close = { nw_helper_force_cancel(it) },
+                    ) { candidate -> connectTo(candidate.ip, port, host) }
                 }
-                firstReachable(resolution.candidatesFor(host)) { candidate -> connectTo(candidate.ip, port, host) }
             }
-        }
+        this.connection = ready
+        this.closedLocally = false
+        this.connectionReady = true
     }
 
-    /** One connect to [endpoint], a name or a literal; [hostname] is what errors name. */
+    /**
+     * One connect to [endpoint], a name or a literal; [hostname] is what errors name. The ready
+     * connection is returned, not adopted; one that failed or was cancelled is cancelled here.
+     */
     private suspend fun connectTo(
         endpoint: String,
         port: Int,
         hostname: String,
-    ) {
+    ): nw_connection_t {
         val tlsConfig = config.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
@@ -64,45 +77,39 @@ class NWClientSocketWrapper(
                 no_delay = NSNumber(bool = config.io.tcpNoDelay == true),
             ) ?: throw SocketIOException("Failed to create NW connection")
 
-        this.connection = conn
-        this.closedLocally = false
+        try {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                var resumed = false
 
-        // Wait for connection to be established
-        suspendCancellableCoroutine { continuation ->
-            var resumed = false
+                nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
+                    if (resumed) return@nw_helper_set_state_handler
 
-            nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
-                if (resumed) return@nw_helper_set_state_handler
-
-                when (state) {
-                    3 -> { // ready
-                        resumed = true
-                        connectionReady = true
-                        continuation.resume(Unit)
-                    }
-                    1, 4 -> { // waiting or failed
-                        resumed = true
-                        continuation.resumeWithException(
-                            mapSocketException(errorDomain, errorDesc, hostname = hostname),
-                        )
-                    }
-                    5 -> { // cancelled
-                        resumed = true
-                        connectionReady = false
-                        continuation.resumeWithException(
-                            SocketIOException(errorDesc ?: "Connection cancelled"),
-                        )
+                    when (state) {
+                        3 -> { // ready
+                            resumed = true
+                            continuation.resume(Unit)
+                        }
+                        1, 4 -> { // waiting or failed
+                            resumed = true
+                            continuation.resumeWithException(
+                                mapSocketException(errorDomain, errorDesc, hostname = hostname),
+                            )
+                        }
+                        5 -> { // cancelled
+                            resumed = true
+                            continuation.resumeWithException(
+                                SocketIOException(errorDesc ?: "Connection cancelled"),
+                            )
+                        }
                     }
                 }
-            }
 
-            nw_helper_start(conn)
-
-            continuation.invokeOnCancellation {
-                if (!resumed) {
-                    nw_helper_force_cancel(conn)
-                }
+                nw_helper_start(conn)
             }
+        } catch (e: Throwable) {
+            nw_helper_force_cancel(conn)
+            throw e
         }
+        return conn
     }
 }
