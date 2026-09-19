@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic
 
+import kotlin.time.Duration
+
 /**
  * Where a [QuicScope.migrate] call should move the connection's local path (RFC 9000 §9).
  *
@@ -144,6 +146,18 @@ sealed interface MigrationResult {
             /** The new local socket could not be opened. */
             data class LocalPathUnavailable(
                 val cause: Throwable,
+            ) : Failed
+
+            /**
+             * The platform had not finished opening the new local socket when [budget] ran out, so the
+             * attempt was abandoned before a probe was ever sent.
+             *
+             * Distinct from [LocalPathUnavailable] because nothing failed: the platform was still
+             * trying. The budget is the same one path validation gets (RFC 9000 §8.2.4), and a socket
+             * that is not open by then is treated exactly like a probe that was not answered by then.
+             */
+            data class LocalPathOpenTimedOut(
+                val budget: Duration,
             ) : Failed
 
             /**

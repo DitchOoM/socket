@@ -413,6 +413,7 @@ private fun MigrationResult.toTraceOutcome(): TraceMigrationOutcome =
         MigrationResult.Unmoved.Failed.AlreadyInProgress -> TraceMigrationOutcome.AlreadyInProgress
         MigrationResult.Unmoved.Failed.NoSpareConnectionId -> TraceMigrationOutcome.NoSpareConnectionId
         is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> TraceMigrationOutcome.LocalPathUnavailable
+        is MigrationResult.Unmoved.Failed.LocalPathOpenTimedOut -> TraceMigrationOutcome.LocalPathOpenTimedOut
         is MigrationResult.Unmoved.Failed.ProbeRejected -> TraceMigrationOutcome.ProbeRejected
         MigrationResult.Unmoved.Failed.PathNotValidated -> TraceMigrationOutcome.PathNotValidated
         is MigrationResult.Unmoved.Failed.SwitchRejected -> TraceMigrationOutcome.SwitchRejected

@@ -1871,12 +1871,11 @@ abstract class MigrationSimTestSuite {
         const val DARK_ROUND_PTOS = 2L
 
         /**
-         * Migrations [aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime] performs before it
-         * kills anything. Two rather than one so the active path index is 2: a reader that assumed
-         * index 0 reads a path the connection left, which is how the first investigation of this
-         * scenario measured zero expiries and went looking in the wrong place.
+         * One: when a migration completes the driver retires the old CID on the new path; the peer's
+         * ACK of that retirement, one round trip later, is the path's first RTT sample and every later
+         * path inherits it, so an unsampled active path exists only inside that first round trip.
          */
-        const val PRIOR_MIGRATIONS = 2
+        const val PRIOR_MIGRATIONS = 1
 
         /**
          * Round trip above which a path is certainly **un-sampled** — quiche is reporting RFC 9002
