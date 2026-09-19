@@ -8,9 +8,8 @@ import com.ditchoom.buffer.freeIfNeeded
  * Translates a platform read that returns a [ReadBuffer] (and signals end/reset by throwing
  * [SocketClosedException]) into the [ReadResult] trichotomy.
  *
- * This is the logic the deleted `TcpByteStream` adapter used to perform. Now that a `ClientSocket`
- * **is** a [com.ditchoom.buffer.flow.ByteStream] (no adapter), each platform socket's
- * `read(deadline): ReadResult` wraps its existing throwing read body with this helper:
+ * A `ClientSocket` **is** a [com.ditchoom.buffer.flow.ByteStream] (no adapter), so each platform
+ * socket's `read(deadline): ReadResult` wraps its throwing read body with this helper:
  *
  * ```kotlin
  * override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }

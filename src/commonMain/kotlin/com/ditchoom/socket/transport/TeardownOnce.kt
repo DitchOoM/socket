@@ -5,21 +5,16 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
- * Runs a resource's teardown exactly once, however many callers race `close()`.
- *
- * Three classes in this package arrived at the same seven lines independently — [CodecConnection]
- * (#471), [CodecSender] (#471), and [ReconnectingConnection], which was edited 21 minutes after
- * #471 landed and kept the defect that issue had just removed, one field over from the guard #473
- * replaced in the same file. The lesson lived in a commit message, and that was not enough for it to
- * travel. It is a type now.
+ * Runs a resource's teardown exactly once, however many callers race `close()`. [CodecConnection],
+ * [CodecSender] and [ReconnectingConnection] all close through it; the rule is a type so that it
+ * travels.
  *
  * ## Why a latch rather than a flag
  *
  * `if (closed) return; closed = true` is check-then-act. `@Volatile` publishes the write; it does not
- * make the pair atomic, so concurrent closers all pass the guard and all run teardown. Measured
- * across this package: 223/300 attempts in [CodecConnection] (worst case all eight closers, each
- * calling `release()` on a deque that is not thread-safe), and 20/300 in [ReconnectingConnection],
- * where both closers closed the same inner connection.
+ * make the pair atomic, so concurrent closers all pass the guard and all run teardown — in
+ * [CodecConnection] each calling `release()` on a deque that is not thread-safe, in
+ * [ReconnectingConnection] both closing the same inner connection.
  *
  * `CompletableDeferred.complete()` returns true for exactly one concurrent caller, so the winner is
  * decided by the same atomic operation that records the decision — there is no window between

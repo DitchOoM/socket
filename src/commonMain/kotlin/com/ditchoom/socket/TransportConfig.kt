@@ -12,8 +12,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * The single, immutable, injected-once configuration tree for a transport connection.
  *
- * Folds together everything that used to be scattered across `ConnectionOptions`, `SocketOptions`,
- * the global mutable `PlatformSocketConfig` singleton, and the per-call `read(timeout=…)` defaults:
+ * Every knob a connection reads lives here, never on a global singleton or a per-call default:
  *
  * - [bufferFactory] — how read buffers are allocated (platform-aware default).
  * - [readPolicy] / [writePolicy] — the deadline policy adopted by the connection's
@@ -27,8 +26,8 @@ import kotlin.time.Duration.Companion.seconds
  *   *by design* — a control or QPACK instruction stream, a stream drained only to keep its
  *   flow-control window open — because there ordinary silence is not failure, and a deadline turns it
  *   into one. Those reads pass [kotlin.time.Duration.INFINITE] explicitly and delegate liveness to the
- *   transport's idle timeout. The rule is the same for both roles of a protocol (see #472, #476, #495,
- *   #512, #513): a client and a server facing the same peer behaviour must not disagree about it.
+ *   transport's idle timeout. The rule is the same for both roles of a protocol: a client and a
+ *   server facing the same peer behaviour must not disagree about it.
  * - [connectTimeout] — bound on the connect handshake itself, per address attempted.
  * - [nameResolution] — how the connect turns a name into the addresses it tries
  *   ([NameResolution], sealed): the platform's own way by default, or a caller's [HostResolver]
@@ -79,8 +78,7 @@ data class TransportConfig(
 }
 
 /**
- * Platform I/O tuning + TCP socket options — the injected replacement for the global mutable
- * `PlatformSocketConfig` singleton and the old `SocketOptions` data class.
+ * Platform I/O tuning + TCP socket options, injected rather than read from a process-global object.
  *
  * TCP knobs ([tcpNoDelay], [keepAlive], buffer sizes) and io_uring knobs ([ioQueueDepth] …) and
  * the codec encode-sizing fallback ([defaultBufferSize]) all live here, threaded through
@@ -115,7 +113,7 @@ data class IoTuning(
     val defaultBufferSize: Int = 8192,
     /**
      * How long `CodecConnection.close()` lets its writer flush already-queued messages before closing
-     * the stream underneath it (#382).
+     * the stream underneath it.
      *
      * Exists because `send` is a hand-off: without a drain, `close()` races ahead of a just-queued
      * goodbye frame and the common send-DISCONNECT-then-close shape silently loses it. Bounded rather

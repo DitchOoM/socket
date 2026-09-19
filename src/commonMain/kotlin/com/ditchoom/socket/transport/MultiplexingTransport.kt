@@ -51,10 +51,10 @@ interface MultiplexingTransport {
         codec: Codec<T>,
         /**
          * Outbound queue depth and full-queue policy for every stream the mux mints — see
-         * [CodecConnection] and [OverflowPolicy] (#382).
+         * [CodecConnection] and [OverflowPolicy].
          *
          * Defaulted to the conservative pair ([OverflowPolicy.Suspend], which never discards a message)
-         * so that existing callers keep compiling and get the fix without a migration. State them
+         * so that existing callers need no migration. State them
          * explicitly when the traffic on these streams is recoverable at a higher layer and a lagging
          * peer should shed rather than apply back-pressure.
          *

@@ -34,10 +34,10 @@ class TypedMuxView<T>(
      * Writer lifetime for every [CodecConnection] this view mints, and the outbound queue policy they
      * are minted with. Required here for the same reason they are required on [CodecConnection]: a mux
      * view creates connections on the caller's behalf, so the caller — not the view — has to state the
-     * scope those writers live in and what a full queue means for its traffic (#382).
+     * scope those writers live in and what a full queue means for its traffic.
      *
-     * Mux-wide since #469: [openUnidirectional]'s [CodecSender] owns a writer on this same scope and
-     * is minted with this same policy, so the guarantee no longer stops at bidirectional streams.
+     * Mux-wide: [openUnidirectional]'s [CodecSender] owns a writer on this same scope and is minted
+     * with this same policy, so the guarantee covers unidirectional streams too.
      */
     private val scope: CoroutineScope,
     private val outboundCapacity: Int,
@@ -47,7 +47,7 @@ class TypedMuxView<T>(
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
     /**
-     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * Source-compatible constructor for callers that do not state an outbound queue policy — see
      * [CodecConnection]'s deprecated constructor for what the defaults are and why migrating matters.
      */
     @Deprecated(
@@ -80,12 +80,11 @@ class TypedMuxView<T>(
 
     /**
      * Every [Sender] this view has minted and not yet closed, so [closeMintedConnections] can drain
-     * them (#382).
+     * them.
      *
-     * Needed because `send` is now a hand-off: a scoped session like
-     * [MultiplexingTransport.withMux] that cancelled its writer scope on exit would silently discard
-     * anything a caller had queued but not flushed — and before #382, `send` returning meant written,
-     * so `withMux { openBidirectional().send(x) }` was a correct program.
+     * Needed because `send` is a hand-off: a scoped session like [MultiplexingTransport.withMux] that
+     * cancelled its writer scope on exit would silently discard anything a caller had queued but not
+     * flushed, so `withMux { openBidirectional().send(x) }` must drain before the scope ends.
      *
      * An UNLIMITED channel rather than a list plus a lock: minting can happen from any coroutine, and
      * this needs to be safe on Kotlin/Native too, where a shared stdlib collection is not.
@@ -135,8 +134,8 @@ class TypedMuxView<T>(
             config = config,
             encodeContext = encodeContext,
             id = sink.muxStreamIdOrZero(),
-            // Tracked like the bidirectional streams: a CodecSender now owns a writer coroutine and a
-            // buffer pool, so one that is minted and never closed leaks both (#469).
+            // Tracked like the bidirectional streams: a CodecSender owns a writer coroutine and a
+            // buffer pool, so one that is minted and never closed leaks both.
         ).also { minted.trySend(it) }
     }
 

@@ -40,7 +40,7 @@ suspend fun <T> ClientSocket.Companion.connect(
  * Allocates the platform client socket, injecting [config] **at allocation time** so the concrete
  * implementation can be chosen from it (e.g. JVM I/O strategy; datagram-vs-stream for UDP) and so the
  * connection's [com.ditchoom.buffer.flow.ReadPolicy] / [com.ditchoom.buffer.flow.WritePolicy] are real
- * immutable vals rather than reassigned at [ClientToServerSocket.open]. Config is injected once, here —
- * [ClientToServerSocket.open] no longer takes it.
+ * immutable vals rather than reassigned at [ClientToServerSocket.open]. Config is injected once, here;
+ * [ClientToServerSocket.open] does not take it.
  */
 expect fun ClientSocket.Companion.allocate(config: TransportConfig = TransportConfig()): ClientToServerSocket

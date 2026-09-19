@@ -1,8 +1,7 @@
 package com.ditchoom.socket
 
 /**
- * The transports a given platform can actually provide. Replaces the old binary
- * `enum { FULL_SOCKET_ACCESS, WEBSOCKETS_ONLY }` with an honest set: a browser advertises
+ * The transports a given platform can actually provide, as an honest set: a browser advertises
  * `{ WEB_TRANSPORT, WEB_SOCKET }`, a full-socket platform advertises all four. Common code
  * queries this and branches exhaustively rather than catching `UnsupportedOperationException`.
  */

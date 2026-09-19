@@ -31,7 +31,7 @@ import kotlin.time.Instant
  * ```
  *
  * Establishment/handshake failures additionally implement [ConnectionFailure], exposing an exhaustive,
- * platform-neutral [ConnectionFailureReason] (`reason`) as the portable discriminator (issue #166).
+ * platform-neutral [ConnectionFailureReason] (`reason`) as the portable discriminator.
  */
 sealed class SocketException(
     override val message: String,
@@ -100,7 +100,7 @@ sealed class SocketConnectionException(
     /**
      * The remote host actively refused the connection (ECONNREFUSED).
      *
-     * [platformError] is retained as **non-discriminating diagnostic detail** only (issue #166) — it is
+     * [platformError] is retained as **non-discriminating diagnostic detail** only — it is
      * the raw platform string, which varies per platform/version. Branch on [reason], never on it.
      */
     class Refused(
@@ -134,7 +134,7 @@ sealed class SocketConnectionException(
     /**
      * A connection-establishment failure whose cause is [reason] but which has no dedicated named
      * subtype — e.g. [ConnectionFailureReason.OutOfMemory]. The escape hatch that lets every platform
-     * mapper produce any exhaustive [ConnectionFailureReason] (issue #166) while keeping the common
+     * mapper produce any exhaustive [ConnectionFailureReason] while keeping the common
      * failures ([Refused] / [NetworkUnreachable] / [HostUnreachable]) as ergonomic named types.
      */
     class Other(
@@ -307,7 +307,7 @@ class SocketWriteStalledException(
 
 /**
  * A `CodecConnection` configured with `OverflowPolicy.Fail` was asked to send while its outbound queue
- * was full (#382).
+ * was full.
  *
  * Not a transport failure: the connection is healthy and the peer may be perfectly fine — this reports
  * that *this* sender is producing faster than the peer is draining, at a connection whose caller asked
@@ -340,7 +340,7 @@ sealed class SSLSocketException(
  * The TLS handshake failed (certificate validation, protocol mismatch, etc.).
  *
  * [reason] defaults to [ConnectionFailureReason.TlsHandshake]; a mapper that can tell the failure was
- * specifically a certificate rejection passes [ConnectionFailureReason.TlsBadCertificate] (issue #166).
+ * specifically a certificate rejection passes [ConnectionFailureReason.TlsBadCertificate].
  */
 class SSLHandshakeFailedException(
     message: String,

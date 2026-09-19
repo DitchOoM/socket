@@ -50,7 +50,7 @@ open class NWSocketWrapper(
      * The single outstanding native receive, if one is in flight — enforces single-flight (RFC §3.2).
      * Network.framework has no per-receive cancel, so a `nw_connection_receive` can't be abandoned;
      * instead the one-shot completion is captured here and, on a caller timeout, left outstanding for
-     * the next `read()` to re-await. Non-destructive: a deadline no longer tears down the connection.
+     * the next `read()` to re-await. Non-destructive: a deadline does not tear down the connection.
      */
     private var inFlightRead: CompletableDeferred<ReadBuffer>? = null
 
@@ -244,7 +244,7 @@ open class NWSocketWrapper(
                 SocketErrorTypeTls -> {
                     when {
                         // A certificate rejection is a distinct typed reason from a generic handshake
-                        // failure (issue #166) — pick TlsBadCertificate when the NW/Sec error names a cert.
+                        // failure — pick TlsBadCertificate when the NW/Sec error names a cert.
                         msgLower.contains("certificate") ||
                             msgLower.contains("cert") ||
                             msgLower.contains("trust") ->
@@ -263,7 +263,7 @@ open class NWSocketWrapper(
                             msgLower.contains("name or service not known") ||
                             msgLower.contains("host not found") ->
                             SocketUnknownHostException(hostname, message)
-                        // ENOMEM during establishment — a typed connect failure (issue #166).
+                        // ENOMEM during establishment — a typed connect failure.
                         msgLower.contains("cannot allocate memory") || msgLower.contains("out of memory") ->
                             SocketConnectionException.Other(ConnectionFailureReason.OutOfMemory, message)
                         msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
