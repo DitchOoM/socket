@@ -1353,8 +1353,8 @@ class QuicheDriver(
                 // (#588: a RecvPacket dereferenced after its buffer was back in the pool). Cancelled
                 // means nothing more runs: the command in hand is failed the way the teardown drain
                 // fails everything still queued, and the drain takes the rest.
-                if (cmd != null && !currentCoroutineContext().isActive) {
-                    failCommand(cmd)
+                if (!currentCoroutineContext().isActive) {
+                    cmd?.let(::failCommand)
                     break
                 }
                 when {
