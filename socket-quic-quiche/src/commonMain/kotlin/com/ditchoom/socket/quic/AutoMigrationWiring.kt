@@ -7,6 +7,7 @@ import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.transport.NetworkId
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -278,7 +279,7 @@ internal fun wireAutoMigration(
     // AlwaysAvailable never changes network identity (Android without an installed Context, Wasm) —
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
-    connection.launch {
+    connection.launch(CoroutineName("quic-client/auto-migration")) {
         var attachedTo: Attachment = Attachment.AwaitingBaseline
         merge(
             monitor.state

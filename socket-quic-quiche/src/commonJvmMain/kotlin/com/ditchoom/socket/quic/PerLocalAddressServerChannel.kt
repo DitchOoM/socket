@@ -12,6 +12,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -121,7 +122,8 @@ internal class PerLocalAddressServerChannel private constructor(
 
     init {
         for (member in members) {
-            scope.launch {
+            val local = member.localAddress
+            scope.launch(CoroutineName("quic-server/member-reader/${local.host}:${local.port}")) {
                 while (true) {
                     val result =
                         try {

@@ -10,6 +10,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -75,7 +76,7 @@ internal suspend fun buildJvmQuicConnection(
     // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
     val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-client/$hostname:$port"))
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
     // acquired and hands over entirely once the connection owns its own release.
     var progress: ConnectProgress = ConnectProgress.BeforeChannel

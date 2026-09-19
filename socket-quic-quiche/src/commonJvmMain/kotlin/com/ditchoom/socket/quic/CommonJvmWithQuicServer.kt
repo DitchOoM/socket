@@ -10,6 +10,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +40,7 @@ internal suspend fun buildJvmQuicServer(
     api: QuicheApi = loadQuicheApi(),
 ): SharedQuicheServer {
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-server"))
     var bound = false
 
     // A shared port constrains the transport (RFC 9443 §3) — resolve that before configuring.

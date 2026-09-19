@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkObservation
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -118,7 +119,7 @@ sealed interface ConnectionNetworkObservation {
         }
 
         override fun collectInto(scope: CoroutineScope) {
-            scope.launch {
+            scope.launch(CoroutineName("quic-client/network-observation")) {
                 monitor.observations.collect { observation ->
                     val previous = latest.value
                     latest.value =
