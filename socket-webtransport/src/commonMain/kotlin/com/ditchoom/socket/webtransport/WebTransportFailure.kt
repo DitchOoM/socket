@@ -12,8 +12,8 @@ package com.ditchoom.socket.webtransport
  * is duplicated across the two modules. The adapter ([WebTransportSupport] backings) is the single seam
  * that maps http3 → neutral.
  *
- * [describe] renders the exception message from the typed fields; the wire-visible message therefore
- * stays a strict superset of the old hand-written strings (nothing that read `.message` breaks).
+ * [describe] renders the exception message from the typed fields, so anything that reads `.message`
+ * still sees the typed reason.
  */
 sealed interface WebTransportFailure {
     /** A human-readable diagnostic built from this failure's typed fields (used as the exception message). */

@@ -149,8 +149,7 @@ private val CERT_TLS_ALERTS: Set<Int> = setOf(42, 43, 44, 45, 46, 48, 49)
  *    cert-vs-handshake decided by the typed [QuicError.CryptoError.tlsAlert];
  *  - anything else → [WebTransportFailure.SessionError] (the honest catch-all, cause preserved).
  *
- * This is the single seam that replaces the old `WebTransportException("...: ${t.message}")` rewrap the
- * neutral mapper then string-matched.
+ * This is the single seam between the two failure hierarchies: nothing string-matches a message.
  */
 internal fun Throwable.toNeutralWebTransportFailure(): WebTransportFailure =
     when (this) {
@@ -244,7 +243,7 @@ actual fun webTransportSupport(): WebTransportSupport = Http3WebTransportSupport
  * A [connect]-returned single held session (Fork 2 option 2): one session opened on a held
  * [MultiplexedWebTransport] connection. Everything but [close] delegates to the session adapter; [close]
  * ends the session *and* closes the owning connection, so a single-session dial releases its whole
- * connection (no half-open state can survive) — the same observable lifetime as the old option-1 path.
+ * connection (no half-open state can survive).
  */
 private class SingleSessionOverHeldConnection(
     private val delegate: WebTransportSession,

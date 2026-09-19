@@ -104,7 +104,7 @@ interface WebTransportSession {
      * tvOS/watchOS). Network.framework cannot carry a QUIC datagram flow and inbound streams on the
      * same connection (extracting the datagram flow suppresses all inbound stream delivery), and
      * HTTP/3 structurally requires inbound streams, so the stack keeps streams and drops datagrams
-     * (see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy] and issue #173). Calling this on
+     * (see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy]). Calling this on
      * Apple throws. Use streams instead, or guard on the platform.
      */
     suspend fun sendDatagram(payload: ReadBuffer)
