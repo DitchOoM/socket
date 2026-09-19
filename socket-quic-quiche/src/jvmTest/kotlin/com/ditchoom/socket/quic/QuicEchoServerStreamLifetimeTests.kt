@@ -18,6 +18,10 @@ import kotlin.time.Duration.Companion.seconds
  * The echo server's stream lives as long as the connection does. A walk produces radio gaps of
  * tens of seconds as a matter of course; a server that FINs a stream for being quiet turns every
  * one of them into a stream the client can never be echoed on again (#620).
+ *
+ * The server's read deadline is its idle timeout (10 s here); the client's keepalive (3 s) keeps
+ * the connection alive across a 12 s silence, so the read deadline is crossed and re-armed at
+ * least once before the second echo.
  */
 class QuicEchoServerStreamLifetimeTests {
     private fun certPath(name: String): String {
@@ -43,35 +47,35 @@ class QuicEchoServerStreamLifetimeTests {
     }
 
     @Test
-    fun theEchoStreamOutlivesAThirtyOneSecondSilence() =
+    fun theEchoStreamOutlivesASilenceLongerThanTheServersReadDeadline() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicEchoServerStreamLifetimeTests::class) {
                 val serverOptions =
                     QuicOptions(
                         alpnProtocols = listOf("test"),
                         verifyPeer = false,
-                        idleTimeout = 40.seconds,
+                        idleTimeout = 10.seconds,
                         datagrams = DatagramOptions(),
                     )
                 val clientOptions =
                     QuicOptions(
                         alpnProtocols = listOf("test"),
                         verifyPeer = false,
-                        idleTimeout = 40.seconds,
-                        keepAliveInterval = 5.seconds,
+                        idleTimeout = 10.seconds,
+                        keepAliveInterval = 3.seconds,
                     )
-                withTimeout(90.seconds) {
+                withTimeout(60.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = serverOptions) {
                         val serverJob = launch(Dispatchers.IO) { connections { echoConnection(serverOptions) } }
                         try {
-                            withQuicConnection("localhost", port, clientOptions, timeout = 80.seconds) {
+                            withQuicConnection("localhost", port, clientOptions, timeout = 50.seconds) {
                                 val stream = openStream()
                                 assertEquals(ScopedRead.Data("probe-1;"), stream.echo("probe-1;"))
-                                delay(31.seconds)
+                                delay(12.seconds)
                                 assertEquals(
                                     ScopedRead.Data("probe-2;"),
                                     stream.echo("probe-2;"),
-                                    "31 s of silence on a live connection (keepalive 5 s, idle 40 s) ended the echo stream",
+                                    "12 s of silence on a live connection (keepalive 3 s, idle 10 s) ended the echo stream",
                                 )
                             }
                         } finally {
