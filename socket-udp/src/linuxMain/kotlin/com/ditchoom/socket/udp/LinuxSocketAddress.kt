@@ -153,7 +153,7 @@ internal fun SocketAddress.writeSockaddr(storage: sockaddr_storage): socklen_t {
  * materializing a sockaddr at all: it reads the packed address bits straight into an `IP_PKTINFO`
  * control message. Two normalizations that could disagree about the same address — one deciding a
  * literal is IPv4 and the other IPv6, say — would put the destination and the source of one datagram
- * in different families, which is the class of bug #556 is about.
+ * in different families, which is exactly the bug the source pin exists to prevent.
  *
  * Throws [IllegalArgumentException] for a host that is not a numeric literal, exactly as a destination
  * address does: a [SocketAddress] in this library is a *resolved* endpoint, so an unresolved one is a

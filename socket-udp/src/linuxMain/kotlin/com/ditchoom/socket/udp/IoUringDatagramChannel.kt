@@ -156,11 +156,11 @@ private const val NO_OP_IN_FLIGHT = 0L
  *   [IoUringManager.submitAndWait] drains the kernel before returning even on cancel/close, so no
  *   teardown races a shared buffer. The *descriptor* is owned by [LastOutHandoff] rather than by
  *   [close]: every read, write and control op is admitted, and whoever is last out closes the fd, so a
- *   submission prepared on the poller thread can never name a number the process has recycled (#526).
+ *   submission prepared on the poller thread can never name a number the process has recycled.
  *
  * The addressing mode is fixed at construction ([connectedPeer] non-null = connected): the wrappers
- * add only the mode-specific send arity, so the base type can no longer express "send without knowing
- * the mode" — the old nullable-`to` conflation is gone.
+ * add only the mode-specific send arity, so the base type cannot express "send without knowing the
+ * mode".
  *
  * Not thread-safe (buffer-flow contract): confine [receive] and the send path each to one coroutine.
  */
@@ -176,23 +176,23 @@ internal abstract class IoUringDatagramChannelCore(
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
     /**
      * Test seam: runs inside [receive]'s admission, *after* this receiver is counted in and before its
-     * submission is handed to the poller. That is exactly the window #526 lives in — the descriptor
-     * number used to be read there by code running on another thread, after `close()` had freed it —
-     * and it cannot be reached from outside, so a test that cannot park here cannot drive the defect at
-     * all. Production passes nothing and pays an empty suspend call per receive.
+     * submission is handed to the poller. That is the window in which a descriptor number read on
+     * another thread could name a descriptor `close()` had freed, and it cannot be reached from
+     * outside, so a test that cannot park here cannot drive the defect at all. Production passes
+     * nothing and pays an empty suspend call per receive.
      */
     private val beforeSubmit: suspend () -> Unit = {},
 ) : DatagramChannel {
     /**
      * Who releases the descriptor — the last party out — in one CAS; see [LastOutHandoff].
      *
-     * A `closedFlag` cannot do this job here. `receive()` read the flag and then called
+     * A `closedFlag` cannot do this job here. `receive()` would read the flag and then call
      * `IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_recvmsg(sqe, fd, …) }`, and that lambda
      * does not run at the call site: it rides a channel to the process-global poller thread, which
-     * invokes it in its drain loop. So the descriptor number was read after a channel hand-off *and* a
-     * poller iteration, while `close()` had already run `close(fd)` — and any `socket()`/`open()`/
-     * `accept()` in the process that recycled the number in between made the submission read, or
-     * `sendmsg` write, **another socket** (#526, the same defect as Apple's #507 with a wider window).
+     * invokes it in its drain loop. So the descriptor number would be read after a channel hand-off
+     * *and* a poller iteration, after a `close()` had run `close(fd)` — and any `socket()`/`open()`/
+     * `accept()` in the process that recycled the number in between would make the submission read,
+     * or `sendmsg` write, **another socket**.
      */
     private val handoff = LastOutHandoff()
 
@@ -219,8 +219,8 @@ internal abstract class IoUringDatagramChannelCore(
     /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IP). PMTU is a consumer concern. */
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
-    // Linux is §7.1's richest platform: the full send + receive control plane is implemented — as of
-    // #556's step 2, send-side source selection included — so multicast is the only absent capability
+    // Linux is §7.1's richest platform: the full send + receive control plane is implemented,
+    // send-side source selection included, so multicast is the only absent capability
     // left here, and [MulticastIoUringDatagramChannel] flips that one on for a channel that has joined.
     override val capabilities: DatagramCapabilities =
         DatagramCapabilities(
@@ -235,7 +235,7 @@ internal abstract class IoUringDatagramChannelCore(
             // control message built from DatagramSendOptions.fromLocal, and *refuses* a source it
             // cannot pin instead of sending from the kernel's choice as though it had. Advertising
             // this while quietly ignoring the option would be worse than advertising it absent — a
-            // consumer would stop compensating for something that never started working (#558).
+            // consumer would stop compensating for something that never started working.
             sourceAddressSelect = true,
             multicast = false, // design-for, defer (§10.3)
             // sendmsg's iovec is a raw base pointer: sendDatagram takes payload.nativeMemoryAccess
@@ -335,10 +335,10 @@ internal abstract class IoUringDatagramChannelCore(
                         ecn = Ecn.fromCodepoint(data.reinterpret<IntVar>().pointed.value)
                     level == IPPROTO_IPV6 && type == IPV6_HOPLIMIT ->
                         hopLimit = HopLimit.of(data.reinterpret<IntVar>().pointed.value)
-                    // ipi6_addr + ipi6_ifindex. The interface index used to be dropped here, which
-                    // made every received link-local local address unusable as a reply source: the
-                    // send path would have had nothing to put back in ipi6_ifindex, and the kernel
-                    // refuses an unscoped link-local source outright.
+                    // ipi6_addr + ipi6_ifindex, both kept: without the interface index a received
+                    // link-local local address is unusable as a reply source — the send path has
+                    // nothing to put back in ipi6_ifindex, and the kernel refuses an unscoped
+                    // link-local source outright.
                     level == IPPROTO_IPV6 && type == IPV6_PKTINFO ->
                         localAddress =
                             LocalAddress.of(
@@ -519,7 +519,7 @@ internal abstract class IoUringDatagramChannelCore(
             msg.msg_iovlen = 1.convert()
             when (pin) {
                 // No source named: no ancillary data at all, and the kernel routes and picks — the
-                // default, and every send this channel made before #556.
+                // default.
                 SourcePin.OsRouting -> {
                     msg.msg_control = null
                     msg.msg_controllen = 0u.convert()
@@ -557,7 +557,7 @@ internal abstract class IoUringDatagramChannelCore(
      * failure reported to the caller rather than a value the send path could forget to branch on.
      */
     private sealed interface SourcePin {
-        /** No source named. The kernel routes and picks; the default, and the pre-#556 behaviour. */
+        /** No source named. The kernel routes and picks; the default. */
         data object OsRouting : SourcePin
 
         /** Leave from [address], already normalized into this socket's own address family. */
@@ -572,8 +572,9 @@ internal abstract class IoUringDatagramChannelCore(
      * **Every input reaches a decision here, and none is forwarded on the chance that the kernel will
      * do something sensible with it.** That is the whole discipline of the capability: a channel
      * advertising `sourceAddressSelect` and then handing the kernel something it quietly ignores would
-     * report success for a datagram that left from the wrong address — #556 again, one layer down and
-     * harder to see. Each of the three refusable shapes was measured, not assumed:
+     * report success for a datagram that left from the wrong address — the defect `fromLocal` exists
+     * to prevent, one layer down and harder to see. Each of the three refusable shapes is a kernel
+     * behaviour, not an assumption:
      *
      *  - **A wildcard** (`0.0.0.0`, `::`, and the `::ffff:0.0.0.0` spelling a dual-stack socket can be
      *    handed) is not a source, it is the *absence* of one, and the kernel treats it as such — its
@@ -797,7 +798,7 @@ internal abstract class IoUringDatagramChannelCore(
      * **scoped** borrow rather than an `enter()`/`exit()` pair a caller could forget half of.
      * [MulticastIoUringDatagramChannel] takes its whole control plane through this: it delegates its
      * data plane to this channel already, and the descriptor it `setsockopt`s is this channel's, so it
-     * must be admitted like a `send` rather than reading the number out of a field (#527's shape).
+     * must be admitted like a `send` rather than reading the number out of a field.
      *
      * A borrower admitted here cannot have the descriptor released under it, and one that arrives after
      * [close] is [DescriptorUse.Refused] without a syscall, so it can never name a number the process
@@ -855,10 +856,10 @@ internal abstract class IoUringDatagramChannelCore(
      * Refuses every further party, retires the submission any party already inside is parked on, and
      * leaves like any of them — releasing the descriptor only if it turns out to be last out.
      *
-     * **Why the descriptor is not closed here.** It used to be, and that is #526: `close(fd)` while a
-     * receiver was between its flag check and the poller preparing `io_uring_prep_recvmsg(sqe, fd, …)`
-     * let the submission name a number the process may have recycled, reading — or, for `sendmsg`,
-     * writing — another socket. Closing the descriptor is therefore the last party's job, and this
+     * **Why the descriptor is not closed here.** A `close(fd)` while a receiver is between its flag
+     * check and the poller preparing `io_uring_prep_recvmsg(sqe, fd, …)` lets the submission name a
+     * number the process may have recycled, reading — or, for `sendmsg`, writing — another socket.
+     * Closing the descriptor is therefore the last party's job, and this
      * closer is counted in like a user because it is one until it has finished waking the others.
      *
      * **Why the wake is a cancel by `user_data` and not by fd.** `io_uring_prep_cancel_fd` exists, but

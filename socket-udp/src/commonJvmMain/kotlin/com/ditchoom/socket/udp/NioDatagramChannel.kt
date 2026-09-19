@@ -72,8 +72,8 @@ internal sealed interface WriteReadiness {
  *
  * [budget] bounds the *whole* send, measured against a monotonic mark rather than by accumulating
  * sleeps, and each wait is handed only the time left in it — so a send still reports
- * [DatagramSendError.WouldBlock] on the same deadline it always did (issue #303 keeps that contract),
- * and the caller's buffer is left unconsumed either way.
+ * [DatagramSendError.WouldBlock] on that deadline, and the caller's buffer is left unconsumed either
+ * way.
  *
  * An [IOException] from [write] is classified by [jvmSendErrorOf] — the JDK's exception types and
  * `strerror` phrases onto the same sealed set every other backend reports — with [limit] (the
@@ -94,9 +94,7 @@ internal suspend fun writeAbsorbingBackpressure(
                 write(view)
             } catch (e: IOException) {
                 // The JDK has already reduced the errno to a type or a strerror phrase; classify it
-                // here, at the boundary, so a consumer branches on the member and never on the cause
-                // (#457: this used to be Transport for everything, which made Unreachable
-                // unconstructible on JVM/Android).
+                // here, at the boundary, so a consumer branches on the member and never on the cause.
                 throw DatagramSendException(jvmSendErrorOf(e, attempted = length, limit = limit))
             }
         if (written > 0) return
@@ -172,8 +170,8 @@ internal abstract class NioDatagramChannelCore(
     /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IP). Path-MTU/PMTUD is a consumer concern. */
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
-    // Control-plane options resolved reflectively from what THIS socket actually supports (the same
-    // DatagramChannel.supportedOptions() probe used to seed the §7.1 matrix). Matching by name keeps
+    // Control-plane options resolved reflectively from what THIS socket actually supports
+    // (DatagramChannel.supportedOptions(), the §7.1 matrix). Matching by name keeps
     // commonJvmMain free of a hard compile-time dependency on JDK-19+ / Android-version-specific option
     // constants, so the shared source set compiles and degrades correctly on every JVM and Android level.
     private val supportedOptions: Set<SocketOption<*>> = channel.supportedOptions()
@@ -229,11 +227,11 @@ internal abstract class NioDatagramChannelCore(
             var payload: PlatformBuffer? = null
             // Ownership of `payload` transfers to the caller only on the Received path. Tracking that
             // explicitly, and freeing in `finally` otherwise, is what makes the staging buffer safe on
-            // *every* exit: the two Closed arms, a spurious wakeup's `continue`, cancellation, and —
-            // the case that leaked (#396) — any other IOException from channel.receive()
-            // (PortUnreachableException, ENETUNREACH/EHOSTUNREACH/ECONNABORTED when a network is torn
-            // down under the socket). That last path previously dropped one receiveBufferSize pooled
-            // buffer on the floor per throw, at the driver's retry rate.
+            // *every* exit: the two Closed arms, a spurious wakeup's `continue`, cancellation, and any
+            // other IOException from channel.receive() (PortUnreachableException,
+            // ENETUNREACH/EHOSTUNREACH/ECONNABORTED when a network is torn down under the socket) —
+            // without it, that last path drops one receiveBufferSize pooled buffer per throw, at the
+            // driver's retry rate.
             var handedOff = false
             try {
                 // select() is the only blocking call; runInterruptible makes a cancelled receive
@@ -295,7 +293,7 @@ internal abstract class NioDatagramChannelCore(
         // advances the slice's cursor, never the payload's (send-does-not-consume), and it is still a
         // view over the same memory (no copy). Deliberately NOT ReadBuffer.slice() — on a pooled
         // payload that returns a TrackedSlice holding a reference on the chunk, which this path has
-        // nowhere to release, pinning one chunk out of the pool per send (#277). Linux and Apple take
+        // nowhere to release, pinning one chunk out of the pool per send. Linux and Apple take
         // the same no-reference route via nativeAddress + position().
         return (payload.unwrapFully() as BaseJvmBuffer).byteBuffer.slice()
     }
@@ -315,12 +313,11 @@ internal abstract class NioDatagramChannelCore(
      * socket will not accept it within the send budget does it become a reported
      * [DatagramSendError.WouldBlock]. Surfacing backpressure any earlier would still be wrong — the
      * datagram genuinely has not been transmitted yet, and reporting a failure invites the caller to
-     * retransmit something the kernel is about to send anyway. (It used to be worse than wrong:
-     * `QuicheDriver.flushOutgoing` treated any send failure as terminal and would have ended a live
-     * connection over a momentary full buffer. It now stops the flush and leaves termination to the
-     * idle timer, so this is a quality-of-implementation concern rather than a correctness one.)
+     * retransmit something the kernel is about to send anyway. (`QuicheDriver.flushOutgoing` stops the
+     * flush on a send failure and leaves termination to the idle timer, so this is a
+     * quality-of-implementation concern rather than a correctness one.)
      *
-     * The wait itself is [awaitWritable] — the socket's own `OP_WRITE` signal, not a timer (#303).
+     * The wait itself is [awaitWritable] — the socket's own `OP_WRITE` signal, not a timer.
      */
     protected suspend fun transmit(
         payload: ReadBuffer,
@@ -341,7 +338,7 @@ internal abstract class NioDatagramChannelCore(
     /**
      * Park until the kernel says this socket can accept a datagram again, or until [timeout] elapses.
      *
-     * The reactive half of the send path (#303): a full output buffer is a readiness condition the
+     * The reactive half of the send path: a full output buffer is a readiness condition the
      * platform already reports, so it is awaited rather than polled — one wakeup when the buffer
      * drains, instead of a backoff ladder of timer wakeups that both wastes them and adds latency to
      * the retry. [writeSelector] is opened here on first use and lives with the channel; it is

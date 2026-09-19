@@ -30,8 +30,8 @@ package com.ditchoom.socket.udp
  *
  * A member a consumer can branch on is only worth branching on if every backend constructs it for
  * the same condition. A backend that *cannot* produce a member says so here rather than leaving a
- * consumer to discover it on one platform (#457 was exactly that: [Unreachable] was unconstructible
- * on JVM/Android, so a migration trigger wired to it could never fire there).
+ * consumer to discover it on one platform — a migration trigger wired to a member one backend cannot
+ * construct never fires there.
  *
  * Five backends send, and three of them share one classifier:
  *
@@ -57,7 +57,7 @@ package com.ditchoom.socket.udp
  *   the wrong address family, an unscoped IPv6 link-local) and two after one failed (an address no
  *   interface holds, or a failure this backend could not attribute). Unconstructible on the other
  *   four *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect = false` never
- *   reads `fromLocal` at all, so it has nothing to refuse — rather than by the omission #457 recorded.
+ *   reads `fromLocal` at all, so it has nothing to refuse.
  * - [WouldBlock] — `EAGAIN`, `EWOULDBLOCK`, `ENOBUFS`; on JVM/Android the send budget running out, and
  *   `"No buffer space available"`.
  * - [OsError] — every other errno on the three POSIX backends. **Never on JVM/Android or Node**: NIO
@@ -122,9 +122,9 @@ sealed interface DatagramSendError {
      * not mine" — Linux answers a non-local IPv4 `IP_PKTINFO` with `ENETUNREACH` and a non-local IPv6
      * `IPV6_PKTINFO` with `EINVAL` — so passing the raw code through would tell a consumer the
      * *destination* is unreachable, which is exactly the signal a migration trigger branches on, or
-     * bury the reason in [OsError]. Quietly sending unpinned instead would be worse still: #556 exists
-     * because a reply leaving from the wrong local address is dropped by a `connect()`ed client, so an
-     * unnoticed fallback to the kernel's choice reintroduces the defect the caller asked to prevent.
+     * bury the reason in [OsError]. Quietly sending unpinned instead would be worse still: a reply
+     * leaving from the wrong local address is dropped by a `connect()`ed client, so an unnoticed
+     * fallback to the kernel's choice reintroduces the defect the caller asked to prevent.
      *
      * Nothing was sent. A caller that would rather transmit from any source than not at all retries
      * without `fromLocal`; that choice is the caller's, which is the point of reporting it.
@@ -198,9 +198,9 @@ sealed interface SourceAddressRejection {
      *
      * Refused here rather than handed to the kernel, because the kernel does **not** refuse it: an
      * `IPV6_PKTINFO` control message on an `AF_INET` socket is silently skipped and the datagram
-     * leaves from whichever address routing preferred (measured, Linux 6.18). Passing it down would
-     * therefore be indistinguishable, from the caller's side, from having honoured the request — the
-     * precise shape of the #556 defect.
+     * leaves from whichever address routing preferred. Passing it down would therefore be
+     * indistinguishable, from the caller's side, from having honoured the request — the precise
+     * defect `fromLocal` exists to prevent.
      */
     data object WrongFamily : SourceAddressRejection
 
@@ -275,9 +275,9 @@ private fun errnoSuffix(errno: Int): String = if (errno == ERRNO_NOT_SURFACED) "
  * catch-and-parse.
  *
  * This is the reporting half of the module's send contract: **a send either delivers or reports, and
- * never returns normally having sent nothing.** Four of five backends used to discard their send
- * result, so a datagram could vanish between a clean return and the wire — invisible to a caller and,
- * for quiche, a lie to its congestion controller.
+ * never returns normally having sent nothing.** A backend that discarded its send result would let a
+ * datagram vanish between a clean return and the wire — invisible to a caller and, for quiche, a lie
+ * to its congestion controller.
  */
 class DatagramSendException(
     val error: DatagramSendError,

@@ -20,7 +20,7 @@ import platform.posix.AF_INET6
 // These two declarations survive here because they carry no platform-width types, and because
 // `:socket-quic-quiche`'s OWN `appleMain` consumes them: that module's shared Apple source needs them
 // resolvable from metadata, which per-target `srcDir` output is not. Keep this file free of
-// `size_t`/`ssize_t`/`NSUInteger`-derived types, or the whole arrangement collapses back into #280.
+// `size_t`/`ssize_t`/`NSUInteger`-derived types, or the metadata compilation breaks again.
 
 /**
  * The BSD/Darwin C `sockaddr` layout for [SocketAddressCodec]: a length byte, a single-byte

@@ -5,13 +5,10 @@ package com.ditchoom.socket.udp
  * the requested local endpoint could not be bound, or the 4-tuple could not be fixed — as a sealed
  * value carried by [UdpConnectException], on every backend.
  *
- * The connect-side counterpart of [DatagramSendError] (#457), and filed for the same reason (#534):
- * the backends disagreed about how a refused connect was reported. JVM/Android raised the JDK's own
- * `java.net` types, Apple a message-only exception, Node a message-only exception, and Linux one bare
- * `IllegalStateException("connect to … failed")` with the errno discarded — so a caller that needed to
- * tell "no descriptor left" from "that 4-tuple is taken" (the route probe of #434/#523/#547) could
- * not, and a sealed reason for it could not be minted because one backend was structurally unable to
- * construct it.
+ * The connect-side counterpart of [DatagramSendError]. A caller that needs to tell "no descriptor
+ * left" from "that 4-tuple is taken" (a route probe does) can only do so if every backend constructs
+ * the same sealed reason, so no backend may report a refused connect as a message-only exception with
+ * the errno discarded.
  *
  * ## Parity across the five backends
  *
@@ -35,7 +32,7 @@ package com.ditchoom.socket.udp
 sealed interface UdpConnectError {
     /**
      * The endpoint this socket needed is held by another socket: the requested local port (`bind`), or
-     * the 4-tuple the connect would have formed (`connect`, the #434 collision an unnamed bind against
+     * the 4-tuple the connect would have formed (`connect`, the collision an unnamed bind against
      * a busy peer can draw). `EADDRINUSE`; the JDK's `BindException` for both.
      */
     data class AddressInUse(

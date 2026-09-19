@@ -24,7 +24,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  *   back to this host (`IP_MULTICAST_LOOP`; on by default, which is what same-host tests rely on).
  * - [setOutboundInterface] — which interface *outbound* multicast egresses (`IP_MULTICAST_IF`).
  *
- * Source-specific multicast (SSM, RFC 4607) is a deliberate follow-up (#378); this first landing is any-source.
+ * Source-specific multicast (SSM, RFC 4607) is not offered; every join is any-source.
  *
  * Threading matches [AddressedDatagramChannel]: confine `receive` and `send` each to one coroutine. The
  * control operations are `suspend` so a platform that must hop to a socket-owning dispatcher (Apple) can,
@@ -34,7 +34,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  * A control operation on a closed channel — including one racing the [close] that closes it — never reaches
  * the socket: it is refused with [MulticastException.ChannelClosed]. That is a correctness property, not a
  * convenience. A backend whose control plane names a raw descriptor would otherwise `setsockopt` a
- * descriptor number the OS has already handed to an unrelated socket (#527).
+ * descriptor number the OS has already handed to an unrelated socket.
  */
 @ExperimentalDatagramApi
 interface MulticastDatagramChannel : AddressedDatagramChannel {
@@ -160,12 +160,12 @@ sealed class MulticastException(
      * [OptionFailed] means the kernel rejected the option on *this* channel's socket and a retry is
      * pointless in the same way twice, while this one means the channel is gone — reopen, do not retry.
      *
-     * Load-bearing, not cosmetic (#527): a backend whose control plane names a raw descriptor must decide
+     * Load-bearing, not cosmetic: a backend whose control plane names a raw descriptor must decide
      * "closed" in the same atomic step that admits the call, or the `setsockopt` lands on whatever socket
      * the process has since been handed that descriptor number. Reporting a distinct type is what lets a
      * test tell "refused before the syscall" apart from "the syscall failed", which is the only way to see
-     * that difference from the caller's side. The Apple backend reports it; Linux is the same shape and
-     * follows in #526. The JVM and Node backends delegate the closed check to their runtime's own channel
+     * that difference from the caller's side. The Apple and Linux backends report it. The JVM and Node
+     * backends delegate the closed check to their runtime's own channel
      * (`ClosedChannelException` / a Node throw), which surfaces through [JoinFailed]/[OptionFailed] — no
      * descriptor of theirs is reachable after close, so there is nothing to steal there.
      */

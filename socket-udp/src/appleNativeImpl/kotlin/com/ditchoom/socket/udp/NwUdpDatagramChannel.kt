@@ -79,7 +79,7 @@ internal class NwUdpDatagramChannel(
 
     // NW gives no socket fd, so unlike the POSIX path this channel cannot widen SO_SNDBUF — it is
     // stuck with Darwin's default UDP datagram ceiling. Advertising the theoretical 65507 here would
-    // be the same lie the POSIX path used to tell: a send at the advertised size fails EMSGSIZE
+    // be a lie: a send at the advertised size fails EMSGSIZE
     // (surfaced as the POSIX-domain NW error 40). Report what the kernel will actually accept,
     // queried rather than hardcoded, since net.inet.udp.maxdgram is a tunable sysctl.
     override val maxWritableSize: Int = darwinUdpSendCeiling()
@@ -158,8 +158,8 @@ internal class NwUdpDatagramChannel(
         if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
         suspendCancellableCoroutine<Unit> { continuation ->
             nw_udp_send(conn, ptr, len) { errorDomain, errorCode ->
-                // The completion carries (domain, code) and used to be discarded on the theory that a
-                // transient NW failure is non-fatal. It is not the sink's call to make: resuming as if
+                // The completion carries (domain, code) and is never discarded as a non-fatal transient.
+                // That is not the sink's call to make: resuming as if
                 // the datagram went out tells quiche's congestion controller a packet is in flight that
                 // never left the host. Report it and let the consumer decide.
                 if (errorCode == 0) {

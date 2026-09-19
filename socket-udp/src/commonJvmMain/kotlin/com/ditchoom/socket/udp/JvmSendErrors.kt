@@ -8,7 +8,7 @@ import java.nio.channels.ClosedChannelException
 /**
  * Maps the [IOException] a failed NIO `DatagramChannel.send`/`write` threw onto the typed
  * [DatagramSendError] set — the JVM/Android counterpart of `sendErrnoToError`, working from what the
- * JDK leaves of the errno (#457).
+ * JDK leaves of the errno.
  *
  * ## What the JDK leaves of the errno
  *
@@ -34,8 +34,7 @@ import java.nio.channels.ClosedChannelException
  *   `JNU_ThrowIOExceptionWithLastError` (`jni_util.c:183`) and so throws a **bare** [IOException] whose
  *   message is again `strerror(errno)`. There is no dedicated type on this path at all.
  *
- * Measured on this repo's JDK 21.0.9 / macOS 26.6.2 aarch64, driving `java.nio.channels.DatagramChannel`
- * directly (the probe is in the PR description, and it is reproducible on any host with a v6 loopback,
+ * What `java.nio.channels.DatagramChannel` throws on JDK 21 (any host with a v6 loopback shows the same,
  * because a socket bound to `::1` has no route to a global v6 address whatever the default route does):
  *
  * ```
@@ -71,13 +70,12 @@ import java.nio.channels.ClosedChannelException
  * (`ErrnoException.java:59-65`) — serves `java.net.DatagramSocket`, not NIO. The phrase match below is a
  * `contains` so that phrasing lands on the same member should a device ever route an NIO send through it.
  *
- * TODO(#457): what a *dying interface* raises on Android mid-send is not yet measured — no desk can
- * produce it, and the phone was unavailable when this landed. `ENETUNREACH` once the kernel drops the
- * interface's routes is the expected shape and is mapped; `ENETDOWN` and `EHOSTUNREACH` are mapped for
- * the same reason. `ECONNABORTED` (which #396 saw on the *receive* side when a network was torn down)
- * is the other candidate and is deliberately left as [DatagramSendError.Transport] until a device says
- * so, because guessing it into [DatagramSendError.Unreachable] would be a migration trigger firing on
- * evidence nobody collected. The exact measurement to run with the handoff rig is on the issue.
+ * What a *dying interface* raises on Android mid-send is not yet measured. `ENETUNREACH` once the kernel
+ * drops the interface's routes is the expected shape and is mapped; `ENETDOWN` and `EHOSTUNREACH` are
+ * mapped for the same reason. `ECONNABORTED` (what the *receive* side raises when a network is torn
+ * down) is the other candidate and is deliberately left as [DatagramSendError.Transport] until a device
+ * says so, because guessing it into [DatagramSendError.Unreachable] would be a migration trigger firing
+ * on evidence nobody collected.
  *
  * ## Type first, message second
  *
@@ -86,8 +84,8 @@ import java.nio.channels.ClosedChannelException
  * `BindException` from `send0`, a bare [IOException] from `write0` — and only for phrases that are one
  * errno's `strerror` on Darwin, glibc and bionic alike. That is a conversion at the platform boundary —
  * the string dies here and a typed value leaves — not the catch-and-parse in a consumer that the sealed
- * set exists to remove. #457's proposed shape was types only; measurement showed types only cannot reach
- * the connected path, which is the path a QUIC connection uses.
+ * set exists to remove. Types alone cannot reach the connected path, which is the path a QUIC
+ * connection uses.
  *
  * Anything unrecognized keeps the JDK exception as [DatagramSendError.Transport]'s cause — including
  * `ConnectException`, which on a send can only mean `ETIMEDOUT` or `ENOTCONN` (the `ECONNREFUSED` arm
