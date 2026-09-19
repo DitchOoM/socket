@@ -19,63 +19,59 @@ package com.ditchoom.socket.testkit.migration
  * never got it back is a [NeverRecovered] — not an absence of evidence.
  */
 sealed interface PoolRecoveryVerdict {
-    /** The operator-facing line, keeping the vocabulary a walk log is already grepped for. */
-    val line: String
-
     /** No probe went unanswered, so this connection exercises #445 only and cannot speak to #447. */
     data class NeverLostAProbe(
         val attempts: Int,
-    ) : PoolRecoveryVerdict {
-        override val line: String
-            get() =
-                "INCONCLUSIVE — no probe went unanswered on this connection, so it exercises #445 " +
-                    "only and says nothing about #447 (attempts=$attempts)"
-    }
+    ) : PoolRecoveryVerdict
 
     /** A probe armed after an unanswered one was answered: the pool handed out a usable CID again. */
     data class Recovered(
         val unanswered: Int,
         val answeredAfter: Int,
         val succeededAfter: Int,
-    ) : PoolRecoveryVerdict {
-        override val line: String
-            get() =
-                "PASS — $unanswered unanswered probe(s), then $answeredAfter later probe(s) were " +
-                    "ANSWERED ($succeededAfter completing a migration): the pool recovered in the field"
-    }
+    ) : PoolRecoveryVerdict
 
     /** A later attempt was refused for want of a CID — the pool did not come back. */
     data class Exhausted(
         val unanswered: Int,
         val noSpareAfter: Int,
-    ) : PoolRecoveryVerdict {
-        override val line: String
-            get() =
-                "REGRESSION — $unanswered unanswered probe(s), then $noSpareAfter later attempt(s) " +
-                    "answered NoSpareConnectionId: the pool did not come back (#447 alive)"
-    }
+    ) : PoolRecoveryVerdict
 
     /** Probes kept being armed after the first went unanswered, and not one of them was answered. */
     data class NeverRecovered(
         val unanswered: Int,
         val probedAfter: Int,
-    ) : PoolRecoveryVerdict {
-        override val line: String
-            get() =
-                "FAIL — $unanswered unanswered probe(s) and $probedAfter later probe(s), none of " +
-                    "which was ever answered: this connection never regained a working path"
-    }
+    ) : PoolRecoveryVerdict
 
     /** Nothing was attempted after the unanswered probe, so recovery was never put to the question. */
     data class NeverRetried(
         val unanswered: Int,
-    ) : PoolRecoveryVerdict {
-        override val line: String
-            get() =
+    ) : PoolRecoveryVerdict
+}
+
+/**
+ * The operator-facing line, keeping the vocabulary a walk log is already grepped for. Internal so a
+ * probe can only print a verdict through [ConnectionVerdict], which gates it on echo liveness (#620).
+ */
+internal val PoolRecoveryVerdict.line: String
+    get() =
+        when (this) {
+            is PoolRecoveryVerdict.NeverLostAProbe ->
+                "INCONCLUSIVE — no probe went unanswered on this connection, so it exercises #445 " +
+                    "only and says nothing about #447 (attempts=$attempts)"
+            is PoolRecoveryVerdict.Recovered ->
+                "PASS — $unanswered unanswered probe(s), then $answeredAfter later probe(s) were " +
+                    "ANSWERED ($succeededAfter completing a migration): the pool recovered in the field"
+            is PoolRecoveryVerdict.Exhausted ->
+                "REGRESSION — $unanswered unanswered probe(s), then $noSpareAfter later attempt(s) " +
+                    "answered NoSpareConnectionId: the pool did not come back (#447 alive)"
+            is PoolRecoveryVerdict.NeverRecovered ->
+                "FAIL — $unanswered unanswered probe(s) and $probedAfter later probe(s), none of " +
+                    "which was ever answered: this connection never regained a working path"
+            is PoolRecoveryVerdict.NeverRetried ->
                 "INCONCLUSIVE — $unanswered unanswered probe(s) but no migration was attempted " +
                     "afterwards, so pool recovery was never put to the question"
-    }
-}
+        }
 
 /**
  * One connection's probe history. Every "after" count starts at the first unanswered probe, because
@@ -106,14 +102,15 @@ data class PoolProbeHistory(
 }
 
 /**
- * The same decision, phrased for the end-of-run roll-up rather than one connection.
+ * The same decision, phrased for the end-of-run roll-up rather than one connection; printed only
+ * through [RunVerdict].
  *
  * The roll-up carries one extra trap the per-connection line does not: a **reconnect negotiates a
  * brand-new pool**, so a later connection's clean migrations are not evidence about the connection
  * that lost a probe. Summing the "after" counters keeps that honest, because each of them only ever
  * advanced inside the connection whose probe was lost.
  */
-fun PoolRecoveryVerdict.runLine(connections: Int): String =
+internal fun PoolRecoveryVerdict.runLine(connections: Int): String =
     when (this) {
         is PoolRecoveryVerdict.NeverLostAProbe ->
             "INCONCLUSIVE — not one probe went unanswered across $connections connection(s); " +
