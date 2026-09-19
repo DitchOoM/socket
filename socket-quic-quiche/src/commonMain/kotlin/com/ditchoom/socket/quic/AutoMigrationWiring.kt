@@ -78,17 +78,14 @@ private val NetworkMonitor.observedLink: ObservedLink
         }
 
 /**
- * What the reactor believes about the link the connection is on.
- *
- * This started as a `NetworkId?` local whose KDoc argued the nullable was acceptable: "a local in one
- * function that nothing outside observes". #574 made that argument stop holding — the value is now read
- * by a second trigger that fires with no link change to name, and by [awaitRetrySlot] to decide what
- * would count as news.
+ * What the reactor believes about the link the connection is on. Read by a second trigger that fires
+ * with no link change to name, and by [awaitRetrySlot] to decide what would count as news, so it is a
+ * sealed type rather than a nullable local.
  *
  * ⚠️ It is a **separate type from [ObservedLink]** even though both have two cases and one of them
- * holds a [NetworkId], and the first attempt at this fix shared one type between them. That sharing
- * looked like economy and was an overloaded meaning: `None` had to stand for both "the monitor is
- * naming nothing at this instant" and "no baseline has ever been taken", which are different facts with
+ * holds a [NetworkId]. Sharing one type would be an overloaded meaning: `None` would have to stand
+ * for both "the monitor is naming nothing at this instant" and "no baseline has ever been taken",
+ * which are different facts with
  * different consequences. [NetworkId.Unidentified] is not the sentinel either — that is a link the
  * monitor **saw** and could not name, which the pipeline already drops, and reusing it would conflate
  * "no link" with "a nameless one".
@@ -181,17 +178,16 @@ internal sealed interface MigrationTrigger {
  * [MigrationResult.Unmoved.Impossible] is by definition the family where every later call answers the
  * same, whatever the network does, so the observer stops. A [MigrationResult.Unmoved.Failed] attempt
  * leaves the attachment alone and is re-attempted in place, because the emission that would otherwise be
- * the next new information **never arrives** (#453, and see [retryableWithoutNewInformation]).
+ * the next new information **never arrives** (see [retryableWithoutNewInformation]).
  *
- * ## Two triggers, one lane (#574)
+ * ## Two triggers, one lane
  *
- * The control-plane signal is not always right, and when it is wrong it is wrong for a long time.
- * Measured on the 71h Android walk: every real Wi-Fi→cellular handoff spent **11.5s / 11.5s / 11.9s**
- * — 17 consecutive failed echoes each — on a path carrying nothing while `ConnectivityManager` still
- * reported `net=wifi validated=true`; the migration that eventually followed took 338ms–1954ms. iOS
- * reports the same handoff in ~1s. So the outage was ~12.5s of which QUIC was under two, and the
- * difference was entirely *which* signal the connection was waiting for. [PathLiveness] is the second
- * one, and [SilenceThreshold.isMetBy] carries the argument for why it cannot re-open #385.
+ * The control-plane signal is not always right, and when it is wrong it is wrong for a long time: a
+ * real Wi-Fi→cellular handoff can spend over ten seconds on a path carrying nothing while
+ * `ConnectivityManager` still reports the Wi-Fi network validated, and the migration that follows
+ * takes well under two. The difference is entirely *which* signal the connection is waiting for.
+ * [PathLiveness] is the second one, and [SilenceThreshold.isMetBy] carries the argument for why it
+ * cannot declare a healthy path dead.
  *
  * The two sources are `merge`d into a **single sequential collector** rather than given a coroutine
  * each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is
@@ -208,39 +204,33 @@ internal sealed interface MigrationTrigger {
  * ⚠️ **The retry ladder re-reads it too, and has to.** [PathLiveness] is an edge on a level condition:
  * a dead path emits `Silent` once and then produces nothing, because the thing that would re-arm the
  * edge is a datagram arriving on it. So a ladder that consulted only the monitor could neither notice
- * the path recovering — measured, it then probed once a minute forever on a healthy connection — nor
- * be re-entered on a path that is still dark after the ladder gave up. Both are #574 arriving through
- * its own fix, and both are closed in [awaitRetrySlot], where the flow is one of the two things a
- * data-plane backoff is abandoned on.
+ * the path recovering — it would probe once a minute forever on a healthy connection — nor be
+ * re-entered on a path that is still dark after the ladder gave up. Both are closed in
+ * [awaitRetrySlot], where the flow is one of the two things a data-plane backoff is abandoned on.
  *
- * ## Why a failed attempt cannot wait for the next network event (#453)
+ * ## Why a failed attempt cannot wait for the next network event
  *
- * The original of this function answered a `Failed` with `Unit` and a comment saying "keep watching".
- * What it kept watching for was an event already in the past. The gate above the collector is
- * `distinctUntilChanged()` on **network identity**, so a second attempt needs the identity to change
- * *again* — but the handoff has already happened and the device is now sitting still on the new link,
- * so nothing further is emitted for the rest of the connection.
- *
- * Measured on a real Wi-Fi→cellular walk (2026-08-23): the reactor probed cellular once at
- * t=865026ms, the `PATH_CHALLENGE` went unanswered, `PathNotValidated` came back 3009ms later on the
- * RFC 9000 §8.2.4 abandon timer — and nothing tried again. The connection sat on the dead Wi-Fi path
- * through 57 consecutive failed reads and died of `IdleTimeout` 30 seconds after that. An unanswered
- * probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per handoff is not
- * a policy, it is an outage.
+ * The event a "keep watching" answer would wait for is already in the past. The gate above the
+ * collector is `distinctUntilChanged()` on **network identity**, so a second attempt needs the identity
+ * to change *again* — but the handoff has already happened and the device is now sitting still on the
+ * new link, so nothing further is emitted for the rest of the connection: one unanswered
+ * `PATH_CHALLENGE` on the new link would leave the connection on the dead path until its idle timeout.
+ * An unanswered probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per
+ * handoff is not a policy, it is an outage.
  *
  * **What the probes cost, and why the pool is not what bounds them.** Every probe that reaches quiche
  * links a spare destination connection id to the new path, and every exit from that path — validated,
- * failed, abandoned — retires it (`PathSlot`, #447). On a *live* path that is self-replacing: the
+ * failed, abandoned — retires it (`PathSlot`). On a *live* path that is self-replacing: the
  * `RETIRE_CONNECTION_ID` reaches the peer and a `NEW_CONNECTION_ID` comes back, which is why a
- * connection on a working link migrates indefinitely even at the RFC 9000 minimum of two — measured
- * at 40 consecutive migrations for every limit from 2 to 32. On a path that is already **dead**
- * neither frame crosses, so the pool is finite: [QuicOptions.activeConnectionIdLimit] minus the one
- * in use. Past it quiche answers `NoSpareConnectionId` *before* opening a socket, which is a real
- * answer but not a probe — it reaches no network. That default is therefore sized so the pool
- * is deep enough that a run of failed handoffs still has ids to spend; its KDoc carries the
- * measurement. ⚠️ An abandoned probe only gets its id *back* because of #459 — before that fix quiche
- * re-linked the peer's replacement into the dead probe path, so the pool drained once and never
- * refilled, and this retry loop would have been asking a question that could never be answered.
+ * connection on a working link migrates indefinitely even at the RFC 9000 minimum of two. On a path
+ * that is already **dead** neither frame crosses, so the pool is finite:
+ * [QuicOptions.activeConnectionIdLimit] minus the one in use. Past it quiche answers
+ * `NoSpareConnectionId` *before* opening a socket, which is a real answer but not a probe — it reaches
+ * no network. That default is therefore sized so the pool is deep enough that a run of failed handoffs
+ * still has ids to spend. ⚠️ An abandoned probe only gets its id *back* because of the retire-no-relink
+ * quiche patch — unpatched, quiche re-links the peer's replacement into the dead probe path, so the
+ * pool drains once and never refills, and this retry loop would be asking a question that could never
+ * be answered.
  *
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
@@ -248,11 +238,9 @@ internal sealed interface MigrationTrigger {
  * validation rather than by a guessed constant. While this collector is suspended, flaps coalesce: the
  * wake-ups queue, but they carry no facts, so the first one delivered resolves against whichever link
  * is current *then* and each one behind it finds the reactor already attached to it. Coalescing is
- * therefore still present and still keyed to the real cost of the operation — but as of #574 it is a
- * property of **re-reading**, not of `StateFlow` conflation, because `merge` buffers where a single
- * `StateFlow` collector conflated. `AutoMigrationReactorTests.changesDuringAnInFlightMigrationCoalesce`
- * is the test that caught the difference and is what pins it. A quiet
- * period on top could only refuse a genuine handoff arriving inside the window — leaving the
+ * therefore keyed to the real cost of the operation — and it is a property of **re-reading**, not of
+ * `StateFlow` conflation, because `merge` buffers where a single `StateFlow` collector would conflate.
+ * A quiet period on top could only refuse a genuine handoff arriving inside the window — leaving the
  * connection on a dead path for the remainder of it, which is precisely the outage active migration
  * exists to prevent. The retry backoff is the opposite of such a window and must stay that way: it is
  * abandoned the instant new information arrives ([awaitRetrySlot]) — a different routable link, which
@@ -376,8 +364,7 @@ internal fun wireAutoMigration(
  * So the cadence decays instead: 250ms doubling to a [RETRY_BACKOFF_CEILING] ceiling. The early
  * doublings are the ones that matter and are unchanged — five attempts inside the first 19 seconds,
  * six inside 26 — which is the whole of a dead-path handoff's window. Past that it stretches out to
- * roughly one attempt a minute, so *never giving up* costs about as much per hour as the old fixed
- * budget cost per minute.
+ * roughly one attempt a minute, so *never giving up* costs about one probe per minute.
  *
  * The 250ms floor is a spin guard for the leaves that return *immediately* — `AlreadyInProgress`
  * resolves as the in-flight move completes, `HandshakeNotConfirmed` as the handshake confirms. For the
@@ -417,18 +404,16 @@ private const val BACKOFF_SHIFT_CAP = 20
  *
  * **The path answering again (data-plane trigger only), and this one is not optional.** [PathLiveness]
  * is an edge on a level condition, so once the ladder is running nothing further will be emitted; a
- * ladder that consulted only the monitor could not see the path recover at all. Measured on the first
- * cut of #574, with `PathNotValidated` and the path healing immediately after attempt 1: attempts
- * `1 → 5 → 9 → 14` at 5s, 65s and 365s with `pathLiveness` reading `Answering` throughout, and no
- * termination — one probe, one socket and one spare connection id a minute, for the life of a
- * perfectly healthy connection. The realistic route in is short: a 20ms Wi-Fi blip goes `Silent`, the
- * probe's `PATH_CHALLENGE` is eaten by a middlebox, and the path is back 200ms later.
+ * ladder that consulted only the monitor could not see the path recover at all, and would keep
+ * climbing — one probe, one socket and one spare connection id a minute, for the life of a perfectly
+ * healthy connection. The realistic route in is short: a 20ms Wi-Fi blip goes `Silent`, the probe's
+ * `PATH_CHALLENGE` is eaten by a middlebox, and the path is back 200ms later.
  *
  * It is also what closes the dual of that defect. Every exit from the ladder other than
  * [MigrationResult.Succeeded] leaves a reactor that has already consumed its one `Silent` edge, so
  * without a clause that can end a *data-plane* ladder on the path's own recovery, the reactor either
  * spins forever (above) or — for the exits that return — sits idle on a path still reporting `Silent`
- * with no trigger left to raise. Both are #574 reached through its own fix.
+ * with no trigger left to raise.
  */
 private suspend fun awaitRetrySlot(
     trigger: MigrationTrigger,
@@ -446,9 +431,8 @@ private suspend fun awaitRetrySlot(
                 .map { },
             when (trigger) {
                 // A control-plane retry is trying to reach a link the platform says we have moved to,
-                // and the *old* path coming good says nothing about whether it can. #453's contract —
-                // keep asking, on a decaying cadence, for as long as the connection lives — is
-                // unchanged for it.
+                // and the *old* path coming good says nothing about whether it can. Its contract —
+                // keep asking, on a decaying cadence, for as long as the connection lives — stands.
                 MigrationTrigger.LinkChanged -> emptyFlow()
                 // A data-plane retry exists only because the path had stopped answering. The moment it
                 // answers again the premise is gone.
@@ -460,7 +444,7 @@ private suspend fun awaitRetrySlot(
 /**
  * Whether asking [QuicScope.migrate] the identical question again can plausibly answer differently
  * **with nothing else having changed** — which is the only situation this reactor can create, because
- * the network event that would constitute a change is the one #453 proved never arrives.
+ * the network event that would constitute a change never arrives (see [wireAutoMigration]).
  *
  * Exhaustive on purpose. A new [MigrationResult.Unmoved.Failed] leaf must state its own answer here
  * rather than inherit whichever one this function happened to default to; the whole point of the
@@ -473,10 +457,10 @@ private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boo
         // One path move at a time — the in-flight one completes and frees the lane.
         MigrationResult.Unmoved.Failed.AlreadyInProgress -> true
         // The peer replenishes the pool with NEW_CONNECTION_ID, and at connection start this is
-        // routinely a race against the peer's *first* one rather than a verdict (#448).
+        // routinely a race against the peer's *first* one rather than a verdict.
         MigrationResult.Unmoved.Failed.NoSpareConnectionId -> true
-        // The measured #453 case: an unanswered PATH_CHALLENGE is ordinary on cellular, and the next
-        // probe is a fresh 4-tuple the peer may well answer.
+        // An unanswered PATH_CHALLENGE is ordinary on cellular, and the next probe is a fresh 4-tuple
+        // the peer may well answer.
         MigrationResult.Unmoved.Failed.PathNotValidated -> true
         // A bind that failed or collided with the live path's 4-tuple; a later bind lands elsewhere.
         is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> true

@@ -36,17 +36,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  * [close] FINs the send side via [ByteSink.close], so the peer's [com.ditchoom.buffer.flow.Receiver]
  * flow completes. [id] mirrors the underlying QUIC stream id for cross-layer log correlation.
  *
- * ## The writer (#469)
+ * ## The writer
  *
- * #382 gave [CodecConnection] a writer it owns; this class — the leaf behind
- * [TypedMuxView.openUnidirectional] — kept encoding and writing on the **caller's** coroutine, and so
- * kept all three of the defects #382 describes:
+ * Like [CodecConnection], this class — the leaf behind [TypedMuxView.openUnidirectional] — owns its
+ * writer rather than encoding and writing on the **caller's** coroutine, which would have all three of
+ * the defects [CodecConnection] describes:
  *
- * - **Not serialized.** Two coroutines sending on one sender interleaved their bytes under a
+ * - **Not serialized.** Two coroutines sending on one sender interleave their bytes under a
  *   length-prefix header, producing a frame the peer cannot decode.
- * - **Not atomic.** Cancelling a caller mid-write left a truncated frame whose header still promised
- *   the full length, so the peer read on into whatever followed and went silently deaf.
- * - **Not async.** The caller waited on the peer's socket.
+ * - **Not atomic.** Cancelling a caller mid-write leaves a truncated frame whose header still promises
+ *   the full length, so the peer reads on into whatever follows and goes silently deaf.
+ * - **Not async.** The caller waits on the peer's socket.
  *
  * Being unidirectional does not soften any of that: a self-framing codec is exactly where a spliced
  * or truncated frame is corruption rather than loss. What it does change is scope — there is no
@@ -64,10 +64,10 @@ class CodecSender<T>(
     override val id: Long = 0L,
 ) : Sender<T> {
     /**
-     * Source-compatible constructor for callers written against the pre-#469 signature.
+     * Source-compatible constructor for callers that do not state an outbound queue policy.
      *
      * Same shape and same reasoning as [CodecConnection]'s deprecated overload: existing code keeps
-     * compiling and immediately stops being able to interleave or truncate frames, while giving up any
+     * compiling and cannot interleave or truncate frames, while giving up any
      * say in the two decisions the primary constructor exists to force. The scope it fills in is one
      * this sender creates and owns, so it sits outside the caller's structured concurrency and only
      * [close] stops the writer — which is the reason to migrate.
@@ -109,9 +109,8 @@ class CodecSender<T>(
     }
 
     /**
-     * MultiThreaded for the reason [CodecConnection.bufferPool] documents, which #469 makes true here
-     * too. Before the writer this pool was touched by one role on one coroutine; now the writer
-     * allocates and frees encode buffers on [scope]'s dispatcher while [close] clears it from
+     * MultiThreaded for the reason [CodecConnection.bufferPool] documents, which holds here too: the
+     * writer allocates and frees encode buffers on [scope]'s dispatcher while [close] clears it from
      * whichever thread called it, so the "faster but NOT thread-safe" SingleThreaded mode would be
      * corrupting its own buckets.
      */
@@ -163,9 +162,9 @@ class CodecSender<T>(
             } finally {
                 // However this writer ended — failure, or [scope] cancelled out from under it —
                 // nothing can reach the wire any more, so the queue must stop accepting. Writer
-                // *failure* already closed the channel; writer *cancellation* did not, and that
-                // asymmetry is the same one #382 fixed in CodecConnection: a cancelled scope left a
-                // sender that looked alive, queueing into a queue nobody drains.
+                // *failure* already closes the channel; writer *cancellation* does not, and that
+                // asymmetry is the same trap CodecConnection's writer guards: a cancelled scope would
+                // leave a sender that looks alive, queueing into a queue nobody drains.
                 outbound.close(
                     SocketClosedException.General(
                         "the sender's writer stopped before this message could be written",

@@ -4,11 +4,9 @@ package com.ditchoom.socket.quic
  * Where one outgoing datagram goes — and, when the platform has a choice, which local address it must
  * leave from.
  *
- * Replaces the former `dest: PathKey?` parameter of [UdpChannel.send], whose `null` carried meaning
- * ("send to the channel's own connected peer"). That nullable also made #556 *representable*: a server
- * could name the destination of a reply and say nothing about its source, which is precisely a reply
- * that leaves from whichever local address the kernel prefers. Here the two travel together or not at
- * all, so "routed the reply, forgot the source" no longer type-checks.
+ * The destination and the source travel together or not at all, so "routed the reply, forgot the
+ * source" does not type-check: a server that names the destination of a reply and says nothing about
+ * its source gets a reply that leaves from whichever local address the kernel prefers.
  */
 sealed interface SendTarget {
     /**
@@ -27,7 +25,7 @@ sealed interface SendTarget {
      * for that path (`send_info.from`), which is the `recv_info.to` the receive loop set from the
      * arriving datagram's own local address.
      *
-     * **Naming [from] is the whole of the #556 fix.** A wildcard-bound server that lets the kernel
+     * **Naming [from] is what keeps a wildcard-bound server answerable.** A server that lets the kernel
      * choose answers from whichever address routing prefers, and a client that `connect()`ed to a
      * different local address of the same host drops every one of those replies as off-path. Darwin
      * and Linux disagree about which address the kernel picks — Darwin matches the destination, Linux

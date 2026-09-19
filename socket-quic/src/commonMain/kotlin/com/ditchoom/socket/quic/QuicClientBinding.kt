@@ -12,14 +12,14 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
  * ## Why this is not [QuicPortBinding]
  * The server's binding carries `Own(port, host)`, and a client has nothing to do with either: it
  * binds the source address its route dictates on an ephemeral port, which is what connection
- * migration later rebinds against (#519). Reusing that type would let `Own(5000, "10.0.0.1")`
- * compile on the connect path and be silently ignored — a capability advertised and not honoured,
- * which is the defect shape of #579. So the client's binding says only what a client can answer.
+ * migration later rebinds against. Reusing that type would let `Own(5000, "10.0.0.1")`
+ * compile on the connect path and be silently ignored — a capability advertised and not honoured.
+ * So the client's binding says only what a client can answer.
  */
 public sealed interface QuicClientBinding {
     /**
      * The connection opens and owns its own UDP socket — the ordinary case, and the only one that can
-     * migrate. Unchanged from every client connection this library has ever made.
+     * migrate.
      */
     public data object OwnSocket : QuicClientBinding
 

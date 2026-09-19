@@ -6,7 +6,7 @@ import java.net.NoRouteToHostException
 
 /**
  * Classify a `java.net` failure raised on the way to a connected UDP socket — `open`, `bind` or
- * `connect` — onto [UdpConnectError] (#534). The connect-side twin of [jvmSendErrorOf].
+ * `connect` — onto [UdpConnectError]. The connect-side twin of [jvmSendErrorOf].
  *
  * The JDK reduces the errno to a type where it has one and to `strerror` text where it does not
  * (`Net.c handleSocketErrorWithMessage`): `EADDRINUSE` → [BindException] from **both** `bind0` and

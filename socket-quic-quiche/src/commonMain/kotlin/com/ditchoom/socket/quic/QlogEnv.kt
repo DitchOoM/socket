@@ -16,6 +16,6 @@ package com.ditchoom.socket.quic
  * precedence, because an environment variable is not reachable from every place a trace is worth
  * taking: an Android instrumentation run (`am instrument -e …`) passes *extras*, not environment, so
  * on a device — the one place a real Wi-Fi↔cellular handoff can be recorded — `QUIC_QLOG_DIR` can
- * never be set. #437 was found on such a walk and stalled for want of frame-level evidence.
+ * never be set.
  */
 internal expect fun qlogDir(): String?

@@ -81,8 +81,7 @@ internal object Libc {
  * Subclasses only supply the platform routing socket ([openRoutingSocket]); the
  * event loop, threading, and state resolution are shared. The resolution itself lives in
  * `commonJvmMain` as a single `public` function rather than being mirrored here — this compilation is a
- * separate Kotlin module, and the copies that arrangement used to force had already drifted into three
- * near-identical route parsers.
+ * separate Kotlin module, and a mirrored copy would drift from the original.
  *
  * Lifetime: the recv-loop coroutine owns the native scratch buffer (its own [Arena],
  * closed in `finally` on the coroutine's own thread). [close] merely closes the fd,

@@ -29,7 +29,7 @@ class WebTransportStreamMux<T> private constructor(
 ) : StreamMux<T> by view {
     /**
      * @param outboundCapacity and [overflowPolicy] the outbound queue policy for every stream this mux
-     *   mints — see [OverflowPolicy] (#382). The mux's own [scope] owns the stream writers, so they are
+     *   mints — see [OverflowPolicy]. The mux's own [scope] owns the stream writers, so they are
      *   exactly as long-lived as the mux.
      */
     constructor(
@@ -55,12 +55,12 @@ class WebTransportStreamMux<T> private constructor(
     )
 
     /**
-     * Closes every stream this mux minted, draining each one's outbound queue first (#382).
+     * Closes every stream this mux minted, draining each one's outbound queue first.
      */
     suspend fun closeMintedConnections() = view.closeMintedConnections()
 
     /**
-     * Source-compatible constructor for callers written against the pre-#382 signature — see
+     * Source-compatible constructor for callers that do not state an outbound queue policy — see
      * [CodecConnection]'s deprecated constructor for the defaults and why migrating matters. This one
      * keeps the caller-supplied [scope] for the writers, so only the queue policy is being defaulted.
      */

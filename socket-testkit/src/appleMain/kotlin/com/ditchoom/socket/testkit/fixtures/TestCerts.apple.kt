@@ -21,14 +21,13 @@ import platform.posix.getenv
  * /Users/<user>/Library/Developer/CoreSimulator/Devices/<UDID>/data
  * ```
  *
- * There is no `testcerts/` under there and never will be, so the cwd-relative probe every native
- * suite uses resolves nothing and the loopback server has no cert+key to bind with. That is the
- * whole of issue #359: 93 test invocations across three simulator lanes, each of which reported as
- * a PASS before #357 made skips visible.
+ * There is no `testcerts/` under there and never will be, so a cwd-relative probe resolves nothing
+ * and the loopback server has no cert+key to bind with — and on Kotlin/Native a suite that cannot
+ * stand up its server reports as a PASS unless it names its skip (see [SkipReason]).
  *
- * The fix works because an iOS simulator is **not** a virtual machine. It runs on the host kernel
- * and sees the host filesystem, so an absolute host path is directly readable from inside the
- * sandbox — also measured, before writing any of this:
+ * An absolute path works because an iOS simulator is **not** a virtual machine. It runs on the host
+ * kernel and sees the host filesystem, so an absolute host path is directly readable from inside the
+ * sandbox:
  *
  * ```
  * $ xcrun simctl spawn --standalone <UDID> /bin/cat .../socket-http3/testcerts/cert.crt
@@ -40,9 +39,7 @@ import platform.posix.getenv
  * ⚠️ The variable reaches the binary as `SIMCTL_CHILD_SOCKET_TESTCERTS_DIR`, not under this name —
  * `simctl spawn` passes only `SIMCTL_CHILD_`-prefixed variables to its child, stripping the prefix
  * on the way in. The root `build.gradle.kts` does that prefixing; by the time `getenv` runs here,
- * the name is the bare one below. Setting the unprefixed variable in a CI step does nothing at all,
- * which is exactly how the `QUIC_SIM_BOOTED` wiring managed to be documented for years while never
- * existing.
+ * the name is the bare one below. Setting the unprefixed variable in a CI step does nothing at all.
  */
 const val TESTCERTS_DIR_ENV: String = "SOCKET_TESTCERTS_DIR"
 

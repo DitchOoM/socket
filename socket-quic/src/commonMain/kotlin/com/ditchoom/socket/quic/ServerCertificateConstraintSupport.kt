@@ -8,9 +8,9 @@ package com.ditchoom.socket.quic
  *
  * The distinction the three cases draw is deliberately *not* "how strict is the check" alone — it is
  * **which checks run at all**, including the case where none can, because the platform ships no QUIC
- * engine and therefore never sees a leaf. Collapsing that last case into a "hash-only" one would be the
- * same shape of misstatement issue #339 was about: a value that reads as a weaker guarantee when in fact
- * there is no connection to guarantee anything about.
+ * engine and therefore never sees a leaf. Collapsing that last case into a "hash-only" one would be a
+ * misstatement: a value that reads as a weaker guarantee when in fact there is no connection to
+ * guarantee anything about.
  *
  * Current producers, by platform:
  *  - [Enforced] — JVM/Android (`java.security`), Linux (BoringSSL), macOS and iOS (the shared structural

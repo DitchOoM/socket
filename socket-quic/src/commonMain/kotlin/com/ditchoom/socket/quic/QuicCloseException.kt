@@ -12,14 +12,13 @@ import com.ditchoom.socket.SocketClosedException
  * ([QuicConnectionState.Closed.reason]).
  *
  * ## Why the reason, and not a bare [QuicError]
- * This used to carry only a [QuicError], which cannot say **which side** closed the connection, nor
- * tell a graceful shutdown from a teardown the protocol never explained. The state channel has drawn
- * both distinctions since [QuicCloseReason] replaced its nullable error; the thrown channel had not,
- * and that asymmetry was a diagnostic dead end: a `PROTOCOL_VIOLATION` arriving ~485 ms after a path
- * migration (#437) is a different bug depending on whether *we* sent the offending frame or the peer
- * rejected ours, and the exception — the thing a device probe or a consumer's log actually has in hand
- * — could not say. The information was never missing; the driver resolves it from quiche's
- * `peer_error`/`local_error` and records it in [QuicConnectionState.Closed]. It just stopped here.
+ * A [QuicError] alone cannot say **which side** closed the connection, nor tell a graceful shutdown
+ * from a teardown the protocol never explained. The state channel draws both distinctions through
+ * [QuicCloseReason], and the thrown channel draws the same ones: a `PROTOCOL_VIOLATION` arriving just
+ * after a path migration is a different bug depending on whether *we* sent the offending frame or the
+ * peer rejected ours, and the exception — the thing a device probe or a consumer's log actually has in
+ * hand — says which. The driver resolves it from quiche's `peer_error`/`local_error` and records it in
+ * [QuicConnectionState.Closed].
  *
  * [quicError] remains readable and unchanged for callers that only want the code.
  *
@@ -51,14 +50,14 @@ class QuicCloseException(
      *
      * Derived from [closeReason] rather than stored, so the two can never disagree ([QuicCloseAttribution]
      * documents the same rule for identity). A close that names no error — [QuicCloseReason.Graceful],
-     * and [QuicCloseReason.Unspecified] — answers [QuicError.NoError], exactly as this property did when
-     * it was the only thing the exception carried. That fold is lossy on purpose and is why it is not
+     * and [QuicCloseReason.Unspecified] — answers [QuicError.NoError]. That fold is lossy on purpose
+     * and is why it is not
      * the thing to branch on: `Graceful` and `Unspecified` are indistinguishable here.
      */
     val quicError: QuicError get() = closeReason.errorOrNoError()
 
     /**
-     * Compatibility constructor for the old `QuicCloseException(error, …)` shape, for throw sites that
+     * Compatibility constructor for the `QuicCloseException(error, …)` shape, for throw sites that
      * genuinely hold only an error.
      *
      * The mapping mirrors the one [QuicConnectionState.Closed]'s deprecated constructor already
@@ -110,7 +109,7 @@ class QuicCloseException(
                     reason !is QuicCloseReason.Unspecified && reason.errorOrNoError() is QuicError.NoError -> message
                     // Everything else renders through the one shared rendering — including
                     // Unspecified, which is not noise: it says no CONNECTION_CLOSE was exchanged and
-                    // nothing timed out, the bit the old nullable error reported as a clean shutdown.
+                    // nothing timed out — a different fact from a clean shutdown.
                     else -> "$message [${reason.describe()}]"
                 }
             // Only the session id goes in the string: it is short, stable, and the one identifier that

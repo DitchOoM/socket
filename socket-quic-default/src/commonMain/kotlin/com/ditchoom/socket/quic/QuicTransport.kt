@@ -137,7 +137,7 @@ class QuicTransport(
         // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
         session.use(hostname, port, config) { connection ->
             // The writers of every stream this mux mints live here and are cancelled with the session,
-            // which is what makes withMux's ownership of the mux lifetime complete (#382). Its own Job
+            // which is what makes withMux's ownership of the mux lifetime complete. Its own Job
             // rather than a plain coroutineScope: a stream the caller never closed must not make this
             // function hang waiting for that stream's writer.
             val muxScope = CoroutineScope(currentCoroutineContext() + Job())
@@ -145,9 +145,8 @@ class QuicTransport(
             try {
                 mux.block()
             } finally {
-                // Drain before cancelling. send() is a hand-off now, so a caller that queued a frame and
-                // let this block return would otherwise lose it silently — and before #382, send()
-                // returning meant written, so that was a correct program (#382, review finding M3).
+                // Drain before cancelling. send() is a hand-off, so a caller that queued a frame and
+                // let this block return would otherwise lose it silently — and that is a correct program.
                 mux.closeMintedConnections()
                 muxScope.cancel()
             }

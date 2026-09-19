@@ -20,9 +20,8 @@ import platform.posix.errno
  * socket onto [UdpConnectError] — the connect-side twin of [sendErrnoToError], sharing its
  * unreachable set so a route that a send would report as gone is the one a connect reports as gone.
  *
- * Called with the errno still in hand (#534): the Linux backend used to discard it in favour of one
- * `IllegalStateException("connect to … failed")`, which is what made a sealed reason unconstructible
- * there. Every member is reachable here, so a consumer's `when` over the type is exhaustive on the
+ * Called with the errno still in hand, never after a generic exception has discarded it. Every member
+ * is reachable here, so a consumer's `when` over the type is exhaustive on the
  * POSIX backends without a fallback arm that never fires.
  */
 internal fun connectErrnoToError(code: Int = errno): UdpConnectError =

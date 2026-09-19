@@ -2,11 +2,9 @@ package com.ditchoom.socket.quic
 
 /**
  * Apple (macOS / iOS) default QUIC engine: Cloudflare quiche over a POSIX UDP datapath
- * (`:socket-quic-quiche`) — the same engine JVM/Android/Linux use. This replaced the Network.framework
- * system-QUIC backend (the deleted `:socket-quic-nw`) to delete the macos-26 libquic teardown UAF at
- * the source and unify to one QUIC engine. See the quiche-on-Apple pivot.
+ * (`:socket-quic-quiche`) — the one QUIC engine every platform uses; Network.framework is TCP/TLS only.
  *
- * tvOS/watchOS have no quiche target (Tier-3 build-std is unimplemented — #376) → [UnsupportedQuicEngine]
+ * tvOS/watchOS have no quiche target (Tier-3 build-std is unimplemented) → [UnsupportedQuicEngine]
  * in `unsupportedAppleMain`.
  */
 actual val defaultQuicEngine: QuicEngine = QuicheEngine

@@ -34,7 +34,7 @@ internal class MulticastIoUringDatagramChannel(
     private val base: AddressedIoUringDatagramChannel,
     /**
      * Test seam: runs on entry to every control op, *before* this caller is admitted to [base]'s
-     * descriptor. Lets a test park a caller in the window `close()` used to race. Production passes
+     * descriptor. Lets a test park a caller in the window `close()` races. Production passes
      * nothing and pays an empty suspend call.
      */
     private val beforeAdmission: suspend () -> Unit = {},
@@ -96,12 +96,12 @@ internal class MulticastIoUringDatagramChannel(
 
     /**
      * Runs one `socket_mc_*` call on [base]'s descriptor, borrowed through the admission every other user
-     * of that descriptor passes (#526/#527). Three outcomes and no fourth: applied, refused because the
+     * of that descriptor passes. Three outcomes and no fourth: applied, refused because the
      * channel is closed (no syscall ran, so no recycled descriptor number was ever named), or attempted
      * and failed with an `errno` — read inside the borrow, before anything on the way out can overwrite it.
      *
-     * This class used to hold the descriptor number in a field of its own and `setsockopt` it directly,
-     * which is the one user of that number that `close()` could not see coming.
+     * This class holds no descriptor number of its own: a field copy would be the one user of that
+     * number that `close()` could not see coming.
      */
     private suspend fun control(
         operation: String,

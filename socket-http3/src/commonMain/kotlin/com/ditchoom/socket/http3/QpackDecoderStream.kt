@@ -12,12 +12,10 @@ import kotlinx.coroutines.sync.withLock
  *
  * ## Why an owner
  *
- * The decoder stream is a single QUIC stream, so its writes must be serialized — and they were, by a
- * `Mutex` the *connection* owned and passed into `Http3StreamWriter.writeDecoderInstruction`. Because
- * the lock lived with the caller, [QpackDecoder] could not see it, and #353's fix had to add a
- * *second* mutex of its own to make the accounting atomic with the write. Two locks guarding one
- * stream, and correctness depending on every caller remembering to pass the right one — nothing in
- * the type system paired a stream with its lock.
+ * The decoder stream is a single QUIC stream, so its writes must be serialized, and the acknowledgment
+ * accounting must be atomic with each write. A lock the caller owns and passes in cannot guarantee
+ * either: nothing in the type system pairs a stream with its lock, and correctness would depend on
+ * every caller passing the right one.
  *
  * Here there is one lock, it is not a parameter, and it cannot be mismatched: the object that holds
  * the count is the object that does the write.
@@ -30,9 +28,9 @@ import kotlinx.coroutines.sync.withLock
  * way**: it is a delta against [acknowledgedInsertCount], never a flat one-per-insert.
  *
  * Emitting one per insert regardless double-counts, and the peer is required to kill the connection
- * for it (`QPACK_DECODER_STREAM_ERROR`, 0x202). Whether it fired depended purely on which instruction
- * won the race — increment-then-ack is harmless, because the ack's jump is then a no-op, but
- * ack-then-increment adds on top of a count the ack already moved. That is #353.
+ * for it (`QPACK_DECODER_STREAM_ERROR`, 0x202). Whether it fires depends purely on which instruction
+ * wins the race — increment-then-ack is harmless, because the ack's jump is then a no-op, but
+ * ack-then-increment adds on top of a count the ack already moved.
  *
  * The lock is held across the write on purpose: the count is only correct if the order instructions
  * reach the wire is the order they were accounted for. Computing under a lock and writing outside it
@@ -116,9 +114,9 @@ abstract class QpackDecoderStream {
      * The lock is held across [write], which a subclass supplies, so a `write` that re-entered this
      * object would otherwise deadlock on itself in silence. With an owner, `kotlinx.coroutines.Mutex`
      * fails that acquisition immediately with `IllegalStateException` instead. Nothing does it today —
-     * both implementations put bytes on a QUIC stream — and this is what keeps it that way loudly. It
-     * is the guard #353 added, kept rather than dropped when the accounting moved here: giving the
-     * write a subclass to live in widened the surface it protects instead of removing the hazard.
+     * both implementations put bytes on a QUIC stream — and this is what keeps it that way loudly. Giving
+     * the write a subclass to live in widens the surface the guard protects rather than removing the
+     * hazard.
      */
     private suspend inline fun <T> withOwnedLock(crossinline body: suspend () -> T): T =
         lock.withLock(currentCoroutineContext()[Job]) { body() }

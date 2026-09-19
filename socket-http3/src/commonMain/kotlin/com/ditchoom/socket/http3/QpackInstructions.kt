@@ -55,7 +55,7 @@ sealed interface QpackDecoderInstruction {
      * Insert Count Increment (§4.4.3): `00` + 6-bit increment — entries inserted since the last ack.
      *
      * [InsertCountDelta], not a bare `Long`: this is the one relative quantity in QPACK's counting,
-     * and #353 was a flat `1` emitted where the difference of two absolute counts belonged.
+     * and the type keeps a flat `1` from being emitted where the difference of two absolute counts belongs.
      */
     data class InsertCountIncrement(
         val increment: InsertCountDelta,

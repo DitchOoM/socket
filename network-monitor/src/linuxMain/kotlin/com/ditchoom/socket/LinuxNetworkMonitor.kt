@@ -84,9 +84,8 @@ class LinuxNetworkMonitor : NetworkMonitor {
             scope.launch {
                 // Allocate a native scratch buffer once, reuse across netlink recvs. A raw malloc/free
                 // off nativeHeap, so it is released when the coroutine exits — no GC-managed ByteArray
-                // and no per-iteration pin/unpin. (This used to allocate a deterministic PlatformBuffer;
-                // a plain allocArray is the same malloc without making the whole com.ditchoom:buffer
-                // dependency part of this module's surface, which the extraction is meant to keep small.)
+                // and no per-iteration pin/unpin. A plain allocArray rather than a PlatformBuffer keeps
+                // the com.ditchoom:buffer dependency out of this module's surface.
                 val scratch = nativeHeap.allocArray<ByteVar>(SCRATCH_BYTES)
                 try {
                     while (isActive) {

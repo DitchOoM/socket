@@ -8,12 +8,12 @@ import com.ditchoom.buffer.nativeMemoryAccess
  * The native memory one [QuicheCmd] lends to quiche — the address quiche reads or writes, **bound to
  * the object whose reachability keeps that memory mapped**.
  *
- * ## Why an address alone is not enough (issues #366 / #401 / #415)
+ * ## Why an address alone is not enough
  *
- * A driver command used to carry a bare `addr: Long`, and every command's KDoc asked the caller to
- * "keep that buffer alive until the result completes". On a managed runtime the caller *cannot*: a
- * Kotlin local stops being reachable at its last use, and native memory a buffer owns is released
- * when the **object** becomes unreachable, not when anyone says so:
+ * A driver command cannot carry a bare `addr: Long` and ask the caller to "keep that buffer alive
+ * until the result completes". On a managed runtime the caller *cannot*: a Kotlin local stops being
+ * reachable at its last use, and native memory a buffer owns is released when the **object** becomes
+ * unreachable, not when anyone says so:
  *
  * | JVM tier | `BufferFactory.Default` buffer | native memory released by |
  * |---|---|---|
@@ -28,27 +28,22 @@ import com.ditchoom.buffer.nativeMemoryAccess
  * stream.write(out, 5.seconds)   // `out` is dead from here on
  * ```
  *
- * — left nothing referring to `out` while `streamWrite` was suspended on its `StreamSend`. The GC
- * could free the memory, the allocator hand the chunk to somebody else, and only then would the
- * driver loop call `quiche_conn_stream_send(conn, id, addr, len)`. quiche faithfully copies whatever
- * is at `addr` into its send buffer, AEAD-seals it and puts it on the wire, so the peer receives —
- * and an echo peer returns — **bytes that were never sent**, with the correct length and freed-chunk
- * allocator metadata in them (`… aa 7f 00 00 …`, the high half of an x86-64 heap pointer). That is
- * the whole of the "echo decodes bytes that were never sent" family, and it is why the corruption
- * only ever appeared on JVM/Android lanes and never on Kotlin/Native, where buffers own their memory
- * explicitly.
+ * — leaves nothing referring to `out` while `streamWrite` is suspended on its `StreamSend`. With a
+ * bare address the GC could free the memory, the allocator hand the chunk to somebody else, and only
+ * then would the driver loop call `quiche_conn_stream_send(conn, id, addr, len)`. quiche faithfully
+ * copies whatever is at `addr` into its send buffer, AEAD-seals it and puts it on the wire, so the
+ * peer receives **bytes that were never sent**, with the correct length and freed-chunk allocator
+ * metadata in them. Kotlin/Native is immune only because its buffers own their memory explicitly.
  *
  * ## The rule this type enforces
  *
- * An address can no longer be enqueued without the object that keeps it mapped. The pairing is a
- * type, not a convention, because the convention was already written down — in five command KDocs —
- * and was unenforceable on the runtime that needed it.
+ * An address cannot be enqueued without the object that keeps it mapped. The pairing is a type, not a
+ * convention, because a convention is unenforceable on the runtime that needs it.
  *
  * Two halves, and they do different jobs:
- *  - **[Borrowed] retains the owner.** That is the fix: a queued command is reachable, so the buffer
- *    it borrows is reachable, from enqueue until the driver completes it. Removing the retention
- *    reproduces the defect on the first run (`QuicNativeBufferLifetimeTests` mutation) and corrupts
- *    11 of 10 000 real loopback echoes under collector pressure, against 0 of 10 000 with it.
+ *  - **[Borrowed] retains the owner.** A queued command is reachable, so the buffer it borrows is
+ *    reachable, from enqueue until the driver completes it (`QuicNativeBufferLifetimeTests` proves the
+ *    retention load-bearing by mutation).
  *  - **[endBorrow], called after every quiche call that used [address]**, is what stops an optimizing
  *    JIT from unwinding that: a compiler may read `cmd.buf.address` into a register and treat the
  *    command as dead for the rest of the method, which would put the owner back on the collector's
@@ -117,7 +112,7 @@ internal fun PlatformBuffer.driverOwnedMemory(): QuicheMemory = QuicheMemory.Bor
  *
  * Returns `null` when the buffer has no native memory, so the two public write paths
  * ([DriverStreamAdapter.streamWrite] and [DriverDatagramAdapter.send]) can raise the typed
- * [QuicNativeMemoryRequiredException] they already owe a caller (#502) instead of a bare NPE.
+ * [QuicNativeMemoryRequiredException] they already owe a caller instead of a bare NPE.
  */
 internal fun ReadBuffer.callerFedMemory(): QuicheMemory? =
     nativeMemoryAccess?.let { QuicheMemory.Borrowed(it.nativeAddress + position(), this) }

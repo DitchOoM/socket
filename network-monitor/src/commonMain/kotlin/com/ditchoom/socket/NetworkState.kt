@@ -41,8 +41,8 @@ sealed interface NetworkState {
      * A link is up but there is no default route: nothing is reachable off-link.
      *
      * Still genuinely useful, which is why it is a rung and not a failure — mDNS and multicast
-     * (`UdpSocket.bindMulticast`) work here. This is the state Linux and JVM used to report as
-     * `AVAILABLE` (a container with only `docker0`, or a laptop associated to Wi-Fi with no DHCP lease).
+     * (`UdpSocket.bindMulticast`) work here. A container with only `docker0`, or a laptop associated to
+     * Wi-Fi with no DHCP lease, is here.
      */
     data class LinkLocal(
         override val id: NetworkId,

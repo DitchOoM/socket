@@ -33,8 +33,8 @@ sealed interface QuicConnectionState {
         val reason: QuicCloseReason,
     ) : QuicConnectionState {
         /**
-         * Compatibility constructor for the old `Closed(error)` shape. `null` maps to
-         * [QuicCloseReason.Graceful] because that is what `null` used to mean at construction sites;
+         * Compatibility constructor for the `Closed(error)` shape. `null` maps to
+         * [QuicCloseReason.Graceful], the only reading a bare `null` error offers;
          * a non-null error maps to [QuicCloseReason.ByLocal], since a bare [QuicError] carries no
          * indication of which side closed.
          */

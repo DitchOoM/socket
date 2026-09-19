@@ -71,7 +71,7 @@ import kotlin.time.TimeSource
  * ```kotlin
  * val conn = ReconnectingConnection(
  *     connect = {
- *         // `scope` owns the connection's writer, so it must outlive the connection (#382).
+ *         // `scope` owns the connection's writer, so it must outlive the connection.
  *         val codec = CodecConnection.connect("broker.example.com", 1883,
  *             MyCodec, scope = appScope)
  *         codec.send(ConnectPacket(clientId = "my-client"))
@@ -126,16 +126,11 @@ class ReconnectingConnection<T>(
     private var livenessLost = false
 
     /**
-     * Teardown's once-only latch — see [TeardownOnce] for why a flag cannot do this job.
-     *
-     * This class is where that type's reasoning was found to have failed to travel: `close()` kept
-     * `if (closed) return; closed = true` for 21 minutes after #471 removed exactly that shape from
-     * [CodecConnection], and through #473's edit to the collector guard one field above.
-     * `ReconnectingConnectionCloseRaceTests` measured it closing the same inner connection twice in
-     * 20/300 contended attempts.
+     * Teardown's once-only latch — see [TeardownOnce] for why a flag cannot do this job: with
+     * `if (closed) return; closed = true`, two racing closers close the same inner connection twice.
      *
      * [closed] below is the fence [send] and [receive] fast-fail on. It reads through the latch for
-     * the same reason #473 answers "is a collector running" through [Mutex.isLocked] — two readings
+     * the same reason "is a collector running" is answered through [Mutex.isLocked] — two readings
      * of one fact must not be two fields.
      */
     private val teardown = TeardownOnce()

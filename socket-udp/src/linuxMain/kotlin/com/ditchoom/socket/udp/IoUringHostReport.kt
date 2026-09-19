@@ -22,13 +22,11 @@ import platform.posix.utsname
  * What the host looked like at the moment an `io_uring_setup` failed — the part of an `ENOMEM` that
  * cannot be reconstructed after the process is gone.
  *
- * WHY: #561 is `io_uring_setup` → `ENOMEM` at ring creation on the Linux CI lane, twice, on
- * unrelated PRs, in whichever test happened to create the next ring. The message named the errno
- * and told the reader to run `uname -r`; nothing recorded the kernel, the memlock budget rings are
- * charged against on older kernels, how much the process had locked, or how many rings this manager
- * had created and released — so the two things the issue says must be established before any fix
- * were not in the report. This gathers them at the failure site, from `/proc` and the rlimits, and
- * the manager appends its own ring ledger. Read only on the failure path; never on a hot path.
+ * WHY: an `io_uring_setup` `ENOMEM` is only diagnosable with the kernel version, the memlock budget
+ * rings are charged against on older kernels, how much the process has locked, and how many rings
+ * this manager has created and released. This gathers them at the failure site, from `/proc` and the
+ * rlimits, and the manager appends its own ring ledger. Read only on the failure path; never on a hot
+ * path.
  *
  * Every line is best-effort and says so when a source is unreadable, so a sandbox without `/proc`
  * degrades to a shorter report rather than a second failure inside the first.

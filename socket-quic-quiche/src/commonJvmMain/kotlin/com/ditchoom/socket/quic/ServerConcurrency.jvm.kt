@@ -42,7 +42,7 @@ internal actual class LiveDriverLedger actual constructor() {
      * `size()`-based fast path — because Kotlin's `toList()` special-cases size==1 as
      * `listOf(iterator().next())` and would throw `NoSuchElementException` if that last element is
      * removed (by a driver finishing on its own and calling [remove] from `onCleanup`) between the
-     * size read and `next()`. That was the `9016694` follow-up race in the #179 UAF fix.
+     * size read and `next()`.
      */
     actual fun snapshot(): List<QuicheDriver> = ArrayList(set)
 

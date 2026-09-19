@@ -51,9 +51,9 @@ sealed interface ScopedRead<out R> {
  * ## Why this exists
  *
  * The transferring [ByteStream.read] hands back a buffer the caller must remember to release, and
- * "remember to" is not a contract a managed runtime enforces. Its KDoc used to say that forgetting
- * was harmless under the default heap [BufferFactory.Default], because the collector would reclaim it.
- * There is no factory under which that is true.
+ * "remember to" is not a contract a managed runtime enforces. There is no factory under which
+ * forgetting is harmless — not even the default heap [BufferFactory.Default], where the collector
+ * nominally owns the memory.
  *
  * The factory QUIC actually reads into is `BufferFactory.network()` = `deterministic()` — an
  * `Arena.ofShared()` on JDK 21+ — whose memory is released by an explicit `freeNativeMemory()` and by
@@ -63,8 +63,7 @@ sealed interface ScopedRead<out R> {
  * itself on *managed-heap* pressure, which a pointer-sized wrapper in front of a 64 KB native
  * allocation does not produce. On top of either, the QUIC read path draws from a per-connection pool,
  * where a buffer that is never released is a slot that never returns — so every later read misses the
- * pool and allocates fresh. A device walk that took the old KDoc at its word reached 20.8 GB of address
- * space in 2 h 36 m and died of `std::bad_alloc` (#538).
+ * pool and allocates fresh.
  *
  * So the release is not the caller's to remember here. [block] gets the bytes for exactly as long as
  * it runs, and the buffer is released the moment it stops running.

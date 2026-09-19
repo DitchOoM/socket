@@ -29,15 +29,14 @@ import platform.posix.strerror
  * `socket_mc_*` cinterop shims (see `nw_udp_helpers.h`). Every control op maps a failing `setsockopt` to a
  * typed [MulticastException] carrying `errno`.
  *
- * ## The control plane borrows the descriptor; it does not own one (#527)
+ * ## The control plane borrows the descriptor; it does not own one
  *
- * This class has no `fd` field, and that is the fix. It used to take the descriptor number alongside
- * [base] and `setsockopt` it directly, which made it the one user of that number nobody had counted:
- * [base]'s [LastOutHandoff] admits `receive`, `send` and `close`, and releases the descriptor when the last
- * of *those* leaves (#498, #507). A `joinGroup` in flight was invisible to that word, so `close()` could
- * see an empty channel, close the descriptor, and let the next `socket()`/`open()`/`accept()` anywhere in
- * the process take the number — and the `setsockopt` then landed on **that** socket. Not a failure: a
- * silent success against a stranger's socket, joining it to a group or rewriting its multicast TTL.
+ * This class has no `fd` field on purpose. [base]'s [LastOutHandoff] admits `receive`, `send` and
+ * `close`, and releases the descriptor when the last of *those* leaves; a control op that held the raw
+ * descriptor number would be a user of that number nobody counted, so a `joinGroup` in flight could see
+ * the descriptor closed and the number taken by the next `socket()`/`open()`/`accept()` anywhere in the
+ * process — and the `setsockopt` would land on **that** socket. Not a failure: a silent success against
+ * a stranger's socket, joining it to a group or rewriting its multicast TTL.
  *
  * So every control op goes through [PosixUdpDatagramChannel.withDescriptor], the same admission the data
  * plane passes. The descriptor is reachable only inside that borrow, so it cannot be released underneath a
@@ -46,7 +45,7 @@ import platform.posix.strerror
  * because a second copy of "is it closed" here would be the same defect with an extra step.
  *
  * @param beforeAdmission Test seam: runs on entry to every control op, *before* this caller is admitted to
- *   the descriptor — the window #527 lived in, where `close()` may still be the last party out.
+ *   the descriptor — the window where `close()` may still be the last party out.
  *   `MulticastControlPlaneAdmissionTests` parks a caller here and runs `close()` around it. Production
  *   leaves the no-op default.
  * @param beforeSyscall Test seam: runs after admission and before the `socket_mc_*` call, to hold a

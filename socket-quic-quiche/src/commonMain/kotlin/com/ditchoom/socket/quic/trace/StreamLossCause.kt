@@ -23,15 +23,15 @@ sealed interface StreamLossCause {
     /**
      * A chunk was taken off the queue but its read unwound, and it could not be put back because the
      * queue was already closed — so nothing will ever drain it and freeing is the only alternative to
-     * a leak. UNEXPECTED during a healthy stream: this is the #414 shape, and a trace carrying it is
-     * the first direct evidence that window is reachable rather than merely real by construction.
+     * a leak. UNEXPECTED during a healthy stream: a trace carrying it is direct evidence that this
+     * window is reachable.
      */
     data object QueueClosed : StreamLossCause
 
     /**
      * The driver answered an in-flight `StreamRecv` for a read that had already unwound, and the
-     * salvaged chunk could not be handed on. UNEXPECTED during a healthy stream, and the #393 shape:
-     * bytes quiche delivered, that no `read()` will ever return.
+     * salvaged chunk could not be handed on. UNEXPECTED during a healthy stream: bytes quiche
+     * delivered, that no `read()` will ever return.
      */
     data object SalvageUnclaimed : StreamLossCause
 }

@@ -139,7 +139,7 @@ internal abstract class NodeDatagramChannelCore(
         // asUint8ArrayForSend() views the remaining bytes without consuming them, so no slice() is
         // needed to honor send-does-not-consume — and taking one would be a leak: on a pooled payload
         // ReadBuffer.slice() returns a TrackedSlice holding a reference on the chunk, which this path
-        // has nowhere to release, pinning one chunk out of the pool per send (#277).
+        // has nowhere to release, pinning one chunk out of the pool per send.
         val length = payload.remaining()
         // Parity guard: Node reports EMSGSIZE only after the async callback, and only for some sizes;
         // the same condition reports the same typed reason on every backend.

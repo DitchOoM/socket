@@ -45,7 +45,7 @@ sealed interface Pacing {
  * nothing else — including retransmissions. Closing the instant the handler returns therefore makes
  * the last reply *unreliable*: if the datagram carrying it is dropped in flight, the connection that
  * owed the retransmission no longer exists, and the peer's read ends cleanly over data it never got.
- * That is close-after-write truncation (issue #321), and it is silent — the reply looks sent from both
+ * That is close-after-write truncation, and it is silent — the reply looks sent from both
  * sides of the API.
  */
 sealed interface QuicCloseLinger {
@@ -221,7 +221,7 @@ data class QuicOptions(
      * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
      * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
      * (linger up to 3 seconds), so a reply whose datagram is lost on the wire is still retransmitted
-     * instead of dying with the connection (issue #321).
+     * instead of dying with the connection.
      *
      * Ignored for the client role, where the application decides when to call
      * [QuicConnection.close] and nothing closes the connection behind its back.
@@ -266,7 +266,7 @@ data class QuicOptions(
      * old path is dark that round trip cannot happen, nothing is replenished, and every unanswered
      * probe costs a CID that never comes back.
      *
-     * That is the #453 case, and the reactor's retry budget is what the pool has to feed. Measured
+     * The reactor's retry budget is what the pool has to feed. Measured
      * against a dead old path with every probe unanswered, and the automatic reactor driving:
      *
      * | limit | spares held | probes that reached the wire | reactor gave up at |
@@ -276,9 +276,9 @@ data class QuicOptions(
      * | 8     | 7           | 6                            | 25.75s             |
      * | 16    | 15          | 6                            | 25.75s             |
      *
-     * At the old default of 4, half the retry budget was spent on attempts quiche refused for want of
-     * a spare CID *before* opening a socket — real answers, but not real probes — and the reactor gave
-     * up with a third of the [idleTimeout] window unused. At 8 the pool stops being the binding
+     * At 4, half the retry budget goes on attempts quiche refuses for want of a spare CID *before*
+     * opening a socket — real answers, but not real probes — and the reactor gives up with a third of
+     * the [idleTimeout] window unused. At 8 the pool stops being the binding
      * constraint and every attempt is a probe that actually reaches the network. Above 8 nothing
      * changes, because the reactor's own deadline binds first.
      *
@@ -307,7 +307,7 @@ data class QuicOptions(
      * On the quiche-backed targets (JVM/Android/Linux) the anchors are loaded via
      * `quiche_config_load_verify_locations_from_file`. Supplying anchors forces peer
      * verification on (overriding [verifyPeer] = false), so validation is real chain
-     * evaluation against the pinned anchors — not a bypass. (#99)
+     * evaluation against the pinned anchors — not a bypass.
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
     /**
@@ -331,18 +331,16 @@ data class QuicOptions(
      * `connect()` throws before a certificate exists. Branch on [serverCertificateConstraintSupport]
      * rather than on the platform to see what actually runs.
      *
-     * **Behaviour change on Apple (macOS/iOS), issue #339.** Apple previously never parsed the pinned
-     * leaf's fields, so *any* certificate whose hash matched a pin connected. The constraints are now
-     * enforced there too, which means a pinned leaf that used to connect on Apple can now be rejected
-     * with a [com.ditchoom.socket.CertificateHashPinningException]:
+     * **Every platform with a QUIC engine parses the pinned leaf's fields and enforces the
+     * constraints**, so a pinned leaf whose hash matches can still be rejected with a
+     * [com.ditchoom.socket.CertificateHashPinningException]:
      * `NotTemporallyValid` (expired or not yet valid), `ValidityPeriodTooLong` (validity > 14 days),
      * `UnsupportedPublicKey` (not ECDSA P-256 — including an EC key carrying explicit domain parameters
      * instead of a namedCurve OID, which the walk reads successfully and reports as *not* the named
      * P-256), or `CertificateParseFailed` for a leaf whose DER the shared walk cannot read at all — it
      * accepts the ordinary shapes but not, for example, a UTCTime without seconds or a GeneralizedTime
-     * with fractional seconds or a numeric UTC offset. Every other platform already
-     * behaved this way, so an Apple-only pin is the case to check: confirm the pinned leaf is EC P-256,
-     * currently valid, and issued for 14 days or less. Nothing changed for callers who pin no hashes.
+     * with fractional seconds or a numeric UTC offset. Confirm the pinned leaf is EC P-256, currently
+     * valid, and issued for 14 days or less. Callers who pin no hashes are unaffected.
      */
     val serverCertificateHashes: List<CertificateHash> = emptyList(),
     /**

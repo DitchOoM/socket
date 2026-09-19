@@ -463,9 +463,9 @@ interface QuicheApi {
      * [ProbeOutcome.Probed] with the destination CID sequence number quiche **linked to the new
      * path** on success, or [ProbeOutcome.Rejected] with the raw quiche error code on failure.
      *
-     * The sequence number is a return value rather than the `seqOut` out-param it used to be because
-     * it is not diagnostic — it is a resource the caller now owns. See [ProbeOutcome] for why a
-     * driver that cannot see it leaks one connection ID per failed migration (#447).
+     * The sequence number is a return value rather than an out-param because it is not diagnostic —
+     * it is a resource the caller now owns. See [ProbeOutcome] for why a driver that cannot see it
+     * leaks one connection ID per failed migration.
      */
     fun connProbePath(
         conn: QuicheConn,
@@ -541,8 +541,8 @@ interface QuicheApi {
      * reaches this connection at all. quiche removes a retired CID from its internal table the moment
      * it processes the peer's RETIRE_CONNECTION_ID; anything still mapping that CID to this connection
      * outlives quiche's own view of it, and a packet arriving on it is then delivered to a connection
-     * that no longer recognises it — which quiche reports as a protocol violation and closes over
-     * (#437). Reading this on every established wake is what keeps the two views from diverging.
+     * that no longer recognises it — which quiche reports as a protocol violation and closes over.
+     * Reading this on every established wake is what keeps the two views from diverging.
      *
      * Defaults to 0 — the [connStats]/[connPeerError] default-for-test-doubles convention. A backend
      * that has not bound the accessor reports "nothing retired", which is also the correct answer for
@@ -579,13 +579,12 @@ interface QuicheApi {
     /**
      * How many source connection IDs quiche currently considers active (`quiche_conn_active_scids`).
      *
-     * The **read** counterpart to [connRetiredScids]. This project has always called quiche's CID
-     * *write* API — [connNewScid] to issue, [connRetireDcid] to retire — and, since #441,
-     * [connDrainRetiredScids] to learn what the peer retired. What it never asked is what quiche
-     * believes the live set actually **is**. That gap is why a divergence between quiche's table and
-     * our own routing map is structurally invisible rather than merely rare: there is no second
-     * opinion to compare against, so drift shows up as a dropped packet (#437) or a path slot pinned
-     * forever (#395, #447), long after the moment it happened.
+     * The **read** counterpart to [connRetiredScids]. The CID *write* API — [connNewScid] to issue,
+     * [connRetireDcid] to retire, [connDrainRetiredScids] to learn what the peer retired — says nothing
+     * about what quiche believes the live set actually **is**. Without this second opinion a divergence
+     * between quiche's table and our own routing map is structurally invisible rather than merely rare:
+     * drift shows up as a dropped packet or a path slot pinned forever, long after the moment it
+     * happened.
      *
      * Defaults to 0 — the [connStats]/[connPeerError] default-for-test-doubles convention.
      */
@@ -647,7 +646,7 @@ interface QuicheApi {
     /**
      * Load trusted CA certificates from a PEM bundle file as the verification anchors
      * (`quiche_config_load_verify_locations_from_file`). [pathAddr] is the native address
-     * of a NUL-terminated path string. Returns 0 on success, negative on error. (#99)
+     * of a NUL-terminated path string. Returns 0 on success, negative on error.
      */
     fun configLoadVerifyLocationsFromFile(
         config: QuicheConfig,

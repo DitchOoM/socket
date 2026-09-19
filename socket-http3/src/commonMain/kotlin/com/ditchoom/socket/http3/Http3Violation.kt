@@ -188,7 +188,7 @@ sealed interface Http3Violation {
     }
 
     /**
-     * The peer closed its [type] stream while the connection was live (#530).
+     * The peer closed its [type] stream while the connection was live.
      *
      * The rule is spelled out twice, once per family of critical stream, and both times as a MUST.
      * RFC 9114 §6.2.1, on the control stream: *"The sender MUST NOT close the control stream, and the
@@ -205,16 +205,15 @@ sealed interface Http3Violation {
      * using afterwards: the control stream carries GOAWAY / MAX_PUSH_ID / CANCEL_PUSH, the peer's encoder
      * stream is what keeps our [QpackDecoder]'s dynamic table equal to the peer's encoder table, and the
      * peer's decoder stream is what acknowledges our own insertions. Ending the reading child and
-     * returning — what every one of these readers did before #530 — leaves the connection running on
-     * machinery the peer has destroyed, and the first field section that references the dynamic table
-     * then blocks on a Required Insert Count nothing will ever raise (#472's symptom, from a different
-     * cause).
+     * returning would leave the connection running on machinery the peer has destroyed, and the first
+     * field section that references the dynamic table would then block on a Required Insert Count
+     * nothing will ever raise.
      *
      * §8.1 defines the code as "A stream required by the HTTP/3 connection was **closed or reset**", so a
      * RESET_STREAM lands here too; [QpackStreamReset] is the same code named by the QPACK instruction
      * readers, which see a reset as a distinct read result.
      *
-     * Deliberately **not** routed through `abandonStalledStream` (#511): that names a stall and sends
+     * Deliberately **not** routed through `abandonStalledStream`: that names a stall and sends
      * STOP_SENDING, and a stream the peer has already closed neither stalled nor needs to be asked to
      * stop. The report is a CONNECTION_CLOSE, not a per-stream signal.
      */
@@ -263,25 +262,26 @@ sealed interface Http3Violation {
         override fun describe() = "server cancelled push $pushId"
     }
 
-    // --- Peer-stream router (#477) — H3_REQUEST_CANCELLED -----------------------------------------
+    // --- Peer-stream router — H3_REQUEST_CANCELLED ------------------------------------------------
 
     /**
-     * A peer-initiated [streamId] said nothing for [deadline] before the router could tell what it was
-     * (#477): a bidirectional stream's WebTransport signal, or a push stream's Push ID / response HEADERS,
-     * never arrived. Unlike the QPACK pumps of #472 these streams are *not* idle by design — a peer that
-     * opens a stream and says nothing must not be waited on forever — so the deadline is right and stays;
-     * what was wrong was that expiring it looked like cancellation.
+     * A peer-initiated [streamId] said nothing for [deadline] before the router could tell what it was:
+     * a bidirectional stream's WebTransport signal, or a push stream's Push ID / response HEADERS, never
+     * arrived. Unlike the QPACK pumps these streams are *not* idle by design — a peer that opens a
+     * stream and says nothing must not be waited on forever — so the deadline is right; what must not
+     * happen is for its expiry to look like cancellation.
      *
      * `QuicheDriver` implements a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
      * `CancellationException`; a `launch` child completing with one is *cancelled, not failed*, so
-     * `route()`'s per-stream catch arms never saw it and the child vanished with a bare `close()` —
-     * indistinguishable from a genuinely cancelled router, and on QUIC a send-side FIN only, leaving the
-     * peer's half of the stream open. Naming it lets the router abandon the stream out loud: [errorCode]
+     * `route()`'s per-stream catch arms would never see it and the child would vanish with a bare
+     * `close()` — indistinguishable from a genuinely cancelled router, and on QUIC a send-side FIN only,
+     * leaving the peer's half of the stream open. Naming it lets the router abandon the stream out loud:
+     * [errorCode]
      * is `H3_REQUEST_CANCELLED`, the code RFC 9114 §4.1.1 / §4.6 gives a client for "data no longer
      * needed", sent as RESET_STREAM + STOP_SENDING; a push whose Push ID had already arrived fails its
      * awaiting [Http3ServerPush.response] with this. The connection survives.
      *
-     * The server has the same two shapes (#495) — the WebTransport peek on a client bidirectional stream,
+     * The server has the same two shapes — the WebTransport peek on a client bidirectional stream,
      * and a request stream whose HEADERS never arrive — and abandons them the same way. §4.1.1 gives a
      * server `H3_REQUEST_CANCELLED` for a request it abandons after partial processing; for one it never
      * processed at all it prefers `H3_REQUEST_REJECTED`, a refinement this violation does not make: it
@@ -382,19 +382,19 @@ sealed interface Http3Violation {
     }
 
     /**
-     * A QPACK [stream]'s pump stopped on a read deadline instead of on end-of-stream (#472).
+     * A QPACK [stream]'s pump stopped on a read deadline instead of on end-of-stream.
      *
      * A peer's QPACK encoder stream is idle *by design* between header-block insertions, so a
-     * caller-facing read deadline armed on it expires during ordinary silence. The pumps no longer arm
-     * one — they read with `Duration.INFINITE`, delegating liveness to the connection's idle timeout,
-     * exactly as the control stream already did — so this should be unreachable.
+     * caller-facing read deadline armed on it expires during ordinary silence. The pumps arm none —
+     * they read with `Duration.INFINITE`, delegating liveness to the connection's idle timeout, exactly
+     * as the control stream does — so this should be unreachable.
      *
-     * It exists because the failure it names was **silent**: `QuicheDriver` implements a deadline as
-     * `withTimeout`, whose `TimeoutCancellationException` is a `CancellationException`, and a `launch`
-     * child completing with one is treated as *cancelled, not failed*. The pump exited, the connection
-     * stayed "healthy", and the decoder's dynamic table silently desynced from the peer's until some
-     * later HEADERS block referencing an un-inserted entry failed to decode — presenting as the peer
-     * sending garbage. Naming the timeout makes a recurrence a typed connection abort instead.
+     * It exists because the failure it names is otherwise **silent**: `QuicheDriver` implements a
+     * deadline as `withTimeout`, whose `TimeoutCancellationException` is a `CancellationException`, and a
+     * `launch` child completing with one is treated as *cancelled, not failed*. The pump would exit, the
+     * connection stay "healthy", and the decoder's dynamic table silently desync from the peer's until
+     * some later HEADERS block referencing an un-inserted entry failed to decode — presenting as the
+     * peer sending garbage. Naming the timeout makes that a typed connection abort instead.
      */
     data class QpackPumpDeadlineExpired(
         val stream: QpackStream,

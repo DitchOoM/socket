@@ -74,11 +74,11 @@ internal suspend fun buildAppleQuicConnection(
     requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
-    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
-    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production uses the defaults; the sim
+    // harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
     // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
-    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): AppleQuicConnection {
     // GREASE is forced off on a shared port before anything reads these — see
@@ -109,7 +109,7 @@ internal suspend fun buildAppleQuicConnection(
 
             applyQuicOptions(quicOptions, AppleQuicConfigCalls(config))
 
-            // Pinned CA trust anchors (#99): load the PEM bundle as the verification
+            // Pinned CA trust anchors: load the PEM bundle as the verification
             // anchors so Linux enforces the same private-CA trust as Apple. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads
             // eagerly; we unlink it immediately after. verifyPeer is forced on in
@@ -127,15 +127,14 @@ internal suspend fun buildAppleQuicConnection(
                 // default verify paths resolve the system store, but the iOS family ships no
                 // filesystem CA store, so the defaults find nothing and every public-CA handshake
                 // fails (tlsAlert 48). Load the embedded Mozilla roots there — the Apple companion to
-                // the Linux /etc/ssl probe (#185) and the JVM/Android default-anchor fix (#182).
+                // the Linux /etc/ssl probe and the JVM/Android default-anchor fallback.
                 loadAppleSystemCaTrust(config)
             }
 
-            // Datapath: open the connection's primary :socket-udp path over NWConnection-UDP (Phase 6
-            // adapter-first cutover) through the same factory that opens every migration path, so both
-            // ask the one question about the local endpoint (#519). Here the answer is
-            // [RouteSource.PlatformAssigned]: NW owns endpoint assignment, so no route is probed and the
-            // bind stays unnamed — the one legitimate unnamed bind, and byte-identical to before.
+            // Datapath: open the connection's primary :socket-udp path over NWConnection-UDP through the
+            // same factory that opens every migration path, so both ask the one question about the local
+            // endpoint. Here the answer is [RouteSource.PlatformAssigned]: NW owns endpoint assignment,
+            // so no route is probed and the bind stays unnamed — the one legitimate unnamed bind.
             // UdpSocket.connect waits until NW is ready + assigns the local endpoint, cancellably (so the
             // QUIC timeout interrupts a stuck connect and never leaks the nw_connection_t); we map its
             // typed connect failure to the QUIC error contract.
@@ -196,8 +195,8 @@ internal suspend fun buildAppleQuicConnection(
                     peerSockAddr.length.convert(),
                     config,
                 ) ?: run {
-                    // The sockaddr encodings and the channel are the SockAddrsPinned arm's to release
-                    // (#544); only what that stage does not know about is freed here.
+                    // The sockaddr encodings and the channel are the SockAddrsPinned arm's
+                    // to release; only what that stage does not know about is freed here.
                     scidBuf.freeNativeMemory()
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
@@ -250,7 +249,7 @@ internal suspend fun buildAppleQuicConnection(
                                 peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
                                 primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
                                 // The same factory that opened the primary path above — one per
-                                // connection, so every path it holds was bound by one discipline (#519).
+                                // connection, so every path it holds was bound by one discipline.
                                 channelFactory = factory,
                             )
                         },
@@ -295,7 +294,7 @@ internal suspend fun buildAppleQuicConnection(
                 // are macOS 12 / iOS 15 (the shipped klib declares them extern_weak, so calling one on
                 // iOS 15–17 is a jump to NULL). So Apple uses the shared commonMain DER walk — the same
                 // code every target compiles — which is what lets `serverCertificateConstraintSupport`
-                // report Enforced here rather than LeafHashOnly (issue #339).
+                // report Enforced here rather than LeafHashOnly.
                 parseLeafFields = ::parsePinnedLeafFieldsDer,
                 now = tuning.wallClock(),
             )
@@ -315,7 +314,7 @@ internal suspend fun buildAppleQuicConnection(
                 runCatching { reached.channel.close() }
                 parentScope.cancel()
             }
-            // Encoded and unowned: no driver exists to free the two pinned sockaddrs (#544).
+            // Encoded and unowned: no driver exists to free the two pinned sockaddrs.
             is ConnectProgress.SockAddrsPinned -> {
                 reached.peer.free()
                 reached.local.free()
@@ -408,7 +407,7 @@ internal class AppleQuicConnection(
         capacity: Int,
     ): Int {
         val deferred = CompletableDeferred<Int>()
-        // The buffer travels with its address (#366): quiche writes the DER into it on the driver
+        // The buffer travels with its address: quiche writes the DER into it on the driver
         // loop, so what keeps that memory mapped has to reach the driver too. See [QuicheMemory].
         driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred))
         return deferred.await()
@@ -574,14 +573,14 @@ private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
 /**
  * Load the default trust anchors for [config] on Apple when verifyPeer is on but no anchors are
  * pinned. macOS keeps BoringSSL's compiled-in default verify paths (they resolve `/etc/ssl/cert.pem`,
- * which macOS ships) — a no-op here, unchanged behaviour. The iOS family (device + simulator) has no
+ * which macOS ships) — a no-op here. The iOS family (device + simulator) has no
  * such filesystem store, so the embedded Mozilla root bundle ([MOZILLA_CA_ROOTS_PEM], generated from
  * mozilla-ca/cacert.pem) is written to a temp file and loaded as the anchor set. BoringSSL then does
  * full RFC 5280 chain validation internally against those roots during the handshake — we never need
  * the peer chain ourselves (quiche only surfaces the leaf). Branching on [Platform.osFamily] rather
  * than probing the filesystem keeps this deterministic on the simulator, which can otherwise see the
- * host Mac's `/etc/ssl`. SecTrust/keychain delegation (honouring MDM-installed + OS-revoked roots) is
- * the tracked follow-up to this bundled-roots interim (#186).
+ * host Mac's `/etc/ssl`. Bundled roots stand in for SecTrust/keychain delegation, so MDM-installed
+ * and OS-revoked roots are not honoured.
  */
 private fun loadAppleSystemCaTrust(config: CPointer<cnames.structs.quiche_config>) {
     if (Platform.osFamily == OsFamily.MACOSX) return
@@ -595,7 +594,7 @@ private fun loadAppleSystemCaTrust(config: CPointer<cnames.structs.quiche_config
 }
 
 /**
- * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path (#99).
+ * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path.
  *
  * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
  * must land on disk; the caller `unlink`s it once `load_verify_locations` has read it. The

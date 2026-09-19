@@ -33,10 +33,9 @@ internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
  * scheduling-interleaved). [scope] is the connection itself (every `QuicConnection` is a
  * [CoroutineScope]), so the collector is cancelled when the connection closes.
  *
- * [monitor] is the connection's **own** resolved monitor, passed in rather than read from a second field
- * on [QuicTraceCapture]. That second field is what this replaces: a caller could hand `QuicOptions` two
- * different monitors — one for auto-migration, one for the trace — and get a capture whose NET lines
- * indexed an observation stream nothing else in the connection had seen.
+ * [monitor] is the connection's **own** resolved monitor, passed in rather than read from a field on
+ * [QuicTraceCapture]: a second monitor — one for auto-migration, one for the trace — would give a
+ * capture whose NET lines index an observation stream nothing else in the connection has seen.
  *
  * No-op when capture is off or the capture did not ask for observations. The server bind path never
  * calls this at all (a server has no local client network path to observe).

@@ -1,7 +1,7 @@
 package com.ditchoom.socket.testkit.migration
 
 /**
- * What one connection's probe history says about its connection-ID pool (#447).
+ * What one connection's probe history says about its connection-ID pool.
  *
  * The question is narrower than it looks, and the obvious reading of it is wrong: *after a probe went
  * unanswered, did this connection ever arm one that was **answered**?*
@@ -19,7 +19,7 @@ package com.ditchoom.socket.testkit.migration
  * never got it back is a [NeverRecovered] — not an absence of evidence.
  */
 sealed interface PoolRecoveryVerdict {
-    /** No probe went unanswered, so this connection exercises #445 only and cannot speak to #447. */
+    /** No probe went unanswered, so this connection cannot speak to pool recovery. */
     data class NeverLostAProbe(
         val attempts: Int,
     ) : PoolRecoveryVerdict
@@ -51,7 +51,7 @@ sealed interface PoolRecoveryVerdict {
 
 /**
  * The operator-facing line, keeping the vocabulary a walk log is already grepped for. Internal so a
- * probe can only print a verdict through [ConnectionVerdict], which gates it on echo liveness (#620).
+ * probe can only print a verdict through [ConnectionVerdict], which gates it on echo liveness.
  */
 internal val PoolRecoveryVerdict.line: String
     get() =
@@ -86,7 +86,7 @@ data class PoolProbeHistory(
     val noSpareAfterUnanswered: Int = 0,
 ) {
     /**
-     * The decision, in one place. Order matters: exhaustion is the specific failure #447 names, so it
+     * The decision, in one place. Order matters: exhaustion is the specific failure, so it
      * outranks the general one, and an answered probe outranks both — a pool that refused a CID once
      * and then handed one out has, by observation, come back.
      */

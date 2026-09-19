@@ -26,8 +26,8 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
  * Owns the per-call lifecycle for the duration of [block]; releases everything before returning.
  *
  * Production code reaches the same path via [QuicheEngine.connect] → [buildJvmQuicConnection];
- * this thin wrapper survives because a test passes a spy [api] (e.g. CountingQuicheApi) to observe
- * the real native calls the driver makes — used to assert reactive keepalive actually PINGs.
+ * this thin wrapper exists so a test can pass a spy [api] (e.g. CountingQuicheApi) and observe
+ * the real native calls the driver makes — how reactive keepalive is asserted to actually PING.
  */
 internal suspend fun <R> commonJvmWithQuicConnection(
     hostname: String,
@@ -64,11 +64,11 @@ internal suspend fun buildJvmQuicConnection(
     connectionOptions: TransportConfig,
     timeout: Duration,
     api: QuicheApi,
-    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
-    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production uses the defaults; the sim
+    // harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
     // Where the local endpoint comes from. Defaulted so every existing caller keeps opening its own
-    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (#306, RFC 9443).
+    // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): JvmQuicConnection {
     // The options this connection actually runs with. On a shared port GREASE is forced off before
@@ -99,7 +99,7 @@ internal suspend fun buildJvmQuicConnection(
         applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
         // CA trust anchors. Two sources, in priority order:
-        //  1. Caller-pinned anchors (#99): load exactly the supplied PEM bundle so non-Apple targets
+        //  1. Caller-pinned anchors: load exactly the supplied PEM bundle so non-Apple targets
         //     enforce the same private-CA trust as Apple.
         //  2. Platform defaults: when verify_peer ends up ON but the caller pinned nothing, fall back to
         //     the JVM/Android default trust store. quiche bundles its own BoringSSL with NO built-in
@@ -129,9 +129,9 @@ internal suspend fun buildJvmQuicConnection(
 
         // 2. Resolve the peer once (numeric literal → no DNS), then open the connection's primary
         // :socket-udp path through the same factory that opens every migration path — so the first path
-        // binds the route's source address like all the others, instead of the unnamed bind #434
-        // removed from the rest (#519). The factory is built here rather than at the migration wiring
-        // below because the primary path is the first thing it opens.
+        // binds the route's source address like all the others, never an unnamed bind. The factory is
+        // built here rather than at the migration wiring below because the primary path is the first
+        // thing it opens.
         val peer = UdpSocket.resolve(hostname, port)
         val codec = SocketAddressCodec(hostOsSockAddrLayout())
         val path =
@@ -228,7 +228,7 @@ internal suspend fun buildJvmQuicConnection(
                 // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned by
                 // onCleanup for the driver's life) and the same factory that opened the primary path in
                 // step 2 — one factory per connection, so every path it ever holds was bound by one
-                // source-address discipline (#519).
+                // source-address discipline.
                 migration =
                     path.origin.migrationCapability(quicOptions.migration) { factory ->
                         MigrationCapability.Supported(
@@ -302,7 +302,7 @@ internal suspend fun buildJvmQuicConnection(
                 api.configFree(config)
                 parentScope.cancel()
             }
-            // Encoded and unowned: no driver exists to free the two pinned sockaddrs (#544).
+            // Encoded and unowned: no driver exists to free the two pinned sockaddrs.
             is ConnectProgress.SockAddrsPinned -> {
                 reached.peer.free()
                 reached.local.free()
@@ -378,7 +378,7 @@ internal class CommonJvmQuicConfigCalls(
 }
 
 /**
- * Write the supplied CA PEM blocks to a single temp bundle file and return its path (#99).
+ * Write the supplied CA PEM blocks to a single temp bundle file and return its path.
  *
  * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
  * must land on disk; the caller deletes it once `load_verify_locations` has read it. The

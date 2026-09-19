@@ -61,7 +61,7 @@ actual object UdpSocket {
         // peer. The socket family follows the resolved remote, so a v6 peer opens a udp6 socket.
         val peer = resolve(remoteHost, remotePort)
         return createDgramSocket(if (peer.family == AddressFamily.IPv6) UDP6 else UDP4).closedIfSetupFails {
-            // A refusal at the bind step of a connect is a refused connect (#534): typed the same way.
+            // A refusal at the bind step of a connect is a refused connect: typed the same way.
             awaitBind(this, localPort, localHost) { UdpConnectException(nodeConnectError(it)) }
             awaitConnect(this, peer.port, peer.host)
             ConnectedNodeDatagramChannel(this, peer)
@@ -108,7 +108,7 @@ private fun isNode(): Boolean = js("global.window") == null
 
 /**
  * Turns a freshly created `dgram` socket into the [setup] result, and closes the socket if anything in
- * between is refused — so a refusal propagates with nothing left behind (#521).
+ * between is refused — so a refusal propagates with nothing left behind.
  *
  * A `dgram` socket owns a libuv `udp` handle and its descriptor from `createSocket()`, before it is
  * bindable, connectable or wrappable, and every step after that can be refused: the bind (an endpoint
@@ -137,12 +137,12 @@ private fun isNode(): Boolean = js("global.window") == null
  *
  * `close()` is legal on a socket whose bind was refused (Node's `healthCheck` gates on the handle
  * existing, not on the bind state) and libuv releases the descriptor *inside* the `close()` call, not on
- * its callback — measured, `lsof` drops before the callback runs — so nothing here waits. The temporary
+ * its callback — so nothing here waits. The temporary
  * `'error'` listener [awaitBind] / [awaitConnect] leave registered is deliberately not removed: it
  * swallows anything the close stirs up, where a socket with no `'error'` listener would take the process
  * down with an unhandled event.
  *
- * The other three actuals already did this: the JVM/Android one closes the channel (#463), the Linux one
+ * The other three actuals do the same: the JVM/Android one closes the channel, the Linux one
  * `close(fd)`s on either refusal, the Apple one cancels the `NWConnection`.
  */
 private inline fun <T> DgramSocket.closedIfSetupFails(setup: DgramSocket.() -> T): T {
@@ -164,7 +164,7 @@ private suspend fun awaitBind(
     port: Int,
     address: String?,
     // The bind is the first step of `connect` as well as the whole of `bind`, and the two report a
-    // refusal differently: `connect` types it (#534), `bind` keeps its own exception.
+    // refusal differently: `connect` types it, `bind` keeps its own exception.
     refusal: (error: Any?) -> Throwable = { UdpBindException(it.toString()) },
 ) = suspendCancellableCoroutine { cont ->
     socket.on("error") { error ->
@@ -197,7 +197,7 @@ private suspend fun awaitConnect(
 }
 
 /**
- * Classify a `dgram` connect fault onto [UdpConnectError] by the errno *name* Node reports (#534) —
+ * Classify a `dgram` connect fault onto [UdpConnectError] by the errno *name* Node reports —
  * the same table as [connectErrnoToError] on the POSIX backends, by name rather than number, so a
  * consumer's branch on the member is the same on every backend. An unrecognised name keeps the
  * original error as [UdpConnectError.Transport]'s cause rather than flattening it into a message.

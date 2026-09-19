@@ -29,10 +29,8 @@ sealed interface QuicWriteTarget {
  * [QuicCloseException] (the connection ended). The fix is at the call site: allocate the buffer from
  * [QuicScope.bufferFactory] or `BufferFactory.deterministic()`, as [message] spells out.
  *
- * Thrown by every quiche-backed connection on every platform. It is the typed replacement for the
- * `NullPointerException` that `QuicheDriver.streamWrite`'s `nativeMemoryAccess!!` used to throw on
- * Kotlin/Native for a `BufferFactory.Default` buffer (#502) — a precondition that lived only in the
- * crash.
+ * Thrown by every quiche-backed connection on every platform, so the precondition is stated as a type
+ * rather than as a `NullPointerException` deep in the driver.
  *
  * [target] says which write, [capabilities] is the connection's declaration that made the buffer
  * unacceptable — so a handler can log the claim alongside the violation without re-reading the scope.

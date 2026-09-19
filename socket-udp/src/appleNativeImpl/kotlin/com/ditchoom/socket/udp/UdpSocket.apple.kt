@@ -49,8 +49,7 @@ import kotlin.coroutines.resumeWithException
 /**
  * The Apple/K-N default: a native deterministic factory (ARC-managed `NSMutableData`). Both the
  * NWConnection receive callback and POSIX `recvfrom` copy into the payload's raw native memory, so
- * `BufferFactory.Default` on native (a non-native GC buffer) is unusable; this is the exact strategy
- * both Apple channels have always used (formerly `PlatformBuffer.allocateNative`).
+ * `BufferFactory.Default` on native (a non-native GC buffer) is unusable.
  */
 internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.deterministic()
 
@@ -131,7 +130,7 @@ actual object UdpSocket {
                         }
                         STATE_FAILED, STATE_CANCELLED -> {
                             resumed = true
-                            // Typed in NW's own (domain, code) namespace (#534): domain 1 is POSIX and
+                            // Typed in NW's own (domain, code) namespace: domain 1 is POSIX and
                             // the code is then the errno, so a consumer can branch on it exactly as it
                             // would on a Linux errno. A `cancelled` state with no error is NW reporting
                             // that the connection went away before it was ready.
@@ -186,8 +185,7 @@ actual object UdpSocket {
                 error("getsockname failed for bound UDP socket")
             }
         // The multicast channel is handed the base channel, not the descriptor: `fd` now has exactly one
-        // owner, and the control plane borrows it back through the same admission the data plane passes
-        // (#527).
+        // owner, and the control plane borrows it back through the same admission the data plane passes.
         val base = PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
         return MulticastPosixUdpDatagramChannel(ipv6 = v6, base = base)
     }
@@ -278,17 +276,15 @@ actual object UdpSocket {
      * that dials `127.0.0.1` both reach it. What that socket does not do on Darwin is *own* the IPv4
      * half of its port. A plain `AF_INET` socket may already hold `0.0.0.0:port`; the dual-stack bind
      * still succeeds, and every datagram addressed to `127.0.0.1:port` is delivered to the more
-     * specific IPv4 socket. Measured on macOS 15, with the delivery rule pinned three ways: an
-     * `AF_INET` **wildcard** holder wins IPv4 and leaves IPv6 alone, while a `127.0.0.1`-specific
-     * holder and an `IPV6_V6ONLY` holder both make the dual-stack bind fail outright. So exactly one
-     * shape is dangerous, and it is the one that binds first and says nothing.
+     * specific IPv4 socket. The delivery rule has three shapes: an `AF_INET` **wildcard** holder wins
+     * IPv4 and leaves IPv6 alone, while a `127.0.0.1`-specific holder and an `IPV6_V6ONLY` holder both
+     * make the dual-stack bind fail outright. So exactly one shape is dangerous, and it is the one that
+     * binds first and says nothing.
      *
      * With an ephemeral port that is invisible: `bind(0)` picks from the IPv6 table, so it can hand out
      * a port whose IPv4 half belongs to an unrelated daemon (`homed`, `adb`, …). A QUIC server bound
      * that way never receives an IPv4 client's Initial — the client retransmits for the whole idle
-     * timeout and closes with `local: IdleTimeout` over an empty server trace, which is
-     * [#450](https://github.com/DitchOoM/socket/issues/450) / #367. Measured at roughly 1 bind in 4 000
-     * on the JVM actual, whose wildcard bind is the same dual-stack socket.
+     * timeout and closes with `local: IdleTimeout` over an empty server trace.
      *
      * So an `AF_INET` probe takes the port first — `bind(0)` on it is handed a port free for IPv4 by
      * definition — and is closed before the real socket binds it. UDP has no `TIME_WAIT`, so the port

@@ -21,9 +21,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Exposes a [QuicheDriver]'s RFC-9221 unreliable datagrams as a buffer-flow [ConnectedDatagramChannel]
- * — the *connected* (single-peer) datagram endpoint backing [QuicScope.datagramChannel]. This is the Phase-7
- * fold of the old `QuicScope.sendDatagram`/`receiveDatagram` surface onto the shared datagram
- * trichotomy; every received [Datagram] carries the connection's [remote] peer.
+ * — the *connected* (single-peer) datagram endpoint backing [QuicScope.datagramChannel]. Every received
+ * [Datagram] carries the connection's [remote] peer.
  *
  * Shared by every quiche-backed platform connection (JVM/Android/Linux/Apple) so the buffer-ownership
  * and native-lifetime rules live in one place. The logic mirrors [DriverStreamAdapter] for streams:
@@ -35,7 +34,7 @@ import kotlinx.coroutines.withContext
  *   read-after-free guard from [DriverStreamAdapter]).
  * - **send**: the caller owns the buffer; the driver only reads it. The same in-flight join guarantees
  *   quiche finished reading before the caller frees/recycles it — and the [QuicheMemory] the command
- *   carries is what keeps the buffer *reachable* meanwhile, which no join can do (#366).
+ *   carries is what keeps the buffer *reachable* meanwhile, which no join can do.
  *
  * A QUIC datagram flow has one implicit peer (the connected refinement has no destination parameter)
  * and no per-datagram IP control plane, so [send] ignores its `options` argument, [capabilities]
@@ -72,10 +71,10 @@ internal class DriverDatagramAdapter(
 
     /**
      * QUIC application datagrams carry no raw IP control plane (ECN/DF/PKTINFO) — but [send] hands
-     * quiche the payload's raw address, so the one data-plane requirement is stated (#502): the same
-     * answer as the connection's [QuicScope.capabilities], in buffer-flow's vocabulary. This used to be
-     * [DatagramCapabilities.None], which that type's own doc calls a *real claim* that heap payloads are
-     * sendable — made over a `nativeMemoryAccess!!`.
+     * quiche the payload's raw address, so the one data-plane requirement is stated: the same answer as
+     * the connection's [QuicScope.capabilities], in buffer-flow's vocabulary. [DatagramCapabilities.None]
+     * would be what that type's own doc calls a *real claim* that heap payloads are sendable — made over
+     * a `nativeMemoryAccess!!`.
      */
     override val capabilities: DatagramCapabilities =
         DatagramCapabilities(requiresNativeMemoryBuffers = QuicheDriver.capabilities.requiresNativeMemoryBuffers)
@@ -100,7 +99,7 @@ internal class DriverDatagramAdapter(
         }
         // A zero-length datagram is valid (RFC 9221); a 0-remaining buffer may not expose a native
         // address, so pass a null pointer in that case (the backends send NULL/len 0). Otherwise this is
-        // a caller-fed buffer (#502): a heap payload is rejected by type before anything is enqueued —
+        // a caller-fed buffer: a heap payload is rejected by type before anything is enqueued —
         // see DriverStreamAdapter.streamWrite, the stream half of the same contract.
         val memory =
             if (remaining > 0) {
@@ -150,7 +149,7 @@ internal class DriverDatagramAdapter(
 
     override suspend fun receive(): DatagramReadResult {
         val buffer = driver.recvBufPool.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
-        // Address AND owner — see DriverStreamAdapter.streamRead and [QuicheMemory] (#366).
+        // Address AND owner — see DriverStreamAdapter.streamRead and [QuicheMemory].
         val memory = buffer.driverOwnedMemory()
 
         // See DriverStreamAdapter.streamRead: the driver may still be writing into `memory` inside
@@ -184,7 +183,7 @@ internal class DriverDatagramAdapter(
                     is StreamRecvResult.Done -> driver.dgramSignal.receive() // park until one arrives, then retry
                     is StreamRecvResult.Error -> return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))
                     // Datagrams have no stream to reset. Reset -> here would mean a backend bug (quiche
-                    // decoded a stream-only sentinel out of a dgram recv); ConnectionGone is the old -2
+                    // decoded a stream-only sentinel out of a dgram recv); ConnectionGone is the driver's own
                     // teardown sentinel. Both land on the same verdict as any other Error above.
                     is StreamRecvResult.Reset, is StreamRecvResult.ConnectionGone ->
                         return DatagramReadResult.Closed(reason = closedError(QuicError.NoError))

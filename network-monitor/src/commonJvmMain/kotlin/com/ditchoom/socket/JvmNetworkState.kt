@@ -12,24 +12,21 @@ import java.net.NetworkInterface
  *
  * `public` rather than `internal` on purpose: the `jvm21Main` (FFM) compilation is a separate Kotlin
  * module and cannot see this source set's internals, so anything shared with it would otherwise have to
- * be **duplicated** — as `parseDefaultRouteInterface` already was, in three places. A single copy of the
- * route probe is worth one exported function, because the whole point of
- * RFC_NETWORK_REACHABILITY §1.1 is that these monitors were answering the routing question wrongly, and
- * two divergent copies of the fix would be the same bug again.
+ * be **duplicated**. A single copy of the route probe is worth one exported function: two divergent
+ * copies of the RFC_NETWORK_REACHABILITY §1.1 routing answer would drift apart.
  *
  * The rungs it can reach are [ReachResolution.RouteOnly]: it resolves link and route, and never probes
  * internet reachability, so a [NetworkState.Routable] always carries [InternetAccess.Unobserved].
  *
  * - **no non-loopback interface is up** → [NetworkState.Offline]
  * - **an interface is up and both route probes report [RouteProbeOutcome.NoRoute]** →
- *   [NetworkState.LinkLocal]. This is the §1.1 fix: a container with only `docker0`, or a laptop
- *   associated to Wi-Fi without a DHCP lease, used to be reported plainly `AVAILABLE`.
+ *   [NetworkState.LinkLocal] (§1.1): a container with only `docker0`, or a laptop associated to Wi-Fi
+ *   without a DHCP lease, has a link and no route.
  * - **either probe reports [RouteProbeOutcome.Routed]** → [NetworkState.Routable]
  * - **a probe was [RouteProbeOutcome.Indeterminate] and neither found a route** →
  *   [NetworkState.Routable] with [InternetAccess.Unobserved]. A monitor that could not see routes is
  *   not entitled to claim [NetworkState.LinkLocal] (§9.2 — the same optimistic-when-blind rule
- *   [ReachResolution.LinkOnly] documents), so a sandboxed-but-routable host keeps the rung `main`
- *   reported (`AVAILABLE`) instead of silently losing [canRouteOffLink] in a major release.
+ *   [ReachResolution.LinkOnly] documents), so a sandboxed-but-routable host keeps [canRouteOffLink].
  * - **the interface scan threw** → [NetworkState.Unknown] (never a silent "offline")
  */
 fun resolveJvmNetworkState(): NetworkState =
@@ -53,10 +50,10 @@ fun resolveJvmNetworkState(): NetworkState =
 
 /**
  * Outcome of a single address-family route probe — three cases, not a boolean, because two very
- * different failures used to collapse into `false`: "the kernel looked and found no route" and "the
+ * different failures must not collapse into `false`: "the kernel looked and found no route" and "the
  * probe never ran". Only the first entitles this monitor to claim [NetworkState.LinkLocal]
- * (RFC_NETWORK_REACHABILITY §9.2 — that claim requires route visibility), and conflating them silently
- * downgraded sandboxed-but-routable hosts to `canRouteOffLink == false`. Same discipline as
+ * (RFC_NETWORK_REACHABILITY §9.2 — that claim requires route visibility); conflating them would silently
+ * downgrade sandboxed-but-routable hosts to `canRouteOffLink == false`. Same discipline as
  * `QuicError`: model the failure modes exhaustively instead of collapsing them into a boolean.
  */
 internal enum class RouteProbeOutcome {

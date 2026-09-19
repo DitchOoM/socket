@@ -1,7 +1,7 @@
 @file:OptIn(
     kotlinx.cinterop.ExperimentalForeignApi::class,
     kotlinx.coroutines.DelicateCoroutinesApi::class,
-    // CloseableCoroutineDispatcher is experimental, and recvDispatcher is exposed (internal) to the #498 witness.
+    // CloseableCoroutineDispatcher is experimental, and recvDispatcher is exposed (internal) to the handoff tests.
     kotlinx.coroutines.ExperimentalCoroutinesApi::class,
 )
 
@@ -67,7 +67,7 @@ import platform.posix.write
  * `memScoped` scratch, RFC §4). [localAddress] is plainly non-null: `UdpSocket.bind` fails fast on a
  * getsockname failure before constructing this channel.
  *
- * ## Why nothing here closes a descriptor another party can still reach (#498, #507)
+ * ## Why nothing here closes a descriptor another party can still reach
  *
  * The blocking syscalls run on a dedicated single-thread dispatcher, so a [close] concurrent with a
  * [receive] has three things to get right: the dispatcher must not be closed under a hop, the socket
@@ -80,13 +80,13 @@ import platform.posix.write
  *    one that empties a closed word releases *everything* — socket, both pipe ends, dispatcher.
  *    "Every party" includes the ones that are not on this class: [MulticastPosixUdpDatagramChannel]
  *    delegates its data plane here and `setsockopt`s the same descriptor, so it borrows it through
- *    [withDescriptor] rather than holding the number itself (#527).
- *  - [close] therefore never closes the socket. Waking a parked receiver was the only reason it ever
- *    did (#498's ordering), and that job now belongs to the [WakePipe]: the receive loop `poll`s both
+ *    [withDescriptor] rather than holding the number itself.
+ *  - [close] therefore never closes the socket. Waking a parked receiver is the [WakePipe]'s job: the
+ *    receive loop `poll`s both
  *    descriptors and calls `recvfrom` only when the *socket* is readable, and [close] writes one byte
  *    to the pipe. A receiver woken by that byte returns [DatagramReadResult.Closed] —
  *    never a datagram, and never a `recvfrom` on a number some later `socket()`/`open()` has recycled
- *    (#507: it read another socket's datagram, delivered as a valid-looking `Received`).
+ *    (which reads another socket's datagram and delivers it as a valid-looking `Received`).
  *  - Darwin leaves no cheaper wake: `shutdown()` on an *unconnected* UDP socket is `ENOTCONN`, so the
  *    usual "shutdown to wake, close later" ordering does not apply here.
  *
@@ -99,11 +99,11 @@ import platform.posix.write
  * write buffer. Not thread-safe: confine [receive]/[send] each to one coroutine (buffer-flow contract).
  *
  * Control plane: the rich Darwin POSIX ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`/`IP_PKTINFO`) is a
- * labeled follow-up (#377); this first landing advertises [DatagramCapabilities.None] (honest — the datapath
+ * not wired; the channel advertises [DatagramCapabilities.None] (honest — the datapath
  * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is its typed absent
  * state and every advisory send field a no-op.
  *
- * @param beforeDispatch Test seam for the #498/#507 window: runs on every receive iteration after this
+ * @param beforeDispatch Test seam for the close-under-receive window: runs on every receive iteration after this
  *   receiver has been admitted and before it hops onto [recvDispatcher]. Production leaves the no-op
  *   default; `PosixUdpReceiveCloseHandoffTests` and `PosixUdpCloseNeverUnderAReaderTests` park a
  *   receiver here and run `close()` around it.
@@ -123,7 +123,7 @@ internal class PosixUdpDatagramChannel(
     // dispatcher thread running behind a constructor that never returns.
     private val wake = WakePipe.openOrClose(fd)
 
-    /** `internal` only so the #498 witness can prove it is closed once the channel is; not an API. */
+    /** `internal` only so the handoff tests can prove it is closed once the channel is; not an API. */
     internal val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
 
     override val isOpen: Boolean get() = !handoff.closed
@@ -273,8 +273,8 @@ internal class PosixUdpDatagramChannel(
     /**
      * Lends the channel's descriptor to [block] for the duration of one call, under the same admission
      * every other party passes — a **scoped** borrow rather than an `enter()`/`exit()` pair a caller could
-     * forget half of. [MulticastPosixUdpDatagramChannel] takes its whole control plane through this
-     * (#527): it delegates its data plane to this channel already, and the descriptor it `setsockopt`s is
+     * forget half of. [MulticastPosixUdpDatagramChannel] takes its whole control plane through this:
+     * it delegates its data plane to this channel already, and the descriptor it `setsockopt`s is
      * this channel's, so it must be admitted like a `send` rather than reading the number out of a field.
      *
      * A borrower admitted here cannot have the descriptor released under it — [close] leaves it open and

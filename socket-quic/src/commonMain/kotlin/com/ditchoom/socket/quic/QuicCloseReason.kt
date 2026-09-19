@@ -3,17 +3,14 @@ package com.ditchoom.socket.quic
 /**
  * Why a QUIC connection reached [QuicConnectionState.Closed] — as a value, never as an absence.
  *
- * ## What this replaces, and why
- * The terminal state used to carry `error: QuicError?`, where `null` meant "clean shutdown". That one
- * nullable was doing two unrelated jobs: it meant *"both peers finished politely"* and also *"we have
- * no idea why this ended"*, because a connection torn down by scope cancellation or by an exception
- * unwinding the driver loop reports no CONNECTION_CLOSE frame and no timeout — so it produced `null`
- * too, and read as graceful.
- *
- * That is not hypothetical. `QuicheDriver`'s own teardown comment records an incident where exactly
- * this collapse made an API-35 emulator failure undiagnosable: every caller resolved its reason
- * through the `NoError` fallback and got the opaque `QuicCloseException: connection closed`. Encoding
- * "I don't know" as "everything was fine" costs you the one bit you needed at the moment you needed it.
+ * ## Why a value, not a nullable error
+ * A nullable `error: QuicError?` where `null` means "clean shutdown" does two unrelated jobs: it means
+ * *"both peers finished politely"* and also *"we have no idea why this ended"*, because a connection
+ * torn down by scope cancellation or by an exception unwinding the driver loop reports no
+ * CONNECTION_CLOSE frame and no timeout — so it produces `null` too, and reads as graceful. Every
+ * caller then resolves its reason through a `NoError` fallback and gets an opaque
+ * `QuicCloseException: connection closed`. Encoding "I don't know" as "everything was fine" costs the
+ * one bit needed at the moment it is needed.
  *
  * So [Unspecified] exists to say the true thing. A close cannot present as [Graceful] unless a
  * CONNECTION_CLOSE carrying NO_ERROR was actually exchanged.
@@ -59,8 +56,8 @@ sealed interface QuicCloseReason {
      * The connection ended without any CONNECTION_CLOSE being exchanged and without timing out — the
      * driver's scope was cancelled, or an exception unwound its loop.
      *
-     * This is an honest "unknown", not a failure verdict, and it is the case the old nullable silently
-     * folded into "clean". If you are seeing it where you expected [Graceful], the connection did not
+     * This is an honest "unknown", not a failure verdict, and it is the case a nullable error would
+     * silently fold into "clean". If you are seeing it where you expected [Graceful], the connection did not
      * shut down through the protocol.
      *
      * ## Where a stateless reset lands

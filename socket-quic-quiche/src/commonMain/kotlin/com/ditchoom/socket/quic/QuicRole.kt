@@ -4,7 +4,7 @@ package com.ditchoom.socket.quic
  * Which side of the QUIC protocol a [QuicheDriver] is.
  *
  * Decides RFC 9000 §2.1 stream-id parity, the role label in qlog and traces, and whether egress
- * names a [SendTarget.ServerReply] — the reply-source pin a wildcard-bound server needs (#556).
+ * names a [SendTarget.ServerReply] — the reply-source pin a wildcard-bound server needs.
  *
  * Orthogonal to [DatagramIngress]: a driver's protocol role says nothing about who pulls its
  * datagrams off the wire, and every combination of the two is constructed in this repository.
