@@ -297,10 +297,7 @@ object IosHandoffProbe {
         // one line that says the probe was alive at 03:00 even while the network was gone.
         val heartbeat =
             GlobalScope.launch(Dispatchers.Default) {
-                // The silence watchdog. A heartbeat that only says "the process is alive" is what
-                // let a wedged echo loop look healthy for two days: the process WAS alive, and
-                // that was the least interesting true thing about it. [loopTicks] asks the question
-                // that actually matters — is the loop still completing exchanges?
+                // The silence watchdog: a live process is not a live echo loop, so [loopTicks] counts completed exchanges.
                 val watchdog = SilenceWatchdog(QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
                 while (NSDate().timeIntervalSince1970 < deadline) {
                     delay(HEARTBEAT_INTERVAL_MS)
@@ -694,7 +691,7 @@ private class MigrationTotals {
                 succeededAfterUnanswered = succeededAfterUnanswered,
                 noSpareAfterUnanswered = noSpareAfterUnanswered,
             )
-        emit("447-VERDICT walk ${history.verdict().forRun(connections, liveness).line}")
+        emit("447-VERDICT run ${history.verdict().forRun(connections, liveness).line}")
     }
 }
 

@@ -279,10 +279,7 @@ class DeviceHandoffProbe {
             // cannot give, and the one line a reader can grep to see the probe was alive at 03:00.
             val heartbeat =
                 launch {
-                    // The silence watchdog. "The process is alive" was the least interesting true
-                    // thing about the iOS walk that wedged for 48.6 hours — its heartbeat kept
-                    // logging the whole time. [loopTicks] answers the question that matters: is the
-                    // echo loop still completing exchanges?
+                    // The silence watchdog: a live process is not a live echo loop, so [loopTicks] counts completed exchanges.
                     val watchdog = SilenceWatchdog(QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
                     while (isActive && System.currentTimeMillis() < deadline) {
                         delay(HEARTBEAT_INTERVAL_MS)
