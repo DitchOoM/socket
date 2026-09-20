@@ -37,6 +37,8 @@ import com.ditchoom.socket.testkit.migration.forRun
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.WalkTargets
+import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -45,7 +47,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.junit.Assume.assumeTrue
+import org.junit.AssumptionViolatedException
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -75,9 +77,13 @@ import kotlin.time.Duration.Companion.seconds
  * ```
  * adb -s <serial> shell am instrument -w \
  *   -e class com.ditchoom.socket.quic.DeviceHandoffProbe \
- *   -e probeHost 100.110.209.112 -e probePort 14433 -e probeMinutes 12 \
+ *   -e probeHost 178.156.248.95,2a01:4ff:f4:eb1a::1 -e probePort 44433 -e probeMinutes 12 \
  *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
  * ```
+ *
+ * `probeHost` is a comma-separated rotation: attempt 1 takes the first, attempt 2 the second, and so
+ * on round. One host is one target on every attempt, exactly as every walk before the rotation.
+ * Rotation, and why it never falls back inside an attempt: see [WalkTargets].
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceHandoffProbe {
@@ -93,9 +99,15 @@ class DeviceHandoffProbe {
         // probeMinutes against an unreachable Tailscale address, silently (it logs, never asserts),
         // which stalled both emulator lanes at 69/153 until the 25m job budget killed them.
         // The documented invocation passes -e probeHost explicitly, so requiring it costs nothing.
-        val host = arg("probeHost", "")
-        assumeTrue("hand-driven probe — pass -e probeHost <ip> to run it (see class KDoc)", host.isNotEmpty())
         val port = arg("probePort", "14433").toInt()
+        val targets =
+            when (val parsed = WalkTargets.parse(arg("probeHost", ""), port)) {
+                WalkTargetsParse.NoHost ->
+                    throw AssumptionViolatedException(
+                        "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
+                    )
+                is WalkTargetsParse.Rotation -> parsed.targets
+            }
         val minutes = arg("probeMinutes", "12").toInt()
         // The read deadline is not an argument: each connection's [EchoSession] derives it from the
         // round trips it measures, the path's own probe timeout (#599). That keeps the #393 salvage
@@ -179,7 +191,7 @@ class DeviceHandoffProbe {
         log.writeText("")
         emit(kept.line)
         emit(
-            "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port " +
+            "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
                 "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog",
         )
 
@@ -298,7 +310,10 @@ class DeviceHandoffProbe {
             while (System.currentTimeMillis() < deadline) {
                 attempt++
                 val attemptStarted = System.currentTimeMillis()
-                emit("CONNECT-ATTEMPT n=$attempt")
+                // Rotated per attempt, never inside one: the attempt that cannot reach its target is
+                // the measurement, so it fails here and the NEXT attempt moves to the next family.
+                val target = targets.forAttempt(attempt)
+                emit("CONNECT-ATTEMPT n=$attempt ${target.line}")
                 if (attempt > 1) status.onEnded("reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
                 // exhausted on the previous connection says nothing about this one.
@@ -311,7 +326,7 @@ class DeviceHandoffProbe {
                     // measured, the first run of this probe tore the connection down every 15s with
                     // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                     // flowing fine. So it has to cover the whole walk, not the handshake.
-                    withQuicConnection(host, port, options, timeout = (minutes + 2).minutes) {
+                    withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
                         emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
 
                         val stream = openStream()
@@ -425,8 +440,10 @@ class DeviceHandoffProbe {
                     emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
                 }
                 val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
-                report.lines("connection=$attempt").forEach(::emit)
-                ledger.report("connection=$attempt", report.liveness)
+                // Tagged with the family it happened on, so every verdict is attributable to one.
+                val tag = target.connectionTag(attempt)
+                report.lines(tag).forEach(::emit)
+                ledger.report(tag, report.liveness)
                 totals.absorb(ledger)
                 liveness.absorb(attempt, report)
                 if (System.currentTimeMillis() < deadline) {

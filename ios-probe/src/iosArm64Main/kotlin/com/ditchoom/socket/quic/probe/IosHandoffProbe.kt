@@ -34,6 +34,8 @@ import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.WalkTargets
+import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -199,12 +201,16 @@ object IosHandoffProbe {
     /**
      * Begin a walk. Returns immediately; the recording runs on [Dispatchers.Default].
      *
+     * [hosts] is a comma-separated rotation: attempt 1 takes the first, attempt 2 the second, and so
+     * on round. One host is one target on every attempt, exactly as every walk before the rotation.
+     * Rotation, and why it never falls back inside an attempt: see [WalkTargets].
+     *
      * [echoIntervalMs] defaults to 100ms rather than something leisurely on purpose: at one echo
      * every 2s the connection is essentially **idle** when a handoff lands, and an idle connection
      * has nothing in flight to strand on the path it is leaving — the easy case, reported as a pass.
      */
     fun start(
-        host: String,
+        hosts: String,
         port: Int,
         minutes: Int,
         echoIntervalMs: Long = 100,
@@ -213,7 +219,7 @@ object IosHandoffProbe {
         running = true
         GlobalScope.launch(Dispatchers.Default) {
             try {
-                walk(host, port, minutes, echoIntervalMs)
+                walk(hosts, port, minutes, echoIntervalMs)
             } finally {
                 running = false
             }
@@ -221,17 +227,27 @@ object IosHandoffProbe {
     }
 
     private suspend fun walk(
-        host: String,
+        hosts: String,
         port: Int,
         minutes: Int,
         echoIntervalMs: Long,
     ) {
+        val targets =
+            when (val parsed = WalkTargets.parse(hosts, port)) {
+                // Nothing to walk to, so nothing is recorded: inventing a host would record a walk
+                // against a server the operator never named.
+                WalkTargetsParse.NoHost -> {
+                    statusLine = "no host — launch with -host <ip>[,<ip>]"
+                    return
+                }
+                is WalkTargetsParse.Rotation -> parsed.targets
+            }
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Tapping Start used to delete the log, and the trace files would have been
         // appended to across walks.
         val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
         val log = Logger(logPath(), startedAt)
-        log.emit("START device=ios target=$host:$port minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
+        log.emit("START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
         log.emit(kept)
         // quiche's own frame-level record, one .sqlog per connection: evidence written by quiche
         // itself, not by this library's code. ~650 KB per 2 min at 250 ms, so ~1.4 GB for 75 h — the
@@ -325,7 +341,10 @@ object IosHandoffProbe {
         while (NSDate().timeIntervalSince1970 < deadline) {
             attempt++
             val attemptStarted = NSDate().timeIntervalSince1970
-            log.emit("CONNECT-ATTEMPT n=$attempt")
+            // Rotated per attempt, never inside one: the attempt that cannot reach its target is the
+            // measurement, so it fails here and the NEXT attempt moves to the next family.
+            val target = targets.forAttempt(attempt)
+            log.emit("CONNECT-ATTEMPT n=$attempt ${target.line}")
             // Per CONNECTION, not per walk: a reconnect negotiates a brand-new CID pool, so a pool
             // exhausted on the previous connection says nothing about this one.
             val ledger = MigrationLedger(log::emit)
@@ -333,7 +352,7 @@ object IosHandoffProbe {
             // and how long it went without an answered echo is its own verdict.
             val session = EchoSession(connectedAt = now())
             try {
-                withQuicConnection(host, port, options, timeout = (minutes + 2).minutes) {
+                withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
                     log.emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
 
                     val stream = openStream()
@@ -430,8 +449,10 @@ object IosHandoffProbe {
                 log.emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
             }
             val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
-            report.lines("connection=$attempt").forEach(log::emit)
-            ledger.report("connection=$attempt", report.liveness)
+            // Tagged with the family it happened on, so every verdict is attributable to one.
+            val tag = target.connectionTag(attempt)
+            report.lines(tag).forEach(log::emit)
+            ledger.report(tag, report.liveness)
             totals.absorb(ledger)
             liveness.absorb(attempt, report)
             if (NSDate().timeIntervalSince1970 < deadline) {
