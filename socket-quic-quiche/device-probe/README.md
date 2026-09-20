@@ -146,6 +146,29 @@ per-path datagram tallies, and with `--datagrams` each datagram's direction, siz
 DCID from its plaintext header — which is how a failed handoff is read without the TLS keys: a probe
 is a new local port, and its DCID is the spare the pool spent on it.
 
+### The server's side (#624)
+
+`quic-echo-test` on the walk server writes its own qlog per connection (`QUIC_QLOG_DIR=/app/qlog`,
+bind-mounted to `/root/quic-echo-qlog`) — the one record of a walk that does not pass through this
+library's client code at all, so it is what a client-side trace or log is checked against when they
+disagree.
+
+```bash
+device-probe/server-pull.sh walk
+```
+
+Copies every server sqlog that has stopped changing in the last 60s to
+`device-probe/logs/<utc-stamp>-walk-server-qlog/`, alongside `provenance.txt` (the server's
+`BUILD-INFO.txt` and the container's image/start time from `docker inspect`, so a qlog is never
+separated from the build that produced it). It reports file count, total bytes and the time range
+covered, and says plainly when there is nothing to pull rather than succeeding silently. Files still
+being written are skipped and counted, not copied half-finished.
+
+`SERVER_SSH` (default `root@178.156.248.95`, or set `SERVER_USER`/`SERVER_HOST` separately) points it
+at a different box. Unlike `pull.sh`, it never deletes anything on the server — `/root/quic-echo-qlog`
+is shared with other work on a live host, and **the qlog budget there is currently uncapped** (#624
+item 1 is still open), so pull often and do not assume old files will still be there next time.
+
 ### A failing window as a committed fixture
 
 `TraceToFixture.window(events, from)` (jvmTest) takes the input events from `from` on, re-based so
