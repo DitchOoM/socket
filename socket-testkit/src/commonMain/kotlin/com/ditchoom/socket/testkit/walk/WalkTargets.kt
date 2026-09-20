@@ -48,7 +48,7 @@ public data class WalkTarget(
     val host: String,
     val port: Int,
 ) {
-    public val family: AddressFamily get() = AddressFamily.of(host)
+    public val family: AddressFamily = AddressFamily.of(host)
 
     /** `host:port`, an IPv6 literal bracketed so its own colons cannot be read as the port separator. */
     public val authority: String
@@ -90,7 +90,7 @@ public data class WalkTargets(
     val first: WalkTarget,
     val rest: List<WalkTarget> = emptyList(),
 ) {
-    public val all: List<WalkTarget> get() = listOf(first) + rest
+    public val all: List<WalkTarget> = listOf(first) + rest
 
     /** Attempts are 1-based, as the probes count them: attempt 1 takes [first]. */
     public fun forAttempt(attempt: Int): WalkTarget = all[(attempt - 1).mod(all.size)]

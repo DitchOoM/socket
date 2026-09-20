@@ -203,9 +203,7 @@ object IosHandoffProbe {
      *
      * [hosts] is a comma-separated rotation: attempt 1 takes the first, attempt 2 the second, and so
      * on round. One host is one target on every attempt, exactly as every walk before the rotation.
-     * A walk pinned to one address confounds address family with device — this phone walked v6 and
-     * the Samsung v4 — and the rotation never falls back inside an attempt, because a silent
-     * fallback would hide a family that does not work on some network.
+     * Rotation, and why it never falls back inside an attempt: see [WalkTargets].
      *
      * [echoIntervalMs] defaults to 100ms rather than something leisurely on purpose: at one echo
      * every 2s the connection is essentially **idle** when a handoff lands, and an idle connection

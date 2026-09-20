@@ -10,9 +10,10 @@ STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, a RE-DERIVED ECHO-LIVEN
 RE-DERIVED #447 verdict gated by it — each of those per connection AND rolled up per address
 family, so a walk answers "does v6 behave differently from v4 on this device and this route".
 
-The family comes from each `CONNECT-ATTEMPT`'s own `target=`/`family=` keys, which a probe writes
-because it rotates its target per attempt. A log written before that rotation carries neither key:
-its connections group under `unknown` and everything else still analyses.
+The family comes from each connection's own `MIGRATION-LEDGER`/`ECHO-LIVENESS`/`447-VERDICT` line
+(`connection=N family=FAM`), falling back to the covering `CONNECT-ATTEMPT`'s `target=`/`family=`
+keys only where a connection has none of those. A log written before the rotation carries none of
+it: its connections group under `unknown` and everything else still analyses.
 
 The re-derived verdicts exist because a probe build before #601 printed its own `447-VERDICT` line
 using logic that counted the retries of a failing episode as recovery — it reported PASS for a
@@ -196,6 +197,18 @@ def longest_gap(points, start, end):
     return max(gaps)
 
 
+# The probe writes family= directly on each connection's OWN MIGRATION-LEDGER / ECHO-LIVENESS /
+# 447-VERDICT line (`connection=N family=FAM`, from WalkTarget.connectionTag) — that is the record
+# for that connection, not an attribution by time. Prefer it over the covering CONNECT-ATTEMPT
+# (family_of(attempt_covering(...)) below), which stays only as the fallback for a connection with
+# no such line — a pre-rotation log, or one truncated before any of the three were emitted.
+CONNECTION_FAMILY = re.compile(r"\bconnection=(\d+) family=(\S+)")
+recorded_family = {}
+for _, b in events:
+    m = CONNECTION_FAMILY.search(b)
+    if m:
+        recorded_family.setdefault(m.group(1), m.group(2))
+
 silent_connections = []
 # (start, end, family) per connection, shared by the #447 loop and the per-family roll-up below.
 windows = []
@@ -211,12 +224,23 @@ for i, start in enumerate(conn_bounds):
     if word == "SILENT":
         silent_connections.append((i + 1, gap, gap_from))
     opening = attempt_covering(start)
-    family = family_of(opening)
+    attempt_num = attempt_number(opening)
+    derived_family = family_of(opening)
+    recorded = recorded_family.get(attempt_num)
+    if recorded is not None:
+        family = recorded
+        if FAMILY.search(opening) and derived_family != recorded:
+            print(f"  ⚠ connection {i + 1} (attempt {attempt_num}): recorded family={recorded} disagrees with"
+                  f" its CONNECT-ATTEMPT's family={derived_family} — trusting the recorded line")
+    else:
+        family = derived_family
     # Named by the probe's own attempt number: an attempt that never connected leaves no CONNECTED
-    # line, so this index and the log's `connection=N` tag diverge the moment one fails.
-    tag = f"attempt {attempt_number(opening)}, {family}"
+    # line, so this index and the log's `connection=N` tag diverge the moment one fails. Blank on a
+    # pre-rotation log, matching the guard on the `#{i+1}` line above.
+    tag = f"attempt {attempt_num}, {family}" if recorded is not None or FAMILY.search(opening) else ""
     windows.append((start, end, family, tag))
-    print(f"  connection {i + 1} [{tag}]: {word} — answered={len(answers)} no answered echo for {hours(gap)}"
+    label = f" [{tag}]" if tag else ""
+    print(f"  connection {i + 1}{label}: {word} — answered={len(answers)} no answered echo for {hours(gap)}"
           f" (from t+{gap_from / 1000:.0f}s); no echo line at all for {hours(loop_gap)} (from t+{loop_from / 1000:.0f}s)")
 if not conn_bounds:
     print("  never connected")
@@ -257,7 +281,8 @@ for i, start in enumerate(conn_bounds):
         gap, _ = silent_by_connection[i + 1]
         verdict = f"FAIL — no answered echo for {hours(gap)}, so the path layer's verdict is void; on its own it read: {verdict}"
     verdict_by_connection[i] = verdict.split(" ", 1)[0]
-    print(f"  connection {i + 1} [{windows[i][3]}]: {verdict}  [{','.join(outcomes) or 'no attempts'}]")
+    label = f" [{windows[i][3]}]" if windows[i][3] else ""
+    print(f"  connection {i + 1}{label}: {verdict}  [{','.join(outcomes) or 'no attempts'}]")
 if silent_connections:
     worst = max(silent_connections, key=lambda c: c[1])
     print(f"  run: FAIL — connection {worst[0]} went {hours(worst[1])} without an answered echo (from t+{worst[2] / 1000:.0f}s);"

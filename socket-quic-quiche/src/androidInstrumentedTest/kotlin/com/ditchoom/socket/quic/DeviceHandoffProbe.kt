@@ -82,11 +82,8 @@ import kotlin.time.Duration.Companion.seconds
  * ```
  *
  * `probeHost` is a comma-separated rotation: attempt 1 takes the first, attempt 2 the second, and so
- * on round. One host is one target on every attempt, exactly as every walk before the rotation. The
- * point is that a walk pinned to one address confounds address family with device — the iPhone
- * walked v6 and this phone v4, so no difference between the two recordings could be attributed. The
- * rotation never falls back inside an attempt: an unreachable target must fail and be recorded
- * against itself, because a silent fallback would hide a family that does not work on some network.
+ * on round. One host is one target on every attempt, exactly as every walk before the rotation.
+ * Rotation, and why it never falls back inside an attempt: see [WalkTargets].
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceHandoffProbe {

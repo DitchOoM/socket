@@ -42,7 +42,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     // COMMA-SEPARATED is a rotation, one target per connection attempt, so one phone covers both
     // address families on one route: `-host "178.156.248.95,2a01:4ff:f4:eb1a::1"`. A colon cannot
     // be the separator — an IPv6 literal is made of them.
-    var hosts: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95"
+    var hosts: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95,2a01:4ff:f4:eb1a::1"
     var port: Int32 = 44433
     var minutes: Int32 = 4500
 
