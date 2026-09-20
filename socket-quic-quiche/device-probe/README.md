@@ -62,6 +62,53 @@ The deadline is the path's own probe timeout (RFC 9002 §6.2.1), computed from t
 probe measures, so it is ~1 s before the first reply and settles to a few times the smoothed RTT.
 A coalesced read (several replies in one chunk) still gives every exchange its own round trip.
 
+## Address families: one walk covers both
+
+Through 2026-09 each phone was pinned to one server address — the iPhone to
+`2a01:4ff:f4:eb1a::1`, this phone to `178.156.248.95` — so address family was confounded with
+device. Any difference between the two recordings could be the family or the phone, and nothing in
+either log could tell them apart.
+
+The probe therefore rotates its target **per connection attempt**: attempt 1 takes the first target,
+attempt 2 the second, and so on round. One device, one route, both families.
+
+```bash
+SERVER_HOST="178.156.248.95,2a01:4ff:f4:eb1a::1" device-probe/start.sh 4500 250    # Android
+ios-probe/device/launch.sh "178.156.248.95,2a01:4ff:f4:eb1a::1"                   # iOS
+```
+
+**The separator is a comma**, never a colon — an IPv6 literal is made of colons. Quote the list: it
+is one argument, and it reaches the Android probe through `am instrument -e probeHost` and the iOS
+app through `-host` in UserDefaults' argument domain. One host is one target on every attempt,
+exactly as every walk before this.
+
+⚠️ There is deliberately **no fallback inside an attempt**. This is not Happy Eyeballs. A target the
+device cannot reach must fail *its own* attempt and be recorded against itself; the next attempt
+moves to the next target. A probe that quietly retried the other family would hide the one thing the
+rotation exists to measure — a family that does not work on some network.
+
+The QUIC client cannot do this itself: every platform's builder resolves the hostname internally, so
+`TransportConfig.nameResolution` and the connect racer reach TCP only. That gap is issue #615; until
+it closes, the family is the probe's to choose and to record.
+
+Every line that can be attributed to a family carries it, in the log's own `key=value` style:
+
+```
+START … targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 …
+CONNECT-ATTEMPT n=7 target=[2a01:4ff:f4:eb1a::1]:44433 family=v6
+MIGRATION-LEDGER connection=7 family=v6 attempts=3 succeeded=2 outcomes=[…]
+ECHO-LIVENESS connection=7 family=v6 LIVE — answered=…
+447-VERDICT connection=7 family=v6 PASS — …
+```
+
+An IPv6 literal is bracketed in `target=` so its own colons cannot be read as the port separator.
+`family=` is `v4` or `v6` for a literal and `resolver` for a name — a name's family is whichever the
+platform resolver picks, which the probe cannot know, so it says so instead of guessing.
+
+`analyze.py` groups the per-connection reporting by that key and prints a per-family summary. A log
+written before the rotation carries no `family=` at all: it groups under `unknown` and everything
+else analyses exactly as before.
+
 ## Dry run (about 15 minutes)
 
 ```bash
@@ -121,3 +168,9 @@ echo counts (late and unanswered separately from failed), RTT and lateness perce
 trend, a **capture health** section (was the trace budget spent, did the heartbeat ever stop, does
 every connection have a trace file), and every `STREAM-INTEGRITY-BROKEN` / `CONNECTION-DEAD` line
 verbatim. Those last two are the lines that turn into issues.
+
+It closes with a **per-family summary** — attempts, connections established, migrations, echoes, the
+re-derived `#447` verdicts and the echo-liveness verdicts, each grouped by the family of the target
+that connection walked. That is the line that answers "does v6 behave differently from v4 on this
+device and this route", and a family whose `attempts` far exceed its `connected` is a family the
+network would not carry.

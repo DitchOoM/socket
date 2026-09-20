@@ -34,11 +34,15 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var ticker: Timer?
 
-    // Defaults match the Android probe so the two recordings can be read side by side. The host is
+    // Defaults match the Android probe so the two recordings can be read side by side. The hosts are
     // overridable per launch without a rebuild: `devicectl device process launch … -- -host <addr>`
     // lands in UserDefaults' argument domain, so an IPv6 literal (or any other server) is one launch
     // away. A tap on the icon launches with no arguments and gets the default.
-    var host: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95"
+    //
+    // COMMA-SEPARATED is a rotation, one target per connection attempt, so one phone covers both
+    // address families on one route: `-host "178.156.248.95,2a01:4ff:f4:eb1a::1"`. A colon cannot
+    // be the separator — an IPv6 literal is made of them.
+    var hosts: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95"
     var port: Int32 = 44433
     var minutes: Int32 = 4500
 
@@ -59,7 +63,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
         applyAuthorization(manager.authorizationStatus)
 
         IosHandoffProbe.shared.start(
-            host: host,
+            hosts: hosts,
             port: port,
             minutes: minutes,
             echoIntervalMs: 250
@@ -130,7 +134,7 @@ struct ProbeView: View {
             Divider()
 
             Group {
-                Text("target: \(runner.host):\(String(runner.port))")
+                Text("targets: \(runner.hosts) port \(String(runner.port))")
                 Text("location: \(runner.authorization)")
                 Text("location updates: \(runner.locUpdates)")
                     .foregroundStyle(runner.locUpdates > 0 ? .primary : .secondary)
