@@ -37,12 +37,19 @@ import kotlin.time.Duration
  * which is what a real handoff looks like and what `ImpairedPipe.blackhole` (whole-pipe) cannot model.
  * [PathReach.DarkUntil] is the walk's cellular attach: a link that is dark for a while and then
  * answers every path on it, which no per-path or per-index blackhole can express.
+ *
+ * [mtu] is #637's condition, and it is keyed on *size* where [reach] is keyed on time: a link that
+ * carries the connection perfectly and silently swallows anything past [LinkMtu.Bounded.bytes]. A
+ * tunnel, a PPPoE hop or a v6 leg at the 1280-byte minimum all look like this, and none of them can be
+ * expressed by loss (which is random, so a retry eventually gets through) or by [PathReach.Dark]
+ * (which kills the path outright, so nothing proves the small datagrams still flow).
  */
 internal data class PathImpairment(
     val latency: Duration = Duration.ZERO,
     val jitter: Duration = Duration.ZERO,
     val loss: Double = 0.0,
     val reach: PathReach = PathReach.Open,
+    val mtu: LinkMtu = LinkMtu.Unbounded,
 )
 
 /** Whether a path carries datagrams at all: always, never, or only once the sim's clock reaches an instant. */
@@ -55,6 +62,24 @@ internal sealed interface PathReach {
     data class DarkUntil(
         val at: Duration,
     ) : PathReach
+}
+
+/**
+ * The largest datagram a link carries: any size, or nothing past [Bounded.bytes].
+ *
+ * The sibling of [PathReach], one axis over. [PathReach] answers "does this link carry datagrams *at
+ * this moment*"; this answers "does it carry *this datagram*". Separate values rather than one
+ * combined state because they compose — the walk's cellular leg attaches late **and** is an MTU-1280
+ * v6 link — and because a drop for size consumes no RNG draws for the same reason a dark drop does
+ * not: bounding a link's MTU must not shift the seeded sequence of everything around it.
+ */
+internal sealed interface LinkMtu {
+    data object Unbounded : LinkMtu
+
+    /** Datagrams of more than [bytes] are swallowed; everything at or below it is carried normally. */
+    data class Bounded(
+        val bytes: Int,
+    ) : LinkMtu
 }
 
 /**
@@ -115,6 +140,16 @@ internal class MultiPathPipe(
         @Volatile var dropped = 0
 
         @Volatile var blackholed = 0
+
+        /** Datagrams the link swallowed for exceeding its [LinkMtu.Bounded.bytes] — #637's observable. */
+        @Volatile var oversized = 0
+
+        /**
+         * The largest datagram either endpoint has handed this link, carried or not — how big the
+         * *sender* decided to make one, which is the other half of #637: a fix that expanded everything
+         * to the RFC floor would validate every constrained link and quietly cost 11% of every payload.
+         */
+        @Volatile var largestOffered = 0
     }
 
     internal inner class Path(
@@ -227,6 +262,9 @@ internal class MultiPathPipe(
         val impairment = path.impairment
         var delay = Duration.ZERO
         synchronized(lock) {
+            // Before every drop branch: the size an endpoint chose is a fact about the sender, not
+            // about whether this link happened to carry it.
+            if (len > path.stats.largestOffered) path.stats.largestOffered = len
             val dark =
                 when (val reach = impairment.reach) {
                     PathReach.Open -> false
@@ -236,6 +274,16 @@ internal class MultiPathPipe(
             if (dark) {
                 // No RNG draws: flipping a blackhole must not shift the seeded sequence around it.
                 path.stats.blackholed++
+                return
+            }
+            val oversized =
+                when (val mtu = impairment.mtu) {
+                    LinkMtu.Unbounded -> false
+                    is LinkMtu.Bounded -> len > mtu.bytes
+                }
+            if (oversized) {
+                // Same no-draw discipline as the dark branch, and for the same reason.
+                path.stats.oversized++
                 return
             }
             val lossRoll = rng.nextDouble()

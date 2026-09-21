@@ -1972,9 +1972,42 @@ class QuicheDriver(
         return QuicCloseReason.Unspecified
     }
 
-    private suspend fun flushOutgoing() {
+    /**
+     * How far quiche may expand the next datagram this flush writes — #637.
+     *
+     * quiche pads a datagram to fill the caller's output buffer whenever the sending path is not
+     * validated, and pads nothing once it is (`send_single`: `has_initial || !path.validated()`). So
+     * "is any path awaiting validation" is the whole question, and the answer is quiche's own path
+     * table rather than anything this driver infers: it is asked the same way on a client (which
+     * probes) and on a server (whose PATH_RESPONSE rides the unvalidated path the client just probed
+     * from — the half the 2026-09-20 walk caught being dropped at 1350 bytes).
+     *
+     * **The single-path short-circuit is the whole cost of this in the steady state.** quiche creates a
+     * connection's initial path already `Validated` (`Path::new`, `is_initial`), so a connection with no
+     * second path has nothing to expand — and index 1 being absent answers that in one FFI call that
+     * allocates nothing. It is also what a backend that has not bound the path-stats FFI answers, which
+     * lands such a backend on exactly today's behaviour rather than on a guess, the same contract
+     * [pathValidationBudget] documents for the same accessor.
+     */
+    private fun sendWindow(): SendWindow {
+        if (api.connPathStats(conn, 1L) == null) return SendWindow.Full
+        var index = 0L
         while (true) {
-            val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, sendInfo)
+            val stats = api.connPathStats(conn, index) ?: return SendWindow.Full
+            when (PathValidation.from(stats.validationState)) {
+                PathValidation.Expanding -> return SendWindow.ValidationFloor
+                PathValidation.Complete, PathValidation.Abandoned -> index++
+            }
+        }
+    }
+
+    private suspend fun flushOutgoing() {
+        // Read once per flush, not once per datagram: a path's validation state only moves inside
+        // quiche's recv()/on_timeout(), both of which belong to the command that has already run by the
+        // time this drains. A send can start a validation but never finish one.
+        val window = sendWindow()
+        while (true) {
+            val written = api.connSend(conn, sendAddr, window.bytes, sendInfo)
             if (written <= 0) break
             // Route by the local egress address quiche chose. Until the first probe ever opens
             // ([routingLive]) this is dormant — send straight to primary, no decode — so the
