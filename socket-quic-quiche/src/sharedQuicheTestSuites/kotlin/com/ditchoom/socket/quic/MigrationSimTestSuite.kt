@@ -88,6 +88,116 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * **#637: a link that carries the connection but not our expansion size.**
+     *
+     * RFC 9000 §8.2.1 requires a datagram carrying a PATH_CHALLENGE to be expanded "to at least the
+     * smallest allowed maximum datagram size of **1200** bytes"; §8.2.2 says the same for
+     * PATH_RESPONSE. *At least* — it is a floor. quiche has no knob for it and instead pads such a
+     * datagram to fill whatever output buffer the caller passed, so before the fix every probe went out
+     * at [QuicheDriver.MAX_DATAGRAM_SIZE] (1350) and so did the peer's answer.
+     *
+     * A link whose effective UDP payload MTU sits between the floor and that number is therefore
+     * unvalidatable by us while being perfectly able to carry the connection. That is not hypothetical:
+     * on the 2026-09-20 iPhone walk, leg 1 connection 2 spent **27 consecutive `PathNotValidated`** on
+     * one such link and then died on idle timeout. The paired server qlog shows the other half — seven
+     * of the probes *did* arrive and were answered within ~60-80us with a **1350-byte** `path_response`,
+     * and not one of those answers reached the phone, while 15,696 datagrams of <= 1200 bytes crossed
+     * the same local address without a loss.
+     *
+     * [LinkMtu.Bounded] is that link, and it is deliberately **not** loss: a lossy path is eventually
+     * validated by a retry, and this one can never be. [CONSTRAINED_LINK_MTU] is above the RFC floor
+     * and below our expansion size, which is the entire window the defect lives in.
+     */
+    @Test
+    fun aPathValidatesOverALinkThatCarriesTheRfcFloorButNotOurExpansionSize() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 637_020L,
+                    probeImpairment = {
+                        PathImpairment(latency = 35.milliseconds, mtu = LinkMtu.Bounded(CONSTRAINED_LINK_MTU))
+                    },
+                ) {
+                    awaitSpareDcids()
+                    val result = withTimeout(GIVE_UP_WINDOW) { migrate().await() }
+                    val probe = pipe.pathAt(clientPaths().last())
+                    assertTrue(
+                        result is MigrationResult.Succeeded,
+                        "a link that carries $CONSTRAINED_LINK_MTU-byte datagrams in both directions must be " +
+                            "validatable: RFC 9000 §8.2.1 asks for 1200, not ${QuicheDriver.MAX_DATAGRAM_SIZE}. " +
+                            "Got $result with ${probe.stats.oversized} datagram(s) swallowed for exceeding the " +
+                            "link's MTU. Traffic: ${pipeTraffic()}",
+                    )
+                    assertEquals(
+                        0,
+                        probe.stats.oversized,
+                        "the handoff succeeded but still put datagrams on the wire that this link cannot " +
+                            "carry — path validation must expand to the RFC floor, not past it. " +
+                            "Traffic: ${pipeTraffic()}",
+                    )
+                    assertTrue(
+                        probe.stats.sentToClient > 0,
+                        "the peer never answered over the constrained link, so nothing here proves the " +
+                            "PATH_RESPONSE half shrank too. Traffic: ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
+
+    /**
+     * **The other half of #637: the floor is for validation, and for nothing else.**
+     *
+     * The RFC floor is a floor, so "expand everything to 1200" also satisfies §8.2.1 — and would pass
+     * [aPathValidatesOverALinkThatCarriesTheRfcFloorButNotOurExpansionSize] while silently costing
+     * every payload the difference up to [QuicheDriver.MAX_DATAGRAM_SIZE] forever. quiche expands a
+     * datagram only on a path it has not validated, so a connection sitting on its validated initial
+     * path must still be filling datagrams to the configured size.
+     *
+     * Asserted on what the client *offered* the link rather than on what crossed it, because that is
+     * the sender's decision and the only thing the send window controls.
+     */
+    @Test
+    fun aValidatedPathIsNotHeldToThePathValidationFloor() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 637_021L) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+                        repeat(BULK_CHUNKS) {
+                            val out = BufferFactory.network().allocate(BULK_CHUNK_BYTES)
+                            repeat(BULK_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
+                            out.resetForRead()
+                            stream.write(out, 30.seconds)
+                            out.freeNativeMemory()
+                        }
+                        delay(2.seconds)
+                        val primary = pipe.paths().first()
+                        assertTrue(
+                            primary.stats.largestOffered > PATH_VALIDATION_EXPANSION,
+                            "a bulk transfer over the connection's own validated path never offered a " +
+                                "datagram larger than the path-validation floor " +
+                                "($PATH_VALIDATION_EXPANSION; largest ${primary.stats.largestOffered}). The " +
+                                "expansion floor has leaked into ordinary data, and every payload now pays " +
+                                "for it. Traffic: ${pipeTraffic()}",
+                        )
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
      * **#447, reproduced from a blackholed probe path alone — no device, no network, no test seam.**
      *
      * The field condition is an unanswered PATH_CHALLENGE, routine on cellular, which previously
@@ -2148,6 +2258,23 @@ abstract class MigrationSimTestSuite {
          * is what bounds it — see that test's KDoc.
          */
         const val LOST_PROBES = 2
+
+        /**
+         * The MTU of #637's link, in bytes of UDP payload: above RFC 9000 §8.2.1's 1200-byte floor and
+         * below [QuicheDriver.MAX_DATAGRAM_SIZE], which is the whole window the defect lives in. 1280 is
+         * IPv6's own minimum link MTU, so the number is one a real leg actually has.
+         */
+        const val CONSTRAINED_LINK_MTU = 1280
+
+        /**
+         * What [aValidatedPathIsNotHeldToThePathValidationFloor] pushes. Deliberately far larger than a
+         * datagram per write: the measurement is "how big does the sender make a datagram when it has
+         * plenty to put in one", and a stream fed 1 KB at a time is application-limited, so quiche
+         * empties the queue into short datagrams and the largest one seen is the handshake Initial's own
+         * 1200-byte padding rather than anything the send window decided.
+         */
+        const val BULK_CHUNK_BYTES = 32 * 1024
+        const val BULK_CHUNKS = 8
 
         /** Long enough that a bounded backoff has certainly finished; virtual, so it is free. */
         val GIVE_UP_WINDOW = 60.seconds
