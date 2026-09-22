@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicServer
@@ -49,21 +50,68 @@ suspend fun <R> withHttp3Server(
     block: suspend Http3Server.() -> R,
 ): R =
     withQuicServer(port, host, tlsConfig, quicOptions.forHttp3(), timeout) {
-        val server = Http3Server(this)
-        coroutineScope {
-            val acceptJob =
-                launch {
-                    connections {
-                        serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest)
-                    }
+        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest, block)
+    }
+
+/**
+ * [withHttp3Server] presenting a generated [certificate] — the WebTransport peer role: browsers reach this
+ * server by pinning [PeerCertificate.hash] through `serverCertificateHashes`, with no DNS name or CA.
+ *
+ * ```kotlin
+ * when (val certificates = peerCertificates) {
+ *     is PeerCertificateSupport.Available -> certificates.generate().use { certificate ->
+ *         signalling.publish(certificate.hash)
+ *         withHttp3Server(
+ *             certificate = certificate,
+ *             webTransport = WebTransportOptions(),
+ *             onWebTransport = { accept() },
+ *             onRequest = { response.send(404) },
+ *         ) { awaitCancellation() }
+ *     }
+ *     PeerCertificateSupport.Unavailable -> Unit // no QUIC server on this platform
+ * }
+ * ```
+ */
+suspend fun <R> withHttp3Server(
+    port: Int = 0,
+    certificate: PeerCertificate,
+    host: String? = null,
+    quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
+    connectionOptions: TransportConfig = TransportConfig(),
+    qpackCapacity: Long = 0,
+    timeout: Duration = 15.seconds,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+    block: suspend Http3Server.() -> R,
+): R =
+    withQuicServer(port, host, certificate, quicOptions.forHttp3(), timeout) {
+        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest, block)
+    }
+
+private suspend fun <R> QuicServer.runHttp3Server(
+    connectionOptions: TransportConfig,
+    qpackCapacity: Long,
+    webTransport: WebTransportOptions?,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)?,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+    block: suspend Http3Server.() -> R,
+): R {
+    val server = Http3Server(this)
+    return coroutineScope {
+        val acceptJob =
+            launch {
+                connections {
+                    serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest)
                 }
-            try {
-                server.block()
-            } finally {
-                acceptJob.cancel()
             }
+        try {
+            server.block()
+        } finally {
+            acceptJob.cancel()
         }
     }
+}
 
 /**
  * Serve the HTTP/3 (RFC 9114) server role over ONE already-accepted QUIC connection — the

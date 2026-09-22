@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -10,6 +12,8 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -49,10 +53,10 @@ abstract class QuicCertificateHashPinningTestSuite {
      * Where that actually resolves today, per concrete member (there are four: JVM, Android, Linux,
      * Apple):
      *  - JVM/Android/Linux/macOS — `Enforced`, and the three cases execute end-to-end.
-     *  - **iOS simulator** — `Enforced` too, so this gate opens, but every test in the Apple member
-     *    still self-skips one step later for want of the build-generated `pinned*` fixtures, which the
-     *    simulator's cwd cannot reach. See `AppleQuicCertificateHashPinningTests`; a green iOS tick here
-     *    is not end-to-end evidence.
+     *  - **iOS simulator** — `Enforced` too, so this gate opens, but every fixture test in the Apple
+     *    member self-skips one step later for want of the build-generated `pinned*` fixtures, which the
+     *    simulator's cwd cannot reach. Only the two generated-certificate cases, which need no fixture,
+     *    run end-to-end there. See `AppleQuicCertificateHashPinningTests`.
      *  - tvOS/watchOS and JS/wasmJs — `NoQuicEngine`, and no member of this suite is compiled for them
      *    at all (`:socket-quic-quiche` registers no such target), so this branch is a statement about the
      *    capability, not a run that happens.
@@ -136,6 +140,86 @@ abstract class QuicCertificateHashPinningTestSuite {
                 }
             }
         }
+
+    /**
+     * The WebTransport peer role: a certificate the engine mints at runtime, served through
+     * `withQuicServer(certificate = …)`, is accepted by a client pinning [PeerCertificate.hash] with the W3C
+     * constraints enforced on it. [rejectsExpiredGeneratedPeerCertificate] is the control proving those
+     * constraints were evaluated rather than skipped.
+     */
+    @Test
+    fun acceptsGeneratedPeerCertificate() =
+        runQuicTest {
+            wrapTestBody {
+                requireEnforced("generated peer certificate")
+                generatedPeerCertificates().generate().use { cert ->
+                    val opts = options()
+                    withQuicServer(port = 0, certificate = cert, quicOptions = opts) {
+                        val handlerRan = CompletableDeferred<Unit>()
+                        val serverJob = launch { connections { handlerRan.complete(Unit) } }
+                        try {
+                            val pinned = opts.copy(serverCertificateHashes = listOf(cert.hash))
+                            try {
+                                withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
+                            } catch (e: CertificateHashPinningException) {
+                                fail("[QUIC-PEER-CERT] $memberName: our own client rejected $cert: ${e.failure.description}", e)
+                            }
+                            handlerRan.await()
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    /** A generated certificate whose window has already closed is rejected by the constraint check. */
+    @Test
+    fun rejectsExpiredGeneratedPeerCertificate() =
+        runQuicTest {
+            wrapTestBody {
+                requireEnforced("expired generated peer certificate")
+                val expiredStart = Clock.System.now() - PeerCertificateValidity.Maximum.duration - 1.days
+                generatedPeerCertificates().generate(notBefore = expiredStart).use { cert ->
+                    val opts = options()
+                    withQuicServer(port = 0, certificate = cert, quicOptions = opts) {
+                        val serverJob = launch { runCatching { connections {} } }
+                        try {
+                            val pinned = opts.copy(serverCertificateHashes = listOf(cert.hash))
+                            val ex =
+                                assertFailsWith<CertificateHashPinningException>("$memberName accepted expired $cert") {
+                                    withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
+                                }
+                            assertTrue(
+                                ex.failure is CertificateHashPinningFailure.NotTemporallyValid,
+                                "expected NotTemporallyValid for $cert, got: ${ex.failure}",
+                            )
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    private fun generatedPeerCertificates(): PeerCertificateSupport.Available =
+        when (val support = peerCertificates) {
+            is PeerCertificateSupport.Available -> support
+            PeerCertificateSupport.Unavailable ->
+                fail(
+                    "[QUIC-PEER-CERT] $memberName: peerCertificates=$support. Every member of this suite runs " +
+                        "on a quiche engine, which must mint WebTransport peer certificates.",
+                )
+        }
+
+    private fun requireEnforced(case: String) {
+        if (!enforcesW3cConstraints()) {
+            fail(
+                "[QUIC-PIN-CONSTRAINTS] DISARMED '$case' in $memberName: " +
+                    "serverCertificateConstraintSupport=$serverCertificateConstraintSupport",
+            )
+        }
+    }
 
     /** A pinned leaf whose hash matches but whose validity window is in the past — NotTemporallyValid. */
     @Test
