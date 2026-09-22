@@ -179,7 +179,8 @@ def analyze(path, lines, lane=None):
     qbudget = [b for _, b in events if b.startswith("QLOG-BUDGET ")]
     if qbudget:
         print(f"  qlog budget: {qbudget[0][len('QLOG-BUDGET '):]}")
-    for tag in ("QLOG-TRUNCATED", "QLOG-EVICTED", "QLOG-REFUSED", "QLOG-ROTATION-REFUSED", "QLOG-DELETE-FAILED"):
+    for tag in ("QLOG-TRUNCATED", "QLOG-EVICTED", "QLOG-REFUSED", "QLOG-ROTATION-REFUSED", "QLOG-DELETE-FAILED",
+                "TRAFFIC-SECRETS-REFUSED"):
         hits = [(t, b) for t, b in events if b.startswith(tag + " ")]
         if hits:
             print(f"  {tag}: {len(hits)} — first at t+{hits[0][0] // 1000}s: {hits[0][1][:140]}")

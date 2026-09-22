@@ -33,11 +33,28 @@ sealed interface QlogTarget {
 }
 
 /**
+ * Where one connection's TLS traffic secrets go, in SSLKEYLOGFILE format (`quiche_conn_set_keylog_path`).
+ *
+ * The file decrypts the connection for anyone who holds it, so nothing is written unless a [File] is named.
+ */
+sealed interface TrafficSecretsLog {
+    /** No secrets are written (a `QUIC_KEYLOG_DIR` environment, if any, still applies). */
+    data object Off : TrafficSecretsLog
+
+    /** quiche appends this connection's secrets to [path]; the directory must already exist. */
+    data class File(
+        val path: String,
+    ) : TrafficSecretsLog
+}
+
+/**
  * Everything a [QuicTraceCapture] mints for **one** connection: the [sink] its replay trace is
- * written to and the [qlog] quiche writes for it. One product per connection so the two records
- * are named together and can be paired afterwards — `conn-0007.trace` beside `conn-0007.sqlog`.
+ * written to, the [qlog] quiche writes for it, and the [trafficSecrets] that decrypt its datagrams.
+ * One product per connection so the records are named together and can be paired afterwards —
+ * `conn-0007.trace` beside `conn-0007.sqlog` and `conn-0007.keys`.
  */
 data class QuicConnectionCapture(
     val sink: NeutralTraceSink,
     val qlog: QlogTarget = QlogTarget.Off,
+    val trafficSecrets: TrafficSecretsLog = TrafficSecretsLog.Off,
 )

@@ -335,6 +335,18 @@ sealed interface TraceEvent {
     }
 
     /**
+     * quiche could not open the file this connection's TLS traffic secrets were to be appended to, at
+     * [path]. Never fatal to the connection; the walk's datagrams stay undecryptable outside this
+     * library. Observation, for the same reason as [QlogRefused].
+     */
+    data class TrafficSecretsRefused(
+        override val at: Duration,
+        val path: String,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * True for the replayable input-event subset (RFC §2), false for observations.
      *
      * The exhaustive `when` is load-bearing, not stylistic: it is what makes adding a variant a
@@ -350,7 +362,7 @@ sealed interface TraceEvent {
                 // in would be replaying our own reaction, not the input that caused it. QlogRefused is
                 // the same shape: a local filesystem fact, not something the far side caused.
                 is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence,
-                is QlogRefused,
+                is QlogRefused, is TrafficSecretsRefused,
                 -> false
             }
 

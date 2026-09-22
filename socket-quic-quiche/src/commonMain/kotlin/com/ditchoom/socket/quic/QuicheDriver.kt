@@ -312,9 +312,7 @@ class QuicheDriver(
      * connection handle, which is still unique within this process and still tells concurrent
      * connections apart — the question the session id exists to answer.
      */
-    internal val sessionId: QuicSessionId by lazy {
-        QuicSessionId(readConnBytes(asciiText = true) { b, n -> api.connTraceId(conn, b, n) } ?: "conn-${conn.handle.toString(16)}")
-    }
+    internal val sessionId: QuicSessionId by lazy { readSessionId(api, conn, bufferFactory) }
 
     /**
      * The CID currently on the wire, read fresh on every access.
@@ -325,40 +323,9 @@ class QuicheDriver(
      */
     internal val wireConnectionId: QuicWireConnectionId
         get() =
-            readConnBytes(asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
+            readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
                 ?.let { QuicWireConnectionId.Known(it) }
                 ?: QuicWireConnectionId.Unavailable
-
-    /**
-     * Run one of quiche's snprintf-style `(buf, bufLen) -> length` readers and render the result, or
-     * `null` when the backend reports nothing (length 0 — including the interface default for a backend
-     * that has not bound the accessor).
-     *
-     * [asciiText] picks the rendering: quiche's trace id is documented as a string, while a connection
-     * ID is raw bytes that only mean anything as hex.
-     */
-    private inline fun readConnBytes(
-        asciiText: Boolean,
-        read: (Long, Int) -> Int,
-    ): String? {
-        val buf = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
-        try {
-            val len = read(addr(buf), CONN_ID_TEXT_CAPACITY)
-            if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return null
-            val sb = StringBuilder(if (asciiText) len else len * 2)
-            repeat(len) {
-                val v = buf.readByte().toInt() and 0xFF
-                if (asciiText) {
-                    sb.append(v.toChar())
-                } else {
-                    sb.append(HEX[v ushr 4]).append(HEX[v and 0xF])
-                }
-            }
-            return sb.toString()
-        } finally {
-            buf.freeNativeMemory()
-        }
-    }
 
     /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
@@ -1491,6 +1458,12 @@ class QuicheDriver(
      */
     private suspend fun run() {
         try {
+            when (role) {
+                // Before the first send, so every handshake secret is written.
+                QuicRole.Client -> api.nameTrafficSecretsLog(conn, capture, role) { sessionId }
+                // Named by the acceptor before it fed the first Initial, which derives the server's secrets.
+                QuicRole.Server -> Unit
+            }
             qlog = enableQlog()
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
@@ -3370,6 +3343,48 @@ class QuicheDriver(
         private const val CONN_ID_TEXT_CAPACITY = 64
 
         private val HEX = "0123456789abcdef".toCharArray()
+
+        /** [conn]'s [QuicSessionId] ([sessionId]), readable before a driver exists for it. */
+        internal fun readSessionId(
+            api: QuicheApi,
+            conn: QuicheConn,
+            bufferFactory: BufferFactory,
+        ): QuicSessionId {
+            val traceId = readConnBytes(bufferFactory, asciiText = true) { b, n -> api.connTraceId(conn, b, n) }
+            return QuicSessionId(traceId ?: "conn-${conn.handle.toString(16)}")
+        }
+
+        /**
+         * Run one of quiche's snprintf-style `(buf, bufLen) -> length` readers and render the result, or
+         * `null` when the backend reports nothing (length 0 — including the interface default for a backend
+         * that has not bound the accessor).
+         *
+         * [asciiText] picks the rendering: quiche's trace id is documented as a string, while a connection
+         * ID is raw bytes that only mean anything as hex.
+         */
+        private inline fun readConnBytes(
+            bufferFactory: BufferFactory,
+            asciiText: Boolean,
+            read: (Long, Int) -> Int,
+        ): String? {
+            val buf = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
+            try {
+                val len = read(buf.driverOwnedNativeAddress(), CONN_ID_TEXT_CAPACITY)
+                if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return null
+                val sb = StringBuilder(if (asciiText) len else len * 2)
+                repeat(len) {
+                    val v = buf.readByte().toInt() and 0xFF
+                    if (asciiText) {
+                        sb.append(v.toChar())
+                    } else {
+                        sb.append(HEX[v ushr 4]).append(HEX[v and 0xF])
+                    }
+                }
+                return sb.toString()
+            } finally {
+                buf.freeNativeMemory()
+            }
+        }
 
         /** Max ALPN protocol identifier length (RFC 7301 — 1-byte length prefix, so ≤ 255). */
         private const val MAX_ALPN_LEN = 255

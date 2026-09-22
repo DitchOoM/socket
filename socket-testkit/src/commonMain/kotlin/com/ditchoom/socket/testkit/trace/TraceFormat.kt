@@ -125,6 +125,10 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append("QLOG_REFUSED ")
                 append(flattenLine(event.path))
             }
+            is TraceEvent.TrafficSecretsRefused -> {
+                append("TRAFFIC_SECRETS_REFUSED ")
+                append(flattenLine(event.path))
+            }
         }
     }
 
@@ -231,6 +235,7 @@ internal fun decodeTraceLine(line: String): TraceEvent {
         // added after the format shipped. A reader predating it fails the unknown-event branch below
         // rather than mis-parsing.
         "QLOG_REFUSED" -> TraceEvent.QlogRefused(at, fields)
+        "TRAFFIC_SECRETS_REFUSED" -> TraceEvent.TrafficSecretsRefused(at, fields)
         else -> throw IllegalArgumentException("unknown trace event '$eventName': $line")
     }
 }

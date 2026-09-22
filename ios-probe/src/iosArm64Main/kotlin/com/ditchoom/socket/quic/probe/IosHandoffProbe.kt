@@ -26,6 +26,7 @@ import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.trace.TrafficSecretsLog
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
@@ -65,6 +66,7 @@ import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSystemFreeSize
+import platform.Foundation.NSLibraryDirectory
 import platform.Foundation.NSNumber
 import platform.Foundation.NSLog
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
@@ -150,6 +152,9 @@ object IosHandoffProbe {
 
     private fun documents(): String = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
 
+    /** The app's Library: private, unlike Documents, which this app shares with the Files app. */
+    private fun library(): String = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, true).first() as String
+
     /** Absolute path of the newline-delimited log, so Swift can offer it to the Files app. */
     fun logPath(): String = "${documents()}/quic-handoff-probe.log"
 
@@ -158,6 +163,9 @@ object IosHandoffProbe {
 
     /** Directory quiche writes this walk's qlog into, alongside the traces. */
     fun qlogDir(): String = "${documents()}/qlog"
+
+    /** Directory quiche appends each connection's TLS secrets to: they decrypt the traces, so not Documents. */
+    fun keysDir(): String = "${library()}/keys"
 
     /** For the UI: the walk's own state, then one line per lane saying what its connection is doing. */
     fun status(): String = (listOf(statusLine) + probeLanes.map { "${it.lane.label}: ${it.status}" }).joinToString("\n")
@@ -213,18 +221,23 @@ object IosHandoffProbe {
         // collects it. Tapping Start used to delete the log, and the trace files would have been
         // appended to across walks.
         val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
+        val keptKeys = rotatePreviousRun(library(), listOf("keys"))
         val log = Logger(logPath(), startedAt)
         val diskFreeAtStart = diskFree()
         log.emit(
-            "START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()} " +
+            "START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()} keys=${keysDir()} " +
                 "${BuildRevision.parse(PROBE_BUILD_STAMP).line} ${diskFreeAtStart.line}",
         )
         log.emit(kept)
+        log.emit("KEYS $keptKeys")
         log.emit(targets.lanesLine(echoIntervalMs.milliseconds))
         // quiche's own frame-level record: evidence written by quiche itself, not by this library's
         // code. Each connection writes a run of .sqlog segments named from the same stem as its trace
         // (conn-v6-0003.sqlog beside conn-v6-0003.trace).
         NSFileManager.defaultManager.createDirectoryAtPath(qlogDir(), true, null, null)
+        // The TLS secrets that let a lane's traces be decrypted without this library (Wireshark reads
+        // conn-v6-0003.keys beside conn-v6-0003.trace), in the app's private Library; pull.sh collects them.
+        NSFileManager.defaultManager.createDirectoryAtPath(keysDir(), true, null, null)
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
         // `TraceToFixture` without re-walking anything. Per connection because the v1 grammar carries
@@ -251,7 +264,7 @@ object IosHandoffProbe {
                 lane.label to QlogDirectory(qlogDir(), laneBudget) { event -> laneEmit(event.line) }
             }
         val traceFiles =
-            WalkTraceFiles(traceDir(), qlog, targets.lanes, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir(), qlog, keysDir(), targets.lanes, budget.bytes) { spent ->
                 log.emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point.",
@@ -341,6 +354,8 @@ object IosHandoffProbe {
                                     TraceSink { event ->
                                         probe.ring.emit(event)
                                         connection.sink.emit(event)
+                                        // The qlog directory reports its own events; a key log has only this one.
+                                        if (event is TraceEvent.TrafficSecretsRefused) emit("TRAFFIC-SECRETS-REFUSED path=${event.path}")
                                     },
                             )
                         },
@@ -815,8 +830,8 @@ private const val RING_CAPACITY = 256
 
 /**
  * One file-backed [TraceSink] per connection, under a byte budget every lane shares, and beside it the
- * qlog quiche writes for that connection — both named by the lane and its own connection count,
- * `conn-v6-0003`, so the two records of a connection pair by name.
+ * qlog and key log quiche writes for that connection — all named by the lane and its own connection count,
+ * `conn-v6-0003`, so a connection's records pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
  * killed by a reboot or a pulled cable must not lose its tail. The budget here covers the trace; the
@@ -825,6 +840,7 @@ private const val RING_CAPACITY = 256
 private class WalkTraceFiles(
     private val dir: String,
     private val qlog: Map<String, QlogDirectory>,
+    private val keysDir: String,
     lanes: List<WalkLane>,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
@@ -869,7 +885,11 @@ private class WalkTraceFiles(
                     }
                 }
             }
-        return QuicConnectionCapture(sink, QlogTarget.Budgeted(qlog.getValue(lane.label), name))
+        return QuicConnectionCapture(
+            sink,
+            QlogTarget.Budgeted(qlog.getValue(lane.label), name),
+            TrafficSecretsLog.File("$keysDir/$name.keys"),
+        )
     }
 }
 

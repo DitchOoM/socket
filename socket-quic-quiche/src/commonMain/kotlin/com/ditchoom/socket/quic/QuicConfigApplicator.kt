@@ -60,6 +60,9 @@ internal interface QuicConfigCalls {
         recvQueueLen: Long,
         sendQueueLen: Long,
     )
+
+    /** Install the TLS key-log callback; a connection writes secrets only once its own key log is named. */
+    fun logKeys()
 }
 
 /**
@@ -170,4 +173,17 @@ internal fun applyQuicOptions(
 
     // Unreliable datagrams (RFC 9221) — only when explicitly enabled.
     options.datagrams?.let { calls.enableDgram(it.recvQueueLen.toLong(), it.sendQueueLen.toLong()) }
+
+    if (trafficSecretsNameable(options)) calls.logKeys()
 }
+
+/**
+ * Whether a connection built from [options] can name a TLS key log: its trace capture can, and so can the
+ * `QUIC_KEYLOG_DIR` environment. Only then does its config carry quiche's key-log callback.
+ */
+internal fun trafficSecretsNameable(options: QuicOptions): Boolean =
+    options.trace != null ||
+        when (keyLogDirectory()) {
+            EnvironmentSetting.Unset -> false
+            is EnvironmentSetting.Value -> true
+        }

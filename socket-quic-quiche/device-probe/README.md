@@ -33,6 +33,15 @@ Three records, kept side by side so a bug in any one instrument leaves the other
   ~1.8 GB per lane per 75 h at 250 ms (1,676 bytes per echo exchange), however many connections the
   lane splits across.
 
+- `keys/conn-v6-0007.keys` — **the TLS secrets that decrypt that connection's datagrams**, in the NSS
+  key log format (`SSLKEYLOGFILE`), named by the same stem as its trace and its qlog. With them the
+  trace's `DGRAM_OUT`/`DGRAM_IN` bytes open in anything that speaks RFC 9001 — Wireshark reads the
+  file as its TLS *(Pre)-Master-Secret log filename*, given a pcap built from the trace's hex — with
+  no code of this library in the loop (`JvmTrafficSecretsLogTests` opens every packet of a recorded
+  trace this way). A secret: the probe keeps them in the app's **private** files dir (`-e probeKeyLog 1`,
+  which `start.sh` passes), and `pull.sh` copies them out through `run-as` into a 0700 `…-keys/`
+  directory. A key log quiche cannot open is a `TRAFFIC-SECRETS-REFUSED` line of its lane.
+
 Each lane's qlog is held to its own budget, which the probe derives from `<minutes>` and
 `[echoIntervalMs]` exactly as it derives the trace's — twice the lane's expected volume, so a walk that
 goes as planned drops nothing — and together to half of what the disk had free at START once the trace
@@ -45,7 +54,7 @@ connection keeps its head and its latest segment — and every drop is a `QLOG-T
 other's records. `analyze.py` reports them under each lane's capture health, with the probe's `build=`
 (the commit it was built from).
 
-`pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
+`pull.sh` fetches all of them and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
 this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
 below is ~590 MB. The probe derives its own budget from `<minutes>` and `[echoIntervalMs]` and prints
 it as `TRACE-BUDGET`; override with a 3rd argument to `start.sh` only if you want a different one.

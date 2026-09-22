@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.trace.TrafficSecretsLog
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
@@ -190,11 +191,22 @@ class DeviceHandoffProbe {
                 WalkQlog.Off
             }
 
+        // The TLS secrets that let a lane's traces be decrypted without this library: conn-v6-0003.keys
+        // beside conn-v6-0003.trace. They decrypt the walk, so they go to the app's PRIVATE files dir,
+        // never external storage, and pull.sh collects them through run-as. Off unless -e probeKeyLog.
+        val keptKeys = PreviousRun.rotate(ctx.filesDir, listOf("keys"))
+        val keyLog =
+            when (arg("probeKeyLog", "")) {
+                "" -> WalkKeyLog.Off
+                else -> WalkKeyLog.Into(File(ctx.filesDir, "keys").also { it.mkdirs() })
+            }
+
         log.writeText("")
         emit(kept.line)
+        emit("KEYS ${keptKeys.line}")
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
-                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog ${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog keys=$keyLog ${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
                 diskFreeAtStart.line,
         )
         emit(targets.lanesLine(echoIntervalMs.milliseconds))
@@ -218,7 +230,7 @@ class DeviceHandoffProbe {
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
         val traceFiles =
-            WalkTraceFiles(traceDir, qlog, targets.lanes, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir, qlog, keyLog, targets.lanes, budget.bytes) { spent ->
                 emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
@@ -268,6 +280,12 @@ class DeviceHandoffProbe {
                                         TraceSink { event ->
                                             probe.ring.emit(event)
                                             connection.sink.emit(event)
+                                            // The qlog directory reports its own events; a key log has only this one.
+                                            if (event is TraceEvent.TrafficSecretsRefused) {
+                                                laneEmit(
+                                                    "TRAFFIC-SECRETS-REFUSED path=${event.path}",
+                                                )
+                                            }
                                         },
                                 )
                             },
@@ -980,10 +998,23 @@ private sealed interface WalkQlog {
     }
 }
 
+/** Whether this walk records the TLS secrets that decrypt its traces, and into which directory. */
+private sealed interface WalkKeyLog {
+    data object Off : WalkKeyLog {
+        override fun toString(): String = "off"
+    }
+
+    data class Into(
+        val dir: File,
+    ) : WalkKeyLog {
+        override fun toString(): String = dir.absolutePath
+    }
+}
+
 /**
  * One file-backed [TraceSink] per connection, under a byte budget every lane shares, and beside it the
- * qlog quiche writes for that connection — both named by the lane and its own connection count,
- * `conn-v6-0003`, so the two records of a connection pair by name.
+ * qlog and key log quiche writes for that connection — all named by the lane and its own connection count,
+ * `conn-v6-0003`, so a connection's records pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
  * killed by a reboot or a pulled cable must not lose its tail. The budget here covers the trace; the
@@ -992,6 +1023,7 @@ private sealed interface WalkQlog {
 private class WalkTraceFiles(
     private val dir: File,
     private val qlog: WalkQlog,
+    private val keyLog: WalkKeyLog,
     lanes: List<WalkLane>,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
@@ -1031,7 +1063,12 @@ private class WalkTraceFiles(
                 WalkQlog.Off -> QlogTarget.Off
                 is WalkQlog.Into -> QlogTarget.Budgeted(qlog.byLane.getValue(lane.label), name)
             }
-        return QuicConnectionCapture(sink, target)
+        val secrets =
+            when (keyLog) {
+                WalkKeyLog.Off -> TrafficSecretsLog.Off
+                is WalkKeyLog.Into -> TrafficSecretsLog.File(File(keyLog.dir, "$name.keys").absolutePath)
+            }
+        return QuicConnectionCapture(sink, target, secrets)
     }
 }
 

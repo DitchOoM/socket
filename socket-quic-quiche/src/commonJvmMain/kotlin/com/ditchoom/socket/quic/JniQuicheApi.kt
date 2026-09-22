@@ -441,6 +441,13 @@ object JniQuicheApi : QuicheApi {
         desc: String,
     ): Boolean = nConnSetQlogPath(conn.handle, path, title, desc)
 
+    override fun configLogKeys(config: QuicheConfig) = nConfigLogKeys(config.handle)
+
+    override fun connSetKeylogPath(
+        conn: QuicheConn,
+        path: String,
+    ): Boolean = nConnSetKeylogPath(conn.handle, path)
+
     // --- Path migration ---
     override fun connProbePath(
         conn: QuicheConn,
@@ -959,6 +966,13 @@ object JniQuicheApi : QuicheApi {
         path: String,
         title: String,
         desc: String,
+    ): Boolean
+
+    @JvmStatic private external fun nConfigLogKeys(config: Long)
+
+    @JvmStatic private external fun nConnSetKeylogPath(
+        conn: Long,
+        path: String,
     ): Boolean
 
     // --- Path migration JNI externals ---
