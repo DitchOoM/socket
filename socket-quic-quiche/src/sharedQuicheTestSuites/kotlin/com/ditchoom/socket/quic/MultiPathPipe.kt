@@ -36,7 +36,8 @@ import kotlin.time.Duration
  * property of the path rather than of the pipe so one path can die while the others stay healthy —
  * which is what a real handoff looks like and what `ImpairedPipe.blackhole` (whole-pipe) cannot model.
  * [PathReach.DarkUntil] is the walk's cellular attach: a link that is dark for a while and then
- * answers every path on it, which no per-path or per-index blackhole can express.
+ * answers every path on it, which no per-path or per-index blackhole can express. [PathReach.HeldUntil]
+ * is the same attach on a link that queues instead of dropping.
  *
  * [mtu] is #637's condition, and it is keyed on *size* where [reach] is keyed on time: a link that
  * carries the connection perfectly and silently swallows anything past [LinkMtu.Bounded.bytes]. A
@@ -52,7 +53,10 @@ internal data class PathImpairment(
     val mtu: LinkMtu = LinkMtu.Unbounded,
 )
 
-/** Whether a path carries datagrams at all: always, never, or only once the sim's clock reaches an instant. */
+/**
+ * Whether a path carries datagrams, and when: always, never, only once the sim's clock reaches an
+ * instant, or late — everything offered before an instant held and released, in order, at it.
+ */
 internal sealed interface PathReach {
     data object Open : PathReach
 
@@ -60,6 +64,14 @@ internal sealed interface PathReach {
 
     /** Dark before [at] (virtual time from the run's t0), open from [at] on. */
     data class DarkUntil(
+        val at: Duration,
+    ) : PathReach
+
+    /**
+     * Everything offered before [at] is held and delivered, in the order it was offered, [at] plus the
+     * path's latency; open from [at] on. A link that queues through an attach rather than dropping.
+     */
+    data class HeldUntil(
         val at: Duration,
     ) : PathReach
 }
@@ -267,7 +279,7 @@ internal class MultiPathPipe(
             if (len > path.stats.largestOffered) path.stats.largestOffered = len
             val dark =
                 when (val reach = impairment.reach) {
-                    PathReach.Open -> false
+                    PathReach.Open, is PathReach.HeldUntil -> false
                     PathReach.Dark -> true
                     is PathReach.DarkUntil -> now() < reach.at
                 }
@@ -292,7 +304,12 @@ internal class MultiPathPipe(
                 path.stats.dropped++
                 return
             }
-            delay = impairment.latency + impairment.jitter * jitterFraction
+            val held =
+                when (val reach = impairment.reach) {
+                    is PathReach.HeldUntil -> (reach.at - now()).coerceAtLeast(Duration.ZERO)
+                    PathReach.Open, PathReach.Dark, is PathReach.DarkUntil -> Duration.ZERO
+                }
+            delay = held + impairment.latency + impairment.jitter * jitterFraction
         }
         // Captured only now: a dropped or blackholed datagram allocates nothing, which keeps the ledger
         // counting real deliveries and the seeded sequence independent of allocation.

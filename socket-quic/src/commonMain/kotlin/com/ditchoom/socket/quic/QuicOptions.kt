@@ -253,30 +253,19 @@ data class QuicOptions(
      * `active_connection_id_limit`). Must be >= 2 for active migration: the peer issues up to this
      * many NEW_CONNECTION_ID frames, and migrating to a new path consumes one spare destination CID.
      *
-     * ## Why 8, measured rather than guessed
-     * The spare pool is exactly this value minus the one in use, and it binds in **one** situation:
-     * a handoff away from a path that is already dead. On a live path it does not bind at all —
-     * each migration retires its old CID and the peer replaces it over the path still carrying
-     * traffic, so a connection migrates indefinitely even at the RFC minimum of 2 (measured in the
-     * deterministic migration sim: 40 consecutive migrations at every limit from 2 to 32). When the
-     * old path is dark that round trip cannot happen, nothing is replenished, and every unanswered
-     * probe costs a CID that never comes back.
+     * ## What the spare pool is, and when it binds
+     * The spares a client holds are `min(this, the peer's limit) - 1` — quiche issues no more source
+     * CIDs than the lower of the two advertise — so against a peer at 4 a client at 8 holds three. The
+     * pool binds in one situation: a handoff away from a path that is already dead. On a live path each
+     * migration retires its old CID and the peer replaces it over the path still carrying traffic, so a
+     * connection migrates indefinitely even at the RFC minimum of 2. When the old path is dark that
+     * round trip cannot happen and nothing is replenished.
      *
-     * The reactor's retry budget is what the pool has to feed. Measured
-     * against a dead old path with every probe unanswered, and the automatic reactor driving:
-     *
-     * | limit | spares held | probes that reached the wire | reactor gave up at |
-     * |-------|-------------|------------------------------|--------------------|
-     * | 2     | 1           | 1                            | 10.75s             |
-     * | 4     | 3           | 3                            | 16.75s             |
-     * | 8     | 7           | 6                            | 25.75s             |
-     * | 16    | 15          | 6                            | 25.75s             |
-     *
-     * At 4, half the retry budget goes on attempts quiche refuses for want of a spare CID *before*
-     * opening a socket — real answers, but not real probes — and the reactor gives up with a third of
-     * the [idleTimeout] window unused. At 8 the pool stops being the binding
-     * constraint and every attempt is a probe that actually reaches the network. Above 8 nothing
-     * changes, because the reactor's own deadline binds first.
+     * An unanswered probe keeps its socket and its CID, and a retry from the same local address probes
+     * that path again with the same CID (RFC 9000 §9.5 forbids reuse only across local addresses). A
+     * retry binds a fresh socket, spending a spare, only while at least one more stays in reserve for a
+     * handoff to another link. So a dead-link handoff probes for as long as the connection lives at any
+     * limit, and a larger pool buys fresh 4-tuples for its first retries, not more retries.
      *
      * ## What raising it costs
      * Nothing is preallocated: quiche treats this as a cap (`Slab::with_capacity(1)` for the path
@@ -284,8 +273,8 @@ data class QuicOptions(
      * do is size `max_concurrent_paths` from the same value — quiche's own comment is "do not allocate
      * more than the number of active CIDs" — so this is one number for two ceilings, and each recorded
      * path carries its own congestion and loss state. Since these options configure servers as well as
-     * clients, the ceiling applies per accepted connection too. Raise it if [idleTimeout] is long
-     * enough for a handoff to spend more than 7 probes; there is no reason to lower it below 4.
+     * clients, the ceiling applies per accepted connection too. As a server's option it is the
+     * spare pool of every client that connects, so there is no reason to lower it below 4.
      */
     val activeConnectionIdLimit: Long = 8,
     /** Verify the peer's TLS certificate. */

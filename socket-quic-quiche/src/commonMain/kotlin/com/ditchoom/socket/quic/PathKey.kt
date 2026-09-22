@@ -31,3 +31,9 @@ fun QuicheApi.decodePathKey(addr: Long): PathKey =
         6 -> PathKey(family = 6, port = sockAddrPort(addr), hi = sockAddrV6Hi(addr), lo = sockAddrV6Lo(addr))
         else -> PathKey(family = 0, port = 0, hi = 0L, lo = 0L)
     }
+
+/**
+ * Whether [other] is bound on the same local address, whatever its port — the same link, as far as a
+ * path can tell. A key that decoded to no family names no address, so it matches nothing.
+ */
+internal fun PathKey.sameAddressAs(other: PathKey): Boolean = family != 0 && family == other.family && hi == other.hi && lo == other.lo

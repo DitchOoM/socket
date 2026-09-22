@@ -218,19 +218,19 @@ internal sealed interface MigrationTrigger {
  * An unanswered probe is the *ordinary* case on real cellular, not an exotic one, so one attempt per
  * handoff is not a policy, it is an outage.
  *
- * **What the probes cost, and why the pool is not what bounds them.** Every probe that reaches quiche
- * links a spare destination connection id to the new path, and every exit from that path — validated,
- * failed, abandoned — retires it (`PathSlot`). On a *live* path that is self-replacing: the
- * `RETIRE_CONNECTION_ID` reaches the peer and a `NEW_CONNECTION_ID` comes back, which is why a
- * connection on a working link migrates indefinitely even at the RFC 9000 minimum of two. On a path
- * that is already **dead** neither frame crosses, so the pool is finite:
- * [QuicOptions.activeConnectionIdLimit] minus the one in use. Past it quiche answers
- * `NoSpareConnectionId` *before* opening a socket, which is a real answer but not a probe — it reaches
- * no network. That default is therefore sized so the pool is deep enough that a run of failed handoffs
- * still has ids to spend. ⚠️ An abandoned probe only gets its id *back* because of the retire-no-relink
- * quiche patch — unpatched, quiche re-links the peer's replacement into the dead probe path, so the
- * pool drains once and never refills, and this retry loop would be asking a question that could never
- * be answered.
+ * **What the probes cost, and why the pool is not what bounds them.** A probe from a new local
+ * address takes a spare destination connection id, and on a *live* path that is self-replacing: the
+ * `RETIRE_CONNECTION_ID` of whatever it leaves reaches the peer and a `NEW_CONNECTION_ID` comes back,
+ * which is why a connection on a working link migrates indefinitely even at the RFC 9000 minimum of
+ * two. On a path that is already **dead** neither frame crosses, so the pool —
+ * `min(QuicOptions.activeConnectionIdLimit, the peer's limit) - 1` — is finite. What keeps it from
+ * bounding the retries is the driver's kept probe path (`PathSlot.Kept`): an unanswered probe keeps its
+ * socket and id, and a retry from the same local address probes it again with that id, binding a fresh
+ * socket only while a spare stays in reserve for another link. So every retry here is a PATH_CHALLENGE
+ * on the wire, and `NoSpareConnectionId` is left for a handoff to yet another link with nothing to
+ * spend. ⚠️ A retired probe path only gives its id *back* because of the retire-no-relink quiche patch —
+ * unpatched, quiche re-links the peer's replacement into the dead probe path and the pool drains once
+ * and never refills.
  *
  * **No quiet period between handoffs, deliberately — and the backoff is not one.** [QuicScope.migrate]
  * suspends until the new path has validated and the active path has switched (or the attempt has
@@ -459,8 +459,8 @@ private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boo
         // The peer replenishes the pool with NEW_CONNECTION_ID, and at connection start this is
         // routinely a race against the peer's *first* one rather than a verdict.
         MigrationResult.Unmoved.Failed.NoSpareConnectionId -> true
-        // An unanswered PATH_CHALLENGE is ordinary on cellular, and the next probe is a fresh 4-tuple
-        // the peer may well answer.
+        // An unanswered PATH_CHALLENGE is ordinary on cellular, and a link that swallowed one may well
+        // carry the next.
         MigrationResult.Unmoved.Failed.PathNotValidated -> true
         // A bind that failed or collided with the live path's 4-tuple; a later bind lands elsewhere.
         is MigrationResult.Unmoved.Failed.LocalPathUnavailable -> true

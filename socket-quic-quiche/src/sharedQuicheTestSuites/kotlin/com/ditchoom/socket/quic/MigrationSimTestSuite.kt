@@ -20,7 +20,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -209,20 +208,19 @@ abstract class MigrationSimTestSuite {
      * ## Why this asserts the mechanism, not a spare-CID count
      * `available_dcids` is moved by at least three independent effects at once — the probe consuming
      * one, the peer issuing a replacement once our RETIRE_CONNECTION_ID lands, and quiche's own
-     * `recv()` refill relinking spares into paths that have none. Measured here: after one abandoned
-     * probe the count sits flat at 2 while the audit shows the server *did* receive the retirement and
-     * issue a replacement (`retiredScidsSeen` 1, `newScid` 4). A test asserting "the count went back
-     * up" would read that flat 2 as a failure — and could read a wrong fix as a success.
+     * `recv()` refill relinking spares into paths that have none — so a count can read a wrong fix as
+     * a success.
      *
-     * So the assertion is what #447 actually changed, and what is unambiguous: **the abandoned path
-     * retired the destination CID it was holding.** Pre-#447 the driver wrote that sequence number into
-     * native scratch and never read it, so its abandon exit had no value to forget and made no retire
-     * call at all — mutated back, this goes red with an empty `retireCalls`.
+     * So the assertion is on the mechanism, and it is unambiguous: **the unanswered probe's path keeps
+     * the destination CID it was holding, and retires it — exactly once — when the next migration
+     * replaces it with a fresh socket.** Pre-#447 the driver never read that sequence number, so no exit
+     * could retire it — mutated back, the replacement makes no retire call and this goes red with an
+     * empty `retireCalls`.
      *
-     * The scenario costs 0ms of wall clock; the ~3s abandon budget is virtual.
+     * The scenario costs 0ms of wall clock; the ~3s abandon budgets are virtual.
      */
     @Test
-    fun anAbandonedProbeRetiresTheConnectionIdItHeld() =
+    fun anUnansweredProbeKeepsItsConnectionIdUntilAFreshSocketReplacesIt() =
         runTest {
             wrapTestBody {
                 withMigrationSim(
@@ -230,8 +228,8 @@ abstract class MigrationSimTestSuite {
                     seed = 77_001L,
                     probeImpairment = { PathImpairment(reach = PathReach.Dark) },
                 ) {
-                    awaitSpareDcids()
-                    assertTrue(clientAvailableDcids() > 0, "the peer never issued a spare CID — nothing could be leaked")
+                    awaitSpareDcids(count = SPARE_POOL)
+                    assertTrue(clientAvailableDcids() > 1, "the pool must afford a fresh socket for the replacement to happen")
 
                     val result = withTimeout(120.seconds) { migrate().await() }
                     assertTrue(
@@ -239,18 +237,24 @@ abstract class MigrationSimTestSuite {
                         "the probe path is a blackhole, so this migration must not have succeeded: $result. " +
                             "If it did, the impairment is not reaching the path and the test proves nothing.",
                     )
-
                     val probe = pipe.pathAt(clientPaths().last())
                     assertTrue(
                         probe.stats.blackholed > 0,
                         "no datagram was ever blackholed on the probe path — the PATH_CHALLENGE was not " +
                             "actually suppressed, so nothing here reproduces #447",
                     )
+                    assertEquals(
+                        emptyList(),
+                        clientAudit.retireCalls,
+                        "the unanswered probe's path is kept for the next probe on its link, so its id must not be retired yet",
+                    )
 
+                    val replaced = withTimeout(120.seconds) { migrate().await() }
+                    assertTrue(replaced !is MigrationResult.Succeeded, "the second probe path is a blackhole too: $replaced")
                     assertEquals(
                         1,
                         clientAudit.retireCalls.size,
-                        "an abandoned probe must retire the destination CID quiche linked to its path, " +
+                        "replacing the kept probe path must retire the destination CID quiche linked to it, " +
                             "exactly once. Calls seen: ${clientAudit.retireCalls}. Pre-#447 the driver never " +
                             "read that sequence number, so this list is empty and every failed handoff costs " +
                             "one spare CID for the rest of the connection's life.",
@@ -522,11 +526,11 @@ abstract class MigrationSimTestSuite {
      * counter. The reactor's own attempt log ([SimClientQuicConnection.attempts]) is asserted too, but
      * only as the *explanation*: it is what turns a red echo into a diagnosis.
      *
-     * ⚠️ [LOST_PROBES] is bounded by the spare CID pool, not chosen for effect: the old path is dead,
-     * so each abandoned probe's RETIRE_CONNECTION_ID never reaches the peer and no replacement ever
-     * comes back. The pool is [SPARE_POOL], and the scenario states that precondition out loud by
-     * waiting for it below. Every §8.2.4 abandon budget here is virtual, so the whole thing costs 0ms
-     * of wall clock.
+     * ⚠️ The link heals by probe *index*, which means something only while every attempt binds and
+     * probes a fresh socket — while the pool stays above the one spare a retry keeps in reserve for
+     * another link. The old path is dead, so no spare comes back, and the scenario states that
+     * precondition out loud by waiting for [LOST_PROBES] + 2 spares below. Every §8.2.4 abandon budget
+     * here is virtual, so the whole thing costs 0ms of wall clock.
      */
     @Test
     fun aLostProbeIsRetriedUntilTheConnectionRehomes() =
@@ -575,10 +579,10 @@ abstract class MigrationSimTestSuite {
                         }
 
                         assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
-                        // Stated as a precondition rather than assumed: this scenario spends one spare
-                        // destination CID per probe and gets none of them back, because the path that
-                        // would carry RETIRE_CONNECTION_ID is about to die.
-                        awaitSpareDcids(count = (LOST_PROBES + 1).toLong())
+                        // Stated as a precondition rather than assumed: every probe up to the healing one
+                        // takes a fresh socket and a spare, one more stays in reserve, and none comes
+                        // back, because the path that would carry RETIRE_CONNECTION_ID is about to die.
+                        awaitSpareDcids(count = (LOST_PROBES + 2).toLong())
                         assertEquals(0, client.attempts.size, "nothing may migrate before the handoff")
 
                         // --- the handoff, and the last input this test ever supplies ---
@@ -734,23 +738,18 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * **Every attempt in one handoff's budget must reach the network** — the property
-     * [QuicOptions.activeConnectionIdLimit]'s default exists to hold.
+     * **Every attempt of a dead-path handoff reaches the network, whatever the peer's connection id
+     * limit.**
      *
-     * The reactor's retry budget and the spare connection id pool are two different ceilings on the
-     * same loop, and only one of them is about the network. Past the pool, `QuicheDriver.handleMigrate`
-     * answers [MigrationResult.Unmoved.Failed.NoSpareConnectionId] *before* `openPath` — a truthful
-     * answer that opens no socket, sends no PATH_CHALLENGE and gives the handoff no new chance. So a
-     * pool smaller than the budget does not shorten the loop; it **hollows it out**, and the shortfall
-     * is invisible from the outside because the attempt count is unchanged.
-     *
-     * Measured on this rig with the old default of 4: six attempts, three probes, the reactor giving
-     * up at 16.75s with a third of the 30s idle window unspent. At the shipped default the two lines
-     * below are the same number.
-     *
-     * The old path must be dead for this to mean anything. On a live path each abandoned probe's
-     * `RETIRE_CONNECTION_ID` reaches the peer and is replaced, so the pool never empties and this
-     * would pass at any limit down to the RFC minimum of two.
+     * The spare pool is `min(peer limit, own limit) - 1` — three against the walk's peer at 4 — and on
+     * a dead active path nothing refills it, because the `RETIRE_CONNECTION_ID` that would earn a
+     * replacement rides that path. Were each attempt to spend a spare, the pool would hollow the retry
+     * loop out: past it, `QuicheDriver.handleMigrate` answers
+     * [MigrationResult.Unmoved.Failed.NoSpareConnectionId] before a socket opens, a truthful answer that
+     * sends nothing and gives the handoff no new chance. Retries on the link the last probe is bound to
+     * probe that path again instead, so every attempt the idle window allows is a PATH_CHALLENGE on the
+     * wire — asserted here per attempt, as datagrams the probe paths carried while it ran, not as
+     * sockets opened.
      */
     @Test
     fun everyRetryInTheBudgetReachesTheNetwork() =
@@ -762,19 +761,26 @@ abstract class MigrationSimTestSuite {
                     seed = 45_303L,
                     quicOptions =
                         migrationSimOptions(
-                            // The field's own deadline, deliberately: the invariant below only holds
-                            // where the idle window allows fewer attempts than the pool can supply, and
-                            // 30s is both QuicOptions' default and what the #453 connection actually had.
                             idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
                             migration = MigrationPolicy.Automatic,
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    serverQuicOptions = walkPeerOptions(),
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = PathReach.Dark) },
                 ) {
-                    awaitSpareDcids(count = SPARE_POOL)
+                    awaitWalkPeerPool()
                     pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
                     monitor.setNetworkId(CELLULAR)
-                    delay(GIVE_UP_WINDOW)
+
+                    // Datagrams the probe paths have carried, read as each attempt completes.
+                    fun probeTraffic() = pipe.paths().drop(1).sumOf { it.stats.sentToServer }
+                    val trafficAtAttempt = mutableListOf<Int>()
+                    withTimeout(GIVE_UP_WINDOW) {
+                        while (client.attempts.lastOrNull() !is MigrationResult.Unmoved.Impossible) {
+                            if (client.attempts.size > trafficAtAttempt.size) trafficAtAttempt += probeTraffic()
+                            delay(10.milliseconds)
+                        }
+                    }
 
                     val refused = client.attempts.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
                     // The last attempt of a dead-path handoff is the one that discovers the connection
@@ -782,29 +788,27 @@ abstract class MigrationSimTestSuite {
                     // rather than a retry that failed to reach anywhere. Everything before it must have
                     // become a real probe.
                     val reachedTheDriver = client.attempts.filter { it !is MigrationResult.Unmoved.Impossible }
-                    assertEquals(
-                        reachedTheDriver.size,
-                        clientPaths().size,
-                        "the handoff made ${reachedTheDriver.size} attempt(s) against a live connection " +
-                            "but opened only ${clientPaths().size} probe path(s): ${refused.size} were " +
-                            "refused for want of a spare connection id before a socket was opened, so " +
-                            "that much of the retry never reached the network. The spare pool is " +
-                            "$SPARE_POOL (activeConnectionIdLimit - 1). Attempts: ${client.attempts}",
-                    )
                     assertTrue(
                         refused.isEmpty(),
-                        "${refused.size} attempt(s) were refused for want of a spare connection id on a " +
-                            "handoff the pool of $SPARE_POOL should have covered: ${client.attempts}",
+                        "${refused.size} attempt(s) were refused for want of a spare connection id before a socket " +
+                            "opened, so that much of the retry never reached the network: ${client.attempts}",
                     )
                     assertTrue(
-                        client.attempts.size >= 2,
-                        "no retry happened at all, so this test is measuring nothing: ${client.attempts}",
+                        reachedTheDriver.all { it == MigrationResult.Unmoved.Failed.PathNotValidated },
+                        "every attempt against the live connection must have been a probe the link swallowed: ${client.attempts}",
                     )
                     assertTrue(
-                        client.attempts.size.toLong() <= SPARE_POOL,
-                        "the ${IDLE_TIMEOUT_IN_THE_FIELD} idle window allowed ${client.attempts.size} " +
-                            "attempts but the pool only holds $SPARE_POOL spare connection ids, so the " +
-                            "two ceilings have crossed and the surplus can never reach the network",
+                        reachedTheDriver.size > WALK_PEER_SPARES,
+                        "only ${reachedTheDriver.size} attempt(s) fit the $IDLE_TIMEOUT_IN_THE_FIELD window, no more " +
+                            "than the peer-sized pool of $WALK_PEER_SPARES could fund one socket each, so this " +
+                            "measures nothing: ${client.attempts}",
+                    )
+                    val perAttempt = (listOf(0) + trafficAtAttempt.take(reachedTheDriver.size)).zipWithNext { a, b -> b - a }
+                    assertTrue(
+                        perAttempt.all { it > 0 },
+                        "an attempt completed with no datagram on any probe path — it answered " +
+                            "PathNotValidated for a probe that never left. Datagrams per attempt: $perAttempt, " +
+                            "attempts=${client.attempts}, traffic=${pipeTraffic()}",
                     )
                 }
             }
@@ -891,34 +895,27 @@ abstract class MigrationSimTestSuite {
             }
         }
 
-    // RED until #631 lands: the reactor spends a peer-sized pool before the link attaches.
-
     /**
-     * **The walk's peer decides the pool, not the client's option** — the 2026-09-12 iPhone walk,
-     * connection 7, replayed against real quiche. RED until #631 lands.
+     * **A link that attaches after the peer-sized pool would have been spent is still reached** — the
+     * 2026-09-12 iPhone walk, connection 7, replayed against real quiche.
      *
      * quiche issues at most `min(peer active_connection_id_limit, its own)` source CIDs
-     * (`Connection::scids_left`), so a client at the shipped 8 talking to a server still on the old
-     * default of 4 holds **three** spares — and the field server was exactly that: the walk's qlog has
-     * the server advertising `active_connection_id_limit: 4` and issuing `NEW_CONNECTION_ID` 1, 2, 3
-     * and nothing more. The trace then reads as the old-default row of
-     * [QuicOptions.activeConnectionIdLimit]'s table: three probes from three fresh cellular ports,
-     * none answered, every one retiring a spare whose `RETIRE_CONNECTION_ID` rode the dead Wi-Fi
-     * socket (`errno=57`, 94 times) and so was never replaced, then `NoSpareConnectionId` at
-     * t+24.6/26.6/30.6/38.6s and `local: IdleTimeout` at t+43.3s. The next connection came up over
-     * that same cellular link three seconds later, at a 120ms round trip.
+     * (`Connection::scids_left`), so a client at the shipped 8 talking to a server at 4 holds **three**
+     * spares — and the field server was exactly that: the walk's qlog has it advertising
+     * `active_connection_id_limit: 4` and issuing `NEW_CONNECTION_ID` 1, 2, 3 and nothing more. Wi-Fi
+     * then died (`errno=57` on every send), cellular swallowed three probes from three fresh ports, and
+     * with each one's `RETIRE_CONNECTION_ID` stuck behind the dead path the pool was gone by t+10s: four
+     * `NoSpareConnectionId` refusals and `local: IdleTimeout` at t+43.3s. The next connection came up
+     * over that same cellular link three seconds later, at a 120ms round trip.
      *
-     * So the link is keyed by **time**, as the walk's evidence is: dark for [WALK_LINK_ATTACH] after
-     * the handoff, then every path on it answers. Today the reactor has spent the whole pool inside
-     * that window and has nothing left to probe with, so the link coming good is never seen. Either
-     * #631 direction turns this green: re-probing the path the last attempt already holds (its socket
-     * is on the link that just attached), or budgeting the retries from
-     * `PeerTransportParams.activeConnIdLimit` so that a probe lands after the attach. Pinning the
-     * server at the shipped limit is the premise, not a fix — the RFC minimum is 2.
+     * So the link is keyed by **time**, as the walk's evidence is: dark for [WALK_LINK_ATTACH] after the
+     * handoff, then every path on it answers, at the sim's realistic 60ms one-way. A retry on the link
+     * the last unanswered probe is still bound to probes that path again with the connection ID it
+     * already holds (RFC 9000 §9.5 forbids reuse only across local addresses), so the pool bounds how
+     * many *sockets* a dead link costs, never how many *probes*.
      */
-    @Ignore
     @Test
-    fun aLinkThatAnswersFromTheFourthProbeOnIsNeverReachedAgainstThePeerTheWalkHad() =
+    fun aLinkThatAttachesAfterThePeerSizedPoolWouldBeSpentIsStillReached() =
         runTest {
             val virtual = this
             val monitor = SimNetworkMonitor.on(WIFI)
@@ -935,61 +932,34 @@ abstract class MigrationSimTestSuite {
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
                     serverQuicOptions = walkPeerOptions(),
-                    probeImpairment = { PathImpairment(reach = cellular) },
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = cellular) },
                 ) {
-                    val serverJob =
-                        client.launch {
-                            val st = server.acceptStream()
-                            while (true) {
-                                val d = st.read(60.seconds)
-                                if (d !is ReadResult.Data) break
-                                st.write(d.buffer, 30.seconds)
-                                d.buffer.freeIfNeeded()
-                            }
-                        }
+                    val serverJob = launchEchoServer()
                     try {
                         val stream = client.openStream()
-
-                        suspend fun echo(payload: String): String {
-                            val out = BufferFactory.network().allocate(payload.length)
-                            out.writeString(payload, Charset.UTF8)
-                            out.resetForRead()
-                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
-                            out.freeNativeMemory()
-                            // Past the connection's own deadline, so what ends a failed handoff is the
-                            // typed close and never this bound.
-                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
-                            if (r !is ReadResult.Data) return "NO_DATA ($r)"
-                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
-                        }
-
-                        assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
-                        awaitSpareDcids(count = WALK_PEER_SPARES)
-                        delay(REPLENISH_SETTLE)
-                        assertEquals(
-                            WALK_PEER_SPARES,
-                            clientAvailableDcids(),
-                            "the sim is not the walk: a peer at active_connection_id_limit=$WALK_PEER_CID_LIMIT grants " +
-                                "${WALK_PEER_CID_LIMIT - 1} spares whatever the client's own limit says",
-                        )
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitWalkPeerPool()
 
                         pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
                         cellular = PathReach.DarkUntil(virtual.currentTime.milliseconds + WALK_LINK_ATTACH)
                         monitor.setNetworkId(CELLULAR)
 
-                        val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
+                        val after = runCatching { stream.echo("after") }.getOrElse { "CONNECTION DIED: $it" }
                         val refused = client.attempts.filterIsInstance<MigrationResult.Unmoved.Failed.NoSpareConnectionId>()
                         assertEquals(
                             "after",
                             after,
                             "the link answered every path on it from $WALK_LINK_ATTACH after the handoff, yet the " +
                                 "connection never re-homed. The peer's active_connection_id_limit=$WALK_PEER_CID_LIMIT " +
-                                "capped the spare pool at $WALK_PEER_SPARES whatever the client's own limit says; the " +
-                                "handoff spent all of them on probes the link swallowed, their RETIRE_CONNECTION_ID " +
-                                "rode the dead path so nothing came back, and every later attempt was refused before a " +
-                                "socket was opened: ${clientPaths().size} probe path(s) opened, ${refused.size} " +
-                                "attempt(s) refused for want of a spare connection id, attempts=${client.attempts}, " +
-                                "state=${clientDriver.state.value}",
+                                "caps the spare pool at $WALK_PEER_SPARES; ${refused.size} attempt(s) were refused for " +
+                                "want of a spare connection id, so the retries on the dark link spent the pool instead " +
+                                "of probing again with the id their path already held. ${clientPaths().size} socket(s) " +
+                                "opened, attempts=${client.attempts}, state=${clientDriver.state.value}",
+                        )
+                        assertTrue(
+                            refused.isEmpty(),
+                            "the connection re-homed, but ${refused.size} attempt(s) on the way were refused for want " +
+                                "of a spare connection id: ${client.attempts}",
                         )
                         stream.close()
                     } finally {
@@ -1000,8 +970,225 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * **A run of unanswered probes on a dead link leaves the next link a connection ID to probe with.**
+     *
+     * The same peer at `active_connection_id_limit` 4 and the same dead Wi-Fi as
+     * [aLinkThatAttachesAfterThePeerSizedPoolWouldBeSpentIsStillReached], but the cellular link never
+     * answers. The handoff keeps asking on it — more attempts than the three spares could fund one
+     * probe each — and then the platform reports a *different* link, bound on a different local
+     * address, that answers at once. That is the handoff that matters, and it needs one spare: a probe
+     * from a new local address must carry a connection ID never used from another (RFC 9000 §9.5).
+     * Every retry on the dead link that took a fresh socket spent one of the three, and none came back,
+     * because each `RETIRE_CONNECTION_ID` rode the dead path.
+     */
+    @Test
+    fun aRunOfUnansweredProbesOnADeadLinkLeavesTheNextLinkASpare() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            // Where a fresh socket binds: the platform's default route. Flipped with the monitor below.
+            var route = SIM_LINK_HOST
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 45_307L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    probeHost = { route },
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = DEFAULT_PATH_LATENCY,
+                            reach = if (route == SIM_OTHER_LINK_HOST) PathReach.Open else PathReach.Dark,
+                        )
+                    },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitWalkPeerPool()
+
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        monitor.setNetworkId(CELLULAR)
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (client.attempts.size <= WALK_PEER_SPARES) delay(10.milliseconds)
+                        }
+                        val onTheDeadLink = client.attempts
+                        // Read now: once the connection has closed, quiche's connection is freed.
+                        val sparesLeft = clientAvailableDcids()
+                        route = SIM_OTHER_LINK_HOST
+                        monitor.setNetworkId(OTHER_WIFI)
+
+                        val after = runCatching { stream.echo("after") }.getOrElse { "CONNECTION DIED: $it" }
+                        assertEquals(
+                            "after",
+                            after,
+                            "the second link answered from the moment the platform reported it, yet the connection " +
+                                "never reached it. ${onTheDeadLink.size} attempt(s) on the dead link " +
+                                "($onTheDeadLink) left $sparesLeft spare connection id(s) of the " +
+                                "$WALK_PEER_SPARES the peer granted; every attempt since: " +
+                                "${client.attempts.drop(onTheDeadLink.size)}, state=${clientDriver.state.value}",
+                        )
+                        assertTrue(
+                            onTheDeadLink.none { it is MigrationResult.Unmoved.Failed.NoSpareConnectionId },
+                            "the connection re-homed, but the dead link's retries were refused for want of a spare " +
+                                "connection id on the way: $onTheDeadLink",
+                        )
+                        val moved = client.attempts.filterIsInstance<MigrationResult.Succeeded>().first()
+                        assertEquals(
+                            SIM_OTHER_LINK_HOST,
+                            moved.localEndpoint.host,
+                            "the connection re-homed, but onto the dead link rather than the one that answered: ${client.attempts}",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * **A link that holds every probe through its attach and then releases them in order** — the
+     * 2026-09-21 iPhone burst: four probes from four fresh ports went unanswered for 4.7–16.1s, then
+     * the server received all of them within half a second, in order, and answered each; only the
+     * attempt still in flight at the release validated, and the answers to the earlier ones found their
+     * sockets closed.
+     *
+     * Characterised against both peers: at the shipped limit every retry binds a fresh socket and the
+     * late answers land on closed ones; at the walk's 4 the retries probe the kept path again, so late
+     * answers — PATH_RESPONSEs to challenges quiche has already dropped, and the server's own
+     * PATH_CHALLENGEs — land on a socket that is still open. Either way they are harmless: the attempt in
+     * flight at the release re-homes the connection, nothing migrates again, and once the retirements
+     * cross on the new path the pool is back to the peer's `limit - 1`.
+     */
+    @Test
+    fun aLinkThatHoldsProbesThroughItsAttachReHomesOnTheAttemptInFlightAtTheRelease() =
+        runTest {
+            for (peer in listOf(migrationSimOptions(idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD), walkPeerOptions())) {
+                val virtual = this
+                val monitor = SimNetworkMonitor.on(WIFI)
+                var cellular: PathReach = PathReach.Dark
+                val limit = peer.activeConnectionIdLimit
+                wrapTestBody {
+                    withMigrationSim(
+                        simEnv(),
+                        seed = 45_308L,
+                        quicOptions =
+                            migrationSimOptions(
+                                idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                                migration = MigrationPolicy.Automatic,
+                                networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            ),
+                        serverQuicOptions = peer,
+                        probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = cellular) },
+                    ) {
+                        val serverJob = launchEchoServer()
+                        try {
+                            val stream = client.openStream()
+                            assertEquals(
+                                "before",
+                                stream.echo("before"),
+                                "peer limit $limit: the connection must be healthy before the handoff",
+                            )
+                            awaitSpareDcids(count = limit - 1)
+
+                            pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                            cellular = PathReach.HeldUntil(virtual.currentTime.milliseconds + LINK_HOLD)
+                            monitor.setNetworkId(CELLULAR)
+
+                            val after = runCatching { stream.echo("after") }.getOrElse { "CONNECTION DIED: $it" }
+                            assertEquals(
+                                "after",
+                                after,
+                                "peer limit $limit: the link released every probe at $LINK_HOLD, yet nothing re-homed: " +
+                                    "attempts=${client.attempts}, traffic=${pipeTraffic()}",
+                            )
+                            val moved = client.attempts.indexOfFirst { it is MigrationResult.Succeeded }
+                            assertTrue(
+                                moved >= 2 && client.attempts.take(moved).all { it == MigrationResult.Unmoved.Failed.PathNotValidated },
+                                "peer limit $limit: every attempt before the release must have been a probe the link " +
+                                    "held past its budget, and the link must have held more than one: ${client.attempts}",
+                            )
+
+                            delay(REPLENISH_SETTLE)
+                            val earlyProbes = pipe.paths().drop(1).take(moved)
+                            assertTrue(
+                                earlyProbes.any { it.stats.sentToClient > 0 },
+                                "peer limit $limit: the server never answered a held probe, so no late answer reached " +
+                                    "the client and this proves nothing about them: ${pipeTraffic()}",
+                            )
+                            assertEquals(
+                                moved + 1,
+                                client.attempts.size,
+                                "peer limit $limit: a late answer moved the connection again: ${client.attempts}",
+                            )
+                            assertEquals(
+                                "still-here",
+                                stream.echo("still-here"),
+                                "peer limit $limit: the late answers broke the connection",
+                            )
+                            assertEquals(
+                                limit - 1,
+                                clientAvailableDcids(),
+                                "peer limit $limit: the retirements crossed on the new path, so the pool must be back " +
+                                    "at the peer's limit - 1",
+                            )
+                            stream.close()
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    /** The walk's echo server: every chunk the client sends comes straight back, until the stream ends. */
+    private fun MigrationSimScope.launchEchoServer() =
+        client.launch {
+            val st = server.acceptStream()
+            while (true) {
+                val d = st.read(60.seconds)
+                if (d !is ReadResult.Data) break
+                st.write(d.buffer, 30.seconds)
+                d.buffer.freeIfNeeded()
+            }
+        }
+
+    /**
+     * One round trip, bounded past the connection's own deadline, so what ends a failed handoff is the
+     * typed close and never this bound.
+     */
+    private suspend fun QuicByteStream.echo(payload: String): String {
+        val out = BufferFactory.network().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
+        out.freeNativeMemory()
+        val r = read(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
+        if (r !is ReadResult.Data) return "NO_DATA ($r)"
+        return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+    }
+
+    /** The premise both walk scenarios stand on: a peer at [WALK_PEER_CID_LIMIT] grants [WALK_PEER_SPARES], whatever the client's own limit. */
+    private suspend fun MigrationSimScope.awaitWalkPeerPool() {
+        awaitSpareDcids(count = WALK_PEER_SPARES)
+        delay(REPLENISH_SETTLE)
+        assertEquals(
+            WALK_PEER_SPARES,
+            clientAvailableDcids(),
+            "the sim is not the walk: a peer at active_connection_id_limit=$WALK_PEER_CID_LIMIT grants " +
+                "${WALK_PEER_CID_LIMIT - 1} spares whatever the client's own limit says",
+        )
+    }
+
+    /**
      * **What a dead-link handoff must always end in** — the 2026-09-10 iPhone walk, connections 1 and
-     * 2, replayed against real quiche. Green, and written to stay green when #631 lands.
+     * 2, replayed against real quiche.
      *
      * Connection 2's shape, which is connection 1's with one more fact in front: a handoff onto a link
      * that answers succeeds, the old CID's retirement crosses on the new path and the peer's
@@ -1011,11 +1198,8 @@ abstract class MigrationSimTestSuite {
      * connection ends on its own deadline with a typed `IdleTimeout` — 30s after its last datagram
      * in, as both phones recorded it — never earlier, never as anything but that reason.
      *
-     * What this deliberately does **not** pin is today's tail — exactly three probes, then
-     * `NoSpareConnectionId` decided at `QuicheDriver.handleMigrate` with
-     * `quiche_conn_available_dcids == 0` until the end. That tail is #631's defect; it lives in
-     * [aLinkThatAnswersFromTheFourthProbeOnIsNeverReachedAgainstThePeerTheWalkHad]'s failure message,
-     * where it will disappear with the fix instead of having to be rewritten.
+     * How many probes that takes is deliberately not pinned here: that is
+     * [aLinkThatAttachesAfterThePeerSizedPoolWouldBeSpentIsStillReached]'s question.
      */
     @Test
     fun aDeadLinkHandoffAgainstThePeerTheWalkHadEndsOnItsOwnDeadlineWithATypedIdleTimeout() =
@@ -1077,11 +1261,11 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * **#459 — an abandoned probe must give its connection id back to the pool.**
+     * **#459 — a replaced probe must give its connection id back to the pool.**
      *
-     * #447 fixed "the abandoned path never retires its connection id". This is the other half, and it
-     * is invisible from that one: we *do* retire, the peer *does* send a replacement, and quiche links
-     * the replacement **straight back into the dead probe path**, which pins it un-evictable
+     * #447 made every probe path retire its connection id when it is torn down. This is the other half,
+     * invisible from that one: we *do* retire, the peer *does* send a replacement, and quiche links the
+     * replacement **straight back into the dead probe path**, which pins it un-evictable
      * (`PathMap::unused()` is `!active() && active_dcid_seq.is_none()`) and holding a spare forever.
      *
      * So every failed handoff costs a spare permanently, on a connection where nothing is wrong. After
@@ -1090,17 +1274,17 @@ abstract class MigrationSimTestSuite {
      * phone that fails a handoff a few times has silently lost active migration, and the only symptom
      * is that a later, perfectly good handoff does not happen.
      *
+     * With spares to spare each attempt here binds a fresh socket and replaces the previous probe, so
+     * every attempt after the first retires one; the last probe is still kept for its next attempt,
+     * holding one id. A pool that recovers therefore settles at [SPARE_POOL] minus that one.
+     *
      * ## Why the original path is HEALTHY here
-     * That is the whole point. On a dead path there is nothing to argue about — the retirement cannot
-     * cross and the pool is *expected* to drain, which is what
-     * [everyRetryInTheBudgetReachesTheNetwork] is about. Here the retirement lands, the peer replies,
-     * and the pool still does not recover. Anything less than a healthy path would leave the failure
-     * explainable by the network.
+     * That is the whole point. On a dead path the retirement cannot cross, so nothing could come back
+     * however correct the driver is. Here the retirement lands, the peer replies, and the pool must
+     * recover. Anything less than a healthy path would leave the failure explainable by the network.
      *
      * ## Why it drives migrate() by hand
-     * [MigrationPolicy.Manual], deliberately: the automatic reactor's retry budget is smaller than the
-     * pool, so it stops one attempt *before* exhaustion and cannot observe this at all. The budget was
-     * hiding the defect, which is why it cannot be removed until this is fixed (#459, #453).
+     * [MigrationPolicy.Manual], so the attempt count is the scenario's rather than the reactor's backoff.
      */
     @Test
     fun anAbandonedProbeGivesItsConnectionIdBackToThePool() =
@@ -1149,11 +1333,12 @@ abstract class MigrationSimTestSuite {
                                 "(#459). Trajectory: $trajectory. Path table: ${clientPathTable()}",
                         )
                         assertEquals(
-                            SPARE_POOL,
+                            SPARE_POOL - 1,
                             clientAvailableDcids(),
-                            "at a one-way path latency of $latency: after ${outcomes.size} abandoned probes " +
+                            "at a one-way path latency of $latency: after ${outcomes.size} unanswered probes " +
                                 "and $REPLENISH_SETTLE of settle each, the spare pool is " +
-                                "${clientAvailableDcids()} instead of $SPARE_POOL. Trajectory: $trajectory",
+                                "${clientAvailableDcids()} instead of $SPARE_POOL less the one the kept probe " +
+                                "path holds. Trajectory: $trajectory",
                         )
                     }
                 }
@@ -2121,6 +2306,9 @@ abstract class MigrationSimTestSuite {
         val WIFI = NetworkId.Link(NetworkKind.Wifi, 1L)
         val CELLULAR = NetworkId.Link(NetworkKind.Cellular, 2L)
 
+        /** A second Wi-Fi network — a different link from both [WIFI] and [CELLULAR]. */
+        val OTHER_WIFI = NetworkId.Link(NetworkKind.Wifi, 3L)
+
         /**
          * How long the real connection survived on its dead path before `IdleTimeout` killed it, on the
          * 2026-08-23 walk (30s, RFC 9000 §10.1). Used as the sim's idle timeout so "did the reactor
@@ -2253,9 +2441,8 @@ abstract class MigrationSimTestSuite {
 
         /**
          * Probes swallowed before the link comes good in [aLostProbeIsRetriedUntilTheConnectionRehomes].
-         * One is the measured field case; two is one more than that and still inside the spare CID pool
-         * (limit 4, minus the one in use, and nothing is replenished while the old path is dark), which
-         * is what bounds it — see that test's KDoc.
+         * One is the measured field case; two is one more than that. Each takes a fresh socket only while
+         * the pool can spare one — see that test's KDoc.
          */
         const val LOST_PROBES = 2
 
@@ -2357,6 +2544,12 @@ abstract class MigrationSimTestSuite {
          * the 30s idle window — the next connection reached the same server over that link at t+30s.
          */
         val WALK_LINK_ATTACH = 10.seconds
+
+        /**
+         * How long the 2026-09-21 burst's link held probes before releasing them: its longest-held
+         * probe was in flight for 16.1s.
+         */
+        val LINK_HOLD = 16.seconds
 
         /** The walk's server side: same ALPN and idle window as the client, the old CID limit. */
         fun walkPeerOptions(): QuicOptions =
