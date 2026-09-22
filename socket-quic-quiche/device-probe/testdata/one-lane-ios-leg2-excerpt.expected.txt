@@ -1,0 +1,47 @@
+START: START device=ios targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 echoIntervalMs=250 qlog=/var/mobile/Containers/Data/Application/F584FE2E-5D14-4C36-BD66-C6D10AC83167/Documents/qlog
+lines=291 duration=7.99h
+
+connections: attempts=1
+  #1 t+0s 178.156.248.95:44433 [v4] lived 28753s — (still up at end of log)
+
+migrations: succeeded=1 failed=4 probes=5
+  t+16141s PATH Migrated(endpoint=100.92.108.100:51522) took 765ms
+  t+16127s PATH Failed(result=PathNotValidated)
+  t+16130s PATH Failed(result=PathNotValidated)
+  t+16134s PATH Failed(result=PathNotValidated)
+  t+16138s PATH Failed(result=PathNotValidated)
+
+echoes: ok=185 late=42 overdue=39 unanswered=0 fail=0 no-data=0 write-timeouts=0 stream-gone=0
+  ⚠ RTT-UNRELIABLE: no LOOP-SCHEDULE line, so this build read an echo only right after each send — 173 of 227 answered echoes (pending>0B) are timed by the loop, not the path, and LATE/OVERDUE are skewed with them. rtt below is from the 54 in-sync (pending=0B) echoes only.
+  rtt (in-sync only) p50=42ms p95=46ms max=48ms
+  late by p50=+9862ms p95=+20053ms max=+20877ms
+  longest gaps between answered echoes: 16093.3s at t+16109s, 12588.0s at t+28745s, 21.2s at t+16141s, 1.0s at t+28746s, 0.3s at t+16s
+  fail kinds: {} 
+
+heartbeats: 1  rss first=36208kB last=36208kB max=36208kB
+  t+16141s HEARTBEAT attempt=1 locUpdates=1 rss=36208kB vsz=400852MB battery=25% unplugged
+
+capture health:
+  trace budget: never spent
+  heartbeat gaps > 3 min: 0
+  previous run at start: none
+  replay traces: no one-lane-ios-leg2-excerpt-traces/ beside the log — pull.sh puts it there
+
+MIGRATION-: 5
+  t+16127s MIGRATION-ATTEMPT n=1 outcome=PathNotValidated tookMs=2999
+  t+16130s MIGRATION-ATTEMPT n=2 outcome=PathNotValidated tookMs=3003
+  t+16134s MIGRATION-ATTEMPT n=3 outcome=PathNotValidated tookMs=3003
+  t+16138s MIGRATION-ATTEMPT n=4 outcome=PathNotValidated tookMs=3003
+  t+16141s MIGRATION-ATTEMPT n=5 outcome=Succeeded tookMs=764
+
+ECHO-LIVENESS (re-derived — the log's own line may predate #620; limit 10 min):
+  connection 1 [attempt 1, v4]: SILENT — answered=226 no answered echo for 4.5h (from t+16s); no echo line at all for 4.5h (from t+16s)
+
+#447 verdict (re-derived — the log's own line may predate #601/#620):
+  connection 1 [attempt 1, v4]: FAIL — no answered echo for 4.5h, so the path layer's verdict is void; on its own it read: PASS — 4 unanswered, then 1 later probe(s) ANSWERED: pool recovered  [PathNotValidated,PathNotValidated,PathNotValidated,PathNotValidated,Succeeded]
+  run: FAIL — connection 1 went 4.5h without an answered echo (from t+16s); 1 of 1 connection(s) SILENT
+
+per-family summary (family from each CONNECT-ATTEMPT's target; `unknown` = a log from before the probe rotated targets):
+  v4: attempts=1 connected=1 | migrations ok=1 failed=4 probes=5 | echoes ok=184 late=42 overdue=39 unanswered=0 fail=0
+      #447={'FAIL': 1} liveness={'SILENT': 1}
+  one family only — the next walk should pass a comma-separated rotation (SERVER_HOST="<v4>,<v6>" ./start.sh …, or ./launch.sh "<v4>,<v6>") so one device covers both

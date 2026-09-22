@@ -8,7 +8,7 @@ say() { printf '%-28s %s\n' "$1" "$2"; }
 adbs get-state >/dev/null 2>&1 || { echo "FAIL device $SERIAL not attached"; exit 1; }
 tun=$(adbs shell ip addr show tun0 2>&1 | head -1)
 case "$tun" in *"does not exist"*) say "tailscale" "OFF (no tun0)";; *) say "tailscale" "ON — $tun"; echo "  FAIL: turn Tailscale OFF or zero migrations will be attempted"; fail=1;; esac
-# SERVER_HOST is one host, or a COMMA-separated rotation (common.sh) — check every target, never
+# SERVER_HOST is one host, or a COMMA-separated list of lanes (common.sh) — check every target, never
 # just the joined string: `ip route get` on a comma-joined value silently misparses instead of
 # testing anything, which is how this check stopped meaning anything after the rotation pair became
 # the default (#634). A v6 literal is made of colons, so split ONLY on comma and quote every target.
