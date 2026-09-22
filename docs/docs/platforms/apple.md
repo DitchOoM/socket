@@ -11,13 +11,12 @@ Apple support splits by protocol, and the split matters:
 |----------|------------------|
 | TCP + TLS | `NWConnection` / `NWListener` (Network.framework) |
 | UDP | `NWConnection` in UDP mode for connected clients; a dual-stack POSIX socket for servers and multicast |
-| **QUIC / HTTP&#8203;/3 / WebTransport** | **Cloudflare [quiche](https://github.com/cloudflare/quiche)**, compiled in and reached through cinterop — *not* Network.framework |
+| **QUIC / HTTP&#8203;/3 / WebTransport** | **Cloudflare [quiche](https://github.com/cloudflare/quiche)** on macOS and iOS, compiled in and reached through cinterop — *not* Network.framework. tvOS and watchOS have no quiche build, so QUIC throws `UnsupportedOperationException` there |
 
 :::info QUIC on Apple is quiche, not `NWProtocolQUIC`
-This library has **no** Network.framework-native QUIC backend. The module that would have provided
-one (`socket-quic-nw`) was deleted in June 2026, and every platform — Apple included — runs the same
-Cloudflare quiche engine. Network.framework's role in the QUIC stack is limited to carrying the
-client's UDP datagrams (see [below](#datagram-path)).
+This library has **no** Network.framework-native QUIC backend: every platform with QUIC — Apple
+included — runs the same Cloudflare quiche engine. Network.framework's role in the QUIC stack is
+limited to carrying the client's UDP datagrams (see [below](#datagram-path)).
 
 Running one engine everywhere is deliberate: it is what makes connection migration, unreliable
 datagrams, pluggable congestion control, and per-stream `RESET_STREAM`/`STOP_SENDING` behave
@@ -63,9 +62,9 @@ connection is cancelled only on genuine EOF, error, or `close()`.
 
 ## QUIC
 
-`socket-quic` on Apple is quiche, exactly as on JVM, Android, and Linux. The Kotlin ↔ quiche binding
-is `CinteropQuicheApi` (`socket-quic-quiche/src/appleMain/`), and the Apple targets link the real
-`libquiche.a` — the shared `Quic*TestSuite` conformance suites run against it, not against a stub.
+`socket-quic` on macOS and iOS is quiche, exactly as on JVM, Android, and Linux. The Kotlin ↔ quiche
+binding is `CinteropQuicheApi` (`socket-quic-quiche/src/appleMain/`), and the Apple targets link the
+real `libquiche.a` — the shared `Quic*TestSuite` conformance suites run against it, not against a stub.
 
 ### Datagram path
 
@@ -83,11 +82,14 @@ Multicast uses `MulticastPosixUdpDatagramChannel`. Note that `SO_REUSEADDR` is a
 only — on Darwin as well as Linux — because for unicast it lets a more-specific bind steal delivery
 from a wildcard socket.
 
-### Certificate pinning caveats
+### Certificate verification
 
-When pinning or supplying your own anchors for QUIC on Apple, two constraints bite in practice:
-`SecTrust` rejects leaf certificates valid for more than 398 days, and an anchor quiche will accept
-must carry `CA:TRUE`. Both surface as opaque handshake failures if missed.
+QUIC certificates are verified by quiche's BoringSSL, as on every other platform — not by
+`SecTrust`, and not against the keychain. Anchors passed as `QuicOptions.trustedCaCertificatesPem`
+are loaded into BoringSSL and must carry `CA:TRUE`; a missing flag surfaces as an opaque handshake
+failure. With no anchors, macOS verifies against `/etc/ssl/cert.pem` and iOS against a bundled
+Mozilla root set, so MDM-installed roots are not trusted for QUIC. (TCP TLS, by contrast, goes
+through `NWProtocolTLS` and the keychain — see [above](#tcp-and-tls).)
 
 ## Building
 

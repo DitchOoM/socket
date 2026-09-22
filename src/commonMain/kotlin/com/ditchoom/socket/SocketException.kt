@@ -360,10 +360,9 @@ class SSLProtocolException(
 ) : SSLSocketException(message, cause)
 
 /**
- * Leaf-certificate hash pinning (W3C `serverCertificateHashes`) rejected the peer. Thrown identically by
- * every backend — the quiche targets verify post-handshake, Apple/Network.framework inside the handshake
- * `verify_block` — so callers handle one type with a structured [failure] instead of parsing a message
- * string.
+ * Leaf-certificate hash pinning (W3C `serverCertificateHashes`) rejected the peer. Thrown by the quiche
+ * backend on every platform with QUIC, Apple included, after the handshake, so callers handle one type
+ * with a structured [failure] instead of parsing a message string.
  *
  * A subtype of [SSLSocketException], so it is caught uniformly via `catch (e: SSLSocketException)` /
  * `catch (e: SocketException)` / `catch (e: IOException)` (JVM/Android), while [failure] is a sealed type
@@ -404,8 +403,7 @@ sealed interface CertificateHashPinningFailure {
 
     /**
      * The peer's leaf certificate DER ([sizeBytes]) exceeded the maximum the backend will read
-     * ([maxBytes]), so it could not be hashed. A fail-closed guard on the quiche backends; the Apple
-     * backend does not produce this (Network.framework imposes no such cap).
+     * ([maxBytes]), so it could not be hashed. A fail-closed guard of the quiche backend.
      */
     data class CertificateTooLarge(
         val sizeBytes: Int,

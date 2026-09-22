@@ -114,8 +114,7 @@ interface QuicScope : CoroutineScope {
      * the stream-type prefix as the first bytes, and `close()` sends FIN. The returned stream's
      * [QuicByteStream.streamId] is unidirectional ([QuicStreamId.isUnidirectional]).
      *
-     * Defaults to [UnsupportedOperationException]; platforms that support it (quiche-backed, Apple)
-     * override this.
+     * Defaults to [UnsupportedOperationException]; quiche-backed connections override this.
      */
     suspend fun openUniStream(): QuicByteStream =
         throw UnsupportedOperationException("Unidirectional QUIC streams are not supported on this platform")
@@ -133,7 +132,7 @@ interface QuicScope : CoroutineScope {
      * with its own error code — e.g. an HTTP/3 error code (RFC 9114 §8.1). After it returns the
      * connection is closed and the scope block unwinds.
      *
-     * Defaults to [UnsupportedOperationException]; quiche-backed and Apple connections override it.
+     * Defaults to [UnsupportedOperationException]; quiche-backed connections override it.
      */
     suspend fun closeWithError(errorCode: Long): Unit =
         throw UnsupportedOperationException("Application-coded connection close is not supported on this platform")
@@ -178,7 +177,7 @@ interface QuicScope : CoroutineScope {
      * addressed to and from (a connected QUIC connection has exactly one). Exposed so received
      * [Datagram]s carry a real, inspectable [Datagram.peer] (buffer-flow requires a non-null peer) and
      * an ICE/relay layer can read the path. Defaults to [UnsupportedOperationException] on platforms
-     * without datagram support; quiche-backed and Apple connections override it.
+     * without datagram support; quiche-backed connections override it.
      */
     @ExperimentalDatagramApi
     val remoteAddress: SocketAddress

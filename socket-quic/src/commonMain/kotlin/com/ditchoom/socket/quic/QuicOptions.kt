@@ -140,24 +140,20 @@ data class DatagramOptions(
 }
 
 /**
- * On the rare platform where a QUIC datagram flow and inbound (peer-initiated) streams cannot
- * coexist on one connection, this decides which to keep. Today the only such platform is Apple's
- * Network.framework: extracting the connection-group datagram flow makes NW deliver inbound *stream*
- * bytes onto that flow, so inbound streams stop being delivered entirely. Everywhere else (quiche on
- * JVM/Linux/Android, and the browser WebTransport object) the two coexist and this is ignored. It is
- * also ignored when [QuicOptions.datagrams] is null.
+ * Which to keep on an engine that cannot carry a QUIC datagram flow and inbound (peer-initiated)
+ * streams on the same connection. No current engine has that restriction: quiche — the engine on
+ * every platform with QUIC, Apple included — and the browser WebTransport object carry both, so
+ * every engine ignores this.
  *
- * You almost never set this directly: it defaults to [PreferDatagrams] (preserving datagram-only
- * connections), and the HTTP/3 / WebTransport stack forces [PreferStreams] internally because inbound
- * streams are structurally required by HTTP/3 (control + QPACK encoder/decoder are peer-initiated
- * unidirectional streams). It exists only for raw-QUIC callers that deliberately combine datagrams
- * with inbound streams on Apple and must choose.
+ * It defaults to [PreferDatagrams], and the HTTP/3 / WebTransport stack sets [PreferStreams] because
+ * HTTP/3 structurally requires inbound streams (control + QPACK encoder/decoder are peer-initiated
+ * unidirectional streams).
  */
 enum class DatagramStreamConflictPolicy {
-    /** Keep the datagram flow; on Apple this suppresses inbound stream delivery. */
+    /** Keep the datagram flow. */
     PreferDatagrams,
 
-    /** Keep inbound streams; on Apple the datagram flow is not extracted, so datagrams report unavailable. */
+    /** Keep inbound streams. */
     PreferStreams,
 }
 
@@ -296,18 +292,22 @@ data class QuicOptions(
     val verifyPeer: Boolean = true,
     /**
      * Trusted CA certificates (PEM, one `-----BEGIN CERTIFICATE-----` block per entry)
-     * to pin as the accepted trust anchors instead of the system trust store. Empty
-     * (the default) uses the platform's default trust evaluation.
+     * to pin as the accepted trust anchors instead of the default roots.
      *
      * Use this to talk to a server whose chain roots in a private CA (e.g. a local
-     * test harness) without installing that CA into the OS keychain.
+     * test harness) without installing that CA into a system trust store.
      *
-     * **Platform support:** wired on all targets. On Apple (Network.framework) a pinned
-     * anchor drives the CA-pinning `verify_block` and is also Certificate-Transparency-exempt.
-     * On the quiche-backed targets (JVM/Android/Linux) the anchors are loaded via
-     * `quiche_config_load_verify_locations_from_file`. Supplying anchors forces peer
-     * verification on (overriding [verifyPeer] = false), so validation is real chain
-     * evaluation against the pinned anchors — not a bypass.
+     * **Platform support:** every platform with a QUIC engine, Apple included, verifies the chain in
+     * quiche's BoringSSL, and the anchors are loaded into it via
+     * `quiche_config_load_verify_locations_from_file`. Each anchor must be a CA certificate
+     * (`basicConstraints` `CA:TRUE`). Supplying anchors forces peer verification on (overriding
+     * [verifyPeer] = false), so validation is real chain evaluation against the pinned anchors —
+     * not a bypass.
+     *
+     * Empty (the default) verifies against the default roots: the JVM trust store (`cacerts`, or
+     * `AndroidCAStore` on Android), the system CA bundle on Linux, `/etc/ssl/cert.pem` on macOS, and
+     * a bundled Mozilla root set on iOS. The Apple keychain is never consulted, so MDM-installed
+     * roots are not trusted.
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
     /**
@@ -363,24 +363,15 @@ data class QuicOptions(
      */
     val datagrams: DatagramOptions? = null,
     /**
-     * Which to keep when a platform cannot carry a datagram flow and inbound streams on the same QUIC
-     * connection — see [DatagramStreamConflictPolicy]. Defaults to [DatagramStreamConflictPolicy.PreferDatagrams]
-     * and is ignored when [datagrams] is null or on platforms where both coexist. The HTTP/3 /
-     * WebTransport stack overrides this to [DatagramStreamConflictPolicy.PreferStreams] for you.
+     * Which to keep on an engine that cannot carry a datagram flow and inbound streams on the same
+     * QUIC connection — see [DatagramStreamConflictPolicy]; no current engine has that restriction, so
+     * every engine ignores it. The HTTP/3 / WebTransport stack sets
+     * [DatagramStreamConflictPolicy.PreferStreams].
      */
     val datagramStreamConflictPolicy: DatagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferDatagrams,
     /**
-     * Apple-only escape hatch for the Network.framework QUIC **server** anti-amplification guard.
-     *
-     * Apple's libquic under-credits a non-Apple client's first flight for the RFC 9000 §8.1
-     * anti-amplification limit, so an oversized server certificate flight (notably an RSA-2048 leaf)
-     * can never be delivered and the handshake deadlocks against quiche/Chrome. To fail loud instead of
-     * silently timing out, the Apple server [bind] estimates the leaf's TLS flight at bind time and
-     * throws when it exceeds NW's budget unless this is true. Default false (guard ON) — keep it and
-     * present a small EC (ECDSA P-256) leaf for out-of-the-box interop. Set true only when the server
-     * will serve **Apple clients exclusively** (Apple↔Apple is unaffected) or you have another reason to
-     * accept the deadlock risk. Ignored on every non-Apple target and for the client role (those don't
-     * have the bug). See the limitation note on `buildAppleQuicServer` / [QuicTlsConfig.pkcs12Path].
+     * Read by no engine. The Apple QUIC server is quiche, the same as on every other platform, and
+     * applies no Apple-specific limit to the size of its certificate flight.
      */
     val appleAllowOversizedServerCert: Boolean = false,
     /**

@@ -22,7 +22,7 @@ import kotlin.time.Duration
  * A single QUIC stream exposed as a [ByteStream].
  *
  * Wraps a bidirectional or unidirectional QUIC stream. Read/write operations
- * delegate to the underlying QUIC engine (quiche or Network.framework).
+ * delegate to the underlying QUIC engine (quiche).
  *
  * State guards prevent use-after-close — calling [read] or [write] after [close]
  * throws [IllegalStateException] immediately rather than returning garbage. [write]
@@ -124,7 +124,7 @@ class QuicByteStream(
         sendFinished = true
         // Delegate FINs the send side if it can; otherwise this is a best-effort no-op
         // (e.g. a scripted test stream that records writes). Production delegates
-        // (QuicheStreamByteStream / NWQuicByteStream) implement the half-close.
+        // (QuicheStreamByteStream) implement the half-close.
         (delegate as? HalfCloseable)?.shutdownSend()
     }
 
@@ -137,7 +137,7 @@ class QuicByteStream(
     override suspend fun reset(errorCode: Long) {
         if (closed) return // idempotent; also a no-op once close()d
         closed = true
-        // Production delegates (QuicheStreamByteStream / NWQuicByteStream) send RESET_STREAM +
+        // Production delegates (QuicheStreamByteStream) send RESET_STREAM +
         // STOP_SENDING; a scripted test delegate that isn't resettable just gets a graceful close.
         (delegate as? Resettable)?.reset(errorCode) ?: delegate.close()
     }

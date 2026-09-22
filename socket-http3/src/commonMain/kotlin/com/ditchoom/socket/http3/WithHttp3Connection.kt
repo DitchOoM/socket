@@ -12,13 +12,11 @@ const val HTTP3_ALPN: String = "h3"
 
 /**
  * HTTP/3 structurally requires inbound (peer-initiated) streams — the peer's control and QPACK
- * encoder/decoder streams are unidirectional and server-initiated. On platforms where a datagram
- * flow and inbound streams cannot coexist (Apple Network.framework), [DatagramStreamConflictPolicy]
- * must therefore resolve to [DatagramStreamConflictPolicy.PreferStreams] for any HTTP/3 connection,
- * regardless of what the caller passed. This is a no-op everywhere the two coexist (quiche, browsers)
- * and when [QuicOptions.datagrams] is null. Applied at the [withHttp3Connection]/[withHttp3Server]
- * boundary so every HTTP/3 and WebTransport path — including callers that build their own
- * [QuicOptions] — is correct without thinking about it.
+ * encoder/decoder streams are unidirectional and server-initiated — so every HTTP/3 connection runs
+ * with [DatagramStreamConflictPolicy.PreferStreams], regardless of what the caller passed. No current
+ * engine has a datagram/inbound-stream conflict (quiche carries both on every platform), so this
+ * changes no behaviour today. Applied at the [withHttp3Connection]/[withHttp3Server] boundary so every
+ * HTTP/3 and WebTransport path — including callers that build their own [QuicOptions] — gets it.
  */
 internal fun QuicOptions.forHttp3(): QuicOptions =
     if (datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams) {

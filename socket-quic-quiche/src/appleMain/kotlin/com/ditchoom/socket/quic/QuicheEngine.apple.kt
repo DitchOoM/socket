@@ -8,8 +8,8 @@ import kotlin.time.Duration
  * Mirrors the linux [QuicheEngine]. The `withQuicConnection` / `withQuicServer` wrappers (in
  * `:socket-quic-default`) own the lifecycle; this engine just builds + establishes.
  *
- * This **is** the Apple `defaultQuicEngine` — there is no Network.framework-native QUIC backend
- * (the former `:socket-quic-nw` was deleted in June 2026).
+ * This **is** the Apple `defaultQuicEngine` on macOS and iOS; there is no Network.framework-native QUIC
+ * backend.
  *
  * Datapath split: the client's UDP rides an `NWConnection` (`UdpSocket.connect`), chosen because
  * Network.framework reports path changes and so keeps connection migration reactive on iOS. The

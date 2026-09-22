@@ -100,20 +100,16 @@ interface WebTransportSession {
      * Send a WebTransport datagram (draft §4.4) carrying [payload]'s remaining bytes (zero-copy; the
      * caller retains ownership). Unreliable, like the underlying QUIC DATAGRAM frame.
      *
-     * **Apple limitation:** WebTransport datagrams are unavailable on Apple platforms (macOS/iOS/
-     * tvOS/watchOS). Network.framework cannot carry a QUIC datagram flow and inbound streams on the
-     * same connection (extracting the datagram flow suppresses all inbound stream delivery), and
-     * HTTP/3 structurally requires inbound streams, so the stack keeps streams and drops datagrams
-     * (see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy]). Calling this on
-     * Apple throws. Use streams instead, or guard on the platform.
+     * Available on every platform with a WebTransport backing — JVM/Android, Linux, macOS and iOS
+     * (quiche carries datagrams and HTTP/3's inbound streams together), and the browser — provided
+     * QUIC datagrams are enabled on the connection. tvOS/watchOS have no QUIC engine, so a session
+     * never opens there.
      */
     suspend fun sendDatagram(payload: ReadBuffer)
 
     /**
      * Inbound WebTransport datagrams (draft §4.4). Each emitted buffer is owned by the collector
      * (release via `freeIfNeeded()`); unreliable — the oldest queued datagram is dropped under pressure.
-     *
-     * **Apple limitation:** always empty on Apple platforms — see [sendDatagram].
      */
     val datagrams: Flow<ReadBuffer>
 
