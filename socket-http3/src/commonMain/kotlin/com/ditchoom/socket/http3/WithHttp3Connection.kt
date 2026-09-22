@@ -18,6 +18,7 @@ const val HTTP3_ALPN: String = "h3"
  * changes no behaviour today. Applied at the [withHttp3Connection]/[withHttp3Server] boundary so every
  * HTTP/3 and WebTransport path — including callers that build their own [QuicOptions] — gets it.
  */
+@Suppress("DEPRECATION") // DatagramStreamConflictPolicy is deprecated; this normalizer goes with it at 5.0.
 internal fun QuicOptions.forHttp3(): QuicOptions =
     if (datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams) {
         this
