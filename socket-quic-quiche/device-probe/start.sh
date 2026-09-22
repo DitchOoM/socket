@@ -16,8 +16,8 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 MIN="${1:?minutes}"; EI="${2:-250}"; BUDGET="${3:-}"
-# qlog is always on: quiche's own frame-level record costs ~1.4 GB per 75 h at 250 ms (measured
-# 2026-09-11: 652 KB per 2 min) and is the one record that does not pass through this library's code.
+# qlog is always on: quiche's own frame-level record, ~1.8 GB per 75 h at 250 ms and the one record
+# that does not pass through this library's code. The probe derives its budget (QLOG-BUDGET) itself.
 BUDGET_ARG=""; [ -n "$BUDGET" ] && BUDGET_ARG="-e probeTraceBudgetMb $BUDGET"
 # probeHost is one host or a COMMA-separated list of lanes (see common.sh). Quoted twice on purpose: once
 # for this shell and once for the device's, because a list is one argument and an IPv6 literal must

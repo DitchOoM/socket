@@ -24,10 +24,26 @@ Three records, kept side by side so a bug in any one instrument leaves the other
   time, on every platform, forever. A field bug becomes a committed regression test instead of
   another walk.
 - `qlog/conn-NNNN.sqlog` — **quiche's own frame-level record** (packets, frames, recovery,
-  congestion, transport parameters), decrypted by quiche itself, one per connection and named to
-  pair with that connection's `traces/conn-NNNN.trace`. This is the one record that does not pass
-  through this library's code, so it is what a bug in the trace or the log is checked against.
-  ~1.4 GB per 75 h at 250 ms, however many connections the walk splits across.
+  congestion, transport parameters), decrypted by quiche itself, named to pair with that
+  connection's `traces/conn-NNNN.trace`. This is the one record that does not pass through this
+  library's code, so it is what a bug in the trace or the log is checked against. A connection's
+  qlog is a run of segments — `conn-v6-0007.sqlog` (the handshake and both sides' transport
+  parameters), then `conn-v6-0007_seg0002.sqlog` and on, one per hour of traffic — so a long
+  connection's older hours are whole files the moment the next one starts.
+  ~1.8 GB per lane per 75 h at 250 ms (1,676 bytes per echo exchange), however many connections the
+  lane splits across.
+
+Each lane's qlog is held to its own budget, which the probe derives from `<minutes>` and
+`[echoIntervalMs]` exactly as it derives the trace's — twice the lane's expected volume, so a walk that
+goes as planned drops nothing — and together to half of what the disk had free at START once the trace
+budget is set aside. Each lane prints its `lane=v6 QLOG-BUDGET …`, and START and every HEARTBEAT carry
+`diskFreeMb=` (the one number about the phone that cannot be read from outside it). When a limit is
+reached, what goes first is what an analysis needs least — a reconnect storm's failed handshakes, then
+the oldest middle segment of any connection, then whole closed connections, oldest first; every
+connection keeps its head and its latest segment — and every drop is a `QLOG-TRUNCATED` /
+`QLOG-EVICTED` / `QLOG-REFUSED` line of the lane it belongs to. One lane's storm never evicts the
+other's records. `analyze.py` reports them under each lane's capture health, with the probe's `build=`
+(the commit it was built from).
 
 `pull.sh` fetches both and says loudly if the traces are missing. The trace costs **~7.9 MB/hour at
 this rig's 250ms cadence** — measured on device, 574 bytes per echo exchange — so the 75-hour run
@@ -163,17 +179,25 @@ disagree.
 device-probe/server-pull.sh walk
 ```
 
-Copies every server sqlog that has stopped changing in the last 60s to
-`device-probe/logs/<utc-stamp>-walk-server-qlog/`, alongside `provenance.txt` (the server's
-`BUILD-INFO.txt` and the container's image/start time from `docker inspect`, so a qlog is never
-separated from the build that produced it). It reports file count, total bytes and the time range
-covered, and says plainly when there is nothing to pull rather than succeeding silently. Files still
-being written are skipped and counted, not copied half-finished.
+Copies every server qlog file to `device-probe/logs/<utc-stamp>-walk-server-qlog/` — including the
+ones a live connection is still writing, as a snapshot of the bytes they held when listed, cut back to
+their last complete record — with `MANIFEST.tsv` (each file's state, `settled` / `live-snapshot` /
+`vanished`, and its size and mtime on the server), the server's `qlog-budget.log`, its START / READY /
+`[qlog]` stdout lines in `server-stdout.txt`, and `provenance.txt` (`BUILD-INFO.txt` and the
+container's image, start time and `QUIC_*` environment from `docker inspect`). It says plainly when
+there is nothing to pull, when the server's START says `qlog=off`, and when its build is not stamped.
+
+The server prints `START build=<commit> port=… qlog=<dir> QLOG-BUDGET …` before READY and writes the
+same line into `qlog-budget.log`, so every pulled capture names the build that wrote it. Its qlog
+directory is budgeted like a probe's — `QlogBudget.forWalk` for the walk it serves, set by
+`QUIC_QLOG_WALK_MINUTES` (default 4500), `QUIC_QLOG_WALK_ECHO_MS` (250) and `QUIC_QLOG_WALK_LANES`
+(4: two phones, one lane per address family each): 13,808 MB, 23 MB segments, 18,000 connection
+records — and the qlog an earlier server process left there counts against it. Everything it drops is
+a line in `qlog-budget.log`.
 
 `SERVER_SSH` (default `root@178.156.248.95`, or set `SERVER_USER`/`SERVER_HOST` separately) points it
-at a different box. Unlike `pull.sh`, it never deletes anything on the server — `/root/quic-echo-qlog`
-is shared with other work on a live host, and **the qlog budget there is currently uncapped** (#624
-item 1 is still open), so pull often and do not assume old files will still be there next time.
+at a different box. Unlike `pull.sh`, it never deletes anything on the server: what is kept there is
+the server's budget's decision.
 
 ### A failing window as a committed fixture
 
