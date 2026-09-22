@@ -2029,9 +2029,17 @@ class QuicheDriver(
         when (role) {
             QuicRole.Server -> Unit
             QuicRole.Client ->
-                when (val latest = api.readSessionTicket(conn, bufferFactory)) {
-                    QuicSessionTicketState.NotIssued -> Unit
-                    is QuicSessionTicketState.Issued -> _sessionTicket.value = latest
+                // The ticket is read with the protocol this connection negotiated, which is what an offer
+                // of it will speak; before the handshake settles there is neither a ticket nor a protocol.
+                when (val settled = _state.value) {
+                    is QuicConnectionState.Established ->
+                        when (val latest = api.readSessionTicket(conn, bufferFactory, settled.negotiatedAlpn)) {
+                            QuicSessionTicketState.NotIssued -> Unit
+                            is QuicSessionTicketState.Issued -> _sessionTicket.value = latest
+                        }
+                    QuicConnectionState.Idle, QuicConnectionState.Handshaking, QuicConnectionState.Draining,
+                    is QuicConnectionState.Closed,
+                    -> Unit
                 }
         }
     }

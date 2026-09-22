@@ -12,36 +12,49 @@ import com.ditchoom.buffer.managed
  * Opaque: the bytes are the QUIC engine's own serialization, meaningful only when offered back to the
  * same kind of engine. They include the session's resumption secret, so store them like a credential.
  *
- * Obtain one from [QuicScope.sessionTicket]; offer it with [QuicResumption.Offer].
+ * [protocol] travels with them because it decides what the bytes *mean*: a session speaks one
+ * application protocol, and it is the ticket — never a caller-supplied string — that names the
+ * protocol a [QuicResumption.ResumeWithEarlyData] connection offers.
+ *
+ * Obtain one from [QuicScope.sessionTicket]; offer it with [QuicResumption.Resume] or
+ * [QuicResumption.ResumeWithEarlyData].
  */
 class QuicSessionTicket private constructor(
+    /** The application protocol (RFC 7301 ALPN) this session speaks. */
+    val protocol: String,
     private val bytes: ReadBuffer,
 ) {
     /** The serialized form, for storage: a read-only view positioned at its first byte. */
     fun serialized(): ReadBuffer = bytes.slice()
 
-    override fun equals(other: Any?): Boolean = other is QuicSessionTicket && bytes.slice().contentEquals(other.bytes.slice())
+    override fun equals(other: Any?): Boolean =
+        other is QuicSessionTicket && protocol == other.protocol && bytes.slice().contentEquals(other.bytes.slice())
 
     override fun hashCode(): Int {
-        var result = 1
+        var result = protocol.hashCode()
         for (i in 0 until bytes.limit()) result = 31 * result + bytes[i]
         return result
     }
 
-    override fun toString(): String = "QuicSessionTicket(${bytes.limit()}B)"
+    override fun toString(): String = "QuicSessionTicket($protocol, ${bytes.limit()}B)"
 
     companion object {
         /**
-         * A ticket from its [serialized] form. Copies the remaining bytes of [serialized] without
-         * consuming them. Bytes that are not a ticket are not rejected here — the engine reports them
-         * when they are offered, as [QuicFullHandshakeReason.TicketUnusable].
+         * A ticket from its [serialized] form and the [protocol] it was stored with — store the two
+         * together, since offering a session says which protocol the connection speaks. Copies the
+         * remaining bytes of [serialized] without consuming them. Bytes that are not a ticket are not
+         * rejected here — the engine reports them when they are offered, as
+         * [QuicFullHandshakeReason.TicketUnusable].
          */
-        fun restore(serialized: ReadBuffer): QuicSessionTicket {
+        fun restore(
+            serialized: ReadBuffer,
+            protocol: String,
+        ): QuicSessionTicket {
             val source = serialized.slice()
             val copy = BufferFactory.managed().allocate(source.remaining())
             copy.write(source)
             copy.resetForRead()
-            return QuicSessionTicket(copy)
+            return QuicSessionTicket(protocol, copy)
         }
     }
 }
@@ -67,7 +80,7 @@ sealed interface QuicSessionTicketState {
  * val resumption =
  *     when (val last = previous.sessionTicket.value) {
  *         QuicSessionTicketState.NotIssued -> QuicResumption.None
- *         is QuicSessionTicketState.Issued -> QuicResumption.Offer(last.ticket, QuicEarlyData.Replayable { hello() })
+ *         is QuicSessionTicketState.Issued -> QuicResumption.ResumeWithEarlyData(last.ticket) { hello() }
  *     }
  * withQuicConnection(host, port, options.copy(resumption = resumption)) { … }
  * ```
@@ -77,51 +90,63 @@ sealed interface QuicResumption {
     data object None : QuicResumption
 
     /**
-     * Offer [ticket] for resumption (RFC 8446 §2.2), and send [earlyData] as 0-RTT if the session
-     * permits it. The handshake's answer is [QuicScope.resumption].
+     * Offer [ticket] for resumption (RFC 8446 §2.2) and send nothing before the handshake completes.
+     * Resuming still skips the certificate exchange. The connection offers [QuicOptions.alpnProtocols],
+     * as any other connection does — nothing is written before the protocol is negotiated.
      */
-    class Offer(
+    class Resume(
         val ticket: QuicSessionTicket,
-        val earlyData: QuicEarlyData = QuicEarlyData.None,
     ) : QuicResumption
-}
-
-/**
- * What a resuming client sends before the handshake completes (0-RTT, RFC 9001 §4.6).
- *
- * ## ⚠️ 0-RTT data can be replayed
- * An attacker who captures a client's first flight can deliver it to the server again, and the server
- * cannot tell (RFC 8446 §8, RFC 9001 §9.2). Nothing is sent as 0-RTT unless the caller hands it over
- * here, in [Replayable]'s block — and everything written there must be safe for the server to act on
- * more than once.
- */
-sealed interface QuicEarlyData {
-    /** Send nothing before the handshake completes. Resuming still skips the certificate exchange. */
-    data object None : QuicEarlyData
 
     /**
-     * Run [write] before the client's first flight leaves, so what it writes travels in that flight as
-     * 0-RTT when the session permits it.
+     * Offer [ticket] and run [write] before the client's first flight leaves, so what it writes travels
+     * in that flight as 0-RTT when the session permits it.
+     *
+     * ## ⚠️ 0-RTT data can be replayed
+     * An attacker who captures a client's first flight can deliver it to the server again, and the
+     * server cannot tell (RFC 8446 §8, RFC 9001 §9.2). Nothing is sent as 0-RTT unless it is written
+     * here, and everything written here must be safe for the server to act on more than once.
+     *
+     * ## One protocol, by construction
+     * A connection built from this offers exactly one application protocol —
+     * [QuicSessionTicket.protocol], the one the session speaks — instead of
+     * [QuicOptions.alpnProtocols]. There is no protocol to pass and no list to widen, so early bytes
+     * cannot be read under a protocol other than the one they were written for: not when the server
+     * accepts 0-RTT, and not when it declines and the engine sends them again after the handshake
+     * (which is what it does instead of resetting the streams as RFC 9001 §4.6.2 has a client do).
+     * [QuicOptions.alpnProtocols] must still list that protocol — it is what the caller says this
+     * connection may speak — or the connect fails with [EarlyDataProtocolNotOfferedException] before
+     * anything is sent.
      *
      * [write] runs exactly once, before [withQuicConnection]'s block. Its writes are queued, not sent,
      * until it returns — so it must not wait on the peer; a read, or a write the session's remembered
-     * flow control cannot take whole, releases the first flight at that point.
-     *
-     * If the server does not accept 0-RTT, the bytes are sent again once the handshake completes, so
-     * they reach the server exactly once either way; [QuicScope.resumption] says which happened. The
-     * engine re-sends them rather than resetting the streams as RFC 9001 §4.6.2 has a client do, so they
-     * are read under whatever application protocol the new handshake negotiated: offer early data with
-     * a single ALPN, or write bytes that are valid under every protocol offered.
+     * flow control cannot take whole, releases the first flight at that point. If the server does not
+     * accept 0-RTT the bytes are sent again once the handshake completes, so they reach the server
+     * exactly once either way; [QuicScope.resumption] says which happened.
      *
      * The streams [write] opens are ordinary streams of the connection; to keep one for the main block,
      * hand it out — for example through a `CompletableDeferred` completed inside [write].
      */
-    class Replayable(
+    class ResumeWithEarlyData(
+        val ticket: QuicSessionTicket,
         val write: suspend QuicEarlyDataScope.() -> Unit,
-    ) : QuicEarlyData
+    ) : QuicResumption
 }
 
-/** What a [QuicEarlyData.Replayable] block can do: open streams and write to them. */
+/**
+ * A [QuicResumption.ResumeWithEarlyData] connection offers exactly [sessionProtocol], the protocol its
+ * session speaks, and [offered] — the caller's [QuicOptions.alpnProtocols] — does not list it. Raised
+ * before the connection opens a socket: the two are known as soon as connect has both, and narrowing to
+ * a protocol the caller never offered would speak a protocol it did not ask for.
+ */
+class EarlyDataProtocolNotOfferedException(
+    val sessionProtocol: String,
+    val offered: List<String>,
+) : IllegalArgumentException(
+        "0-RTT resumes a session speaking '$sessionProtocol', which this connection's application protocols $offered do not include",
+    )
+
+/** What a [QuicResumption.ResumeWithEarlyData] block can do: open streams and write to them. */
 interface QuicEarlyDataScope {
     /** The connection's [QuicScope.bufferFactory]. */
     val bufferFactory: BufferFactory
@@ -192,7 +217,10 @@ sealed interface QuicEarlyDataOutcome {
  * endpoint's side of the handshake.
  */
 sealed interface QuicEarlyDataRejection {
-    /** This endpoint did not enable 0-RTT: a client that offered [QuicEarlyData.None], or a server without [QuicOptions.enableEarlyData]. */
+    /**
+     * This endpoint did not enable 0-RTT: a client that offered [QuicResumption.Resume], or a server
+     * without [QuicOptions.enableEarlyData].
+     */
     data object NotEnabled : QuicEarlyDataRejection
 
     /** The peer did not take part: a server that declined the client's 0-RTT, or a client that offered none. */

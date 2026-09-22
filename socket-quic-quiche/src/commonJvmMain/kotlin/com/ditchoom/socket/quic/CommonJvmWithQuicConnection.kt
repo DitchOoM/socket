@@ -91,7 +91,9 @@ internal suspend fun buildJvmQuicConnection(
     val config = api.configNew(QUICHE_PROTOCOL_VERSION)
     try {
         // ALPN — writes directly into buffer (zero-copy)
-        encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
+        // A 0-RTT connection offers exactly its session's protocol — see [clientAlpnOffer], which
+        // refuses before any socket opens if this caller's options do not list it.
+        encodeAlpnList(clientAlpnOffer(quicOptions), bufferFactory).use { alpnBuf ->
             val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
             api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
         }

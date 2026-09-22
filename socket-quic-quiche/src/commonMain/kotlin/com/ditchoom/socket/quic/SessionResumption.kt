@@ -115,34 +115,48 @@ internal fun QuicheApi.offerSession(
     conn: QuicheConn,
     resumption: QuicResumption,
     bufferFactory: BufferFactory,
-): SessionOffer =
-    when (resumption) {
-        QuicResumption.None -> SessionOffer.None
-        is QuicResumption.Offer -> {
-            val serialized = resumption.ticket.serialized()
-            val native = bufferFactory.allocate(serialized.remaining())
-            try {
-                native.write(serialized)
-                native.resetForRead()
-                val rc = connSetSession(conn, native.driverOwnedNativeAddress(), native.remaining())
-                if (rc < 0) {
-                    SessionOffer.Unusable(rc)
-                } else {
-                    SessionOffer.Offered(
-                        when (resumption.earlyData) {
-                            QuicEarlyData.None -> FirstFlight.Immediate
-                            is QuicEarlyData.Replayable -> FirstFlight.HeldForEarlyData(CompletableDeferred())
-                        },
-                    )
-                }
-            } finally {
-                native.freeNativeMemory()
+): SessionOffer {
+    val (ticket, firstFlight) =
+        when (resumption) {
+            QuicResumption.None -> return SessionOffer.None
+            is QuicResumption.Resume -> resumption.ticket to FirstFlight.Immediate
+            is QuicResumption.ResumeWithEarlyData -> resumption.ticket to FirstFlight.HeldForEarlyData(CompletableDeferred())
+        }
+    val serialized = ticket.serialized()
+    val native = bufferFactory.allocate(serialized.remaining())
+    return try {
+        native.write(serialized)
+        native.resetForRead()
+        val rc = connSetSession(conn, native.driverOwnedNativeAddress(), native.remaining())
+        if (rc < 0) SessionOffer.Unusable(rc) else SessionOffer.Offered(firstFlight)
+    } finally {
+        native.freeNativeMemory()
+    }
+}
+
+/**
+ * The application protocols a **client** connection offers.
+ *
+ * A connection sending 0-RTT offers exactly the session's protocol: early bytes are written for the
+ * protocol the ticket speaks, and the engine sends them again under the negotiated protocol if the
+ * server declines 0-RTT (RFC 9001 §4.6.2), so a second offered protocol is a way for them to be read
+ * as something they are not. The ticket names it — there is no string to pass — and
+ * [QuicOptions.alpnProtocols] must list it, or this fails before the connection opens a socket.
+ */
+internal fun clientAlpnOffer(options: QuicOptions): List<String> =
+    when (val resumption = options.resumption) {
+        QuicResumption.None, is QuicResumption.Resume -> options.alpnProtocols
+        is QuicResumption.ResumeWithEarlyData -> {
+            val protocol = resumption.ticket.protocol
+            if (protocol !in options.alpnProtocols) {
+                throw EarlyDataProtocolNotOfferedException(protocol, options.alpnProtocols)
             }
+            listOf(protocol)
         }
     }
 
 /**
- * Run the caller's [QuicEarlyData.Replayable] block once, where [offer] says it belongs: before the
+ * Run the caller's [QuicResumption.ResumeWithEarlyData] block once, where [offer] says it belongs: before the
  * first flight when quiche took the ticket, so its writes can go as 0-RTT, and after [awaitEstablished]
  * otherwise, as ordinary data. [awaitEstablished] runs exactly once either way.
  */
@@ -152,36 +166,40 @@ internal suspend fun runEarlyData(
     scope: QuicEarlyDataScope,
     awaitEstablished: suspend () -> Unit,
 ) {
-    val early =
-        when (resumption) {
-            QuicResumption.None -> QuicEarlyData.None
-            is QuicResumption.Offer -> resumption.earlyData
-        }
-    when (early) {
-        QuicEarlyData.None -> awaitEstablished()
-        is QuicEarlyData.Replayable ->
+    when (resumption) {
+        QuicResumption.None, is QuicResumption.Resume -> awaitEstablished()
+        is QuicResumption.ResumeWithEarlyData ->
             when (val flight = offer.firstFlight) {
                 is FirstFlight.HeldForEarlyData -> {
                     try {
-                        scope.(early.write)()
+                        scope.(resumption.write)()
                     } finally {
                         flight.released.complete(Unit)
                     }
                     awaitEstablished()
                 }
+                // quiche refused the ticket, so there is no 0-RTT to send it in: the block's bytes are
+                // ordinary data on an established connection.
                 FirstFlight.Immediate -> {
                     awaitEstablished()
-                    scope.(early.write)()
+                    scope.(resumption.write)()
                 }
             }
     }
 }
 
-/** Read [conn]'s serialized session into a [QuicSessionTicket]; [QuicSessionTicketState.NotIssued] when there is none. */
+/**
+ * Read [conn]'s serialized session as a ticket for [protocol], the connection's negotiated application
+ * protocol. [QuicSessionTicketState.NotIssued] when no ticket has arrived, and when [protocol] is empty
+ * — a backend that cannot report the ALPN cannot say what an offer of this session would speak, and a
+ * ticket that cannot name its protocol is one no connection may offer with 0-RTT.
+ */
 internal fun QuicheApi.readSessionTicket(
     conn: QuicheConn,
     bufferFactory: BufferFactory,
+    protocol: String,
 ): QuicSessionTicketState {
+    if (protocol.isEmpty()) return QuicSessionTicketState.NotIssued
     val length = connSession(conn, 0L, 0)
     if (length <= 0) return QuicSessionTicketState.NotIssued
     val native = bufferFactory.allocate(length)
@@ -189,13 +207,13 @@ internal fun QuicheApi.readSessionTicket(
         val copied = connSession(conn, native.driverOwnedNativeAddress(), length)
         if (copied != length) return QuicSessionTicketState.NotIssued
         native.setLimit(length)
-        return QuicSessionTicketState.Issued(QuicSessionTicket.restore(native))
+        return QuicSessionTicketState.Issued(QuicSessionTicket.restore(native, protocol))
     } finally {
         native.freeNativeMemory()
     }
 }
 
-/** The part of a connection a [QuicEarlyData.Replayable] block sees. */
+/** The part of a connection a [QuicResumption.ResumeWithEarlyData] block sees. */
 internal class ConnectionEarlyDataScope(
     private val connection: QuicScope,
 ) : QuicEarlyDataScope {

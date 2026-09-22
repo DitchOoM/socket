@@ -122,13 +122,9 @@ internal fun earlyDataEnabled(
     when (role) {
         QuicRole.Server -> options.enableEarlyData
         QuicRole.Client ->
-            when (val resumption = options.resumption) {
-                QuicResumption.None -> false
-                is QuicResumption.Offer ->
-                    when (resumption.earlyData) {
-                        QuicEarlyData.None -> false
-                        is QuicEarlyData.Replayable -> true
-                    }
+            when (options.resumption) {
+                QuicResumption.None, is QuicResumption.Resume -> false
+                is QuicResumption.ResumeWithEarlyData -> true
             }
     }
 

@@ -97,7 +97,9 @@ internal suspend fun buildLinuxQuicConnection(
                     ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create quiche config")
 
             // ALPN
-            val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
+            // A 0-RTT connection offers exactly its session's protocol — see [clientAlpnOffer], which
+            // refuses before any socket opens if this caller's options do not list it.
+            val alpnBuf = encodeAlpnList(clientAlpnOffer(quicOptions), bufferFactory)
             val alpnPtr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
             quiche_config_set_application_protos(config, alpnPtr, alpnBuf.remaining().convert())
             alpnBuf.freeNativeMemory()

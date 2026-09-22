@@ -167,7 +167,14 @@ enum class DatagramStreamConflictPolicy {
  * since QUIC mandates ALPN negotiation.
  */
 data class QuicOptions(
-    /** Application-Layer Protocol Negotiation identifiers. Must not be empty. */
+    /**
+     * Application-Layer Protocol Negotiation identifiers (RFC 7301) this endpoint offers. Must not be
+     * empty.
+     *
+     * A client connection sending 0-RTT is the one exception: it offers exactly the protocol its session
+     * speaks ([QuicResumption.ResumeWithEarlyData]), which this list must contain. So early bytes are
+     * read under the protocol they were written for, whatever else is listed here.
+     */
     val alpnProtocols: List<String>,
     /** Flow control limits. */
     val flowControl: FlowControl = FlowControl(),
@@ -388,8 +395,9 @@ data class QuicOptions(
     val trace: QuicTraceCapture? = null,
     /**
      * **Client-side**: the session this connection offers — [QuicResumption.None] for a full
-     * handshake, or a ticket an earlier connection received ([QuicScope.sessionTicket]) to resume it,
-     * optionally with 0-RTT data. The handshake's answer is [QuicScope.resumption].
+     * handshake, or a ticket an earlier connection received ([QuicScope.sessionTicket]), resumed with
+     * ([QuicResumption.ResumeWithEarlyData]) or without ([QuicResumption.Resume]) 0-RTT data. The
+     * handshake's answer is [QuicScope.resumption].
      *
      * Ignored for the server role.
      */
