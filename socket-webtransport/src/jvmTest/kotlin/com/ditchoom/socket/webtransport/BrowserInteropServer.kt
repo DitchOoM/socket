@@ -63,9 +63,7 @@ class BrowserInteropServer {
         )
         // Cert selection. Default `pinned` (EC P-256 ≤14-day) for the browser cell — the only self-signed
         // leaf a browser accepts via serverCertificateHashes. `cert` is the long-lived testcerts/cert.*
-        // (CN=quic.tech), used by the durable native↔native cross-impl cell (quiche-server ↔ NW-client),
-        // where the client dials with verifyPeer=false and never pins, so the 13-day pinned treadmill is
-        // unnecessary.
+        // (CN=quic.tech), for a native client that dials with verifyPeer=false and never pins.
         val certName = System.getProperty("wt.interop.cert", "pinned")
         val certCrt = resolveCert("$certName.crt")
         val certKey = resolveCert("$certName.key")
@@ -108,8 +106,7 @@ class BrowserInteropServer {
                     System.getProperty("wt.interop.configFile")?.let { cfg ->
                         File(cfg).apply {
                             parentFile?.mkdirs()
-                            // datagrams=true: this quiche server can carry WT datagrams (RFC 9297). A
-                            // cross-impl client involving NW ignores this and tests streams only.
+                            // datagrams=true: this quiche server carries WT datagrams (RFC 9297).
                             writeText("url=https://localhost:$port/\ncertSha256=$certSha256\ndatagrams=true\n")
                         }
                     }

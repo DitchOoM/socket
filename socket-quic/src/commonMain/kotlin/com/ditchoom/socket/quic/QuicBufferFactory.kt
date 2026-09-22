@@ -50,7 +50,7 @@ fun BufferFactory.requireNativeMemory(): BufferFactory {
     probe.freeIfNeeded()
     require(isNative) {
         "QUIC requires a native-memory BufferFactory: it hands buffer addresses to native code " +
-            "(quiche / Network.framework). BufferFactory.Default and BufferFactory.managed() allocate " +
+            "(quiche and the platform UDP socket). BufferFactory.Default and BufferFactory.managed() allocate " +
             "on the heap and can't be used here — pass BufferFactory.network() (the default) or " +
             "BufferFactory.deterministic()."
     }

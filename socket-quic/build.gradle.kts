@@ -13,9 +13,8 @@ plugins {
 // The default-engine wrappers (withQuicConnection / withQuicServer) and the multiplatform
 // `defaultQuicEngine` live in :socket-quic-default.
 //
-// There is exactly ONE engine on every platform: Cloudflare quiche. The Network.framework-native
-// QUIC backend (:socket-quic-nw / NetworkEngine) was deleted in June 2026 — on Apple, quiche runs
-// the protocol and Network.framework only carries the client's UDP datagrams.
+// There is exactly ONE engine on every platform: Cloudflare quiche. On Apple, quiche runs the
+// protocol and Network.framework only carries the client's UDP datagrams.
 //
 // This module keeps bare Apple target declarations (no cinterop, no engine sources) so the
 // pure-API klibs still publish for Apple consumers; :socket-quic-quiche supplies the engine.

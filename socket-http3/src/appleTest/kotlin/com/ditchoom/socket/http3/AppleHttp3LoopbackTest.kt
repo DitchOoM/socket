@@ -16,18 +16,16 @@ import com.ditchoom.socket.testkit.skip.recordSkip
  * Apple subclass of [Http3LoopbackTestSuite] — a comprehensive HTTP/3 exercise on the Apple **quiche**
  * backend (plain GET/POST, dynamic QPACK, server push, the full WebTransport stream matrix,
  * close/drain/reset, and middleware), over the same Cloudflare-quiche QUIC engine JVM/Android/Linux use,
- * provided transitively through socket-quic-default → :socket-quic-quiche. (This replaced the
- * Network.framework backend in the quiche-on-Apple pivot, which deleted the macos-26 libquic teardown UAF
- * and the in-process NW-loopback flake this suite used to hit.)
+ * provided transitively through socket-quic-default → :socket-quic-quiche.
  *
  * Like Linux's [LinuxHttp3LoopbackTest] it probes the cert/key on the filesystem and configures the
- * quiche server with loose PEM cert+key (no PKCS#12 — that was an NW-identity requirement).
+ * quiche server with loose PEM cert+key.
  *
- * The simulator lanes run this suite too, as of #359. They used to skip all 31 invocations because
- * `simctl spawn --standalone` starts in the device's data container rather than the module directory,
- * so the cwd-relative cert probe found nothing; the build now exports the module's `testcerts/` by
- * absolute path and [locateTestCerts] prefers it. [wrapTestBody] still reports a typed skip if the
- * pair genuinely cannot be found, which on a macOS lane means a broken checkout and goes red.
+ * The simulator lanes run this suite too. `simctl spawn --standalone` starts in the device's data
+ * container rather than the module directory, so a cwd-relative cert probe finds nothing; the build
+ * exports the module's `testcerts/` by absolute path and [locateTestCerts] prefers it. [wrapTestBody]
+ * still reports a typed skip if the pair genuinely cannot be found, which on a macOS lane means a
+ * broken checkout and goes red.
  *
  * WebTransport datagrams work on the quiche backend (RFC 9221), so the inherited
  * [Http3LoopbackTestSuite.webTransport_datagramRoundTrip] runs unmodified.

@@ -375,16 +375,14 @@ jobs:
             if [ "$ok" -gt 0 ]; then
               status="✅ exercised"
             elif [ "$applicable" = "false" ]; then
-              # The quiche QuicHarnessIntegrationTests doesn't run on this lane at all in
-              # v6 (Apple = Network.framework backend with no quiche Kotlin target; JS has
-              # no QUIC implementation). `ok=0,skip=0` is structural, not a silently
-              # all-skipped regression — the platform's QUIC client (if any) is validated
-              # elsewhere (see the per-platform reason below). Render ℹ️, never fail.
+              # The quiche QuicHarnessIntegrationTests doesn't run on this lane at all (JS
+              # has no QUIC implementation). `ok=0,skip=0` is structural, not a silently
+              # all-skipped regression (see the per-platform reason below). Render ℹ️, never
+              # fail.
               status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ] && [ "$intentional_skip" = "$skip" ]; then
-              # Every SKIP came from a platform gate inside withHarness
-              # (PR #54 iter 9: Apple K/N is the only one today). Not a
-              # regression; tracked separately.
+              # Every SKIP came from a platform gate inside withHarness.
+              # Not a regression; tracked separately.
               status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ]; then
               status="❌ all skipped"

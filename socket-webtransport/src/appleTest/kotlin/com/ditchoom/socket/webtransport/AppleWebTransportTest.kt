@@ -28,8 +28,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Apple subclass of [WebTransportTestSuite]. The in-process QUIC server here is the Apple **quiche**
  * backend (provided transitively through socket-http3 → socket-quic-default → :socket-quic-quiche), so —
- * exactly like Linux's `withHttp3Server` — the server loads a loose PEM cert+key (no PKCS#12; that was an
- * NW `sec_identity_t` requirement, gone with the Network.framework backend in the quiche-on-Apple pivot).
+ * exactly like Linux's `withHttp3Server` — the server loads a loose PEM cert+key.
  *
  * Cert paths are probed on the filesystem relative to the test's working directory, mirroring
  * [LinuxWebTransportTest]. macOS K/N runs the full suite; on iOS/tvOS/watchOS `--standalone` simulators

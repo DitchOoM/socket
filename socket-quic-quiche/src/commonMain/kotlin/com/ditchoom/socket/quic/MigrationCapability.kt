@@ -4,19 +4,10 @@ package com.ditchoom.socket.quic
  * Whether a [QuicheDriver] can perform RFC 9000 §9 **active connection migration**, and — when it can —
  * everything required to do it.
  *
- * ## Why this is a type and not four constructor defaults
- * This replaces `udpChannelFactory: UdpChannelFactory? = null` plus
- * `peerAddr/peerLen/primaryLocalAddr/primaryLocalLen: Long/Int = 0L/0`, from which the driver derived
- *
- * ```kotlin
- * migrationEnabled = role is Client && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
- * ```
- *
- * Three separate anti-patterns met in that one line: nullability standing in for a capability, `0L`
- * sentinels standing in for "no address", and a four-term boolean standing in for a decision. All of
- * them defaulted to "silently disabled", so a platform that simply *omitted* the arguments got a
- * perfectly working connection that quietly could not migrate — and nothing asked. That is exactly how
- * Apple shipped without migration: not a wrong answer, an unasked question.
+ * ## Why this is a type and not constructor defaults
+ * A nullable factory, `0L` sockaddr sentinels and a boolean derived from them would each default to
+ * "silently disabled", so a platform that simply *omitted* the arguments would get a perfectly working
+ * connection that quietly could not migrate — and nothing would ask.
  *
  * The parameter is deliberately **required** at every construction site. A new platform, or a new
  * transport backend, cannot compile until it states which case applies. The churn that costs in test

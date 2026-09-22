@@ -114,17 +114,16 @@ internal fun retryConnection(): Nothing = throw RetryConnectionException()
 
 /**
  * Establish a QUIC connection that is PROVEN live, retrying a FRESH connection up to [attempts] times when
- * the connection comes up **drain-storm-wedged** — i.e. it handshakes through a transient
- * Network.framework path flap (`POSIXErrorCode 50: Network is down`) on the virtualized macos-26 CI
- * loopback, reaches `ready`, but then silently passes no bytes (streams open, but the round-trip never
- * completes; see the v6-ci-stabilize memory). A fresh, post-storm connection comes up healthy.
+ * the connection comes up **wedged**: it handshakes, but then passes no bytes (streams open, but the
+ * round-trip never completes), as after a transient `POSIXErrorCode 50: Network is down` flap on a
+ * virtualized macOS runner's loopback. A fresh connection comes up healthy.
  *
  * The retry is scoped to the **establishment phase only**, so a real assertion never gets masked: the
  * [session] runs a warmup probe and calls `confirmLive()` once a round-trip succeeds. A wedge BEFORE
  * `confirmLive()` (the session calls [retryConnection], or the probe hangs to the per-attempt [timeout])
  * is retried; anything AFTER `confirmLive()` — a thrown `AssertionError`, or a timeout once the connection
- * was proven live — propagates unretried. On a reliable backend the first probe always succeeds, so this
- * is a no-op wrapper around [withQuicConnection]; only the lossy NW loopback ever spends a retry.
+ * was proven live — propagates unretried. On a healthy connection the first probe succeeds, so this is a
+ * no-op wrapper around [withQuicConnection]; only a wedged connection spends a retry.
  *
  * @param timeout per-attempt budget passed to [withQuicConnection] (bounds establishment + the whole
  *   session); the enclosing [runQuicTest] budget must cover up to [attempts] of these.
@@ -247,19 +246,9 @@ suspend fun awaitUntil(
  * tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64,
  * watchosSimulatorArm64, watchosX64).
  *
- * Used by `QuicHarnessIntegrationTests` to select the Apple-only pinned-trust
+ * Used by `QuicHarnessIntegrationTests` to select the Apple pinned-trust
  * configuration (verifyPeer = true against the pinned harness CA) instead of the
  * verifyPeer = false the other targets use.
- *
- * Historical note: this flag once gated a much larger Apple carve-out, back when
- * Apple QUIC ran on Network.framework and its QUIC TLS rejected the private-CA,
- * non-CT-logged harness cert with errSSLBadCert (-9808). Apple QUIC is quiche
- * now, so that whole class of divergence is gone — the flag survives only to pick
- * the pinning configuration.
- *
- * (Earlier docstrings referenced an `AppleQuicConnectStartupProbe` as the Apple
- * smoke test — it never existed in the repo. Broader macOS harness coverage is
- * tracked in issue #311.)
  */
 expect fun isAppleKNative(): Boolean
 
@@ -289,21 +278,11 @@ expect fun isKotlinNative(): Boolean
  * daemons (nehelper / nw services) a connection needs are unreachable. Raw-socket TCP doesn't need
  * them, which is why the rest of the Apple suite passes and hides this.
  *
- * Proven empirically (2026-06-02, iOS 26.5 build 23F77, iPhone 17 Pro sim), all against the SAME
- * device + OS — note this measured the *Network.framework* QUIC backend, which the quiche-on-Apple
- * pivot has since replaced, so it is evidence for the mechanism, not a current measurement:
- *   - our K/N `test.kexe` via `simctl spawn --standalone`      → public QUIC TIMEOUT (even at 45s)
- *   - our K/N `test.kexe` via `simctl spawn` (no --standalone) → public QUIC OK in 87ms
- *   - a normally-launched Swift NW QUIC app                    → READY in 36-47ms
- *   - physical iPhone (iOS 26.5)                               → READY in 42-50ms
- *
  * The fix would be to run the iOS-simulator test task with `standalone = false` against a
- * pre-booted simulator. ⚠️ **That booted mode is not implemented.** Earlier revisions of this
- * docstring said the build enables it (and sets `QUIC_SIM_BOOTED=1`) when `-PiosSimulatorDevice`
- * is supplied; no such property, and no assignment of `QUIC_SIM_BOOTED`, exists anywhere in the
- * build or in CI. Every Apple simulator lane therefore skips unconditionally today, which is why
- * this now reports the skip instead of hiding it. macOS K/N (no simulator, real network stack)
- * returns [QuicHarnessAvailability.Available] and validates the QUIC client.
+ * pre-booted simulator. ⚠️ **That booted mode is not implemented**: nothing in the build or in CI
+ * sets `QUIC_SIM_BOOTED=1`, so every Apple simulator lane reports this skip. macOS K/N (no
+ * simulator, real network stack) returns [QuicHarnessAvailability.Available] and validates the
+ * QUIC client.
  */
 expect fun quicHarnessAvailability(): QuicHarnessAvailability
 

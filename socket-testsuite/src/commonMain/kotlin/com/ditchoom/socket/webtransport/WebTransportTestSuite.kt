@@ -53,7 +53,7 @@ import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
  * its own `commonTest`.
  *
  * Platform-parameterized exactly like the QUIC `*TestSuite`s: each platform with a working in-process
- * QUIC server (JVM, linuxX64, and Apple via Network.framework) subclasses this and supplies
+ * QUIC server (quiche on JVM, Android, Linux, macOS and iOS) subclasses this and supplies
  * [testTlsConfig] (cert/key paths) + [wrapTestBody] (skip when the native QUIC binding is absent). JS /
  * wasmJs have no in-process QUIC server and no native multiplexed provider, so they get no subclass.
  *

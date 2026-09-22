@@ -35,7 +35,7 @@ cd "$CERT_DIR"
 # against the default openssl.cnf's `[req] x509_extensions = v3_ca`, so it emits
 # DUPLICATE Basic Constraints / Subject Key Identifier extensions on the CA —
 # which Apple's macOS-15 Security framework rejects as non-standards-compliant
-# (errSecCertificate… -67903 → QUIC errSSLBadCert -9808). OpenSSL 3.x silently
+# (errSecCertificate… -67903 → errSSLBadCert -9808). OpenSSL 3.x silently
 # dedupes, hiding the bug locally. A config with no x509_extensions/req_extensions
 # makes `-addext` (and the leaf `-extfile`) the only extension source, so the
 # output is identical and duplicate-free across openssl versions. (Issue #81.)
@@ -48,9 +48,10 @@ CFG
 
 # ── harness-root CA — the cert authority we want every platform to TRUST ──────
 # subjectKeyIdentifier on the CA is required so leaves can carry a matching
-# authorityKeyIdentifier=keyid (below): Apple's Security/Network.framework trust
-# evaluation expects the SKI/AKI pair to chain a leaf to its issuer, and a
-# missing AKI is a known errSSLBadCert (-9808) trigger on the macOS QUIC path.
+# authorityKeyIdentifier=keyid (below): Apple's Security.framework trust
+# evaluation (behind Network.framework's TCP TLS) expects the SKI/AKI pair to
+# chain a leaf to its issuer, and a missing AKI is a known errSSLBadCert (-9808)
+# trigger.
 # Harmless on BoringSSL/JVM — they don't require it.
 openssl genrsa -out ca.key 2048 2>/dev/null
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
@@ -72,7 +73,7 @@ sign_leaf() {
     openssl genrsa -out "$name.key" 2048 2>/dev/null
     openssl req -new -key "$name.key" -out "$name.csr" -subj "/CN=$cn" -config "$REQ_CNF"
     # subjectKeyIdentifier + authorityKeyIdentifier: Apple's modern TLS trust
-    # evaluation (Security.framework, used by Network.framework's QUIC path)
+    # evaluation (Security.framework, behind Network.framework's TCP TLS)
     # expects leaves to carry an SKI and an AKI that keyid-matches the issuer's
     # SKI; a missing AKI is a documented errSSLBadCert (-9808) cause. authorityKey
     # Identifier=keyid:always resolves the keyid from the -CA cert (which now has
@@ -87,10 +88,9 @@ subjectAltName = $sans
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always
 EOF
-    # 397 days: Apple's TLS stack (Network.framework / Security) rejects any
-    # server *leaf* cert with validity > 398 days (errSSLBadCert / -9808),
-    # which blocked the macOS QUIC handshake. The CA stays long-lived (the 398
-    # rule is leaf-only). CI regenerates certs every run, so 397d never expires
+    # 397 days: Apple's TLS trust evaluation (Security.framework) rejects any
+    # server *leaf* cert with validity > 398 days (errSSLBadCert / -9808).
+    # The CA stays long-lived (the 398 rule is leaf-only). CI regenerates certs every run, so 397d never expires
     # in practice. BoringSSL/JVM (Linux harness) don't care about the shorter
     # validity, so this is safe cross-platform.
     openssl x509 -req -in "$name.csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial \

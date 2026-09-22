@@ -129,18 +129,15 @@ class QuicheDriver(
     /**
      * Connection-migration wiring (RFC 9000 §9), as one exhaustive answer.
      *
-     * **Deliberately has no default.** It replaces five parameters that all defaulted to "disabled"
-     * (`udpChannelFactory: UdpChannelFactory? = null` plus four `0L`/`0` sockaddr sentinels), which
-     * meant a construction site could stay silent and get a connection that quietly could not migrate.
-     * That is how the Apple client shipped without migration for a year: nothing ever asked it. Now a
-     * new platform, backend, or test double cannot compile until it states which case applies.
+     * **Deliberately has no default**, so a construction site cannot stay silent and get a connection
+     * that quietly cannot migrate: a new platform, backend, or test double does not compile until it
+     * states which case applies.
      *
      * `internal` rather than `private` so `QuicCapabilityConformanceTestSuite` can read the **claim** a
      * live connection was built with and check it against what that connection actually does. A
-     * declaration nothing verifies is just a comment the compiler happens to type-check: it was
-     * `Supported` that Apple would have had to state, and stating it wrongly costs nothing until
-     * something measures it. Internal, so this stays inside the module — the seam is a test seam, like
-     * [QuicheBackedConnection], not a consumer API.
+     * declaration nothing verifies is just a comment the compiler happens to type-check, and stating it
+     * wrongly costs nothing until something measures it. Internal, so this stays inside the module — the
+     * seam is a test seam, like [QuicheBackedConnection], not a consumer API.
      */
     internal val migration: MigrationCapability,
     /**

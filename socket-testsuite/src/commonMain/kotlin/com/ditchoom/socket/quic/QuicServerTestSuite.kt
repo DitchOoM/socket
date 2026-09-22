@@ -634,10 +634,6 @@ abstract class QuicServerTestSuite {
      * on every backend. [ReadResult.End] means the peer finished *politely* (a FIN), and reporting it
      * for a RESET_STREAM launders an abnormal, code-carrying abort into a clean end-of-stream — the
      * application cannot tell a cancelled request from a completed one (issue #398).
-     *
-     * This used to accept either value, justified by an Apple/Network.framework distinction that no
-     * longer exists (the June 2026 pivot made Apple a quiche backend like every other platform) — an
-     * assertion that cannot fail, documenting the defect as intended behaviour.
      */
     protected open fun assertResetObservedByPeer(resultClassName: String?) {
         assertEquals(
@@ -652,10 +648,8 @@ abstract class QuicServerTestSuite {
     /**
      * A client that opens a stream, sends a chunk, then [reset]s it with an application
      * error code must (a) still deliver the pre-reset data to the server and (b) make the
-     * server's next read terminate rather than hang. Regression guard for the Apple bug
-     * where [QuicByteStream.reset] silently degraded to a graceful FIN because the
-     * Network.framework stream didn't implement [com.ditchoom.buffer.flow.Resettable] — so no RESET_STREAM
-     * was ever sent. (Issue #81.) [assertResetObservedByPeer] pins the platform-exact result.
+     * server's next read terminate rather than hang: [QuicByteStream.reset] must send a RESET_STREAM,
+     * not degrade to a graceful FIN. [assertResetObservedByPeer] pins the result the peer observes.
      */
     @Test
     fun clientResetStreamIsObservedByServer() =
@@ -720,9 +714,8 @@ abstract class QuicServerTestSuite {
      * A peer resetting ONE stream must surface to a write on that stream as a stream-scoped
      * [QuicStreamException] (never a connection-level [QuicCloseException]), and the connection
      * must stay usable — a fresh stream still round-trips. This is the end-to-end contract behind
-     * the quiche driver's STOP_SENDING/RESET split (#133) and its Apple equivalent (#134): the
-     * Apple write path previously mapped every send error to [QuicCloseException], tearing down a
-     * healthy connection when a peer cancelled a single stream.
+     * the quiche driver's STOP_SENDING/RESET split (#133): a peer cancelling one stream must not tear
+     * down a healthy connection.
      */
     @Test
     fun peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable() =
@@ -831,13 +824,8 @@ abstract class QuicServerTestSuite {
      * This is the END-TO-END complement to the driver-level
      * `connection_close_captures_peer_error_as_typed_reason` (which injects the peer error via a
      * stub): here a real peer sends a real CONNECTION_CLOSE over loopback, exercising each quiche
-     * binding's `connPeerError` (FFM on JDK 21, JNI on JDK < 21 / Android, cinterop on K/N) and the
-     * Apple NW close path. [assertConnectionCloseErrorObservedByPeer] pins the platform-exact reason.
-     *
-     * `open` because Network.framework's connection close is a **local group cancel** that does not
-     * transmit the QUIC application close code on the wire (the same family of limitation as #134),
-     * so a peer cannot observe it — the Apple subclass overrides this with the NW-available contract
-     * rather than asserting something NW can't honor.
+     * binding's `connPeerError` (FFM on JDK 21, JNI on JDK < 21 / Android, cinterop on K/N).
+     * [assertConnectionCloseErrorObservedByPeer] pins the reason the peer observes.
      */
     @Test
     open fun connectionCloseWithErrorIsObservedByPeer() =
@@ -892,12 +880,11 @@ abstract class QuicServerTestSuite {
         }
 
     // --- Pinned CA trust (#99) ---
-    // QuicOptions.trustedCaCertificatesPem must drive real chain validation on the
-    // quiche-backed targets (JVM/Android/Linux), matching the Apple path. Before #99 the
-    // quiche path ignored the option, so the positive test below is the regression guard:
-    // pinning the server's own anchor (with verifyPeer left at its default of true) only
-    // succeeds if the anchor is actually loaded — otherwise verification against an empty
-    // trust store rejects the self-signed peer and the handshake fails.
+    // QuicOptions.trustedCaCertificatesPem must drive real chain validation on every quiche
+    // target. The positive test below pins the server's own anchor (with verifyPeer left at its
+    // default of true), which only succeeds if the anchor is actually loaded — otherwise
+    // verification against an empty trust store rejects the self-signed peer and the handshake
+    // fails.
 
     @Test
     fun pinnedCorrectCaAnchorHandshakeAndEchoSucceed() =

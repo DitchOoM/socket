@@ -12,7 +12,7 @@ plugins {
 // public lifecycle entrypoints (withQuicConnection / withQuicServer / withQuicMux) and the
 // `expect val defaultQuicEngine` that selects a backend per platform:
 //   jvm / android / linux → :socket-quic-quiche (QuicheEngine)
-//   macos / ios           → :socket-quic-quiche (QuicheEngine, POSIX UDP datapath)
+//   macos / ios           → :socket-quic-quiche (QuicheEngine; NWConnection client, POSIX server)
 //   tvos / watchos        → :socket-quic        (UnsupportedQuicEngine — no quiche target)
 //   js / wasmJs           → :socket-quic        (UnsupportedQuicEngine)
 // The backend modules expose their engine as public SPI; this module wires them together so a
@@ -103,13 +103,12 @@ kotlin {
             }
         }
         if (appleTargets) {
-            // Apple QUIC backend split (quiche-on-Apple pivot): macOS + iOS run the quiche engine
-            // (:socket-quic-quiche over a POSIX UDP datapath) — the same engine as JVM/Android/Linux.
-            // tvOS/watchOS have no quiche target (Tier-3 build-std deferred), so they get
-            // UnsupportedQuicEngine. Two intermediate source sets sit under the default-template
-            // appleMain: quicheAppleMain (parent of macos/ios) and unsupportedAppleMain (tvos/watchos).
-            // This replaced the Network.framework backend (:socket-quic-nw), deleting the macos-26
-            // libquic teardown UAF at the source. See quiche-on-apple-pivot.
+            // macOS + iOS run the quiche engine (:socket-quic-quiche) — the same engine as
+            // JVM/Android/Linux. The client's UDP datagrams ride an NWConnection; the server binds a
+            // dual-stack POSIX UDP socket. tvOS/watchOS have no quiche target (Tier-3 build-std
+            // deferred), so they get UnsupportedQuicEngine. Two intermediate source sets sit under the
+            // default-template appleMain: quicheAppleMain (parent of macos/ios) and unsupportedAppleMain
+            // (tvos/watchos).
             val appleMain by getting
             val quicheAppleMain by creating {
                 dependsOn(appleMain)

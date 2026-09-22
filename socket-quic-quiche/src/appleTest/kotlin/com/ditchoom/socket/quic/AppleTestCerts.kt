@@ -28,9 +28,9 @@ import platform.posix.getenv
  *    directly and are used as-is.
  *  - **iOS/tvOS/watchOS simulators** run under `simctl spawn --standalone`, whose cwd has no
  *    `testcerts/`. Rather than skip there, the embedded PEM is materialized into the process's
- *    writable `TMPDIR`. That is what lets the full quiche handshake run **for real** on the simulator
- *    instead of self-skipping: the POSIX UDP datapath needs no Network.framework listener, so the only
- *    thing that ever blocked the sim was the missing cwd.
+ *    writable `TMPDIR`. That is what lets the full quiche loopback handshake (a POSIX UDP server and an
+ *    `NWConnection` client) run **for real** on the simulator instead of self-skipping: the missing
+ *    cwd is the only thing that blocks it there.
  *
  * The build-GENERATED fixtures ([requireGenerated]) have no such fallback and cannot have one — see
  * their section below.

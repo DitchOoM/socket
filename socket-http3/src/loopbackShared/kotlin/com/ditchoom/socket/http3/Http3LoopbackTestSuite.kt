@@ -107,13 +107,10 @@ abstract class Http3LoopbackTestSuite {
     // (it only advertises max_datagram_frame_size in the QUIC handshake).
     //
     // `.forHttp3()` (PreferStreams) is applied to match exactly what the production withHttp3Server /
-    // withHttp3Connection entrypoints force at their boundary: on Apple's Network.framework, extracting
-    // a datagram flow steals inbound/server-initiated stream delivery (the control stream's SETTINGS
-    // never reach the peer), so HTTP/3 must prioritize streams. The client tests already route through
+    // withHttp3Connection entrypoints force at their boundary. The client tests already route through
     // withHttp3Connection (which calls forHttp3 itself); the loopback SERVER here is built with a raw
-    // withQuicServer, so without this it would run a transport config production never uses — and its
-    // control-stream SETTINGS would silently not arrive on Apple. On quiche (JVM/Linux) PreferStreams is
-    // a no-op for datagrams, so the datagram round-trip test is unaffected there.
+    // withQuicServer, so without this it would run a transport config production never uses. quiche
+    // ignores PreferStreams, so the datagram round-trip test is unaffected.
     //
     // trace: deterministic-replay capture (RFC_DETERMINISTIC_SIMULATION.md §5) into
     // [diagnostics]'s in-memory ring, dumped only when a test fails. BOTH ends are captured because
@@ -1392,10 +1389,7 @@ abstract class Http3LoopbackTestSuite {
 
     // --- WebTransport Phase 3: datagrams (draft-ietf-webtrans-http3 §4.4, RFC 9297) ---
 
-    // Runs on every backend. This was `open` for a Network.framework-specific override that no
-    // longer exists: NW's connection-group API let a datagram flow steal inbound *stream* delivery,
-    // so the Apple subclass had to @Ignore it. The quiche-on-Apple pivot deleted that backend, and
-    // quiche carries RFC 9221 datagrams on every target — see AppleHttp3LoopbackTest.
+    // Runs on every backend: quiche carries RFC 9221 datagrams on every target.
     @Test
     fun webTransport_datagramRoundTrip() =
         runHttp3LoopbackTest {
