@@ -10,3 +10,12 @@ package com.ditchoom.socket.quic
  * restarting the daemon with a new environment.
  */
 internal actual fun qlogDir(): String? = (System.getProperty("quic.qlog.dir") ?: System.getenv("QUIC_QLOG_DIR"))?.takeIf { it.isNotBlank() }
+
+internal actual fun environmentSetting(
+    property: String,
+    variable: String,
+): EnvironmentSetting =
+    (System.getProperty(property) ?: System.getenv(variable))
+        ?.takeIf { it.isNotBlank() }
+        ?.let { EnvironmentSetting.Value(it.trim()) }
+        ?: EnvironmentSetting.Unset

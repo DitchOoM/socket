@@ -16,9 +16,19 @@ sealed interface QlogTarget {
     /** No qlog for this connection (a `QUIC_QLOG_DIR` environment, if any, still applies). */
     data object Off : QlogTarget
 
-    /** quiche creates and writes [path]; the directory must already exist. */
+    /** quiche creates and writes [path], one file for the connection's whole life; the directory must already exist. */
     data class File(
         val path: String,
+    ) : QlogTarget
+
+    /**
+     * quiche writes the connection's qlog as a run of segments in [directory], named from [name]
+     * (`<name>.sqlog`, then `<name>_seg0002.sqlog` and on) and kept or dropped under the directory's
+     * [QlogBudget]. [name] must be unique per connection, as a [File] path must.
+     */
+    data class Budgeted(
+        val directory: QlogDirectory,
+        val name: String,
     ) : QlogTarget
 }
 

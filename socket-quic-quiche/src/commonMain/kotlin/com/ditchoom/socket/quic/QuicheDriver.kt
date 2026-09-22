@@ -13,6 +13,11 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.quic.trace.QlogFile
+import com.ditchoom.socket.quic.trace.QlogOpening
+import com.ditchoom.socket.quic.trace.QlogRecord
+import com.ditchoom.socket.quic.trace.QlogSegment
+import com.ditchoom.socket.quic.trace.QlogStep
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.SendStalledException
 import com.ditchoom.socket.quic.trace.StreamLossCause
@@ -1267,25 +1272,32 @@ class QuicheDriver(
         entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
     }
 
-    /** Whether quiche was told to write this connection's qlog, and where. */
-    private sealed interface QlogOutcome {
-        data object Off : QlogOutcome
+    /** What quiche is writing this connection's qlog into. Read and written on the driver loop only. */
+    private sealed interface QlogCapture {
+        data object Off : QlogCapture
 
-        data class Tracing(
+        /** One file for the connection's whole life. */
+        data class Single(
             val path: String,
-        ) : QlogOutcome
+        ) : QlogCapture
 
-        /** quiche opens a qlog with `create_new`: a file already at [path], or no directory, is refused. */
-        data class Refused(
-            val path: String,
-        ) : QlogOutcome
+        /** [current], one segment of [record]'s run under its directory's budget. */
+        data class Segmented(
+            val record: QlogRecord,
+            val current: QlogSegment,
+        ) : QlogCapture
     }
+
+    private var qlog: QlogCapture = QlogCapture.Off
+
+    /** Driver wakes since the current segment was last measured; see [QLOG_CHECK_WAKES]. */
+    private var qlogWakes = 0
 
     /**
      * Where this connection's qlog goes: the capture's own [QlogTarget] when it named one, else the
      * `QUIC_QLOG_DIR` diagnostics door, else nowhere.
      *
-     * The environment fallback names the file by [sessionId], quiche's trace id, the SCID this endpoint
+     * The environment door names the record by [sessionId], quiche's trace id, the SCID this endpoint
      * chose, unique to this connection for its whole life. quiche opens with `create_new`, so a name
      * that repeats within a process is refused; a name must therefore come from the connection's
      * identity, never from a reusable handle.
@@ -1295,15 +1307,23 @@ class QuicheDriver(
             TraceCapture.Off -> qlogFromEnvironment()
             is TraceCapture.On ->
                 when (val named = on.qlog) {
-                    is QlogTarget.File -> named
+                    is QlogTarget.File, is QlogTarget.Budgeted -> named
                     QlogTarget.Off -> qlogFromEnvironment()
                 }
         }
 
     private fun qlogFromEnvironment(): QlogTarget =
         qlogDir()
-            ?.let { QlogTarget.File("$it/quiche-${role.label}-$sessionId.sqlog") }
+            ?.let { QlogEnvironment.target(it, "quiche-${role.label}-$sessionId") }
             ?: QlogTarget.Off
+
+    private fun startQlog(segment: QlogSegment): Boolean =
+        api.connSetQlogPath(
+            conn,
+            segment.path,
+            "ditchoom-socket ${role.label}",
+            if (segment.index == 1) "session $sessionId" else "session $sessionId segment ${segment.index}",
+        )
 
     /**
      * Diagnostics only: quiche's own frame-level record, beside the replay trace. Called once from [run]
@@ -1311,16 +1331,99 @@ class QuicheDriver(
      * refusal (or an older libquiche without qlog) never disrupts the connection. The qlog header's
      * description carries the session id, so a file names its connection even when its path does not.
      */
-    private fun enableQlog(): QlogOutcome =
+    private fun enableQlog(): QlogCapture =
         when (val target = qlogTarget()) {
-            QlogTarget.Off -> QlogOutcome.Off
+            QlogTarget.Off -> QlogCapture.Off
             is QlogTarget.File ->
                 if (api.connSetQlogPath(conn, target.path, "ditchoom-socket ${role.label}", "session $sessionId")) {
-                    QlogOutcome.Tracing(target.path)
+                    println("[qlog] tracing ${role.label} connection $sessionId to ${target.path}")
+                    QlogCapture.Single(target.path)
                 } else {
-                    QlogOutcome.Refused(target.path)
+                    qlogRefused(target.path)
+                    QlogCapture.Off
+                }
+            is QlogTarget.Budgeted ->
+                when (val opening = target.directory.open(target.name)) {
+                    is QlogOpening.Refused -> QlogCapture.Off
+                    is QlogOpening.Admitted -> {
+                        deleteDropped(opening.record, opening.evicted)
+                        if (startQlog(opening.head)) {
+                            println("[qlog] tracing ${role.label} connection $sessionId to ${opening.head.path}, segmented")
+                            QlogCapture.Segmented(opening.record, opening.head)
+                        } else {
+                            opening.record.refusedByQuiche()
+                            qlogRefused(opening.head.path)
+                            QlogCapture.Off
+                        }
+                    }
                 }
         }
+
+    private fun qlogRefused(path: String) {
+        println("[qlog] refused $path for ${role.label} connection $sessionId — a file already there, or no directory")
+        // stdout alone does not reach the walk record: without this the replay trace has no evidence
+        // this connection ran with no frame-level capture.
+        capture.record { it.qlogRefused(path) }
+    }
+
+    /**
+     * Every [QLOG_CHECK_WAKES] wakes, measure the segment quiche is writing and move it to the next one
+     * when the budget says it is full. Counted in wakes, not time, so a burst that writes a segment in a
+     * second is cut as promptly as a walk's trickle, and a virtual-time run cuts at the same points
+     * every time.
+     */
+    private fun pollQlog() {
+        when (val q = qlog) {
+            QlogCapture.Off, is QlogCapture.Single -> Unit
+            is QlogCapture.Segmented -> {
+                if (++qlogWakes < QLOG_CHECK_WAKES) return
+                qlogWakes = 0
+                when (val step = q.record.observe(qlogFileBytes(q.current.path))) {
+                    is QlogStep.Keep -> deleteDropped(q.record, step.evicted)
+                    is QlogStep.RotateDue -> {
+                        deleteDropped(q.record, step.evicted)
+                        if (startQlog(step.next)) {
+                            qlog = q.copy(current = step.next)
+                            // quiche flushed and closed the previous segment as it let go of it, so this
+                            // is its final size, not the one measured a moment ago.
+                            deleteDropped(q.record, q.record.rotated(step.next, qlogFileBytes(q.current.path)))
+                        } else {
+                            q.record.rotationRefused(step.next)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** The connection's handshake completed: its record is a connection that carried traffic, not a failed attempt. */
+    private fun qlogEstablished() {
+        when (val q = qlog) {
+            QlogCapture.Off, is QlogCapture.Single -> Unit
+            is QlogCapture.Segmented -> q.record.established()
+        }
+    }
+
+    /** After `quiche_conn_free`, which flushes and closes the last segment: settle the record's accounts. */
+    private fun closeQlog() {
+        when (val q = qlog) {
+            QlogCapture.Off, is QlogCapture.Single -> Unit
+            is QlogCapture.Segmented -> deleteDropped(q.record, q.record.close(qlogFileBytes(q.current.path)))
+        }
+        qlog = QlogCapture.Off
+    }
+
+    private fun deleteDropped(
+        record: QlogRecord,
+        files: List<QlogFile>,
+    ) {
+        for (file in files) {
+            when (deleteQlogFile(file.path)) {
+                QlogDeletion.Deleted -> Unit
+                QlogDeletion.Failed -> record.directory.deleteFailed(file)
+            }
+        }
+    }
 
     /**
      * The reactive driver loop. Suspends on command channel or quiche timeout — zero CPU when idle.
@@ -1328,16 +1431,7 @@ class QuicheDriver(
      */
     private suspend fun run() {
         try {
-            when (val qlog = enableQlog()) {
-                QlogOutcome.Off -> Unit
-                is QlogOutcome.Tracing -> println("[qlog] tracing ${role.label} connection $sessionId to ${qlog.path}")
-                is QlogOutcome.Refused -> {
-                    println("[qlog] refused ${qlog.path} for ${role.label} connection $sessionId — a file already there, or no directory")
-                    // stdout alone does not reach the walk record: without this the replay trace has no
-                    // evidence this connection ran with no frame-level capture.
-                    capture.record { it.qlogRefused(qlog.path) }
-                }
-            }
+            qlog = enableQlog()
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
             // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner
@@ -1459,6 +1553,7 @@ class QuicheDriver(
                     }
                 }
                 afterCommand()
+                pollQlog()
             }
         } finally {
             withContext(NonCancellable) {
@@ -1789,6 +1884,7 @@ class QuicheDriver(
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
             _state.value = QuicConnectionState.Established(readNegotiatedAlpn())
+            qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
             // sample is: the reactor subscribes just after this, from the engine's connect(), so a
@@ -2851,6 +2947,7 @@ class QuicheDriver(
         // wake happened (e.g. a pure event-cascade virtual-time run).
         capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
         api.connFree(conn)
+        closeQlog()
         // Tear down any non-primary migration paths: cancel reader, close socket, free
         // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
         for (entry in paths.values.toList()) {
@@ -3052,6 +3149,14 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /**
+         * Driver wakes between measurements of a budgeted qlog's current segment: one `stat` per this
+         * many commands and timers. A wake writes at most one flush's worth of qlog, so a segment
+         * overshoots its size by at most this many flushes; at a walk's cadence that is seconds of
+         * traffic against a segment of an hour.
+         */
+        internal const val QLOG_CHECK_WAKES = 64
 
         /**
          * What every driver-backed connection declares to its callers. All three bindings —
