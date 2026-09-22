@@ -141,14 +141,14 @@ data class DatagramOptions(
 
 /**
  * Which to keep on an engine that cannot carry a QUIC datagram flow and inbound (peer-initiated)
- * streams on the same connection. No current engine has that restriction: quiche — the engine on
- * every platform with QUIC, Apple included — and the browser WebTransport object carry both, so
- * every engine ignores this.
- *
- * It defaults to [PreferDatagrams], and the HTTP/3 / WebTransport stack sets [PreferStreams] because
- * HTTP/3 structurally requires inbound streams (control + QPACK encoder/decoder are peer-initiated
- * unidirectional streams).
+ * streams on the same connection.
  */
+@Deprecated(
+    "No engine reads this: quiche — the QUIC engine on every platform, Apple included — and the " +
+        "browser WebTransport object all carry a datagram flow and inbound streams on the same " +
+        "connection, so there is nothing to choose between. Removed in 5.0.",
+    level = DeprecationLevel.WARNING,
+)
 enum class DatagramStreamConflictPolicy {
     /** Keep the datagram flow. */
     PreferDatagrams,
@@ -353,15 +353,21 @@ data class QuicOptions(
     val datagrams: DatagramOptions? = null,
     /**
      * Which to keep on an engine that cannot carry a datagram flow and inbound streams on the same
-     * QUIC connection — see [DatagramStreamConflictPolicy]; no current engine has that restriction, so
-     * every engine ignores it. The HTTP/3 / WebTransport stack sets
-     * [DatagramStreamConflictPolicy.PreferStreams].
+     * connection — see [DatagramStreamConflictPolicy].
      */
+    @Deprecated(
+        "No engine reads this: every engine carries a datagram flow and inbound streams on the same " +
+            "connection, so there is nothing to choose between. Removed in 5.0.",
+        level = DeprecationLevel.WARNING,
+    )
+    @Suppress("DEPRECATION")
     val datagramStreamConflictPolicy: DatagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferDatagrams,
-    /**
-     * Read by no engine. The Apple QUIC server is quiche, the same as on every other platform, and
-     * applies no Apple-specific limit to the size of its certificate flight.
-     */
+    /** Whether to accept a server certificate flight above an Apple-specific size limit. */
+    @Deprecated(
+        "Read by no engine: the Apple QUIC server is quiche, the same as on every other platform, " +
+            "and applies no Apple-specific limit to the size of its certificate flight. Removed in 5.0.",
+        level = DeprecationLevel.WARNING,
+    )
     val appleAllowOversizedServerCert: Boolean = false,
     /**
      * Opt-in deterministic-replay trace capture (RFC_DETERMINISTIC_SIMULATION.md §5). Null (the
