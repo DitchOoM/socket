@@ -239,7 +239,7 @@ private fun generatePeerCertificate(
             keyPair.writePublicKey(publicKey)
             publicKey.resetForRead()
             if (publicKey.remaining() != P256_PUBLIC_KEY_BYTES || publicKey[0].toInt() != UNCOMPRESSED_POINT) {
-                throw PeerCertificateException(PeerCertificateFailure.MalformedKeyMaterial(KeyMaterialPart.PublicKey, publicKey.remaining()))
+                malformed(KeyMaterialPart.PublicKey, publicKey)
             }
             // A positive 16-byte serial that is unique per key: the leading bytes of the key's SHA-256.
             backend.sha256(publicKey, serial)
@@ -276,7 +276,7 @@ private fun generatePeerCertificate(
                     keyPair.sign(tbs, signature)
                     signature.resetForRead()
                     if (signature.remaining() == 0 || signature[0].toInt() != DER_SEQUENCE) {
-                        throw PeerCertificateException(PeerCertificateFailure.MalformedKeyMaterial(KeyMaterialPart.Signature, signature.remaining()))
+                        malformed(KeyMaterialPart.Signature, signature)
                     }
                     Der.sequence(Der.encoded(tbs), algorithm, Der.bitString(signature)).encode(native)
                 } finally {
@@ -318,6 +318,11 @@ private fun generatePeerCertificate(
     }
 }
 
+private fun malformed(
+    part: KeyMaterialPart,
+    written: ReadBuffer,
+): Nothing = throw PeerCertificateException(PeerCertificateFailure.MalformedKeyMaterial(part, written.remaining()))
+
 /** RFC 5208 PKCS#8 `PrivateKeyInfo` wrapping an RFC 5915 `ECPrivateKey`, as PEM; every intermediate is zeroed. */
 private fun privateKeyPem(
     keyPair: P256KeyPair,
@@ -330,7 +335,7 @@ private fun privateKeyPem(
         keyPair.writePrivateKey(scalar)
         scalar.resetForRead()
         if (scalar.remaining() != P256_PRIVATE_KEY_BYTES) {
-            throw PeerCertificateException(PeerCertificateFailure.MalformedKeyMaterial(KeyMaterialPart.PrivateKey, scalar.remaining()))
+            malformed(KeyMaterialPart.PrivateKey, scalar)
         }
         val pkcs8 =
             Der
