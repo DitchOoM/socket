@@ -11,17 +11,18 @@ import com.ditchoom.buffer.fromHexString
  * leaf-hash pin end-to-end against a real loopback server, plus (where the platform enforces them) the
  * certificate constraints.
  *
- * **Where these five tests actually execute — measured, not assumed.**
- * Every test here needs a build-generated `pinned*` fixture, and those are reachable only from a cwd
- * containing `testcerts/`:
- *  - **macosArm64/macosX64** — cwd is the repo/module dir, so all five run for real. The three
+ * **Where these tests actually execute — measured, not assumed.**
+ * The five fixture tests need a build-generated `pinned*` fixture, and those are reachable only from a
+ * cwd containing `testcerts/`. The two generated-certificate tests (`acceptsGeneratedPeerCertificate`,
+ * `rejectsExpiredGeneratedPeerCertificate`) mint their certificate at runtime and need none.
+ *  - **macosArm64/macosX64** — cwd is the repo/module dir, so all seven run for real. The three
  *    constraint-reject cases (`rejectsExpiredLeaf`, `rejectsOverlyLongValidityLeaf`,
  *    `rejectsNonP256KeyLeaf`) execute **only here** among the Apple targets.
  *  - **iOS simulator** — runs under `simctl spawn --standalone`, whose cwd has no `testcerts/`, so
  *    [AppleTestCerts.requireGenerated] throws [AppleTestCerts.MissingGeneratedFixture] and
- *    [wrapTestBody] converts that into a skip. **All five tests self-skip on iOS**, including
- *    `acceptsMatchingLeafHash` and `rejectsWrongLeafHash`. Do not read a green iOS tick here as
- *    end-to-end pinning coverage.
+ *    [wrapTestBody] converts that into a skip. **All five fixture tests self-skip on iOS**, including
+ *    `acceptsMatchingLeafHash` and `rejectsWrongLeafHash`; the two generated-certificate tests are the
+ *    end-to-end pinning coverage iOS gets.
  *
  * Check it rather than trusting this comment — the skip is announced. After an
  * `iosSimulatorArm64Test` run, `build/test-results/iosSimulatorArm64Test/TEST-*.xml` carries five

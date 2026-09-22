@@ -3,7 +3,7 @@ package com.ditchoom.socket.webtransport
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.decodeHexInto
+import com.ditchoom.buffer.fromHexString
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult

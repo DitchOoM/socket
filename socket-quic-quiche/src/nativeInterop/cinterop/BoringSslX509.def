@@ -15,7 +15,7 @@ package = com.ditchoom.socket.quic.boringssl
 # linuxX64/linuxArm64 binary via the base :socket: module's cinterop
 # (staticLibraries.linux = libssl.a libcrypto.a), contributed transitively to
 # dependents — hence NO libraryPaths/staticLibraries/linkerOpts here.
-headers = openssl/x509.h openssl/evp.h openssl/ec.h openssl/asn1.h openssl/obj_mac.h openssl/sha.h stdint.h stddef.h
+headers = openssl/x509.h openssl/evp.h openssl/ec.h openssl/ec_key.h openssl/ecdsa.h openssl/bn.h openssl/asn1.h openssl/obj_mac.h openssl/sha.h stdint.h stddef.h
 
 compilerOpts.linux = -D_GNU_SOURCE
 
@@ -94,4 +94,39 @@ static inline void ditchoom_sha256(
     size_t data_len,
     uint8_t *out) {
     SHA256(data, data_len, out);
+}
+
+// Generate an ECDSA P-256 key pair for a WebTransport peer certificate (PeerCertificateBackend.linux.kt).
+// Writes the private scalar as 32 big-endian bytes to out_priv and the SEC 1 uncompressed public point
+// (04 || X || Y, 65 bytes) to out_pub. Returns 1 on success, 0 on failure.
+static inline int ditchoom_p256_generate(uint8_t *out_priv, uint8_t *out_pub) {
+    EC_KEY *key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!key) return 0;
+    int ok = EC_KEY_generate_key(key) &&
+        BN_bn2bin_padded(out_priv, 32, EC_KEY_get0_private_key(key)) &&
+        EC_POINT_point2oct(EC_KEY_get0_group(key), EC_KEY_get0_public_key(key),
+                           POINT_CONVERSION_UNCOMPRESSED, out_pub, 65, NULL) == 65;
+    EC_KEY_free(key);
+    return ok ? 1 : 0;
+}
+
+// ECDSA over SHA-256 of msg[0..msg_len) with the 32-byte big-endian P-256 scalar priv, writing the DER
+// ECDSA-Sig-Value to out_sig (capacity sig_cap). Returns the signature length, or 0 on failure.
+static inline size_t ditchoom_p256_sign(
+    const uint8_t *priv,
+    const uint8_t *msg,
+    size_t msg_len,
+    uint8_t *out_sig,
+    size_t sig_cap) {
+    EC_KEY *key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!key) return 0;
+    size_t written = 0;
+    uint8_t digest[SHA256_DIGEST_LENGTH];
+    unsigned int sig_len = 0;
+    if (EC_KEY_oct2priv(key, priv, 32) && ECDSA_size(key) <= sig_cap) {
+        SHA256(msg, msg_len, digest);
+        if (ECDSA_sign(0, digest, sizeof(digest), out_sig, &sig_len, key)) written = sig_len;
+    }
+    EC_KEY_free(key);
+    return written;
 }

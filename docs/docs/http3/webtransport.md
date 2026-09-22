@@ -57,6 +57,34 @@ withHttp3Server(
 }
 ```
 
+## Serving Browsers Without a CA
+
+A browser can reach a server with no DNS name and no CA-issued certificate through
+`serverCertificateHashes`, provided the certificate is ECDSA P-256 and valid for at most 14 days.
+`peerCertificates` mints one; hand its `hash` to the browser over your own signalling channel:
+
+```kotlin
+when (val certificates = peerCertificates) {
+    is PeerCertificateSupport.Available -> certificates.generate().use { certificate ->
+        signalling.publish(certificate.hash) // browser: { algorithm: "sha-256", value: <hash bytes> }
+        withHttp3Server(
+            certificate = certificate,
+            webTransport = WebTransportOptions(maxSessions = 4),
+            onWebTransport = { accept() },
+            onRequest = { response.send(404) },
+        ) {
+            awaitCancellation()
+        }
+    }
+    PeerCertificateSupport.Unavailable -> Unit // no QUIC server on this platform
+}
+```
+
+The certificate never renews itself. Mint a successor before `renewAt(lead)` and publish both hashes
+while both are valid. `PeerCertificateValidity.of(duration)` picks a shorter lifetime; one longer than 14
+days cannot be constructed. The private key stays in memory until `close()`. It reaches the TLS stack only
+while the server binds, as owner-only files that are deleted as soon as the bind returns.
+
 ## Streams
 
 A session opens streams just like raw QUIC, but scoped to the session. Bidirectional streams are
