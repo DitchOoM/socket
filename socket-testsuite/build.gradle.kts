@@ -24,7 +24,10 @@ plugins {
 //     tests (the internal-codec Http3LoopbackServer) deliberately stay in :socket-http3's own
 //     commonTest rather than moving here.
 
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -51,7 +54,7 @@ kotlin {
     }
 
     // Apple targets — host-gated, since they only build on macOS.
-    if (isMacOS) {
+    if (appleTargets) {
         macosArm64()
         macosX64()
         iosArm64()

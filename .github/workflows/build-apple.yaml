@@ -516,8 +516,8 @@ jobs:
       QUIC_LOOPBACK_ALIAS_PROVISIONED: "1"
     steps:
       - uses: actions/checkout@v7
-      # konan: false — this lane is JVM-only, so restoring the ~450MB Kotlin/Native toolchain would
-      # be pure download cost.
+      # konan: false — this lane is JVM-only (see -PappleTargets=false on the test step), so restoring
+      # the ~450MB Kotlin/Native toolchain would be pure download cost.
       - uses: ./.github/actions/apple-quiche-env
         with:
           konan: "false"
@@ -554,14 +554,17 @@ jobs:
               s.close()
           PY
 
-      # ⚠️ 20 min, NOT the 8 the monolith used or the 12 this job first carried over. Both were
-      # sized for a world where this step ran AFTER the JNI step in the SAME job, so compilation
-      # was already done and the Gradle daemon was warm. Fanned out, each backend lane compiles
-      # from cold, and the step legitimately grew: measured 618s, 637s, then 733s across three
-      # runs on equivalent content — the third tripped the 720s limit and failed a green suite.
-      # That is a timeout mis-sized by the split, not a hang.
-      # The limit still earns its place: it fires faster than the job timeout and names the step.
-      # A genuine hang is bounded by timeout-minutes: 30 at job level.
+      # The step compiles every JVM module from cold (each backend lane is its own job), then runs
+      # the suite. The limit fires faster than the job timeout and names the step; a genuine hang is
+      # bounded by timeout-minutes: 30 at job level.
+      #
+      # -PappleTargets=false: this lane builds and runs JVM code only, so no module declares the
+      # Apple K/N targets. With them declared, :socket-http3's KSP codec generation (which runs on
+      # commonMain METADATA, and which socket-http3:compileKotlinJvm depends on) resolves every
+      # dependency's metadata artifact — and a project's metadata artifact carries all of its shared
+      # source sets, so the graph grew by every Apple cinterop, commonizeCInterop,
+      # commonizeNativeDistribution and a K/N toolchain download (this job restores no ~/.konan),
+      # all ahead of the first test. The K/N, link and publish jobs leave the property unset.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
         timeout-minutes: 20
         env:
@@ -569,7 +572,7 @@ jobs:
           # and its first inventory confirmed zero. A skip now means the artifact plumbing broke.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: >-
-          ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} --continue
+          ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} -PappleTargets=false --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # This lane builds its own natives, so a `native-library-unavailable` skip here means the

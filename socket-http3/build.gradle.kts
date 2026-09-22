@@ -9,7 +9,10 @@ plugins {
     signing
 }
 
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
@@ -25,10 +28,9 @@ repositories {
 //
 // Targets mirror :socket-quic's host-gated matrix exactly: because commonMain
 // `api`-depends on :socket-quic, both modules must expose the SAME target set per host
-// or dependency resolution fails. So Apple targets are declared only on macOS and the
-// Linux-native targets only on Linux — the same `if (isMacOS)` / `if (isLinux)` guards
-// :socket-quic uses. KSP-for-main (for future declarative codecs) stays deferred until a
-// @ProtocolMessage codec actually exists; the wiring to copy is on origin/feature/socket-http3.
+// or dependency resolution fails. So Apple targets are declared only when `appleTargets` and the
+// Linux-native targets only on Linux — the same `if (appleTargets)` / `if (isLinux)` guards
+// :socket-quic uses.
 kotlin {
     jvmToolchain(21)
 
@@ -77,7 +79,7 @@ kotlin {
         }
     }
 
-    if (isMacOS) {
+    if (appleTargets) {
         // Apple QUIC is Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
         // :socket-quic-default → :socket-quic-quiche, whose Quiche cinterop klib now EMBEDS libquiche.a
         // and carries the Apple frameworks in its manifest linkerOpts (Gap A's fix). The live H3

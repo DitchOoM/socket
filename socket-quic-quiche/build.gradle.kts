@@ -24,6 +24,9 @@ plugins {
 }
 
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    isMacOS && providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
@@ -3359,7 +3362,7 @@ kotlin {
     // self-contained libquiche.a with vendored BoringSSL) over a POSIX UDP datapath — replacing the
     // Network.framework system-QUIC backend (the deleted :socket-quic-nw). macOS .a comes from the
     // shared cargo tasks; iOS .a from createBuildQuicheAppleStaticTask. See quiche-on-apple-pivot.
-    if (isMacOS) {
+    if (appleTargets) {
         // One configurator for every Apple target. Each target's self-contained libquiche.a (boring-crate
         // vendors BoringSSL into it) is EMBEDDED into the Quiche cinterop
         // klib via staticLibraries/libraryPaths def directives, so the published klib is self-contained:
@@ -3553,9 +3556,9 @@ kotlin {
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
-        // Apple targets only register on macOS (see the `if (isMacOS)` cinterop block above), so the
-        // appleMain source set — and the embedded Mozilla-CA constant it consumes — exists only there.
-        if (isMacOS) {
+        // Apple targets register only when `appleTargets` (see the cinterop block above), so the
+        // appleMain source set — and the embedded Mozilla-CA constant it consumes — exists only then.
+        if (appleTargets) {
             val appleMain by getting {
                 kotlin.srcDir(generateMozillaCaRoots.map { mozillaCaGeneratedDir })
             }
