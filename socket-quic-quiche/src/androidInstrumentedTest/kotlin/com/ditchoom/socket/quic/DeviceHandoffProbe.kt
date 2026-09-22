@@ -20,12 +20,17 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
+import com.ditchoom.socket.testkit.echo.EchoLoop
+import com.ditchoom.socket.testkit.echo.EchoLoopEnd
+import com.ditchoom.socket.testkit.echo.EchoLoopEvent
 import com.ditchoom.socket.testkit.echo.EchoOutcome
 import com.ditchoom.socket.testkit.echo.EchoRead
 import com.ditchoom.socket.testkit.echo.EchoSession
-import com.ditchoom.socket.testkit.echo.EchoStep
+import com.ditchoom.socket.testkit.echo.EchoStream
+import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
 import com.ditchoom.socket.testkit.echo.SilenceWatchdog
@@ -55,6 +60,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicReferenceArray
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -132,48 +138,6 @@ class DeviceHandoffProbe {
             log.appendText(rendered + "\n")
             // logcat too, so a tethered run is watchable live: adb logcat -s QuicHandoffProbe
             android.util.Log.i("QuicHandoffProbe", rendered)
-        }
-
-        // One exchange: the write, then the read the session judges. A write that times out is the
-        // session's to decide; every other failure is the loop's to classify.
-        suspend fun exchange(
-            stream: QuicByteStream,
-            session: EchoSession,
-            seq: Int,
-            payload: String,
-            sentAt: Long,
-        ): EchoStep {
-            // Write takes no ownership, so this one IS ours to free — and on a multi-hour walk a
-            // 10-byte-per-round leak is still a leak.
-            val out = BufferFactory.Default.allocate(payload.length)
-            try {
-                out.writeString(payload, Charset.UTF8)
-                out.resetForRead()
-                stream.write(out, WRITE_DEADLINE)
-            } catch (e: TimeoutCancellationException) {
-                // Only this scope's own cancellation, which wears the same type, gets out of here.
-                currentCoroutineContext().ensureActive()
-                return session.writeTimedOut(seq, waited = (System.currentTimeMillis() - sentAt).milliseconds, at = now())
-            } finally {
-                out.freeIfNeeded()
-            }
-            session.sent(seq, payload, now())
-            // Scoped read (#538): the echoed bytes are decoded inside the block and the buffer is
-            // released on the way out.
-            val reply =
-                try {
-                    when (val resp = stream.read(session.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }) {
-                        is ScopedRead.Data -> StreamReply.Echoed(resp.value)
-                        ScopedRead.End -> StreamReply.PeerEnded
-                        ScopedRead.Reset -> StreamReply.PeerReset
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    // The deadline is where "late" begins, not where an exchange fails: the reply is
-                    // still owed and is judged when it arrives.
-                    currentCoroutineContext().ensureActive()
-                    StreamReply.StillOwed
-                }
-            return session.reply(seq, reply, now())
         }
 
         // Frame-level evidence, off by default: quiche's own record, one .sqlog per connection in the
@@ -330,16 +294,8 @@ class DeviceHandoffProbe {
                         emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
 
                         val stream = openStream()
-                        var seq = 0
                         var lastWire = identity.wire
                         val ticksAtConnect = loopTicks
-
-                        // Every exchange is judged by [session] when its reply arrives (#393, #599): the
-                        // invariant is that everything received is an in-order prefix of everything
-                        // sent, and a missed read deadline is where "late" begins, not where an
-                        // exchange fails. A FIN or RESET from the peer, or a run of writes it will not
-                        // drain, ends the session instead: the stream is no longer being echoed (#620).
-                        var integrityBroken = false
 
                         // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
                         // loop below. Phase 4 bounds an unanswered path probe at ~3s (RFC 9000 §8.2.4),
@@ -355,83 +311,40 @@ class DeviceHandoffProbe {
                             }
                         }
 
-                        while (System.currentTimeMillis() < deadline) {
-                            // A wire CID that rotates while the session id holds is exactly what a
-                            // successful migration looks like.
-                            if (identity.wire != lastWire) {
-                                emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
-                                lastWire = identity.wire
-                            }
-
-                            seq++
-                            val sentAt = System.currentTimeMillis()
-                            // Delimited so payload boundaries stay visible in a coalesced read.
-                            val payload = "probe-$seq;"
-                            try {
-                                when (val step = exchange(stream, session, seq, payload, sentAt)) {
-                                    is EchoStep.Exchanged -> {
-                                        when (step) {
-                                            is EchoStep.Exchanged.Judged ->
-                                                when (val read = step.read) {
-                                                    is EchoRead.Consumed -> {
-                                                        read.outcomes.forEach { emit(it.line(read.owedBytes)) }
-                                                        status.onRead(read)
-                                                    }
-                                                    is EchoRead.Diverged ->
-                                                        if (integrityBroken) {
-                                                            emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
-                                                        } else {
-                                                            integrityBroken = true
-                                                            // The whole point of the run: both sides at the divergence.
-                                                            status.onBroken(read.atByte)
-                                                            emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
-                                                        }
-                                                }
-                                            EchoStep.Exchanged.StillOwed -> Unit
+                        val loop =
+                            EchoLoop(
+                                stream = QuicEchoStream(stream),
+                                session = session,
+                                interval = echoIntervalMs.milliseconds,
+                                clock = ::now,
+                                emit = ::emit,
+                                // The typed reason, side included: "we sent a frame the peer rejected" and
+                                // "the peer sent us one" are opposite bugs, and a device log is all we get
+                                // from a real handoff (#437).
+                                closedBy = ::connectionClosedBy,
+                            ) { event ->
+                                when (event) {
+                                    // A wire CID that rotates while the session id holds is exactly what a
+                                    // successful migration looks like.
+                                    is EchoLoopEvent.Round ->
+                                        if (identity.wire != lastWire) {
+                                            emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
+                                            lastWire = identity.wire
                                         }
-                                        // Progress is a completed exchange: a write the peer never
-                                        // drained is not one, so the silence watchdog sees it.
-                                        loopTicks = ticksAtConnect + session.exchanges
+                                    is EchoLoopEvent.Read -> status.onRead(event.read)
+                                    is EchoLoopEvent.IntegrityBroken -> status.onBroken(event.atByte)
+                                    is EchoLoopEvent.Progress -> {
+                                        loopTicks = ticksAtConnect + event.exchanges
                                     }
-                                    is EchoStep.WriteTimedOut -> {
-                                        emit(step.line)
-                                        status.onWriteTimeout(session.owedBytes)
-                                    }
-                                    // The peer stopped echoing this stream. Leave the scope and let the
-                                    // outer loop reconnect, exactly as a dead connection does — and say
-                                    // which of the two it was, because they are different events.
-                                    is EchoStep.Reconnect -> {
-                                        emit(step.line)
-                                        status.onEnded("${step.end.label} — reconnecting")
-                                        return@withQuicConnection
-                                    }
-                                }
-                            } catch (e: Throwable) {
-                                emit(
-                                    "ECHO-FAIL seq=$seq after=${System.currentTimeMillis() - sentAt}ms " +
-                                        "err=${e::class.simpleName} msg=${e.message}",
-                                )
-                                status.onFailure(session.owedBytes)
-                                // A dead connection makes "keep going" a loop spinning against a closed
-                                // connection for the rest of the run. Leave the scope and let the outer
-                                // loop reconnect — a reconnect is itself data, being precisely what
-                                // distinguishes "migrated" from "had to start over".
-                                if (e is QuicCloseException) {
-                                    // The typed reason, side included: "we sent a frame the peer
-                                    // rejected" and "the peer sent us one" are opposite bugs, and a
-                                    // device log is all we get from a real handoff (#437).
-                                    val why = e.closeReason.describe()
-                                    session.ended(SessionEnd.ConnectionDead, now())
-                                    status.onEnded("connection dead ($why) — reconnecting")
-                                    emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
-                                    return@withQuicConnection
+                                    is EchoLoopEvent.WriteTimedOut -> status.onWriteTimeout(event.owedBytes)
+                                    is EchoLoopEvent.Overdue -> status.onOverdue()
+                                    is EchoLoopEvent.Failed -> status.onFailure(event.owedBytes)
                                 }
                             }
-                            session.overdue(now()).forEach {
-                                emit(it.line)
-                                status.onOverdue()
-                            }
-                            delay(echoIntervalMs)
+                        when (val end = loop.run(until = minutes.minutes)) {
+                            EchoLoopEnd.WalkOver -> Unit
+                            is EchoLoopEnd.Left -> status.onEnded("${end.step.end.label} — reconnecting")
+                            is EchoLoopEnd.ConnectionClosed -> status.onEnded("connection dead (${end.reason}) — reconnecting")
                         }
                     }
                     emit("SCOPE-EXITED cleanly")
@@ -851,8 +764,51 @@ private class MigrationTotals {
 @Volatile
 private var loopTicks: Int = 0
 
-/** Bounds one write; [EchoSession.WRITE_TIMEOUT_STREAK_LIMIT] of these in a row ends the session. */
-private val WRITE_DEADLINE = 5.seconds
+/** A [QuicCloseException] is the connection closing under the stream; anything else fails one exchange. */
+private fun connectionClosedBy(e: Throwable): EchoFailure =
+    if (e is QuicCloseException) EchoFailure.ConnectionClosed(e.closeReason.describe()) else EchoFailure.Exchange
+
+/** The probe's QUIC stream as the [EchoLoop] sees it. */
+private class QuicEchoStream(
+    private val stream: QuicByteStream,
+) : EchoStream {
+    override suspend fun write(
+        payload: String,
+        deadline: Duration,
+    ): EchoWrite {
+        // Write takes no ownership, so this one IS ours to free — and on a multi-hour walk a
+        // 10-byte-per-round leak is still a leak.
+        val out = BufferFactory.Default.allocate(payload.length)
+        try {
+            out.writeString(payload, Charset.UTF8)
+            out.resetForRead()
+            stream.write(out, deadline)
+        } catch (e: TimeoutCancellationException) {
+            // Only this scope's own cancellation, which wears the same type, gets out of here.
+            currentCoroutineContext().ensureActive()
+            return EchoWrite.TimedOut
+        } finally {
+            out.freeIfNeeded()
+        }
+        return EchoWrite.Written
+    }
+
+    // Scoped read (#538): the echoed bytes are decoded inside the block and the buffer is released on
+    // the way out.
+    override suspend fun read(deadline: Duration): StreamReply =
+        try {
+            when (val resp = stream.read(deadline) { it.readString(it.remaining(), Charset.UTF8) }) {
+                is ScopedRead.Data -> StreamReply.Echoed(resp.value)
+                ScopedRead.End -> StreamReply.PeerEnded
+                ScopedRead.Reset -> StreamReply.PeerReset
+            }
+        } catch (e: TimeoutCancellationException) {
+            // The deadline is where "late" begins, not where an exchange fails: the reply is still
+            // owed and is judged when it arrives.
+            currentCoroutineContext().ensureActive()
+            StreamReply.StillOwed
+        }
+}
 
 /**
  * The last [capacity] trace events, and nothing older.

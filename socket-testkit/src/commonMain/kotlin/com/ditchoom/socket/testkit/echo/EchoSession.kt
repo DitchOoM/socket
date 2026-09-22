@@ -57,7 +57,7 @@ public sealed interface SessionEnd {
 
 /** What the echo loop does next, decided from one exchange. */
 public sealed interface EchoStep {
-    /** The loop went round: progress, whatever the reply was. */
+    /** A read completed: progress, whatever the reply was. */
     public sealed interface Exchanged : EchoStep {
         public data class Judged(
             val read: EchoRead,
@@ -141,7 +141,7 @@ public class EchoSession(
     private var longestQuiet = QuietGap(from = connectedAt, length = Duration.ZERO)
     private var consecutiveWriteTimeouts = 0
 
-    /** Exchanges the loop completed; the silence watchdog's measure of progress. */
+    /** Replies the loop has read, timed-out reads included; the silence watchdog's measure of progress. */
     public var exchanges: Int = 0
         private set
 
@@ -194,6 +194,8 @@ public class EchoSession(
 
     /** The exchanges that crossed their own deadline since the last call, oldest first. */
     public fun overdue(at: Duration): List<EchoOverdue> = ledger.overdue(at)
+
+    public fun nextOverdue(): NextOverdue = ledger.nextOverdue()
 
     /** The session learned how it ended; the first end stands. */
     public fun ended(
@@ -254,7 +256,7 @@ public class EchoSession(
     }
 
     public companion object {
-        /** With a 5 s write deadline, a minute of writes the peer will not drain. */
+        /** With [EchoLoop.WRITE_DEADLINE], a minute of writes the peer will not drain. */
         public const val WRITE_TIMEOUT_STREAK_LIMIT: Int = 12
     }
 }

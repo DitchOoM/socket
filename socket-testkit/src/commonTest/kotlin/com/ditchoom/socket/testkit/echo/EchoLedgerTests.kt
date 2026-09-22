@@ -164,4 +164,22 @@ class EchoLedgerTests {
         assertEquals(62.5.milliseconds, second.variance, "3/4 · 50 + 1/4 · |100 − 200|")
         assertEquals(112.5.milliseconds + 250.milliseconds + 25.milliseconds, second.probeTimeout)
     }
+
+    @Test
+    fun theNextOverdueIsOneGranulePastTheEarliestDeadlineStillDue() {
+        val ledger = warmedTo58ms()
+        assertEquals<NextOverdue>(NextOverdue.None, ledger.nextOverdue(), "nothing is owed")
+        val deadline = ledger.readDeadline
+        ledger.sent(21, "probe-21;", 10_000.milliseconds)
+        ledger.sent(22, "probe-22;", 10_250.milliseconds)
+
+        assertEquals<NextOverdue>(NextOverdue.At(10_000.milliseconds + deadline + 1.milliseconds), ledger.nextOverdue())
+        val at = (ledger.nextOverdue() as NextOverdue.At).at
+        assertEquals(listOf(21), ledger.overdue(at).map { it.seq }, "the instant it names is the one overdue() reports")
+        assertEquals<NextOverdue>(
+            NextOverdue.At(10_250.milliseconds + deadline + 1.milliseconds),
+            ledger.nextOverdue(),
+            "seq 21 is reported; seq 22 is next",
+        )
+    }
 }

@@ -110,6 +110,16 @@ public data class EchoOverdue(
         get() = "ECHO-OVERDUE seq=$seq waited=${waited.inWholeMilliseconds}ms deadline=${deadline.inWholeMilliseconds}ms"
 }
 
+/** When [EchoLedger.overdue] next has an exchange to report. */
+public sealed interface NextOverdue {
+    /** No exchange still owed is waiting to cross its deadline. */
+    public data object None : NextOverdue
+
+    public data class At(
+        val at: Duration,
+    ) : NextOverdue
+}
+
 /** What was still owed when the connection ended: the exchanges that actually failed. */
 public sealed interface EchoUnanswered {
     public data object None : EchoUnanswered
@@ -137,8 +147,8 @@ public sealed interface EchoUnanswered {
  * sent. Late delivery keeps that true; bytes destroyed by a timed-out read break it permanently.
  * Only the unechoed tail is kept, so a multi-day run costs O(echo) per read, not O(history).
  *
- * The deadline to read with is [readDeadline]: the probe timeout of the path this ledger measures.
- * Owned by one echo loop; not shared.
+ * [readDeadline] is the deadline an exchange sent now is judged against: the probe timeout of the
+ * path this ledger measures. Owned by one echo loop; not shared.
  */
 public class EchoLedger(
     rtt: RttEstimate = RttEstimate.Unsampled,
@@ -217,6 +227,24 @@ public class EchoLedger(
             }
         }
         return crossed
+    }
+
+    /**
+     * The first instant at which [overdue] reports the earliest exchange still due: one
+     * [RttEstimate.GRANULARITY] past its deadline, because a reply arriving exactly at it is on time.
+     */
+    public fun nextOverdue(): NextOverdue {
+        var earliest: NextOverdue = NextOverdue.None
+        for (sent in pending) {
+            if (sent.expectation != Expectation.Due) continue
+            val at = sent.sentAt + sent.deadline + RttEstimate.GRANULARITY
+            earliest =
+                when (val current = earliest) {
+                    NextOverdue.None -> NextOverdue.At(at)
+                    is NextOverdue.At -> if (at < current.at) NextOverdue.At(at) else current
+                }
+        }
+        return earliest
     }
 
     /** Close the ledger at the end of a connection: whatever is still owed is what failed. */
