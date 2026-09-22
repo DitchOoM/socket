@@ -289,7 +289,10 @@ internal class SharedQuicheServer(
             val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
             val tokenLenBuf = bufferFactory.allocate(8)
 
-            val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS)
+            // The loop owns what it takes; a datagram the reader offered and the loop never took — the
+            // reader cancelled mid-hand-off as the server closes — is freed by the channel, never by
+            // the reader, whose cancelled `send` cannot say whether the hand-off happened.
+            val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS, onUndeliveredElement = ::freeUndeliveredDatagram)
             val reader =
                 launch(serverReceiveDispatcher + CoroutineName("quic-server/receive/$port/reader")) {
                     try {

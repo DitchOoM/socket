@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -13,6 +14,7 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -22,6 +24,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -199,6 +202,84 @@ class PerLocalAddressServerChannelTests {
             assertIs<DatagramReadResult.Closed>(result)
         }
 
+    /**
+     * A datagram the composite's `receive()` handed out belongs to whoever received it — even when the
+     * composite closes before the member reader that produced it has resumed.
+     *
+     * The fan-in is a rendezvous, and a rendezvous `send` that the receiver has already completed can
+     * still throw `CancellationException` at the sender: the hand-off happened, but the sender's
+     * resumption ran after `close()` cancelled it. A reader that frees the payload on that exception
+     * frees a buffer the server already routed to a connection — the second owner behind the
+     * `Buffer has been freed and returned to pool` escapes from a server driver.
+     *
+     * Exact under [SteppedDispatcher]: the reader parks in the hand-off, the receive completes it, the
+     * reader's resumption is held while `close()` runs, then released.
+     */
+    @Test
+    fun aDatagramTheReceiverTookStaysItsWhenTheCompositeClosesBeforeTheReaderResumes() =
+        runBlocking {
+            val readers = SteppedDispatcher()
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias), readers)
+            readers.runUntilIdle()
+
+            val sent = pool.allocate(DATAGRAM_LEN).also { it.setLimit(DATAGRAM_LEN) }
+            alias.deliver(literal("198.51.100.7", 51000), sent)
+            readers.runUntilIdle()
+            assertEquals(0, readers.pendingCount, "premise: the alias reader is parked in the hand-off, holding the datagram")
+
+            val received = assertIs<DatagramReadResult.Received>(withTimeout(5.seconds) { channel.receive() })
+            assertTrue(received.datagram.payload === sent, "premise: the receive took the reader's datagram itself")
+            assertEquals(1, readers.pendingCount, "premise: the reader's resumption after the hand-off is queued, not run")
+
+            channel.close()
+            readers.runUntilIdle()
+
+            val dereference = runCatching { received.datagram.payload.nativeMemoryAccess }.exceptionOrNull()
+            assertNull(
+                dereference,
+                "the member reader freed a datagram the receiver had already taken: its hand-off completed, " +
+                    "close() cancelled it before it resumed, and it treated that CancellationException as " +
+                    "non-delivery. The receiver's next dereference threw $dereference",
+            )
+            received.datagram.payload.freeNativeMemory()
+        }
+
+    /**
+     * The other half of the same ownership: a datagram no receiver ever took is freed when the
+     * composite closes, exactly once, by the composite. A pooled receive buffer nobody frees is native
+     * memory lost for good.
+     */
+    @Test
+    fun aDatagramNoReceiverTookIsFreedWhenTheCompositeCloses() =
+        runBlocking<Unit> {
+            val readers = SteppedDispatcher()
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias), readers)
+            readers.runUntilIdle()
+
+            val sent = pool.allocate(DATAGRAM_LEN).also { it.setLimit(DATAGRAM_LEN) }
+            alias.deliver(literal("198.51.100.7", 51000), sent)
+            readers.runUntilIdle()
+            assertEquals(0, readers.pendingCount, "premise: the alias reader is parked in the hand-off, holding the datagram")
+
+            channel.close()
+            readers.runUntilIdle()
+
+            assertIs<IllegalStateException>(
+                runCatching { sent.nativeMemoryAccess }.exceptionOrNull(),
+                "a datagram no receiver took must go back to its pool when the composite closes",
+            )
+        }
+
+    private val pool = QuicheDriver.newRecvBufPool(BufferFactory.deterministic())
+
+    private companion object {
+        const val DATAGRAM_LEN = 64
+    }
+
     private fun payload(): ReadBuffer = BufferFactory.Default.allocate(4).also { it.resetForRead() }
 
     private fun literal(
@@ -226,7 +307,14 @@ class PerLocalAddressServerChannelTests {
         fun deliver(peer: SocketAddress) {
             val buf: PlatformBuffer = BufferFactory.Default.allocate(4)
             buf.resetForRead()
-            queue.trySend(DatagramReadResult.Received(Datagram(payload = buf, peer = peer)))
+            deliver(peer, buf)
+        }
+
+        fun deliver(
+            peer: SocketAddress,
+            payload: PlatformBuffer,
+        ) {
+            queue.trySend(DatagramReadResult.Received(Datagram(payload = payload, peer = peer)))
         }
 
         override val isOpen: Boolean get() = !closed
