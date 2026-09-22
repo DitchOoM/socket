@@ -4,12 +4,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * A walk pinned to one server address confounds address family with device: through 2026-09 the
- * iPhone walked `2a01:4ff:f4:eb1a::1` and the Samsung `178.156.248.95`, so every difference between
- * the two recordings could be either the family or the phone. Rotating the target per connection
- * puts both families on one device and one route.
+ * A walk pinned to one server address confounds address family with device, and one connection
+ * rotated per attempt tests one family for as long as the network holds still. One lane per target
+ * puts every family on one device, one route and every network the device crosses.
  */
 class WalkTargetsTests {
     private val v4 = WalkTarget("178.156.248.95", 44433)
@@ -32,23 +32,49 @@ class WalkTargetsTests {
     }
 
     @Test
-    fun rotationAlternatesPerAttemptAndWrapsAround() {
-        val targets = WalkTargets(v4, listOf(v6))
-        assertEquals(listOf(v4, v6, v4, v6, v4), (1..5).map { targets.forAttempt(it) })
+    fun eachTargetIsALaneNamedByItsFamily() {
+        val lanes = WalkTargets(v4, listOf(v6)).lanes
+        assertEquals(listOf("v4", "v6"), lanes.map { it.label })
+        assertEquals(listOf(v4, v6), lanes.map { it.target })
+        assertEquals("lane=v6", lanes[1].token)
     }
 
+    /** Two targets of one family are two lanes, and their lines must not merge. */
     @Test
-    fun aThirdTargetTakesItsTurnInOrder() {
+    fun aRepeatedFamilyGetsANumberedLane() {
         val other = WalkTarget("2a01:4ff:f4:eb1a::2", 44433)
-        val targets = WalkTargets(v4, listOf(v6, other))
-        assertEquals(listOf(v4, v6, other, v4, v6, other), (1..6).map { targets.forAttempt(it) })
+        assertEquals(listOf("v4", "v6", "v6-2"), WalkTargets(v4, listOf(v6, other)).lanes.map { it.label })
     }
 
-    /** One host is what every walk before this one did, and it has to keep behaving that way. */
     @Test
-    fun oneTargetIsEveryAttempt() {
+    fun theSecondLaneStartsHalfAnIntervalLater() {
+        val lanes = WalkTargets(v4, listOf(v6)).lanes
+        assertEquals(listOf(0.milliseconds, 125.milliseconds), lanes.map { it.stagger(250.milliseconds, lanes.size) })
+        assertEquals(
+            "LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125",
+            WalkTargets(v4, listOf(v6)).lanesLine(250.milliseconds),
+        )
+    }
+
+    @Test
+    fun aLaneLogPutsItsTokenInFrontOfEveryLine() {
+        val lines = ArrayList<String>()
+        val log = WalkTargets(v4, listOf(v6)).lanes[1].log { lines += it }
+        log("ECHO-OK seq=1 rtt=44ms pending=0B")
+        assertEquals(listOf("lane=v6 ECHO-OK seq=1 rtt=44ms pending=0B"), lines)
+    }
+
+    @Test
+    fun aLanesFilesAreNamedByTheLane() {
+        assertEquals("conn-v6-0003", WalkTargets(v4, listOf(v6)).lanes[1].fileStem(3))
+    }
+
+    /** One host is what every walk before lanes did: one lane, and it has to keep behaving that way. */
+    @Test
+    fun oneTargetIsOneLane() {
         val targets = WalkTargets(v4)
-        assertEquals(List(7) { v4 }, (1..7).map { targets.forAttempt(it) })
+        assertEquals(listOf("v4"), targets.lanes.map { it.label })
+        assertEquals(0.milliseconds, targets.lanes.single().stagger(250.milliseconds, 1))
         assertEquals("targets=178.156.248.95:44433/v4", targets.line)
     }
 
@@ -71,14 +97,14 @@ class WalkTargetsTests {
     @Test
     fun aCommaSeparatedArgumentKeepsTheOrderItWasGivenAndTheColonsInALiteral() {
         val parsed = WalkTargets.parse("178.156.248.95,2a01:4ff:f4:eb1a::1", 44433)
-        val targets = assertIs<WalkTargetsParse.Rotation>(parsed).targets
+        val targets = assertIs<WalkTargetsParse.Parsed>(parsed).targets
         assertEquals(listOf(v4, v6), targets.all)
         assertEquals("targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6", targets.line)
     }
 
     @Test
     fun oneHostParsesToOneTarget() {
-        val targets = assertIs<WalkTargetsParse.Rotation>(WalkTargets.parse("178.156.248.95", 44433)).targets
+        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse("178.156.248.95", 44433)).targets
         assertEquals(listOf(v4), targets.all)
         assertEquals(v4, targets.first)
     }
@@ -86,7 +112,7 @@ class WalkTargetsTests {
     /** Whitespace around a host survives a shell that quoted the list as one word. */
     @Test
     fun surroundingSpaceIsNotPartOfAHost() {
-        val targets = assertIs<WalkTargetsParse.Rotation>(WalkTargets.parse(" 178.156.248.95 , 2a01:4ff:f4:eb1a::1 ", 44433)).targets
+        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse(" 178.156.248.95 , 2a01:4ff:f4:eb1a::1 ", 44433)).targets
         assertEquals(listOf(v4, v6), targets.all)
     }
 

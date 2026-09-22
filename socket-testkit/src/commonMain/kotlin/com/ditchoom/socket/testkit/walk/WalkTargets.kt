@@ -1,5 +1,7 @@
 package com.ditchoom.socket.testkit.walk
 
+import kotlin.time.Duration
+
 /**
  * The address family a walk target's host names, decided by the literal the operator gave.
  *
@@ -67,7 +69,7 @@ public data class WalkTarget(
 
 /** What a launcher's host argument parsed to. */
 public sealed interface WalkTargetsParse {
-    public data class Rotation(
+    public data class Parsed(
         val targets: WalkTargets,
     ) : WalkTargetsParse
 
@@ -76,15 +78,47 @@ public sealed interface WalkTargetsParse {
 }
 
 /**
- * The targets one walk rotates through, one per connection attempt, so a single device covers both
- * address families on one route instead of confounding family with device.
+ * One lane of a walk: a target it keeps a connection to for the whole run, concurrently with every
+ * other lane, so each family is exercised on every network the device crosses.
+ *
+ * [label] is the target's family, suffixed `-2`, `-3`, … when two targets share one. Every line the
+ * lane logs starts with [token], so an analyzer demultiplexes lanes instead of merging them.
+ */
+public data class WalkLane(
+    val label: String,
+    val target: WalkTarget,
+    val index: Int,
+) {
+    public val token: String get() = "lane=$label"
+
+    /** [emit] with this lane's [token] in front of every line. */
+    public fun log(emit: (String) -> Unit): (String) -> Unit = { emit("$token $it") }
+
+    /** The stem of this lane's [connection]th trace and qlog files: `conn-v6-0003`. */
+    public fun fileStem(connection: Int): String = "conn-$label-" + connection.toString().padStart(4, '0')
+
+    /** How long this lane waits before its first connect, so [lanes] lanes send evenly spread across one [interval]. */
+    public fun stagger(
+        interval: Duration,
+        lanes: Int,
+    ): Duration = interval * index / lanes
+
+    public companion object {
+        /** The token of a line that belongs to the whole run rather than to one lane. */
+        public const val RUN_TOKEN: String = "lane=run"
+    }
+}
+
+/**
+ * The targets one walk runs, one [WalkLane] each, all at once: a device on a stable network holds
+ * each connection for the whole run, so a single rotating connection would test one family per run.
  *
  * Non-empty by construction: [first] is a field, so a walk with no target cannot be built.
  *
- * Rotation is per ATTEMPT and never inside one. A probe that fell back to the other family when a
- * target was unreachable would hide the one thing this exists to measure — a family that does not
- * work on some network — by quietly succeeding on the other. An unreachable target therefore fails
- * its own attempt, is recorded against itself, and the next attempt moves on.
+ * A lane never falls back to another family. A probe that retried the other family when a target
+ * was unreachable would hide the one thing this exists to measure — a family that does not work on
+ * some network — by quietly succeeding on the other. An unreachable target therefore fails its own
+ * lane's attempts, is recorded against itself, and that lane backs off and tries again.
  */
 public data class WalkTargets(
     val first: WalkTarget,
@@ -92,11 +126,20 @@ public data class WalkTargets(
 ) {
     public val all: List<WalkTarget> = listOf(first) + rest
 
-    /** Attempts are 1-based, as the probes count them: attempt 1 takes [first]. */
-    public fun forAttempt(attempt: Int): WalkTarget = all[(attempt - 1).mod(all.size)]
+    public val lanes: List<WalkLane> =
+        all.mapIndexed { index, target ->
+            val family = target.family.label
+            val earlier = all.take(index).count { it.family.label == family }
+            WalkLane(label = if (earlier == 0) family else "$family-${earlier + 1}", target = target, index = index)
+        }
 
-    /** What `START` carries: every target in rotation order, each with its family. */
+    /** What `START` carries: every target in lane order, each with its family. */
     public val line: String get() = "targets=" + all.joinToString(",") { "${it.authority}/${it.family.label}" }
+
+    /** The run's `LANES` line: each lane's label and target, and how far apart their sends are spread. */
+    public fun lanesLine(interval: Duration): String =
+        "LANES " + lanes.joinToString(" ") { "${it.label}=${it.target.authority}" } +
+            " staggerMs=${(interval / lanes.size).inWholeMilliseconds}"
 
     override fun toString(): String = line
 
@@ -113,7 +156,7 @@ public data class WalkTargets(
         ): WalkTargetsParse {
             val hosts = spec.split(SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
             if (hosts.isEmpty()) return WalkTargetsParse.NoHost
-            return WalkTargetsParse.Rotation(
+            return WalkTargetsParse.Parsed(
                 WalkTargets(WalkTarget(hosts.first(), port), hosts.drop(1).map { WalkTarget(it, port) }),
             )
         }
