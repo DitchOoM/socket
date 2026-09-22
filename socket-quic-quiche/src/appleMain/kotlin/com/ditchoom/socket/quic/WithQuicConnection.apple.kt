@@ -109,8 +109,8 @@ internal suspend fun buildAppleQuicConnection(
 
             applyQuicOptions(quicOptions, AppleQuicConfigCalls(config))
 
-            // Pinned CA trust anchors: load the PEM bundle as the verification
-            // anchors so Linux enforces the same private-CA trust as Apple. quiche only
+            // Pinned CA trust anchors: load the PEM bundle as BoringSSL's verification
+            // anchors, the same trust every quiche platform enforces. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads
             // eagerly; we unlink it immediately after. verifyPeer is forced on in
             // applyQuicOptions whenever anchors are present.
@@ -229,20 +229,13 @@ internal suspend fun buildAppleQuicConnection(
                     random = tuning.random,
                     capture = tuning.captureFactory(),
                     networkObservation = tuning.networkObservation,
-                    // RFC 9000 §9 active migration, over a SECOND NWConnection.
-                    //
-                    // The previous comment here said explicit quiche path migration "does not map to
-                    // NWConnection (NW owns path moves)". That was written before the Phase 6 cutover and
-                    // is doubly stale. This client's datapath is already `UdpSocket.connect` ->
-                    // `DatagramChannelUdpChannel`, the same shared adapter Linux and the JVM use, so the
-                    // seam it claimed did not fit is the seam already in use. And NW does not own path
-                    // moves for UDP: measured on macOS, a UDP nw_connection_t whose path disappears goes
-                    // to `failed` with POSIX 57 in ~2s, never recovers, and its local endpoint never
-                    // changes. Nothing re-homes, so the app must open the new path itself — which is
-                    // Apple's own documented model (betterPathAvailable -> new connection -> move).
-                    //
-                    // `UdpSocket.connect` yields a fresh NWConnection with its own NW-assigned local
-                    // endpoint, which is exactly the new 4-tuple quiche probes and migrates onto.
+                    // RFC 9000 §9 active migration, over a SECOND NWConnection. The datapath is
+                    // `UdpSocket.connect` -> `DatagramChannelUdpChannel`, the shared adapter Linux and the
+                    // JVM use. NW does not move a UDP connection between paths: a UDP nw_connection_t whose
+                    // path disappears goes to `failed` (POSIX 57) and its local endpoint never changes, so
+                    // the app opens the new path itself — Apple's documented model (betterPathAvailable ->
+                    // new connection -> move). `UdpSocket.connect` yields a fresh NWConnection with its own
+                    // NW-assigned local endpoint: the new 4-tuple quiche probes and migrates onto.
                     migration =
                         path.origin.migrationCapability(quicOptions.migration) { factory ->
                             MigrationCapability.Supported(

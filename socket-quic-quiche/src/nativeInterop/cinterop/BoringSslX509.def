@@ -8,8 +8,8 @@ package = com.ditchoom.socket.quic.boringssl
 # static-inline functions defined in the .def body, whereas raw declarations
 # pulled only from headers= come back EMPTY here (the base :socket: module hits
 # the same wall and likewise wraps every OpenSSL call in a .def-body inline).
-# Using a C wrapper also keeps the BoringSSL logic in C (mirrors the Apple
-# backend's CommonCrypto verify_block) and avoids per-symbol cinterop binding.
+# Using a C wrapper also keeps the BoringSSL logic in C and avoids per-symbol
+# cinterop binding.
 #
 # The X509/EVP/EC/ASN1 symbols themselves are ALREADY linked into the
 # linuxX64/linuxArm64 binary via the base :socket: module's cinterop

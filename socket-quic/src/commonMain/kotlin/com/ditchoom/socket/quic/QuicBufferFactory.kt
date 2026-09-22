@@ -11,7 +11,8 @@ import com.ditchoom.socket.TransportConfig
  * The platform-correct buffer factory for QUIC I/O: native-memory buffers with explicit cleanup.
  *
  * Every QUIC backend hands buffer addresses straight to native code — quiche over FFM/JNI on the
- * JVM, quiche over cinterop on Linux, Network.framework on Apple — so the read/write hot paths need
+ * JVM, quiche over cinterop on Linux and Apple, plus Network.framework for the Apple client's UDP
+ * datagrams — so the read/write hot paths need
  * native memory, not a managed heap buffer that would force a copy at the boundary. `network()` is
  * that factory (currently [BufferFactory.deterministic]); it is the default for
  * [withQuicConnection]/[withQuicServer] and is what [QuicScope.bufferFactory] reports.
@@ -33,7 +34,8 @@ fun BufferFactory.Companion.network(): BufferFactory = BufferFactory.determinist
 
 /**
  * Fail fast if [this] doesn't allocate native-memory buffers. Every QUIC backend hands buffer
- * *addresses* straight to native code — quiche over FFM/JNI/cinterop, Network.framework — so a
+ * *addresses* straight to native code — quiche over FFM/JNI/cinterop, and Network.framework for the
+ * Apple client's UDP datagrams — so a
  * managed/heap factory ([BufferFactory.Default] / [BufferFactory.managed]) can't back QUIC I/O on
  * **any** platform, the JVM included: it would NPE deep in the binding on the first
  * `nativeMemoryAccess` dereference (cert/key load, recv buffers, sockaddrs, …). This turns that latent

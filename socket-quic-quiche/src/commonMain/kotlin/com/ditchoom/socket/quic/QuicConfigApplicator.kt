@@ -78,7 +78,7 @@ internal interface QuicConfigCalls {
  *   match — the browser cannot express this mode).
  * - With no pinned hashes: verify unless explicitly disabled, and always verify when CA anchors are
  *   pinned (trustedCaCertificatesPem implies verification against those anchors regardless of
- *   verifyPeer — mirrors the Apple verify_block; anchors are loaded by the platform connect path).
+ *   verifyPeer; anchors are loaded by the platform connect path).
  */
 internal fun resolveVerifyPeer(options: QuicOptions): Boolean =
     if (options.serverCertificateHashes.isNotEmpty()) {

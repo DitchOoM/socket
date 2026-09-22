@@ -104,8 +104,8 @@ internal suspend fun buildLinuxQuicConnection(
 
             applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
 
-            // Pinned CA trust anchors: load the PEM bundle as the verification
-            // anchors so Linux enforces the same private-CA trust as Apple. quiche only
+            // Pinned CA trust anchors: load the PEM bundle as BoringSSL's verification
+            // anchors, the same trust every quiche platform enforces. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads
             // eagerly; we unlink it immediately after. verifyPeer is forced on in
             // applyQuicOptions whenever anchors are present.

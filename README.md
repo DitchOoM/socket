@@ -369,7 +369,8 @@ platform, Apple included. There is no Network.framework-native QUIC backend:
 |----------|---------------|
 | JVM / Android | quiche via FFM (JDK 21+) or JNI (JDK ≤20) |
 | Linux (x64/arm64) | quiche cinterop, static `libquiche.a`, io_uring UDP |
-| iOS/macOS/tvOS/watchOS | quiche cinterop; client UDP over `NWConnection` (path-migration aware), server on a dual-stack POSIX UDP socket |
+| iOS/macOS | quiche cinterop; client UDP over `NWConnection` (path-migration aware), server on a dual-stack POSIX UDP socket |
+| tvOS/watchOS | Not supported (no quiche build) |
 | JS / wasmJs | Not supported (no raw UDP) |
 
 ## License

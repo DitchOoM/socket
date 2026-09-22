@@ -90,8 +90,7 @@ suspend fun <R> withHttp3Server(
  * Because the caller builds the [QuicOptions], the transport prerequisites [withHttp3Server]
  * applies via its internal `forHttp3()` are the caller's responsibility: keep `"h3"` in the ALPN
  * offer, and leave inbound unidirectional streams deliverable (HTTP/3's control + QPACK streams are
- * peer-initiated; on platforms where a datagram flow conflicts with inbound streams, prefer streams
- * — see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy]).
+ * peer-initiated — see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy]).
  */
 suspend fun QuicScope.serveHttp3(
     connectionOptions: TransportConfig = TransportConfig(),
