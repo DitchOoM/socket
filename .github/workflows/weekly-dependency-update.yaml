@@ -37,9 +37,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    uses: ./.github/workflows/compute-ci-version.yaml
+
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    needs: version
+    # Inherited by the agent's Gradle calls; build.gradle.kts fails a CI build that was not handed one.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:

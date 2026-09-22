@@ -53,8 +53,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      # linux-quiche-env fails loudly on an empty version rather than letting build.gradle.kts fall
-      # back to a live Central query (#329). Nothing here is published, so any pinned value will do.
+      # linux-quiche-env and build.gradle.kts both refuse a CI build with no version. Nothing here is
+      # published, so any pinned value will do.
       ORG_GRADLE_PROJECT_version: "0.0.0-flakehunt"
       # Match what build-linux.yaml gives its test lanes, so a timing budget here is the same budget
       # the real lane runs under. Hunting a timing flake against a different budget measures a

@@ -53,21 +53,13 @@ inputs:
 runs:
   using: composite
   steps:
-    # ⚠️ Guards a SILENT failure mode. build-linux.yaml sets ORG_GRADLE_PROJECT_version once at
-    # WORKFLOW level from `inputs.version`, so it covers every fanned-out job without repeating
-    # itself. If that expression ever stopped resolving (a rename, or an `env:` block moved under a
-    # context where `inputs` is unavailable), the variable would simply be empty — and
-    # build.gradle.kts falls back to querying Maven Central live when no version is supplied. That
-    # is exactly the per-job version split #329 removed, and it would come back INVISIBLY: every
-    # job still produces a plausible version, just not necessarily the same one. Fail loudly here
-    # instead, before any Gradle call.
+    # Fails ahead of this action's setup when build-linux.yaml's workflow-level pin did not resolve.
+    # build.gradle.kts would refuse the first Gradle call anyway; this says so minutes sooner.
     - name: Assert the run's version is pinned
       shell: bash
       run: |
         if [ -z "${ORG_GRADLE_PROJECT_version:-}" ]; then
-          echo "::error::ORG_GRADLE_PROJECT_version is empty in this job. The workflow-level env in"
-          echo "::error::build-linux.yaml did not resolve inputs.version, so every Gradle call here"
-          echo "::error::would fetch its own version from Maven Central — the #329 split, silently."
+          echo "::error::ORG_GRADLE_PROJECT_version is empty in this job: build-linux.yaml's workflow-level env did not resolve inputs.version."
           exit 1
         fi
         echo "version pinned for this job: ${ORG_GRADLE_PROJECT_version}"

@@ -39,17 +39,17 @@ on:
         # to "compute it yourself" would silently restore the cross-job version split this exists
         # to remove — and it would do so invisibly, since both branches produce a plausible
         # version. A caller that forgets to pass it must fail at the workflow-call, not 40
-        # minutes later in `validate`. See compute-version.yaml for the full story.
-        description: "The run's version, from the compute-version job. Pins every Gradle call here."
+        # minutes later in `validate`.
+        description: "The run's version (compute-version.yaml on a release, compute-ci-version.yaml otherwise). Pins every Gradle call here."
         required: true
         type: string
 
 # Every job below shares these. Job-level (not a step export) so it covers the FIRST Gradle
 # invocation too — there is no longer a version step to run first.
 env:
-  # Pins every Gradle invocation to the run's single version. build.gradle.kts only calls
-  # getNextVersion when no version was supplied from outside, so with this set no Gradle call here
-  # touches Maven Central's metadata at all. See #329 / compute-version.yaml.
+  # The run's single version, for every Gradle invocation in this workflow; build.gradle.kts fails a
+  # CI build that was not handed one. .github/actions/apple-quiche-env asserts it is non-empty
+  # ahead of its toolchain setup.
   ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
   # Loaded macOS runners occasionally take >10s for a QUIC handshake that is normally <1s (this is a
   # real-network establishment test, not the deterministic ManualDriverClock sim tier), tripping the

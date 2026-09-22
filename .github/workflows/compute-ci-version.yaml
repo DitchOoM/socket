@@ -1,0 +1,35 @@
+name: "Compute CI Version"
+
+# The version of every build that is not a release: the highest release tag reachable from the
+# commit, patch-bumped, with a `-ci` suffix (v4.19.0 -> 4.19.1-ci; see .github/scripts/ci-version.sh).
+# It comes from git alone, so Maven Central's availability cannot fail these runs, the same commit
+# always builds the same version, and the suffix can never collide with a published release.
+# Releases take theirs from compute-version.yaml.
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "This commit's CI version, e.g. 4.19.1-ci"
+        value: ${{ jobs.version.outputs.version }}
+
+jobs:
+  version:
+    name: "Compute CI version"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, so every tag reachable from this commit is present.
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          version="$(.github/scripts/ci-version.sh)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version for this run: ${version}"
+          echo "### Version for this run: \`${version}\`" >> "$GITHUB_STEP_SUMMARY"
