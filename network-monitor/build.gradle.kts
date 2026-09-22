@@ -11,11 +11,14 @@ plugins {
 }
 
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
+// `-PlinuxTargets=false` (see the root build.gradle.kts).
 val appleTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
         providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val linuxTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 
 repositories {
     google()
@@ -176,7 +179,7 @@ kotlin {
 
     // Linux targets — LinuxNetworkMonitor over netlink, via this module's own Netlink cinterop.
     // ARM64 is cross-registered on x64 for source-set resolution.
-    if (isLinux) {
+    if (linuxTargets) {
         linuxX64 { configureNetlinkCinterop("x64") }
         linuxArm64 { configureNetlinkCinterop("arm64") }
     }

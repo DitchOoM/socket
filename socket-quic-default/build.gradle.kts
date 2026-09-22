@@ -18,11 +18,14 @@ plugins {
 // The backend modules expose their engine as public SPI; this module wires them together so a
 // consumer can `implementation(":socket-quic-default")` and call withQuic* on any target.
 
-// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
+// `-PlinuxTargets=false` (see the root build.gradle.kts).
 val appleTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
         providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val linuxTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
@@ -62,7 +65,7 @@ kotlin {
         watchosX64()
     }
 
-    if (isLinux) {
+    if (linuxTargets) {
         linuxX64()
         linuxArm64()
     }
@@ -95,7 +98,7 @@ kotlin {
             // provide it so Android consumers of the QUIC StateFlow path don't NoClassDefFoundError.
             implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
         }
-        if (isLinux) {
+        if (linuxTargets) {
             val linuxMain by getting {
                 dependencies {
                     api(project(":socket-quic-quiche"))

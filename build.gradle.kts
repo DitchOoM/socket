@@ -42,14 +42,19 @@ boringssl {
 }
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-// Apple Kotlin/Native targets are declared on a macOS host. `-PappleTargets=false` leaves them out
-// for an invocation that builds only JVM code: a JVM compile that reads commonMain metadata
-// (:socket-http3's KSP codecs) otherwise pulls every Apple cinterop, the commonizer and the K/N
-// toolchain into its graph. Every module reads the same property, so project dependencies always
-// agree on the target set.
+// Kotlin/Native targets: Apple targets are declared on a macOS host, Linux targets on a Linux host.
+// `-PappleTargets=false` / `-PlinuxTargets=false` leave a family out for an invocation that builds only
+// JVM code: a JVM compile that reads commonMain metadata (:socket-http3's KSP codecs) otherwise pulls
+// that family's cinterops, the commonizer and the K/N toolchain into its graph. Every module reads both
+// properties the same way, so project dependencies always agree on the target set.
 val appleTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
         providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
+val linuxTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
+
+// The host OS: a Linux host builds the harness's quic-echo image from its own natives (see composeArgs).
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
@@ -445,7 +450,7 @@ kotlin {
     // NOTE: Kotlin/Native doesn't have a prebuilt compiler for linux-aarch64,
     // so ARM64 must be cross-compiled from x64. Both targets are always registered
     // on Linux x64 for proper source set resolution.
-    if (isLinux) {
+    if (linuxTargets) {
         // x64 target - always available on Linux x64
         linuxX64 {
             configureLinuxCinterop("x64")
@@ -558,7 +563,7 @@ kotlin {
         // The canonical BoringSSL owner klib is added as `api` here so it (a) contributes the SINGLE
         // embedded libcrypto.a/libssl.a to every linux K/N final link, and (b) propagates transitively
         // to downstream modules that depend on project(":") (e.g. :socket-quic-quiche).
-        if (isLinux) {
+        if (linuxTargets) {
             val linuxMain by getting {
                 kotlin.srcDir(posixNativeImplDir)
                 dependencies {

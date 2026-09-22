@@ -1236,8 +1236,9 @@ jobs:
             audit: "true"
     steps:
       - uses: actions/checkout@v7
-      # konan: false — this lane is JVM-only, so restoring the ~450MB Kotlin/Native toolchain would
-      # be download cost for nothing. jdk17 only on the leg that needs a 17 launcher.
+      # konan: false — this lane is JVM-only (see -PlinuxTargets=false on the test step), so restoring
+      # the ~450MB Kotlin/Native toolchain would be download cost for nothing. jdk17 only on the leg
+      # that needs a 17 launcher.
       - uses: ./.github/actions/linux-quiche-env
         with:
           konan: "false"
@@ -1299,6 +1300,14 @@ jobs:
       # --continue, every failing test gets to execute and report so we see the
       # full failure surface in one CI cycle. Combined with the test-reports
       # artifact upload below, this gives complete signal per run.
+      #
+      # -PlinuxTargets=false: this lane builds and runs JVM code only, so no module declares the
+      # Linux K/N targets. With them declared, :socket-http3's KSP codec generation (which runs on
+      # commonMain METADATA, and which socket-http3:compileKotlinJvm depends on) resolves every
+      # dependency's metadata artifact, whose linuxMain/nativeMain parts need every Linux cinterop,
+      # commonizeCInterop, commonizeNativeDistribution and a K/N toolchain download (this job restores
+      # no ~/.konan), all ahead of the first test. The host's quiche .so + JNI shim are host tasks, not
+      # K/N ones, so they stay. Every other job leaves the property unset.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.leg.name }})
         timeout-minutes: 24
         env:
@@ -1319,11 +1328,11 @@ jobs:
             ulimit -c unlimited
             sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
             echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue --no-daemon \
-              --no-configuration-cache ${{ inputs.gradle-args }}
+            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} -PlinuxTargets=false \
+              --continue --no-daemon --no-configuration-cache ${{ inputs.gradle-args }}
           else
-            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue \
-              --no-configuration-cache ${{ inputs.gradle-args }}
+            .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} -PlinuxTargets=false \
+              --continue --no-configuration-cache ${{ inputs.gradle-args }}
           fi
 
       # Distinct from the harness OK/SKIP audit below: that one counts whether the QUIC *client*

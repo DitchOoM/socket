@@ -9,11 +9,14 @@ plugins {
     signing
 }
 
-// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
+// `-PlinuxTargets=false` (see the root build.gradle.kts).
 val appleTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
         providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val linuxTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -29,8 +32,7 @@ repositories {
 // Targets mirror :socket-quic's host-gated matrix exactly: because commonMain
 // `api`-depends on :socket-quic, both modules must expose the SAME target set per host
 // or dependency resolution fails. So Apple targets are declared only when `appleTargets` and the
-// Linux-native targets only on Linux — the same `if (appleTargets)` / `if (isLinux)` guards
-// :socket-quic uses.
+// Linux-native targets only when `linuxTargets` — the same guards :socket-quic uses.
 kotlin {
     jvmToolchain(21)
 
@@ -98,7 +100,7 @@ kotlin {
         watchosX64()
     }
 
-    if (isLinux) {
+    if (linuxTargets) {
         // linuxX64/linuxArm64: codecs are pure common Kotlin, so the full common suite runs here. The
         // live interop GET opens a real QUIC connection (calls into quiche), now linked from the
         // :socket-quic-quiche Quiche klib's embedded libquiche.a (Gap A) — the old repo-absolute

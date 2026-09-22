@@ -25,11 +25,15 @@ plugins {
     signing
 }
 
+// The host OS decides which quiche shared library and JNI shim the JVM tests load (isMacOS / isLinux).
+// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
+// `-PlinuxTargets=false` (see the root build.gradle.kts).
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
-// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val appleTargets =
     isMacOS && providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val linuxTargets =
+    isLinux && providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -3242,7 +3246,7 @@ kotlin {
         }
     }
 
-    if (isLinux) {
+    if (linuxTargets) {
         // Embed libquiche.a into the Quiche cinterop klib so a downstream K/N consumer that links the
         // published klib gets the archive (Gap A's fix), exactly like the base :socket: module's
         // generateLinuxSocketsDef embeds libssl/libcrypto/liburing. We REPLACE the base def's
@@ -3621,7 +3625,7 @@ kotlin {
         // declaring it here too is belt-and-suspenders so THIS module's own linux final links (e.g. its
         // test binaries) definitely carry the single owner archive. quiche's external SSL_/EVP_ refs and
         // the BoringSslX509/Quiche cinterops resolve against it.
-        if (isLinux) {
+        if (linuxTargets) {
             val linuxMain by getting {
                 dependencies {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
