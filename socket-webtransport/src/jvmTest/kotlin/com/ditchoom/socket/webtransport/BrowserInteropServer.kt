@@ -9,13 +9,16 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.toHexString
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.http3.WebTransportStream
 import com.ditchoom.socket.http3.withHttp3Server
 import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.peerCertificates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -46,9 +49,10 @@ import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
  *
  * It binds an **ephemeral** UDP port (`port = 0`) and prints `WT_SERVER_READY port=<n> certSha256=<hex>`
  * on stdout — the caller captures the real port (no fixed-port collisions) and uses the printed SHA-256
- * (the DER hash of the leaf) as the W3C `serverCertificateHashes` value. The server presents the
- * **`pinned`** fixture (EC P-256, ≤14-day validity), the only self-signed leaf a browser accepts via
- * `serverCertificateHashes`. It serves until a stop file appears (`wt.interop.stopFile`, default
+ * (the DER hash of the leaf) as the W3C `serverCertificateHashes` value. By default the server presents a
+ * certificate the library generates at startup (`PeerCertificateSupport.Available.generate`: EC P-256,
+ * 14 days), so real Chrome judges exactly what a WebTransport peer serves; `-Dwt.interop.cert=pinned`
+ * selects the keytool fixture instead. It serves until a stop file appears (`wt.interop.stopFile`, default
  * `$TMPDIR/wt-interop-stop`) or [MAX_LIFETIME] elapses, so an orchestrator (Karma) can stop it cleanly.
  *
  * Per accepted session it echoes: each peer bidi stream back prefixed `echo:` then FIN; each peer uni
@@ -61,14 +65,11 @@ class BrowserInteropServer {
             "BrowserInteropServer only runs with -Dwt.interop.server=true (manual browser interop harness)",
             System.getProperty("wt.interop.server") == "true",
         )
-        // Cert selection. Default `pinned` (EC P-256 ≤14-day) for the browser cell — the only self-signed
-        // leaf a browser accepts via serverCertificateHashes. `cert` is the long-lived testcerts/cert.*
-        // (CN=quic.tech), for a native client that dials with verifyPeer=false and never pins.
-        val certName = System.getProperty("wt.interop.cert", "pinned")
-        val certCrt = resolveCert("$certName.crt")
-        val certKey = resolveCert("$certName.key")
-        val certSha256 =
-            if (certName == "pinned") resolveCert("$certName.sha256").readText().trim() else ""
+        // Cert selection. Default `generated`: a PeerCertificate minted at startup by the library (EC P-256,
+        // 14 days), the WebTransport peer role this harness proves against real Chrome. `pinned` is the
+        // keytool fixture from :socket-webtransport:generateWebTransportPinnedCert; `cert` is the long-lived
+        // testcerts/cert.* (CN=quic.tech) for clients that dial with verifyPeer=false and never pin.
+        val certName = System.getProperty("wt.interop.cert", GENERATED)
         val stopFile =
             File(System.getProperty("wt.interop.stopFile") ?: File(System.getProperty("java.io.tmpdir"), "wt-interop-stop").path)
         stopFile.delete() // clear any stale sentinel from a previous run
@@ -83,43 +84,73 @@ class BrowserInteropServer {
                 datagrams = DatagramOptions(),
             )
         val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
+        val webTransport = Http3WebTransportOptions(maxSessions = 16)
 
         runBlocking {
             withContext(Dispatchers.Default) {
-                withHttp3Server(
-                    port = 0,
-                    tlsConfig = QuicTlsConfig(certChainPath = certCrt.absolutePath, privKeyPath = certKey.absolutePath),
-                    quicOptions = serverQuicOptions,
-                    connectionOptions = connectionOptions,
-                    webTransport = Http3WebTransportOptions(maxSessions = 16),
-                    onWebTransport = { echoSession() },
-                    onRequest = { response.send(404) },
-                ) {
-                    // The block runs with `port` resolved to the bound ephemeral port. Print a single
-                    // machine-parseable READY line; flush so a capturing orchestrator sees it immediately.
-                    println("WT_SERVER_READY port=$port certSha256=$certSha256 stopFile=${stopFile.absolutePath}")
-                    System.out.flush()
-                    // Also emit a machine-readable config file (the orchestrator's signal that the server is
-                    // up AND the port/hash the browser test compiles against). Written last so its existence
-                    // means "ready". Gradle captures test-worker stdout into the report, not the console, so a
-                    // file is the reliable cross-process channel.
-                    System.getProperty("wt.interop.configFile")?.let { cfg ->
-                        File(cfg).apply {
-                            parentFile?.mkdirs()
-                            // datagrams=true: this quiche server carries WT datagrams (RFC 9297).
-                            writeText("url=https://localhost:$port/\ncertSha256=$certSha256\ndatagrams=true\n")
-                        }
+                if (certName == GENERATED) {
+                    val certificates =
+                        peerCertificates as? PeerCertificateSupport.Available
+                            ?: error("peerCertificates=$peerCertificates: this JVM cannot mint a WebTransport peer certificate")
+                    certificates.generate().use { certificate ->
+                        println("WT_CERT generated notBefore=${certificate.notBefore} notAfter=${certificate.notAfter}")
+                        withHttp3Server(
+                            port = 0,
+                            certificate = certificate,
+                            quicOptions = serverQuicOptions,
+                            connectionOptions = connectionOptions,
+                            webTransport = webTransport,
+                            onWebTransport = { echoSession() },
+                            onRequest = { response.send(404) },
+                        ) { serveUntilStopped(port, certificate.hash.value.toHexString(), stopFile) }
                     }
-                    val deadline = MAX_LIFETIME.inWholeMilliseconds
-                    var waited = 0L
-                    while (!stopFile.exists() && waited < deadline) {
-                        delay(POLL_MS)
-                        waited += POLL_MS
-                    }
-                    println("WT_SERVER_STOPPING (stopFile=${stopFile.exists()}, waitedMs=$waited)")
+                } else {
+                    val certSha256 = if (certName == "pinned") resolveCert("$certName.sha256").readText().trim() else ""
+                    withHttp3Server(
+                        port = 0,
+                        tlsConfig =
+                            QuicTlsConfig(
+                                certChainPath = resolveCert("$certName.crt").absolutePath,
+                                privKeyPath = resolveCert("$certName.key").absolutePath,
+                            ),
+                        quicOptions = serverQuicOptions,
+                        connectionOptions = connectionOptions,
+                        webTransport = webTransport,
+                        onWebTransport = { echoSession() },
+                        onRequest = { response.send(404) },
+                    ) { serveUntilStopped(port, certSha256, stopFile) }
                 }
             }
         }
+    }
+
+    /**
+     * Announce readiness (a `WT_SERVER_READY` line, then the config file the orchestrator waits for) and
+     * serve until [stopFile] appears or [MAX_LIFETIME] elapses.
+     */
+    private suspend fun serveUntilStopped(
+        port: Int,
+        certSha256: String,
+        stopFile: File,
+    ) {
+        println("WT_SERVER_READY port=$port certSha256=$certSha256 stopFile=${stopFile.absolutePath}")
+        System.out.flush()
+        // Gradle captures test-worker stdout into the report, not the console, so a file is the reliable
+        // cross-process channel. Written last so its existence means "ready".
+        System.getProperty("wt.interop.configFile")?.let { cfg ->
+            File(cfg).apply {
+                parentFile?.mkdirs()
+                // datagrams=true: this quiche server carries WT datagrams (RFC 9297).
+                writeText("url=https://localhost:$port/\ncertSha256=$certSha256\ndatagrams=true\n")
+            }
+        }
+        val deadline = MAX_LIFETIME.inWholeMilliseconds
+        var waited = 0L
+        while (!stopFile.exists() && waited < deadline) {
+            delay(POLL_MS)
+            waited += POLL_MS
+        }
+        println("WT_SERVER_STOPPING (stopFile=${stopFile.exists()}, waitedMs=$waited)")
     }
 
     /** Echo every peer-initiated bidi/uni stream + datagram for one accepted session, until it closes. */
@@ -187,6 +218,9 @@ class BrowserInteropServer {
     private companion object {
         val MAX_LIFETIME = 30.minutes
         const val POLL_MS = 500L
+
+        /** `wt.interop.cert` value selecting a library-generated [com.ditchoom.socket.quic.PeerCertificate]. */
+        const val GENERATED = "generated"
 
         /**
          * The WebTransport application error code the `/reset` route aborts streams with. 0x1e7 straddles

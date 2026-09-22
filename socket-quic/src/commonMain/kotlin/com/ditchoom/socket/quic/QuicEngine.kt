@@ -67,6 +67,24 @@ interface QuicEngine {
         timeout: Duration,
     ): QuicServer
 
+    /**
+     * Whether this engine can mint a [PeerCertificate] for [bind]. [PeerCertificateSupport.Unavailable]
+     * unless the engine supplies a [PeerCertificateBackend].
+     */
+    val peerCertificates: PeerCertificateSupport get() = PeerCertificateSupport.Unavailable
+
+    /**
+     * [bind] presenting [certificate]: its certificate and private key exist as owner-only PEM files only
+     * while the [QuicTlsConfig] overload runs, which loads them before returning. Throws
+     * [PeerCertificateException] if [certificate] is closed.
+     */
+    suspend fun bind(
+        binding: QuicPortBinding,
+        certificate: PeerCertificate,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = certificate.withPemFiles { tlsConfig -> bind(binding, tlsConfig, quicOptions, timeout) }
+
     @Deprecated(
         "Superseded by QuicPortBinding, which also expresses a shared port.",
         ReplaceWith("bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)"),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Browser WebTransport interop runner (handoff §3): start an external withHttp3Server (the
-# BrowserInteropServer harness, JVM/quiche, `pinned` EC P-256 leaf), then run the jsBrowserTest AND
+# BrowserInteropServer harness, JVM/quiche, library-generated EC P-256 peer certificate), then run the jsBrowserTest AND
 # wasmJsBrowserTest (shared src/browserInterop test) in real headless Chrome via Karma against it — so
 # both browser backends' reset → neutral-exception mapping is exercised, not just compile-checked. The
 # harness binds an ephemeral port and writes its config

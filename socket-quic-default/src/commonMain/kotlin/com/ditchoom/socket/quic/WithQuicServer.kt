@@ -67,3 +67,38 @@ suspend fun <R> withQuicServer(
         server.close()
     }
 }
+
+/**
+ * Whether this platform's default engine can mint a [PeerCertificate] — the self-signed, ≤14-day ECDSA
+ * P-256 certificate a browser accepts through WebTransport `serverCertificateHashes`.
+ */
+val peerCertificates: PeerCertificateSupport get() = defaultQuicEngine.peerCertificates
+
+/**
+ * [withQuicServer] presenting a generated [certificate] instead of PEM files. Its private key touches disk
+ * only while the server binds (see [QuicEngine.bind]); hand [PeerCertificate.hash] to clients that pin it.
+ */
+suspend fun <R> withQuicServer(
+    port: Int = 0,
+    host: String? = null,
+    certificate: PeerCertificate,
+    quicOptions: QuicOptions,
+    timeout: Duration = 15.seconds,
+    block: suspend QuicServer.() -> R,
+): R = withQuicServer(QuicPortBinding.Own(port, host), certificate, quicOptions, timeout, block)
+
+/** [withQuicServer] on [binding] presenting a generated [certificate]; see the port overload. */
+suspend fun <R> withQuicServer(
+    binding: QuicPortBinding,
+    certificate: PeerCertificate,
+    quicOptions: QuicOptions,
+    timeout: Duration = 15.seconds,
+    block: suspend QuicServer.() -> R,
+): R {
+    val server = defaultQuicEngine.bind(binding, certificate, quicOptions, timeout)
+    return try {
+        server.block()
+    } finally {
+        server.close()
+    }
+}

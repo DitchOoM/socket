@@ -284,11 +284,11 @@ afterEvaluate {
 
 // --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
 // Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an
-// externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche) presenting the
-// W3C serverCertificateHashes `pinned` fixture for the local browser-interop lane (real Chrome ↔ the
-// quiche JVM BrowserInteropServer). Chrome accepts a self-signed leaf only via serverCertificateHashes,
-// which requires an EC P-256 leaf with ≤14-day validity — so it's generated fresh (a committed one is a
-// guaranteed expiry flake) into this module's gitignored testcerts/. The browser lane operator runs
+// externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche). By default the harness
+// presents a PeerCertificate the library mints at startup, so Chrome judges the WebTransport peer role
+// itself. Chrome accepts a self-signed leaf only via serverCertificateHashes (EC P-256, ≤14 days).
+// `-Dwt.interop.cert=pinned` instead serves the keytool fixture this task writes into the gitignored
+// testcerts/ (a committed one would be a guaranteed expiry flake); that lane runs
 // `:socket-webtransport:generateWebTransportPinnedCert` before launching BrowserInteropServer.
 val generateWebTransportPinnedCert =
     tasks.register("generateWebTransportPinnedCert") {

@@ -26,6 +26,8 @@ object QuicheEngine : QuicEngine {
             supportsSharedPort = true,
         )
 
+    override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(SecurityFrameworkPeerCertificateBackend)
+
     override suspend fun connect(
         binding: QuicClientBinding,
         hostname: String,
