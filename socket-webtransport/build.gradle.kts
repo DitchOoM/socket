@@ -15,7 +15,10 @@ plugins {
     signing
 }
 
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -105,7 +108,7 @@ kotlin {
         nodejs()
     }
 
-    if (isMacOS) {
+    if (appleTargets) {
         // Apple QUIC is quiche (the quiche-on-Apple pivot), provided transitively via :socket-http3 →
         // :socket-quic-default → :socket-quic-quiche, whose Quiche cinterop klib now EMBEDS libquiche.a
         // and carries the Apple frameworks in its manifest linkerOpts (Gap A's fix). The WebTransport
@@ -177,8 +180,11 @@ kotlin {
         jvmMain.get().dependsOn(http3Main)
         androidMain.get().dependsOn(http3Main)
         // nativeMain is the default-template parent of appleMain/linuxMain; routing it through
-        // http3Main gives every native target the socket-http3 backing in one edge.
-        named("nativeMain").get().dependsOn(http3Main)
+        // http3Main gives every native target the socket-http3 backing in one edge. It exists only
+        // when some native target is declared.
+        if (appleTargets || isLinux) {
+            named("nativeMain").get().dependsOn(http3Main)
+        }
 
         jsMain.get().dependsOn(browserMain)
         wasmJsMain.get().dependsOn(browserMain)
@@ -204,7 +210,7 @@ kotlin {
                 }
             }
         }
-        if (isMacOS) {
+        if (appleTargets) {
             // `appleTest` (default-template parent of macos/ios/tvos/watchos Test) gets the suite once;
             // the Apple QUIC server backing comes transitively through nativeMain → socket-http3 →
             // socket-quic-default → socket-quic-quiche (quiche), which carries its own cinterop and

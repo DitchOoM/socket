@@ -42,7 +42,14 @@ boringssl {
 }
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple Kotlin/Native targets are declared on a macOS host. `-PappleTargets=false` leaves them out
+// for an invocation that builds only JVM code: a JVM compile that reads commonMain metadata
+// (:socket-http3's KSP codecs) otherwise pulls every Apple cinterop, the commonizer and the K/N
+// toolchain into its graph. Every module reads the same property, so project dependencies always
+// agree on the target set.
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
@@ -413,7 +420,7 @@ kotlin {
     }
 
     // Apple targets with Network.framework zero-copy socket implementation
-    if (isMacOS) {
+    if (appleTargets) {
         // macOS
         macosArm64 { configureNWHelpersCinterop() }
         macosX64 { configureNWHelpersCinterop() }
@@ -526,7 +533,7 @@ kotlin {
         // POSIX code every native target shares (getaddrinfo), added per leaf for the same reason
         // appleNativeImpl is: a shared appleMain cannot compile metadata with watchosArm64 in it.
         val posixNativeImplDir = file("src/posixNativeImpl/kotlin")
-        if (isMacOS) {
+        if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",

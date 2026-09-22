@@ -10,7 +10,10 @@ plugins {
 }
 
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 repositories {
@@ -154,7 +157,7 @@ kotlin {
     // watchosArm64 is arm64_32: 32-bit pointers, so `ssize_t` is Int there and Long everywhere else.
     // Keep width-dependent comparisons normalized (see HostLoopback.apple.kt) or this target alone
     // fails to compile.
-    if (isMacOS) {
+    if (appleTargets) {
         macosArm64 { configureNwUdpCinterop() }
         macosX64 { configureNwUdpCinterop() }
         iosArm64 { configureNwUdpCinterop() }
@@ -212,7 +215,7 @@ kotlin {
         // actual platforms" and the metadata compilation fails — while each individual target still
         // compiles perfectly. Per-target srcDir removes the metadata compilation from the picture, which
         // is exactly how the other two modules carry all eleven Apple targets (#280).
-        if (isMacOS) {
+        if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",

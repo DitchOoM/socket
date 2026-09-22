@@ -18,7 +18,10 @@ plugins {
 // The backend modules expose their engine as public SPI; this module wires them together so a
 // consumer can `implementation(":socket-quic-default")` and call withQuic* on any target.
 
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -45,7 +48,7 @@ kotlin {
         nodejs()
     }
 
-    if (isMacOS) {
+    if (appleTargets) {
         macosArm64()
         macosX64()
         iosArm64()
@@ -99,7 +102,7 @@ kotlin {
                 }
             }
         }
-        if (isMacOS) {
+        if (appleTargets) {
             // Apple QUIC backend split (quiche-on-Apple pivot): macOS + iOS run the quiche engine
             // (:socket-quic-quiche over a POSIX UDP datapath) — the same engine as JVM/Android/Linux.
             // tvOS/watchOS have no quiche target (Tier-3 build-std deferred), so they get

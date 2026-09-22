@@ -11,7 +11,10 @@ plugins {
 }
 
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 repositories {
@@ -157,7 +160,7 @@ kotlin {
     // Apple targets — AppleNetworkMonitor over NWPathMonitor plus the getifaddrs interface scan, via
     // this module's own NetworkHelpers cinterop. Registered on macOS hosts so :socket's Apple
     // compilations resolve this dep.
-    if (isMacOS) {
+    if (appleTargets) {
         macosArm64 { configureNetworkHelpersCinterop() }
         macosX64 { configureNetworkHelpersCinterop() }
         iosArm64 { configureNetworkHelpersCinterop() }
@@ -238,7 +241,7 @@ kotlin {
         // appleTest needs no such treatment: it is compiled once per target (never as metadata) and is
         // associated with that target's main compilation, so it sees both the cinterop and the
         // `internal` mappers (appleNetworkState / appleNetworkId) it asserts on.
-        if (isMacOS) {
+        if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",

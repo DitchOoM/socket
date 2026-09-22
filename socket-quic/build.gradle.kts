@@ -20,7 +20,10 @@ plugins {
 // This module keeps bare Apple target declarations (no cinterop, no engine sources) so the
 // pure-API klibs still publish for Apple consumers; :socket-quic-quiche supplies the engine.
 
-val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+val appleTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
+        providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -47,7 +50,7 @@ kotlin {
         nodejs()
     }
 
-    if (isMacOS) {
+    if (appleTargets) {
         macosArm64()
         macosX64()
         iosArm64()
