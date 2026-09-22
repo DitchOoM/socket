@@ -15,11 +15,14 @@ plugins {
     signing
 }
 
-// Apple K/N targets: declared on a macOS host unless `-PappleTargets=false` (see the root build.gradle.kts).
+// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
+// `-PlinuxTargets=false` (see the root build.gradle.kts).
 val appleTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsMac &&
         providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val linuxTargets =
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
@@ -127,7 +130,7 @@ kotlin {
         watchosX64()
     }
 
-    if (isLinux) {
+    if (linuxTargets) {
         // The linuxX64Test binary stands up a real QUIC server + client (via :socket-testsuite's
         // WebTransportTestSuite → withHttp3Server / connectMultiplexed), which calls into quiche, now
         // linked from the :socket-quic-quiche Quiche klib's embedded libquiche.a (Gap A) — the old
@@ -182,7 +185,7 @@ kotlin {
         // nativeMain is the default-template parent of appleMain/linuxMain; routing it through
         // http3Main gives every native target the socket-http3 backing in one edge. It exists only
         // when some native target is declared.
-        if (appleTargets || isLinux) {
+        if (appleTargets || linuxTargets) {
             named("nativeMain").get().dependsOn(http3Main)
         }
 
@@ -198,7 +201,7 @@ kotlin {
         jvmTest.dependencies {
             implementation(project(":socket-testsuite"))
         }
-        if (isLinux) {
+        if (linuxTargets) {
             // Attach to the SHARED `linuxTest` source set (default-hierarchy parent of linuxX64Test +
             // linuxArm64Test) so the LinuxWebTransportTest conformance subclass — and the cross-backend
             // exception-parity test it inherits — builds and runs on BOTH linux arches, not just x64.
