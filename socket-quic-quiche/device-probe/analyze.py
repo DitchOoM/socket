@@ -10,6 +10,9 @@ STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, a RE-DERIVED ECHO-LIVEN
 RE-DERIVED #447 verdict gated by it — each of those per connection AND rolled up per address
 family, so a walk answers "does v6 behave differently from v4 on this device and this route".
 
+A log whose echo loop timed echoes by its own schedule rather than by their arrival (no
+`LOOP-SCHEDULE` line) is flagged RTT-UNRELIABLE, and its rtt comes from in-sync echoes only.
+
 The family comes from each connection's own `MIGRATION-LEDGER`/`ECHO-LIVENESS`/`447-VERDICT` line
 (`connection=N family=FAM`), falling back to the covering `CONNECT-ATTEMPT`'s `target=`/`family=`
 keys only where a connection has none of those. A log written before the rotation carries none of
@@ -108,12 +111,20 @@ nodata = [t for t, b in events if b.startswith("ECHO-NO-DATA")]
 unanswered_events = [(t, int(m.group(1))) for t, b in events for m in [re.match(r"ECHO-UNANSWERED count=(\d+)", b)] if m]
 unanswered = sum(n for _, n in unanswered_events)
 answered = sorted(ok + late)
-# A probe built before #599 wrote one ECHO-OK per READ (`got=…B`), so an echo that arrived one
-# payload behind made every later read return the PREVIOUS echo at once: its rtt read ~0 and only
-# in-sync echoes (pending=0B) carried a real round trip. Since #599 every exchange is judged on its
-# own send time, so every rtt is real.
+# Which echo loop wrote the log decides which rtt samples are round trips:
+# - before #599 it wrote one ECHO-OK per READ (`got=…B`), so an echo one payload behind made every
+#   later read return the PREVIOUS echo at once and its rtt read ~0;
+# - from #599 until the loop announced `LOOP-SCHEDULE`, it read only right after each send. Once one
+#   reply missed its read deadline, every later echo waited in the receive buffer until the next
+#   send's read: rtt ≈ the loop period, `pending` = the payload just sent, the derived read deadline
+#   inflated with it (so OVERDUE fired late) and a reply that arrived inside its deadline could read
+#   LATE. The walk qlogs put the true round trip at ~44 ms under a logged ~256 ms.
+# On both, only an in-sync echo (pending=0B) carries a real round trip. A build that logs
+# `LOOP-SCHEDULE` keeps a read outstanding until the echo arrives, so every rtt is real.
 legacy = any("got=" in b for _, b in ok[:200])
-timed = [b for _, b in answered if not legacy or re.search(r"pending=0B", b)]
+scheduled = any(b.startswith("LOOP-SCHEDULE") for _, b in events)
+rtt_unreliable = bool(answered) and not scheduled
+timed = [b for _, b in answered if not rtt_unreliable or re.search(r"pending=0B", b)]
 rtts = sorted(int(m.group(1)) for b in timed for m in [re.search(r"rtt=(\d+)ms", b)] if m)
 lateness = sorted(int(m.group(1)) for _, b in late for m in [re.search(r"late=\+(\d+)ms", b)] if m)
 gaps = [(answered[i][0] - answered[i - 1][0], answered[i][0]) for i in range(1, len(answered))]
@@ -123,8 +134,12 @@ stream_gone = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER"
 print(f"\nechoes: ok={len(ok)} late={len(late)} overdue={len(overdue)} unanswered={unanswered} fail={len(fail)} no-data={len(nodata)}"
       f" write-timeouts={len(write_timeouts)} stream-gone={len(stream_gone)}"
       + (f" in-sync={len(timed)} one-behind={len(ok) - len(timed)} (pre-#599 grammar)" if legacy else ""))
+if rtt_unreliable and not legacy:
+    print(f"  ⚠ RTT-UNRELIABLE: no LOOP-SCHEDULE line, so this build read an echo only right after each send —"
+          f" {len(answered) - len(timed)} of {len(answered)} answered echoes (pending>0B) are timed by the loop, not the"
+          f" path, and LATE/OVERDUE are skewed with them. rtt below is from the {len(timed)} in-sync (pending=0B) echoes only.")
 if rtts:
-    print(f"  rtt{' (in-sync only)' if legacy else ''} p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
+    print(f"  rtt{' (in-sync only)' if rtt_unreliable else ''} p50={rtts[len(rtts) // 2]}ms p95={rtts[int(len(rtts) * 0.95)]}ms max={rtts[-1]}ms")
 if lateness:
     print(f"  late by p50=+{lateness[len(lateness) // 2]}ms p95=+{lateness[int(len(lateness) * 0.95)]}ms max=+{lateness[-1]}ms")
 print("  longest gaps between answered echoes:", ", ".join(f"{g / 1000:.1f}s at t+{at / 1000:.0f}s" for g, at in worst))

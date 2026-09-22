@@ -50,7 +50,7 @@ public sealed interface EchoLoopEvent {
         val atByte: Int,
     ) : EchoLoopEvent
 
-    /** The session's [EchoSession.exchanges] after an exchange completed. */
+    /** The session's [EchoSession.exchanges] after a read completed. */
     public data class Progress(
         val exchanges: Int,
     ) : EchoLoopEvent
@@ -86,16 +86,23 @@ public sealed interface EchoLoopEnd {
 }
 
 /**
- * The walk probes' echo loop over one connection's stream: write `probe-N;`, read the echo, let
- * [session] judge it, report, wait [interval], until the walk's deadline or the stream ends.
+ * The walk probes' echo loop over one connection's stream: write `probe-N;` every [interval], judge
+ * each echo with [session], until the walk's deadline or the stream ends.
+ *
+ * A read stays outstanding from each send until nothing is owed or the next send is due, so an echo
+ * is judged the instant it becomes readable and its round trip is the path's, not the loop's. The
+ * read wakes at each exchange's overdue crossing on the way, so `ECHO-OVERDUE` is reported when the
+ * deadline passes and every `ECHO-LATE` follows its own `ECHO-OVERDUE`. The loop sleeps only while
+ * nothing is owed. One coroutine owns the loop and [session], so neither needs a lock; the one
+ * stretch with no read outstanding is the write itself, bounded by [writeDeadline].
  *
  * Every exchange is judged by [session] when its reply arrives: everything received must be an
- * in-order prefix of everything sent, and a missed read deadline is where "late" begins, not where
- * an exchange fails. A FIN or RESET from the peer, or a run of writes it will not drain, ends the
+ * in-order prefix of everything sent, and a missed deadline is where "late" begins, not where an
+ * exchange fails. A FIN or RESET from the peer, or a run of writes it will not drain, ends the
  * session instead: the stream is no longer being echoed.
  *
  * [clock] is the time every exchange is stamped with, and [closedBy] decides whether a throw from
- * the stream means the connection is gone. Owned by one coroutine, as [session] is.
+ * the stream means the connection is gone.
  */
 public class EchoLoop(
     private val stream: EchoStream,
@@ -107,51 +114,38 @@ public class EchoLoop(
     private val writeDeadline: Duration = WRITE_DEADLINE,
     private val observe: (EchoLoopEvent) -> Unit,
 ) {
+    private sealed interface Integrity {
+        data object Intact : Integrity
+
+        data object Broken : Integrity
+    }
+
+    /** What the round does after one step. */
+    private sealed interface Next {
+        data object KeepGoing : Next
+
+        data class Leave(
+            val end: EchoLoopEnd,
+        ) : Next
+    }
+
+    private var integrity: Integrity = Integrity.Intact
+
     /** Exchange until [until] on [clock], or until the stream or the connection ends. */
     public suspend fun run(until: Duration): EchoLoopEnd {
+        emit("LOOP-SCHEDULE read=held-until-answered intervalMs=${interval.inWholeMilliseconds}")
         var seq = 0
-        var integrityBroken = false
         while (clock() < until) {
             seq++
             observe(EchoLoopEvent.Round(seq))
             val sentAt = clock()
+            val nextSendAt = sentAt + interval
             // Delimited so payload boundaries stay visible in a coalesced read.
             val payload = "probe-$seq;"
             try {
-                when (val step = exchange(seq, payload, sentAt)) {
-                    is EchoStep.Exchanged -> {
-                        when (step) {
-                            is EchoStep.Exchanged.Judged ->
-                                when (val read = step.read) {
-                                    is EchoRead.Consumed -> {
-                                        read.outcomes.forEach { emit(it.line(read.owedBytes)) }
-                                        observe(EchoLoopEvent.Read(read))
-                                    }
-                                    is EchoRead.Diverged ->
-                                        if (integrityBroken) {
-                                            emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
-                                        } else {
-                                            integrityBroken = true
-                                            observe(EchoLoopEvent.IntegrityBroken(read.atByte))
-                                            emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
-                                        }
-                                }
-                            EchoStep.Exchanged.StillOwed -> Unit
-                        }
-                        // Progress is a completed exchange: a write the peer never drained is not one,
-                        // so the silence watchdog sees it.
-                        observe(EchoLoopEvent.Progress(session.exchanges))
-                    }
-                    is EchoStep.WriteTimedOut -> {
-                        emit(step.line)
-                        observe(EchoLoopEvent.WriteTimedOut(session.owedBytes))
-                    }
-                    // The peer stopped echoing this stream: leave, exactly as a dead connection does,
-                    // and say which of the two it was, because they are different events.
-                    is EchoStep.Reconnect -> {
-                        emit(step.line)
-                        return EchoLoopEnd.Left(step)
-                    }
+                when (val next = exchange(seq, payload, sentAt, nextSendAt)) {
+                    Next.KeepGoing -> Unit
+                    is Next.Leave -> return next.end
                 }
             } catch (e: Throwable) {
                 emit("ECHO-FAIL seq=$seq after=${(clock() - sentAt).inWholeMilliseconds}ms err=${e::class.simpleName} msg=${e.message}")
@@ -168,26 +162,89 @@ public class EchoLoop(
                     }
                 }
             }
-            session.overdue(clock()).forEach {
-                emit(it.line)
-                observe(EchoLoopEvent.Overdue(it))
-            }
-            delay(interval)
+            reportOverdue()
+            val rest = nextSendAt - clock()
+            if (rest.isPositive()) delay(rest)
         }
         return EchoLoopEnd.WalkOver
     }
 
-    /** One exchange: the write, then the read the session judges. A write that times out is the session's to decide. */
+    /** One exchange: the write, then reads until nothing is owed or [nextSendAt] comes. */
     private suspend fun exchange(
         seq: Int,
         payload: String,
         sentAt: Duration,
-    ): EchoStep {
+        nextSendAt: Duration,
+    ): Next {
         when (stream.write(payload, writeDeadline)) {
-            EchoWrite.TimedOut -> return session.writeTimedOut(seq, waited = clock() - sentAt, at = clock())
+            EchoWrite.TimedOut -> return handle(seq, session.writeTimedOut(seq, waited = clock() - sentAt, at = clock()))
             EchoWrite.Written -> session.sent(seq, payload, clock())
         }
-        return session.reply(seq, stream.read(session.readDeadline), clock())
+        while (session.owedBytes > 0) {
+            reportOverdue()
+            val wakeAt =
+                when (val crossing = session.nextOverdue()) {
+                    NextOverdue.None -> nextSendAt
+                    is NextOverdue.At -> minOf(crossing.at, nextSendAt)
+                }
+            val wait = wakeAt - clock()
+            if (!wait.isPositive()) return Next.KeepGoing
+            when (val next = handle(seq, session.reply(seq, stream.read(wait), clock()))) {
+                Next.KeepGoing -> Unit
+                is Next.Leave -> return next
+            }
+        }
+        return Next.KeepGoing
+    }
+
+    private fun handle(
+        seq: Int,
+        step: EchoStep,
+    ): Next =
+        when (step) {
+            is EchoStep.Exchanged -> {
+                when (step) {
+                    is EchoStep.Exchanged.Judged ->
+                        when (val read = step.read) {
+                            is EchoRead.Consumed -> {
+                                read.outcomes.forEach { emit(it.line(read.owedBytes)) }
+                                observe(EchoLoopEvent.Read(read))
+                            }
+                            is EchoRead.Diverged ->
+                                when (integrity) {
+                                    Integrity.Broken -> emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
+                                    Integrity.Intact -> {
+                                        integrity = Integrity.Broken
+                                        observe(EchoLoopEvent.IntegrityBroken(read.atByte))
+                                        emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
+                                    }
+                                }
+                        }
+                    EchoStep.Exchanged.StillOwed -> Unit
+                }
+                // Progress is a completed read: a write the peer never drained is not one, so the
+                // silence watchdog sees it.
+                observe(EchoLoopEvent.Progress(session.exchanges))
+                Next.KeepGoing
+            }
+            is EchoStep.WriteTimedOut -> {
+                emit(step.line)
+                observe(EchoLoopEvent.WriteTimedOut(session.owedBytes))
+                Next.KeepGoing
+            }
+            // The peer stopped echoing this stream: leave, exactly as a dead connection does, and say
+            // which of the two it was, because they are different events.
+            is EchoStep.Reconnect -> {
+                emit(step.line)
+                Next.Leave(EchoLoopEnd.Left(step))
+            }
+        }
+
+    private fun reportOverdue() {
+        session.overdue(clock()).forEach {
+            emit(it.line)
+            observe(EchoLoopEvent.Overdue(it))
+        }
     }
 
     public companion object {

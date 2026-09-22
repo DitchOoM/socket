@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.echo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -78,6 +79,38 @@ class EchoLoopTests {
                     "  judged: ${run.judged.take(8).joinToString("; ")}\n" +
                     "  seq 20: ${run.judged.firstOrNull { it.seq == 20 }}\n" +
                     "  log:\n    " + run.lines.take(12).joinToString("\n    "),
+            )
+        }
+
+    /** OVERDUE is the moment the deadline passes with the reply still owed, so it precedes that reply's LATE. */
+    @Test
+    fun anOverdueEchoIsReportedWhenItCrossesItsDeadlineNotAtTheNextSend() =
+        runTest {
+            val run = walk(echoAfter = { write -> if (write == 3) 200.milliseconds else trueRoundTrip }, exchanges = 6)
+
+            val seq3 = run.lines.filter { " seq=3 " in it }
+            assertEquals(
+                listOf(
+                    "t=626ms ECHO-OVERDUE seq=3 waited=126ms deadline=125ms",
+                    "t=700ms ECHO-LATE seq=3 rtt=200ms late=+75ms deadline=125ms pending=0B",
+                ),
+                seq3,
+                "seq 3 was sent at 500 ms with a 125 ms deadline and echoed at 700 ms; the whole log:\n  " + run.lines.joinToString("\n  "),
+            )
+        }
+
+    /** A path slower than the cadence: every echo arrives after the next send, and each keeps its own round trip. */
+    @Test
+    fun echoesSlowerThanTheIntervalKeepTheCadenceAndTheirOwnRoundTrip() =
+        runTest {
+            val run = walk(echoAfter = { 300.milliseconds }, exchanges = 20)
+
+            val wrong = run.judged.filter { it.roundTrip != 300.milliseconds }
+            assertTrue(
+                run.judged.size >= 19 && wrong.isEmpty(),
+                "every echo took 300 ms on a 250 ms cadence over 20 intervals: ${run.judged.size} were judged (one send " +
+                    "per interval gives 19 answered in time), ${wrong.size} of them at another round trip: " +
+                    run.judged.take(8).joinToString("; "),
             )
         }
 }
