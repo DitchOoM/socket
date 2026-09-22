@@ -35,6 +35,19 @@ if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataCont
 else
   echo "no qlog on the device"
 fi
+# TLS key logs (conn-v6-0003.keys beside conn-v6-0003.trace): with them Wireshark decrypts the traces' datagrams
+# with no code of ours in the loop. They decrypt the walk, so the probe keeps them in the app's private
+# Library rather than the Files-app-visible Documents, and this copy is 0700.
+keys="$(dirname "$0")/logs/$stamp-$TAG-keys"
+if (umask 077 && xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Library/keys --destination "$keys" >/dev/null 2>&1); then
+  echo "pulled $(find "$keys" -name '*.keys' | wc -l | tr -d ' ') key log(s) -> $keys (SECRET: decrypts the walk)"
+else
+  echo "no key logs on the device (a probe build without them)"
+fi
+keysprev="$(dirname "$0")/logs/$stamp-$TAG-keys-previous"
+if (umask 077 && xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Library/previous --destination "$keysprev" >/dev/null 2>&1); then
+  echo "pulled previous runs' key logs -> $keysprev (still on the device; devicectl cannot delete)"
+fi
 prev="$(dirname "$0")/logs/$stamp-$TAG-previous"
 if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Documents/previous --destination "$prev" >/dev/null 2>&1; then
   echo "pulled previous run(s): $(ls "$prev" | tr '\n' ' ') -> $prev (still on the device; devicectl cannot delete)"

@@ -547,6 +547,11 @@ internal class SharedQuicheServer(
         // replies would be the one exchange that could not pin its source.
         locals.put(api.decodePathKey(localSockAddr.address), localAddr)
 
+        // This connection's own capture, minted once: its key log is named here because consuming the
+        // Initial below derives every server secret, and the driver built after it records on the same one.
+        val capture = tuning.captureFactory()
+        api.nameTrafficSecretsLog(conn, capture, QuicRole.Server) { QuicheDriver.readSessionId(api, conn, bufferFactory) }
+
         // Feed the initial packet before the driver starts — safe, driver not yet running. quiche
         // rejecting it (undecryptable, malformed past the header) means there is no connection to
         // drive: release everything accept created and report the refusal, instead of starting a
@@ -598,7 +603,7 @@ internal class SharedQuicheServer(
                 driverContext = tuning.driverContext,
                 sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
-                capture = tuning.captureFactory(),
+                capture = capture,
                 // RFC 9000 §9 active migration is a client-only capability — in QUIC v1 only clients
                 // migrate — so a server-accepted connection states that outright. The server still
                 // handles a *peer's* migration (per-source recv_info + sendInfo.to egress, see

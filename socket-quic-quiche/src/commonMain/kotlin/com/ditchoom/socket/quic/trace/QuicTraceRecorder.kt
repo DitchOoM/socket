@@ -70,6 +70,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
  *             | "QLOG_REFUSED" SP path                                  ; observation: quiche's
  *                                                                       ;   `create_new` open refused
+ *             | "TRAFFIC_SECRETS_REFUSED" SP path                       ; observation: the key log
+ *                                                                       ;   could not be opened
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
  * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
  * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"
@@ -245,6 +247,11 @@ class QuicTraceRecorder(
      */
     fun qlogRefused(path: String) {
         record(TraceEvent.QlogRefused(now(), path))
+    }
+
+    /** Record that quiche could not open this connection's TLS key log at [path] (TRAFFIC_SECRETS_REFUSED). */
+    fun trafficSecretsRefused(path: String) {
+        record(TraceEvent.TrafficSecretsRefused(now(), path))
     }
 
     /**

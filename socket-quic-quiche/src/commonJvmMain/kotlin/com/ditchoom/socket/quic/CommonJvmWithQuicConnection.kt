@@ -375,6 +375,8 @@ internal class CommonJvmQuicConfigCalls(
         recvQueueLen: Long,
         sendQueueLen: Long,
     ) = api.configEnableDgram(cfg, true, recvQueueLen, sendQueueLen)
+
+    override fun logKeys() = api.configLogKeys(cfg)
 }
 
 /**

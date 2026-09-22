@@ -549,6 +549,10 @@ internal class AppleQuicConfigCalls(
         sendQueueLen: Long,
     ) = com.ditchoom.socket.quic.quiche
         .quiche_config_enable_dgram(cfg, true, recvQueueLen.convert(), sendQueueLen.convert())
+
+    override fun logKeys() =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_log_keys(cfg)
 }
 
 /**

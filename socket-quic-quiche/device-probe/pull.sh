@@ -37,6 +37,24 @@ else
   echo "no qlog on the device (the run was started without it)"
 fi
 
+# TLS key logs (conn-v6-0003.keys beside conn-v6-0003.trace): with them Wireshark decrypts the traces' datagrams
+# with no code of ours in the loop. They decrypt the walk, so the probe keeps them in the app's PRIVATE
+# files dir, reachable only through run-as (the test APK is debuggable), and so does this copy: 0700.
+# `previous` holds key logs a START moved aside; removed from the phone only after a successful pull.
+KEYS_FOUND="$(adbs shell "run-as $PKG ls files 2>/dev/null" | tr -d '\r' | grep -xE 'keys|previous' | tr '\n' ' ' || true)"
+if [ -n "$KEYS_FOUND" ]; then
+  keys="$(dirname "$0")/logs/$stamp-$TAG-keys"; mkdir -p "$keys"; chmod 700 "$keys"
+  # shellcheck disable=SC2086 # KEYS_FOUND is a word list on purpose
+  if adbs exec-out "run-as $PKG tar -cf - -C files $KEYS_FOUND" | tar -xf - -C "$keys"; then
+    echo "pulled $(find "$keys" -name '*.keys' | wc -l | tr -d ' ') key log(s) -> $keys (SECRET: decrypts the walk)"
+    case " $KEYS_FOUND " in *" previous "*) adbs shell "run-as $PKG rm -rf files/previous" ;; esac
+  else
+    echo "key logs on the device could NOT be pulled — left in place: files/{$KEYS_FOUND}" >&2
+  fi
+else
+  echo "no key logs on the device (the run was started without them)"
+fi
+
 # Runs a START moved aside instead of deleting (PREVIOUS-RUN in the log). Pulled, then removed
 # from the device only once the pull returned success, so nothing is ever lost between the two.
 PREV="/sdcard/Android/data/$PKG/files/previous"

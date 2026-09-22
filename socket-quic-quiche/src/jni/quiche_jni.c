@@ -540,6 +540,24 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnSetQlogPath)(
     return result;
 }
 
+/* Install the TLS key-log callback on a config. Writes nothing until a connection names a file. */
+JNIEXPORT void JNICALL JNI_FN(nConfigLogKeys)(
+    JNIEnv *env, jclass cls, jlong config) {
+    quiche_config_log_keys((quiche_config *)(uintptr_t)config);
+}
+
+/* Append a connection's TLS secrets (SSLKEYLOGFILE format) to a file. Same string contract as
+ * nConnSetQlogPath: a NULL from GetStringUTFChars fails closed. */
+JNIEXPORT jboolean JNICALL JNI_FN(nConnSetKeylogPath)(
+    JNIEnv *env, jclass cls, jlong conn, jstring path) {
+    const char *c_path = (*env)->GetStringUTFChars(env, path, NULL);
+    if (c_path == NULL) return JNI_FALSE;
+    jboolean result = quiche_conn_set_keylog_path((quiche_conn *)(uintptr_t)conn, c_path)
+        ? JNI_TRUE : JNI_FALSE;
+    (*env)->ReleaseStringUTFChars(env, path, c_path);
+    return result;
+}
+
 /* --- Path migration --- */
 
 /* Packs quiche_conn_probe_path's (seq, rc) pair into a single jlong exactly as nConnMigrate does

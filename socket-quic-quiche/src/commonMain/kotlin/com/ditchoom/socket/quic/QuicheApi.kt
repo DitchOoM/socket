@@ -456,6 +456,24 @@ interface QuicheApi {
         desc: String,
     ): Boolean = false
 
+    /**
+     * Install the TLS key-log callback on [config] (`quiche_config_log_keys`). Writes nothing by itself:
+     * a connection built from [config] writes its secrets only once [connSetKeylogPath] names a file.
+     * Default no-op for test doubles, like [connSetQlogPath].
+     */
+    fun configLogKeys(config: QuicheConfig) {}
+
+    /**
+     * Append [conn]'s TLS traffic secrets to [path] in SSLKEYLOGFILE format (`quiche_conn_set_keylog_path`),
+     * which decrypts the connection for anyone holding the file. Returns `false` when [path] cannot be
+     * opened. Same threading contract and default as [connSetQlogPath]; must precede the connection's
+     * first packet in either direction, or the handshake's secrets are never written.
+     */
+    fun connSetKeylogPath(
+        conn: QuicheConn,
+        path: String,
+    ): Boolean = false
+
     // --- Path migration ---
 
     /**

@@ -213,6 +213,12 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
         )
     }
+    private val hConfigLogKeys by lazy {
+        downcall("quiche_config_log_keys", FunctionDescriptor.ofVoid(ADDRESS))
+    }
+    private val hConnSetKeylogPath by lazy {
+        downcall("quiche_conn_set_keylog_path", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+    }
 
     private val hConnClose by lazy {
         downcall(
@@ -1115,6 +1121,15 @@ class FfmQuicheApi private constructor(
                 cString(arena, desc),
             ) as Boolean
         }
+
+    override fun configLogKeys(config: QuicheConfig) {
+        hConfigLogKeys.invokeExact(seg(config.handle))
+    }
+
+    override fun connSetKeylogPath(
+        conn: QuicheConn,
+        path: String,
+    ): Boolean = Arena.ofConfined().use { arena -> hConnSetKeylogPath.invokeExact(seg(conn.handle), cString(arena, path)) as Boolean }
 
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,

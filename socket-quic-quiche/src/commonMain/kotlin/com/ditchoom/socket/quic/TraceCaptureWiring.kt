@@ -23,7 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
     quicOptions.trace?.let {
         val connection = it.captureFor()
-        TraceCapture.On(QuicTraceRecorder(connection.sink), connection.qlog)
+        TraceCapture.On(QuicTraceRecorder(connection.sink), connection.qlog, connection.trafficSecrets)
     } ?: TraceCapture.Off
 
 /**

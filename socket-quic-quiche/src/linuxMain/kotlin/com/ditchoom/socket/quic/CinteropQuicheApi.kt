@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_grease
 import com.ditchoom.socket.quic.quiche.quiche_config_load_cert_chain_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_load_priv_key_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
+import com.ditchoom.socket.quic.quiche.quiche_config_log_keys
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_active_connection_id_limit
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
@@ -65,6 +66,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_keylog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
@@ -673,6 +675,13 @@ internal object CinteropQuicheApi : QuicheApi {
         // Kotlin String to a NUL-terminated C string), so pass the Strings straight through — no
         // manual `.cstr`/memScoped marshaling.
         quiche_conn_set_qlog_path(conn.handle.toCPointer()!!, path, title, desc)
+
+    override fun configLogKeys(config: QuicheConfig) = quiche_config_log_keys(config.handle.toCPointer()!!)
+
+    override fun connSetKeylogPath(
+        conn: QuicheConn,
+        path: String,
+    ): Boolean = quiche_conn_set_keylog_path(conn.handle.toCPointer()!!, path)
 
     // --- Path migration ---
 
