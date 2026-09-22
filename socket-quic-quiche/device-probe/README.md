@@ -176,7 +176,7 @@ library's client code at all, so it is what a client-side trace or log is checke
 disagree.
 
 ```bash
-device-probe/server-pull.sh walk
+device-probe/server-pull.sh walk logs/<stamp>-walk-qlog ../ios-probe/device/logs/<stamp>-walk-qlog
 ```
 
 Copies every server qlog file to `device-probe/logs/<utc-stamp>-walk-server-qlog/` — including the
@@ -186,6 +186,11 @@ their last complete record — with `MANIFEST.tsv` (each file's state, `settled`
 `[qlog]` stdout lines in `server-stdout.txt`, and `provenance.txt` (`BUILD-INFO.txt` and the
 container's image, start time and `QUIC_*` environment from `docker inspect`). It says plainly when
 there is nothing to pull, when the server's START says `qlog=off`, and when its build is not stamped.
+
+Given the device pulls' qlog directories, it pairs every lane's connection (`conn-v6-0007`) with its
+server record (`quiche-server-<session>`) by the original destination CID both heads carry, and writes
+`PAIRS.tsv` (`qlog-pair.py`, runnable on its own). A device connection with no server record is named
+as a capture gap; a server record no device claims is another client or a health check.
 
 The server prints `START build=<commit> port=… qlog=<dir> QLOG-BUDGET …` before READY and writes the
 same line into `qlog-budget.log`, so every pulled capture names the build that wrote it. Its qlog

@@ -12,6 +12,11 @@
 # server keeps them under its budget and names everything it dropped in qlog-budget.log, which is
 # pulled too, together with the server's own START line (its build and capture config).
 #
+#   ./server-pull.sh <tag> [<device-qlog-dir> …]
+#
+# Given the device pulls' qlog directories (lane-named conn-v6-0007.sqlog …), it pairs every device
+# connection with its server record by original destination CID (qlog-pair.py -> PAIRS.tsv).
+#
 # Read-only against the server: it deletes nothing there. What the server keeps is its budget's
 # decision, not this script's.
 set -euo pipefail
@@ -26,7 +31,7 @@ SERVER_CONTAINER="${SERVER_CONTAINER:-quic-echo-test}"
 # copied whole.
 SETTLED_AGE_SECONDS=60
 
-TAG="${1:?usage: server-pull.sh <tag>}"
+TAG="${1:?usage: server-pull.sh <tag> [<device-qlog-dir> …]}"
 mkdir -p "$(dirname "$0")/logs"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="$(dirname "$0")/logs/$stamp-$TAG-server-qlog"
@@ -188,3 +193,9 @@ provenance_file="$out/provenance.txt"
   echo "$provenance_text"
 } > "$provenance_file"
 echo "provenance -> $provenance_file"
+
+# Which server record is which device connection: by original destination CID, the one id both heads
+# carry. A device connection with no server record is a capture gap, and says so.
+if [ "$#" -gt 1 ]; then
+  python3 "$(dirname "$0")/qlog-pair.py" "$out" "${@:2}"
+fi

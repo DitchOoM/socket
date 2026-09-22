@@ -44,10 +44,10 @@ import com.ditchoom.socket.testkit.migration.forRun
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
-import com.ditchoom.socket.testkit.walk.LaneWatch
-import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.DiskFree
+import com.ditchoom.socket.testkit.walk.LaneWatch
+import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import kotlinx.coroutines.Dispatchers
@@ -200,7 +200,11 @@ class DeviceHandoffProbe {
         emit(targets.lanesLine(echoIntervalMs.milliseconds))
         when (qlog) {
             WalkQlog.Off -> Unit
-            is WalkQlog.Into -> targets.lanes.forEach { lane -> lane.log(::write)(qlog.byLane.getValue(lane.label).budget.line) }
+            is WalkQlog.Into ->
+                targets.lanes.forEach { lane ->
+                    val directory = qlog.byLane.getValue(lane.label)
+                    lane.log(::write)(directory.budget.line)
+                }
         }
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
@@ -961,7 +965,6 @@ private class RingTraceSink(
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
 
-/** Whether this walk records quiche's qlog, and into which directory. */
 /** Whether this walk records quiche's qlog, and each lane's budgeted directory for it. */
 private sealed interface WalkQlog {
     data object Off : WalkQlog {
