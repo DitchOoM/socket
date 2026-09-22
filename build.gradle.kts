@@ -47,8 +47,20 @@ val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
-// Only compute version if not explicitly provided via -Pversion
-if (!project.hasProperty("version") || project.version == "unspecified") {
+
+// A CI build is handed its version (ORG_GRADLE_PROJECT_version / -Pversion) by its workflow's
+// `version` job: compute-version.yaml on the release path, compute-ci-version.yaml everywhere else.
+// Maven Central is read only by a local build and by `nextVersion`, the task that computes the
+// release version; anywhere else in CI a live fetch would make the build depend on Central's
+// availability and on the moment it ran, so a missing version fails here instead.
+val isCI = System.getenv("CI") == "true"
+val isComputingNextVersion = gradle.startParameter.taskNames.any { it.substringAfterLast(':') == "nextVersion" }
+val isVersionSupplied = project.version.toString().let { it.isNotBlank() && it != Project.DEFAULT_VERSION }
+if (!isVersionSupplied) {
+    check(!isCI || isComputingNextVersion) {
+        "No version supplied to a CI build. Set ORG_GRADLE_PROJECT_version for this job from the " +
+            "workflow's `version` job (compute-ci-version.yaml, or compute-version.yaml on the release path)."
+    }
     project.version = getNextVersion(!isRunningOnGithub).toString()
 }
 
@@ -691,7 +703,7 @@ afterEvaluate {
 }
 
 tasks.register("nextVersion") {
-    println(getNextVersion(false))
+    doLast { println(getNextVersion(false)) }
 }
 
 dokka {

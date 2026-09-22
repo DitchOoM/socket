@@ -25,8 +25,14 @@ env:
   QUIC_TEST_TIME_SCALE: "3"
 
 jobs:
+  # Every Gradle call below, including those in scripts/android-emulator-tests.sh, takes this run's
+  # one version through the job env; build.gradle.kts fails a CI build that was not handed one.
+  version:
+    uses: ./.github/workflows/compute-ci-version.yaml
+
   android-emulator:
     runs-on: ubuntu-latest
+    needs: version
     # 25, not 15: a passing run already takes ~14m58s (emulator boot + KVM-accelerated
     # instrumented tests), so a 15-min cap tips a healthy run into a "cancelled" timeout on
     # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
@@ -36,6 +42,8 @@ jobs:
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
     # snapshot on shutdown, and a 1-second grace is not enough to flush one.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     strategy:
       # 29 and 35 are independent signals — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.

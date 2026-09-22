@@ -149,6 +149,11 @@ jobs:
             echo "Opened new tracking issue."
           fi
 
+  # The version both cache-warm jobs hand to Gradle; build.gradle.kts fails a CI build that was not
+  # handed one. The freshness job runs no Gradle.
+  version:
+    uses: ./.github/workflows/compute-ci-version.yaml
+
   # -------------------------------------------------------------------------
   # 2. Native cache-warm — build BoringSSL / quiche / liburing into the SAME
   #    actions/cache entries build-linux.yaml restores, so PRs get a warm hit.
@@ -161,6 +166,9 @@ jobs:
     name: "Warm native build caches (Linux x64 + arm64)"
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    needs: version
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -416,6 +424,9 @@ jobs:
     name: "Warm native build caches (Apple)"
     runs-on: macos-26
     timeout-minutes: 60
+    needs: version
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 

@@ -19,11 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One Maven Central version query for the whole run, ~90s, feeding every job below. Both build
-  # jobs used to compute their own, which let a release publishing between their two queries pin
-  # them to different versions — see compute-version.yaml and #329.
+  # The run's version, derived from git tags (compute-ci-version.yaml). Every Gradle-running job
+  # below takes it; build.gradle.kts fails a CI build that was not handed one.
   version:
-    uses: ./.github/workflows/compute-version.yaml
+    uses: ./.github/workflows/compute-ci-version.yaml
 
   ci-scripts:
     name: "CI script tests"
@@ -72,9 +71,13 @@ jobs:
   #     note); the Apple link gate below + the linuxX64Test handshake suite are the strong Gap-A catchers.
   consumer-smoke:
     name: "Consumer Smoke (JVM + Linux link)"
-    needs: [validate]
+    needs: [version, validate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # For the root-build controllerJar step; the .ci/consumer-smoke build is standalone and takes
+    # the artifacts' version as -PsocketVersion.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - name: Download merged maven-local
@@ -437,9 +440,6 @@ jobs:
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
     needs: [version, build-linux]
-    # Pinned like every other Gradle-running job in the run. This lane publishes nothing, so a
-    # divergent version could not corrupt an artifact — but it removes one more live Maven Central
-    # fetch, which is both latency and a failure mode, and keeps "one version per run" exception-free.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
@@ -508,9 +508,6 @@ jobs:
     name: "Validate Docs Generation"
     runs-on: macos-latest
     needs: version
-    # Same reasoning as build-windows: docs publish nothing, but pinning drops a Central fetch from
-    # the Dokka run. `needs: version` delays this job by ~90s; it finishes in ~8 min against a
-    # ~40 min critical path, so it stays far off it.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
