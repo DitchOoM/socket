@@ -54,21 +54,15 @@ import kotlin.time.Duration.Companion.seconds
  * assertions — not probabilistic flake-catchers. Sizes are tuned to finish well inside `runQuicTest`'s
  * 15 s cap on loopback.
  *
- * ## No `supportsConcurrentConnectionsToSameEndpoint()` escape hatch
- * The two `manyConnections*` tests used to sit behind one, defaulting to `true`, "because Network.
- * framework allows only ONE multiplex QUIC group per (host, port) endpoint per process, so the Apple
- * member overrides this to false (issue #112)". That described the **deleted** NW QUIC backend; since
- * the June 2026 pivot Apple runs the same Cloudflare quiche engine over its own UDP sockets, and no
- * member has overridden the hook on any platform. What remained was a live mechanism for making two of
- * these five tests disappear: `false` skipped them by returning early, and an early return is reported
- * as a **pass** — silently on Kotlin/Native, where there is no `assume`.
- *
- * A platform that genuinely cannot open concurrent connections to one endpoint must record a typed skip
- * instead, as [QuicActiveMigrationTestSuite] requires: override [wrapTestBody] on the member class and
- * call `recordSkip(TheMember::class, reason, gate)` without invoking the block, which emits the
- * `[TEST-SKIPPED]` marker the CI skip inventory counts. (That gate is per-suite, not per-test, which is
- * the honest granularity: a platform with that limitation cannot run *either* `manyConnections*` test,
- * and splitting the suite is cheaper than reintroducing a per-test boolean.)
+ * ## No per-test escape hatch
+ * No hook lets a member return early from a test: an early return is reported as a **pass** — silently
+ * on Kotlin/Native, where there is no `assume`. A platform that genuinely cannot open concurrent
+ * connections to one endpoint must record a typed skip, as [QuicActiveMigrationTestSuite] requires:
+ * override [wrapTestBody] on the member class and call `recordSkip(TheMember::class, reason, gate)`
+ * without invoking the block, which emits the `[TEST-SKIPPED]` marker the CI skip inventory counts.
+ * (That gate is per-suite, not per-test, which is the honest granularity: a platform with that
+ * limitation cannot run *either* `manyConnections*` test, and splitting the suite is cheaper than a
+ * per-test boolean.)
  */
 abstract class QuicConcurrencySoakTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -127,8 +121,7 @@ abstract class QuicConcurrencySoakTestSuite {
      * `initial_max_streams` credit flow harder than the baseline. Same shape and assertions as
      * [manyConcurrentStreamsOnOneConnectionRoundTrip]. CI-safe: the stream count is fixed and bounded; a
      * loaded runner is given proportionally more wall-clock via `.scaled` (the `runQuicTest` cap and every
-     * per-op timeout), never a weaker assertion. Works on every backend including Apple (single connection,
-     * stream multiplexing — the NW model).
+     * per-op timeout), never a weaker assertion.
      */
     @Test
     fun manyConcurrentStreamsHighConcurrencyRoundTrip() =

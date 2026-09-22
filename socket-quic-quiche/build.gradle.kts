@@ -1607,8 +1607,8 @@ fun patchQuicheBuildRsForIosSim(sourceDir: File) {
 }
 
 /**
- * Build quiche as a STATIC library (libquiche.a only) for a K/Native Apple target — the
- * quiche-on-Apple pivot's iOS datapath. macOS reuses [createBuildQuicheSharedTask] (it also copies the
+ * Build quiche as a STATIC library (libquiche.a only) for a K/Native Apple target — the iOS QUIC
+ * engine. macOS reuses [createBuildQuicheSharedTask] (it also copies the
  * .a alongside the dylib); iOS has no dylib step because the `cdylib`/dylib *link* fails on iOS while
  * K/N only needs the archive, so we use `cargo rustc --crate-type staticlib` (no dylib link attempted).
  */
@@ -1719,7 +1719,7 @@ val buildQuicheSharedLinuxArm64 = if (isLinux) createBuildQuicheSharedTask("linu
 val buildQuicheSharedMacosX64 = if (isMacOS) createBuildQuicheSharedTask("macos", "x64") else null
 val buildQuicheSharedMacosArm64 = if (isMacOS) createBuildQuicheSharedTask("macos", "arm64") else null
 
-// iOS static libs for the quiche-on-Apple pivot (macOS .a comes from the shared tasks above). Device
+// iOS static libs for the Apple quiche engine (macOS .a comes from the shared tasks above). Device
 // (aarch64-apple-ios), simulator-arm64 (…-ios-sim), and simulator-x64 (x86_64-apple-ios).
 val buildQuicheStaticIosArm64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-arm64", "aarch64-apple-ios") else null
 val buildQuicheStaticIosSimulatorArm64 =
@@ -2019,14 +2019,6 @@ afterEvaluate {
         // Put staged natives on the test runtime classpath so NativeLibLoader
         // can extract them as classloader resources.
         classpath += files(stagedNativeResourcesDir)
-
-        // Forward `nw.plain.*` system properties to the forked worker JVM (CLI `-D` does NOT propagate
-        // to test workers). Used by the manually-launched QuichePlainProbeClient anti-amplification
-        // probe (-Dnw.plain.client=true); a no-op for ordinary test runs.
-        for ((k, v) in System.getProperties()) {
-            val key = k.toString()
-            if (key.startsWith("nw.plain.")) systemProperty(key, v.toString())
-        }
 
         // --- Heap-corruption / UAF guard ---------------------------------------
         // `-PquicMallocCheck` runs the forked test workers under glibc's malloc
@@ -3170,8 +3162,7 @@ val generateQuicHarnessConfig =
             // skip if the harness isn't actually up.
             val port = env["QUIC_ECHO_PORT"] ?: "14433"
             // Embed the harness CA (PEM) so the cross-platform test can pin it as a
-            // trust anchor on Apple (Network.framework rejects the private CA on the
-            // QUIC path otherwise — issue #81). Null when certs aren't generated.
+            // trust anchor on Apple. Null when certs aren't generated.
             val caCertPem = quicHarnessCaCertFile.takeIf { it.exists() }?.readText()?.trim()
             val pkgDir =
                 quicHarnessGeneratedDir
@@ -3420,10 +3411,10 @@ kotlin {
         }
     }
 
-    // quiche-on-Apple pivot: the Apple QUIC backend is Cloudflare quiche (K/N cinterop into a
-    // self-contained libquiche.a with vendored BoringSSL) over a POSIX UDP datapath — replacing the
-    // Network.framework system-QUIC backend (the deleted :socket-quic-nw). macOS .a comes from the
-    // shared cargo tasks; iOS .a from createBuildQuicheAppleStaticTask. See quiche-on-apple-pivot.
+    // The Apple QUIC engine is Cloudflare quiche (K/N cinterop into a self-contained libquiche.a with
+    // vendored BoringSSL). The client's UDP datagrams ride an NWConnection; the server binds a
+    // dual-stack POSIX UDP socket. macOS .a comes from the shared cargo tasks; iOS .a from
+    // createBuildQuicheAppleStaticTask.
     if (appleTargets) {
         // One configurator for every Apple target. Each target's self-contained libquiche.a (boring-crate
         // vendors BoringSSL into it) is EMBEDDED into the Quiche cinterop
@@ -3975,24 +3966,17 @@ ktlint {
     }
 }
 
-// (The iOS-simulator QUIC harness booted-mode wiring — issue #81 — was defined in the deleted
-// :socket-quic-nw module. The Apple QUIC suites now run from this module's own appleTest.)
-
 // --- Self-signed `localhost` test identity, GENERATED at build time (issues #112 / #99) ---
 // The QUIC CA-pinning tests (QuicServerTestSuite.pinnedCorrectCaAnchor.../pinnedWrongCaAnchor...)
-// do a REAL TLS chain validation, so the localhost identity must satisfy BOTH stacks at once:
-//   * Apple's SecTrust rejects any TLS cert whose validity exceeds 398 days
-//     (errSecCertificateNotStandardsCompliant) — so it MUST be short-lived, which means it can't
-//     be committed "forever" (a 100-year cert passed on quiche but hung every Apple handshake).
-//   * quiche/BoringSSL only accepts a self-signed cert as a pinned trust ANCHOR when it is CA:TRUE.
-// Generating it fresh (397-day, CA:TRUE, serverAuth EKU, SAN localhost+127.0.0.1) keeps it
-// perpetually valid on every platform with ZERO committed expiry. We use `keytool` — it ships with
-// the JDK the build already requires, so it's portable to the Windows jvmTest runner (unlike
-// openssl, which isn't guaranteed there) — plus a pure-JVM PKCS#8 key export. The PEM pair then
-// feeds the openssl p12 step below, which only runs on macOS for the Apple server.
+// do a REAL TLS chain validation, and quiche/BoringSSL only accepts a self-signed cert as a pinned
+// trust ANCHOR when it is CA:TRUE. Generated fresh (397-day, CA:TRUE, serverAuth EKU, SAN
+// localhost+127.0.0.1), so no committed cert ever expires. We use `keytool` — it ships with the JDK
+// the build already requires, so it's portable to the Windows jvmTest runner (unlike openssl, which
+// isn't guaranteed there) — plus a pure-JVM PKCS#8 key export. keytool can only write a keystore,
+// so the pair is minted into a throwaway PKCS12 file in the task's temporaryDir and exported to PEM.
 //
 // Written to every dir a consumer reads (each test source set has its own copy; all git-ignored):
-//   testcerts/                        → Apple K/N + Linux (cwd-relative) + the p12 source below
+//   testcerts/                        → Apple K/N + Linux (cwd-relative)
 //   src/jvmTest/resources/certs/      → JVM (classpath, incl. the Windows runner)
 //   src/androidInstrumentedTest/...   → Android instrumented tests (classpath)
 val localhostCertDirs =
@@ -4203,20 +4187,10 @@ val generatePinnedW3cCerts =
         }
     }
 
-// --- PKCS#12 test identities for the Apple QUIC server tests (issues #112 + #99) ---
-// Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds from a
-// PKCS#12 bundle. Generate a `.p12` for each PEM cert+key using the system openssl (LibreSSL — its
-// default p12 encoding is one SecPKCS12Import reads reliably; this is why we do NOT reuse keytool's
-// PKCS12, whose newer PBE algorithms SecPKCS12Import may reject). Apple builds only on macOS, where
-// openssl is always present, so this never runs on the Windows jvmTest runner. Git-ignored; the
-// Apple K/N test tasks depend on it so the p12s exist (cwd-relative testcerts/*.p12) at runtime.
-//   - cert.p12      → the committed quic.tech example identity used by most Apple server tests.
-//   - localhost.p12 → the generated localhost identity the CA-pinning tests need.
-
 // Wire generateLocalhostCert ahead of everything that reads localhost.* — the test tasks
 // themselves (cwd-relative reads on JVM/Linux/Apple K/N) and the resource-processing tasks that
 // copy it onto the JVM/Android test classpath. Each match only adds a dependsOn, harmless for any
-// task that doesn't actually read the cert. generateTestP12 already chains via dependsOn above.
+// task that doesn't actually read the cert.
 tasks
     .matching {
         it.name.matches(Regex("(jvm|linuxX64|macos|ios|tvos|watchos)\\w*Test")) ||

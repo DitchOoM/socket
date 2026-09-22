@@ -109,11 +109,10 @@ kotlin {
     }
 
     if (appleTargets) {
-        // Apple QUIC is quiche (the quiche-on-Apple pivot), provided transitively via :socket-http3 →
-        // :socket-quic-default → :socket-quic-quiche, whose Quiche cinterop klib now EMBEDS libquiche.a
-        // and carries the Apple frameworks in its manifest linkerOpts (Gap A's fix). The WebTransport
-        // conformance test.kexe therefore links quiche + frameworks straight from that klib — the old
-        // repo-absolute `-force_load` here is redundant and removed. tvOS/watchOS have no quiche target.
+        // Apple QUIC is quiche, provided transitively via :socket-http3 → :socket-quic-default →
+        // :socket-quic-quiche, whose Quiche cinterop klib EMBEDS libquiche.a and carries the Apple
+        // frameworks in its manifest linkerOpts, so the WebTransport conformance test.kexe links quiche +
+        // frameworks straight from that klib. tvOS/watchOS have no quiche target.
         macosArm64()
         macosX64()
         iosArm64()
@@ -276,10 +275,9 @@ afterEvaluate {
     }
 }
 
-// The Apple WebTransport conformance suite now runs on the quiche backend (the quiche-on-Apple pivot),
-// which loads a loose PEM cert+key directly from the committed testcerts/cert.{crt,key} — exactly like
-// JVM/Linux. The old PKCS#12 export (an NW `sec_identity_t` requirement) and the NW<->quiche cross-impl
-// interop jar are both gone (Apple IS quiche now, so there are no two implementations to cross-test).
+// The Apple WebTransport conformance suite's quiche server loads a loose PEM cert+key directly from the
+// committed testcerts/cert.{crt,key} — exactly like JVM/Linux — so the Apple K/N test tasks need no
+// cert-generation dependency.
 
 // --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
 // Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an
@@ -287,9 +285,8 @@ afterEvaluate {
 // W3C serverCertificateHashes `pinned` fixture for the local browser-interop lane (real Chrome ↔ the
 // quiche JVM BrowserInteropServer). Chrome accepts a self-signed leaf only via serverCertificateHashes,
 // which requires an EC P-256 leaf with ≤14-day validity — so it's generated fresh (a committed one is a
-// guaranteed expiry flake) into this module's gitignored testcerts/. Relocated here from the deleted
-// :socket-quic-nw (which produced it for the now-removed NW cross-impl cells); the browser lane operator
-// runs `:socket-webtransport:generateWebTransportPinnedCert` before launching BrowserInteropServer.
+// guaranteed expiry flake) into this module's gitignored testcerts/. The browser lane operator runs
+// `:socket-webtransport:generateWebTransportPinnedCert` before launching BrowserInteropServer.
 val generateWebTransportPinnedCert =
     tasks.register("generateWebTransportPinnedCert") {
         group = "verification"

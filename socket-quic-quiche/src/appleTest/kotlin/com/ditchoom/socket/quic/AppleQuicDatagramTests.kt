@@ -13,10 +13,6 @@ package com.ditchoom.socket.quic
  * :socket-webtransport Apple suites must (they have no equivalent fallback, so the missing cwd is fatal
  * there). No `wrapTestBody` override: there is no condition under which this should silently pass
  * without running.
- *
- * The historical flake in #158 blamed the Network.framework backend's datagram path; that backend was
- * deleted in the June 2026 quiche pivot, and the suite already wraps the round-trip in the shared
- * `withLiveQuicConnection` retry that covers a datagram-wedged connection on a virtualized runner.
  */
 class AppleQuicDatagramTests : QuicDatagramTestSuite() {
     override fun testTlsConfig() = AppleTestCerts.tlsConfig

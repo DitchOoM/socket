@@ -80,12 +80,11 @@ kotlin {
     }
 
     if (appleTargets) {
-        // Apple QUIC is Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
-        // :socket-quic-default → :socket-quic-quiche, whose Quiche cinterop klib now EMBEDS libquiche.a
-        // and carries the Apple frameworks in its manifest linkerOpts (Gap A's fix). The live H3
-        // loopback test.kexe therefore links quiche + frameworks straight from that klib — the old
-        // repo-absolute `-force_load` here (one per target) is redundant and removed. tvOS/watchOS have
-        // no quiche target (UnsupportedQuicEngine), so they link no quiche.
+        // Apple QUIC is Cloudflare quiche, provided transitively via :socket-quic-default →
+        // :socket-quic-quiche, whose Quiche cinterop klib EMBEDS libquiche.a and carries the Apple
+        // frameworks in its manifest linkerOpts, so the live H3 loopback test.kexe links quiche +
+        // frameworks straight from that klib. tvOS/watchOS have no quiche target
+        // (UnsupportedQuicEngine), so they link no quiche.
         macosArm64()
         macosX64()
         iosArm64()
@@ -113,9 +112,9 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":socket-quic"))
-            // v6 Phase 2b.5: the withQuicConnection/withQuicServer entrypoints that WithHttp3* call
-            // live in :socket-quic-default (which selects the per-platform engine: quiche on
-            // jvm/android/linux, Network.framework on Apple, Unsupported on js/wasm). It transitively
+            // The withQuicConnection/withQuicServer entrypoints that WithHttp3* call live in
+            // :socket-quic-default (which selects the per-platform engine: quiche on
+            // jvm/android/linux/macOS/iOS, Unsupported on tvOS/watchOS and js/wasm). It transitively
             // contributes the quiche backend (+ root :socket BoringSSL) on jvm/linux. implementation,
             // not api: withQuic* are called internally; no :socket-quic-default type is in http3's API.
             implementation(project(":socket-quic-default"))
@@ -197,9 +196,8 @@ afterEvaluate {
     }
 }
 
-// The Apple Http3 loopback suite now runs on the quiche backend (the quiche-on-Apple pivot), which loads
-// a loose PEM cert+key directly from the committed testcerts/cert.{crt,key} — exactly like JVM/Linux. The
-// old PKCS#12 export (an NW `sec_identity_t` requirement) is gone, so the Apple K/N test tasks need no
+// The Apple Http3 loopback suite's quiche server loads a loose PEM cert+key directly from the committed
+// testcerts/cert.{crt,key} — exactly like JVM/Linux — so the Apple K/N test tasks need no
 // cert-generation dependency.
 
 // --- Publishing ---

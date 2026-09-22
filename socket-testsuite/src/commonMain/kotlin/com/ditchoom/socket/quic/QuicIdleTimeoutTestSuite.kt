@@ -56,9 +56,9 @@ abstract class QuicIdleTimeoutTestSuite {
      */
     @Test
     fun idleConnectionTimesOutWithCleanEnd() =
-        // Budget covers several withLiveQuicConnection attempts: on the virtualized macos-26 CI loopback a
-        // connection can come up drain-storm-wedged (handshakes through a transient NW path flap, then
-        // passes no bytes), so a warmup probe retries a fresh connection before the real idle-out wait. The
+        // Budget covers several withLiveQuicConnection attempts: on a virtualized macOS runner's loopback a
+        // connection can come up drain-storm-wedged (handshakes, then passes no bytes after a transient
+        // network-down flap), so a warmup probe retries a fresh connection before the real idle-out wait. The
         // server echoes (so the warmup can round-trip), then goes idle once the client stops sending.
         runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
@@ -108,9 +108,9 @@ abstract class QuicIdleTimeoutTestSuite {
      */
     @Test
     fun activityKeepsConnectionAlivePastIdleTimeout() =
-        // Budget covers several withLiveQuicConnection attempts: on the virtualized macos-26 CI loopback a
-        // connection can come up drain-storm-wedged (handshakes through a transient NW path flap, then
-        // passes no bytes), so the warmup probe retries a fresh connection before the real keepalive wait.
+        // Budget covers several withLiveQuicConnection attempts: on a virtualized macOS runner's loopback a
+        // connection can come up drain-storm-wedged (handshakes, then passes no bytes after a transient
+        // network-down flap), so the warmup probe retries a fresh connection before the real keepalive wait.
         runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
                 val opts = options(KEEPALIVE_IDLE).copy(keepAliveInterval = KEEPALIVE_INTERVAL)

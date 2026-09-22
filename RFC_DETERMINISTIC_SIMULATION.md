@@ -174,5 +174,5 @@ Implementation generalizes the proven `Toxiproxy.kt` pattern (commonTest HTTP co
 
 - Byte-replaying encrypted field traffic through real quiche (impossible by design — Tier A exists for this).
 - Replacing the existing byte-level fuzzers (Jazzer, seeded H3/QPACK fuzz) — the timeline fuzzer targets event ordering, a different axis.
-- Simulating NW-specific QUIC behavior — Apple QUIC is quiche (June 2026 pivot); the driver seams cover Apple like every other platform.
+- Simulating NW-specific QUIC behavior — Apple QUIC is quiche; the driver seams cover Apple like every other platform.
 - Per-test dynamic container provisioning (real isolation for parallel consumers) — deferred until static-ports + toxiproxy proves insufficient.

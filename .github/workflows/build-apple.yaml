@@ -65,10 +65,9 @@ env:
 
 jobs:
   # ── Stage 1: build every Apple quiche native exactly once ────────────────────────────────────
-  # The Apple QUIC backend is Cloudflare quiche over an NWConnection-UDP datapath (the
-  # quiche-on-Apple pivot replaced the Network.framework system-QUIC backend / the deleted
-  # :socket-quic-nw). quiche needs no special SDK; macos-26 is kept for a recent Xcode + an iOS-26
-  # simulator runtime for iosSimulatorArm64Test.
+  # The Apple QUIC engine is Cloudflare quiche; the client's UDP rides an NWConnection and the
+  # server binds a dual-stack POSIX UDP socket. quiche needs no special SDK; macos-26 is kept for a
+  # recent Xcode + an iOS-26 simulator runtime for iosSimulatorArm64Test.
   natives:
     name: "Apple quiche natives"
     runs-on: macos-26
@@ -332,9 +331,9 @@ jobs:
   #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack)
   #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)
   # macosArm64Test is NOT here — it runs in integration-macos-arm64 from the prebuilt .kexe the
-  # `link` job uploads. iosSimulatorArm64Test runs the quiche loopback for real (the POSIX/NW
-  # datapath needs no Network.framework listener, so it works standalone); the H3/WebTransport
-  # suites self-skip on the standalone sim (no testcerts/ cwd). tvOS/watchOS have no quiche target
+  # `link` job uploads. iosSimulatorArm64Test runs the quiche loopback for real (it embeds its certs,
+  # so it works standalone); the H3/WebTransport suites self-skip on the standalone sim (no
+  # testcerts/ cwd). tvOS/watchOS have no quiche target
   # → UnsupportedQuicEngine, so their QUIC suites skip cleanly.
   # NOT continue-on-error: a real Apple test failure must stay red.
   kn-tests:
@@ -621,7 +620,7 @@ jobs:
       # Gradle at all, so without this the checkout's testcerts/ holds only the two committed files
       # and the Apple CA-/hash-pinning tests die on AppleTestCerts.MissingGeneratedFixture.
       # The verify task depends on both generators, so it both MINTS the fixtures and fails here,
-      # in the producing job, if any is missing. PEMs are all these suites read — no .p12.
+      # in the producing job, if any is missing.
       - name: Link macosArm64 test binaries (+ mint and verify the generated TLS fixtures)
         run: >-
           ./gradlew linkDebugTestMacosArm64

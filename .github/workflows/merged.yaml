@@ -226,9 +226,8 @@ jobs:
               status="✅ exercised"
             elif [ "$applicable" = "false" ]; then
               # The quiche QuicHarnessIntegrationTests doesn't run on this lane at all
-              # (JS has no QUIC implementation; an Apple NW-only lane has no quiche target).
-              # `ok=0,skip=0` is structural, not a silently all-skipped regression — that
-              # platform's QUIC client (if any) is validated elsewhere. Render ℹ️, never fail.
+              # (JS has no QUIC implementation). `ok=0,skip=0` is structural, not a silently
+              # all-skipped regression. Render ℹ️, never fail.
               # NOTE: this branch must mirror review.yaml's copy of the same job — the two
               # had drifted (merged.yaml lacked it), reddening every release on the JS lane.
               status="ℹ️ platform gap (known)"

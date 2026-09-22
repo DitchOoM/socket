@@ -8,7 +8,7 @@ import org.junit.runner.RunWith
  * [JvmQuicDatagramTests] / [LinuxQuicDatagramTests]. Replaces the former hand-copy, which only carried
  * `datagramRoundTrip` + `datagramsDisabledByDefault`; extending the suite ALSO gains the
  * `datagramTooLargeThrows` validation test the hand-copy was missing. The shared
- * `withLiveQuicConnection` retry on the round-trip is a no-op on the quiche backend (no NW drain storm).
+ * `withLiveQuicConnection` retry on the round-trip is a no-op on a connection that is live at once.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicDatagramTests : QuicDatagramTestSuite() {

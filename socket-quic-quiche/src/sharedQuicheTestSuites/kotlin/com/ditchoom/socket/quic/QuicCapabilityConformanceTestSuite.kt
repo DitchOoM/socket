@@ -99,8 +99,8 @@ abstract class QuicCapabilityConformanceTestSuite {
                         declared,
                         "a client connection on a real quiche engine under a permitting MigrationPolicy must " +
                             "declare that it can migrate. Anything else here means this platform's connection setup " +
-                            "wired no UdpChannelFactory — the exact shape in which Apple shipped without RFC 9000 §9 " +
-                            "migration for a year, with no red test because nothing asked. Declared: $declared",
+                            "wired no UdpChannelFactory, so its connections silently cannot perform RFC 9000 §9 " +
+                            "migration. Declared: $declared",
                     )
                     // The behavioural half of the same claim: the Impossible family means "and never will,
                     // whatever the network does", so a connection that just declared Supported cannot answer

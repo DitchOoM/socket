@@ -10,8 +10,8 @@ import com.ditchoom.buffer.flow.SocketAddress
  *
  * A sealed answer rather than a nullable factory: "no factory" and "a factory that is null" read the
  * same at a call site, and the migration wiring is the one place in this driver where getting that
- * wrong is silent — a connection with no factory simply never migrates and nothing asks why, which is
- * how Apple shipped without migration (see [MigrationCapability]).
+ * wrong is silent — a connection with no factory simply never migrates and nothing asks why (see
+ * [MigrationCapability]).
  */
 internal sealed interface ClientPathOrigin {
     /** The connection owns its socket. [factory] opened the primary path and opens every later one. */

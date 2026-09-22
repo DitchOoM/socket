@@ -107,18 +107,8 @@ suspend fun awaitUntil(
  * tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64,
  * watchosSimulatorArm64, watchosX64).
  *
- * Used by `QuicHarnessIntegrationTests` to select the Apple-only pinned-trust
+ * Used by `QuicHarnessIntegrationTests` to select the Apple pinned-trust
  * configuration (verifyPeer = true against the pinned harness CA) instead of the
  * verifyPeer = false the other targets use.
- *
- * Historical note: this flag once gated a much larger Apple carve-out, back when
- * Apple QUIC ran on Network.framework and its QUIC TLS rejected the private-CA,
- * non-CT-logged harness cert with errSSLBadCert (-9808). Apple QUIC is quiche
- * now, so that whole class of divergence is gone — the flag survives only to pick
- * the pinning configuration.
- *
- * (Earlier docstrings referenced an `AppleQuicConnectStartupProbe` as the Apple
- * smoke test — it never existed in the repo. Broader macOS harness coverage is
- * tracked in issue #311.)
  */
 internal expect fun isAppleKNative(): Boolean

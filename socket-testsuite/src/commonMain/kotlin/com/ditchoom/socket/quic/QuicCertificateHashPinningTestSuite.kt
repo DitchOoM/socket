@@ -105,8 +105,8 @@ abstract class QuicCertificateHashPinningTestSuite {
     /**
      * Pinning a non-matching hash must reject the connection with a [CertificateHashPinningException]
      * whose [CertificateHashPinningFailure.HashMismatch] carries the leaf the server actually presented.
-     * Every backend throws the identical type (quiche post-handshake; Apple/NW from the verify_block),
-     * and `HashMismatch` (vs `NoPeerCertificate`) also proves the leaf DER was read at runtime.
+     * Every backend is quiche and throws it post-handshake, and `HashMismatch` (vs `NoPeerCertificate`)
+     * also proves the leaf DER was read at runtime.
      */
     @Test
     fun rejectsWrongLeafHash() =
@@ -212,13 +212,7 @@ abstract class QuicCertificateHashPinningTestSuite {
                     "serverCertificateConstraintSupport=$serverCertificateConstraintSupport",
             )
             val opts = options()
-            // The `pinned-rsa` fixture deliberately presents an RSA leaf. On Apple that trips the
-            // Network.framework server anti-amplification guard (RSA flight can't be delivered to a
-            // non-Apple client). This suite is NW↔NW on Apple (the client is also Network.framework, which
-            // the bug doesn't affect), and it tests *pinning*, not interop — so bypass the guard for the
-            // server. The flag is ignored on every non-Apple backend and for the EC fixtures.
-            val serverOpts = opts.copy(appleAllowOversizedServerCert = true)
-            withQuicServer(port = 0, tlsConfig = fixtureTlsConfig(fixture), quicOptions = serverOpts) {
+            withQuicServer(port = 0, tlsConfig = fixtureTlsConfig(fixture), quicOptions = opts) {
                 val serverJob = launch { runCatching { connections {} } }
                 try {
                     val pinned = opts.copy(serverCertificateHashes = listOf(fixtureLeafHash(fixture)))

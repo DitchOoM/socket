@@ -14,12 +14,12 @@ import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * quiche-on-Apple end-to-end proof: an Apple [QuicheEngine] client and server talk to each other
+ * Apple quiche end-to-end proof: an Apple [QuicheEngine] client and server talk to each other
  * over the UDP loopback datapath, completing a QUIC handshake and a bidirectional stream
  * round-trip. Drives [QuicheEngine] directly rather than via `defaultQuicEngine` so the assertion
  * is pinned to this engine even if the default wiring changes. If this passes, the
  * full quiche QUIC stack — cinterop API, config/ALPN/cert loading, accept loop, per-peer demux, the
- * driver event loop, and the POSIX datapath — works on macOS.
+ * driver event loop, and the UDP datapath (an `NWConnection` client, a POSIX server) — works on macOS.
  */
 class AppleQuicheEngineLoopbackTest {
     // Cert resolution (incl. the TMPDIR materialization that lets this run for real on a --standalone

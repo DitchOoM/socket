@@ -92,10 +92,8 @@ abstract class QuicDatagramTestSuite {
                             reason = "datagram round-trip never completed (connection came up datagram-wedged)",
                         ) { confirmLive ->
                             assertTrue(datagramChannel().maxWritableSize > 0, "datagrams should be sendable")
-                            // RFC 9221 datagrams are UNRELIABLE and NW keeps no app-level pre-arm backlog, so
-                            // the very first datagram can be lost to a setup-ordering race (peer's recv loop
-                            // arms a sub-ms margin before this send; on a jittery runner the send beats the arm
-                            // → dropped). The robust pattern is resend-until-acked — the echo IS the ack. We
+                            // RFC 9221 datagrams are UNRELIABLE, so any single datagram — the first included —
+                            // may be dropped. The robust pattern is resend-until-acked — the echo IS the ack. We
                             // bound the wait: a HEALTHY connection echoes within a resend or two; a WEDGED one
                             // never echoes, so on timeout we abandon it and retry a fresh connection (the resend
                             // loop alone can't escape a wedge). On a reliable backend the first send is echoed

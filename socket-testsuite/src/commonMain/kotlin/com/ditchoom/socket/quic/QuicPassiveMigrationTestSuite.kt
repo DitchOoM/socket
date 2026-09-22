@@ -30,21 +30,14 @@ import kotlin.time.Duration.Companion.seconds
  * source 4-tuple suddenly changed. We assert the stream still round-trips afterward, exercising the
  * server's per-source recv_info + `sendInfo.to` egress routing.
  *
- * ## No `supportsPassiveSourceRebind()` escape hatch
- * This suite used to offer one, defaulting to `true`, "because Apple's server does not migrate egress
- * to a rebound source (issue #112)". That justification described the **deleted** Network.framework
- * QUIC backend, and no member has overridden it since: Apple's server has been the same Cloudflare
- * quiche server as JVM/Linux since the June 2026 pivot, doing the same per-source `recv_info` +
- * `sendInfo.to` routing. So the hook sat at `true` on every platform while remaining a live mechanism
- * for making this test *vanish* — a `false` here would have turned the one test in this suite into a
- * green tick that asserted nothing, and on Kotlin/Native there is no `assume`, so the early return is
- * reported as a pass with no trace at all.
- *
- * A platform that genuinely cannot do RFC 9000 §9.3 must therefore record a typed skip instead, exactly
- * as [QuicActiveMigrationTestSuite] requires: override [wrapTestBody] on the member class and call
- * `recordSkip(TheMember::class, reason, gate)` without invoking the block. That emits the
- * `[TEST-SKIPPED]` marker the CI skip inventory greps for, so the gap is counted rather than dissolved
- * into a passing run.
+ * ## No escape hatch
+ * Every member's server is quiche, doing the same per-source `recv_info` + `sendInfo.to` routing, and no
+ * hook lets a member return early: on Kotlin/Native there is no `assume`, so an early return is
+ * reported as a pass with no trace at all. A platform that genuinely cannot do RFC 9000 §9.3 must
+ * record a typed skip instead, exactly as [QuicActiveMigrationTestSuite] requires: override
+ * [wrapTestBody] on the member class and call `recordSkip(TheMember::class, reason, gate)` without
+ * invoking the block. That emits the `[TEST-SKIPPED]` marker the CI skip inventory greps for, so the
+ * gap is counted rather than dissolved into a passing run.
  */
 abstract class QuicPassiveMigrationTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig

@@ -106,17 +106,11 @@ abstract class QuicServerLifecycleTestSuite {
      * share one incoming-streams channel) must be released when the connection ends, not hang until
      * the caller's own timeout.
      *
-     * Here the connection ends via idle timeout — the close signal Network.framework delivers
-     * reliably. The client establishes a stream, then collects streams() while idle; when the idle
-     * timer fires, the connection closes and the flow must complete. On every quiche-backed platform
-     * this always held (the driver closes its incoming-streams channel on close); on Apple the
-     * post-handshake connection state used to be dropped, so the channel was never closed and a
-     * streams() collector / parked acceptStream() hung forever. The quiche platforms keep this
-     * regression honest cross-platform.
-     *
-     * Collecting streams() (vs a single acceptStream) also tolerates Network.framework delivering a
-     * hidden phantom initial stream to the client; it is simply drained, so the test asserts exactly
-     * the close-unblocks-consumers contract and nothing incidental.
+     * Here the connection ends via idle timeout. The client establishes a stream, then collects
+     * streams() while idle; when the idle timer fires, the connection closes and the flow must
+     * complete, because the driver closes its incoming-streams channel on close. Collecting streams()
+     * (vs a single acceptStream) drains anything else the peer opens, so the test asserts exactly the
+     * close-unblocks-consumers contract and nothing incidental.
      */
     @Test
     fun streamsFlowCompletesWhenConnectionCloses() =

@@ -32,22 +32,16 @@ import kotlin.time.Duration.Companion.seconds
  *
  * TLS trust is platform-specific (see the `applePinnedTrust` field). Non-Apple
  * targets connect with `verifyPeer = false` and accept the peer cert directly
- * (quiche + the JVM TLS stack) — we're exercising the QUIC client API surface
- * (handshake, stream open, write+read, multi-stream IDs), not cert validation.
- * Apple's Network.framework always evaluates the peer cert, so the Apple path
- * PINS the harness CA via [QuicOptions.trustedCaCertificatesPem]: a verify_block
- * makes it the sole anchor, and a pinned anchor is CT-exempt, which clears the
- * errSSLBadCert (-9808) the default QUIC trust path returns for the private-CA
- * leaf (issue #81). The peer serves `valid.crt` (SAN DNS:localhost), so Apple
- * connects via `localhost` to satisfy NW's hostname check. This runs on Apple
- * K/N now — no keychain trust step required (the prior skip is removed).
+ * — we're exercising the QUIC client API surface (handshake, stream open,
+ * write+read, multi-stream IDs), not cert validation. The Apple path PINS the
+ * harness CA via [QuicOptions.trustedCaCertificatesPem], so quiche's BoringSSL
+ * validates the chain against it as the sole anchor. The peer serves
+ * `valid.crt` (SAN DNS:localhost), so Apple connects via `localhost` to satisfy
+ * the hostname check.
  *
  * Tests gracefully skip when the harness isn't reachable (local dev
  * without Docker, CI fallback paths) — same withConnect-or-skip pattern
  * as the public-host tests this file replaces.
- *
- * Apple K/N skips this entire suite via [isAppleKNative] (see PR #54);
- * the harness only runs on Linux/JVM/JS CI.
  */
 @OptIn(ExperimentalDatagramApi::class)
 class QuicHarnessIntegrationTests {
@@ -55,16 +49,9 @@ class QuicHarnessIntegrationTests {
 
     // Apple runs verifyPeer = true and PINS the harness CA via
     // trustedCaCertificatesPem, so quiche validates the chain against ca.crt as
-    // the sole anchor rather than against the OS keychain. Other targets keep
-    // verifyPeer = false and let quiche / the JVM TLS stack accept the
-    // self-signed peer cert directly.
-    //
-    // The asymmetry predates the quiche-on-Apple pivot — it was originally
-    // required because Network.framework always evaluated the peer cert and its
-    // verifyPeer knob could not bypass that. Now that Apple QUIC is quiche like
-    // everywhere else, the pin is no longer forced by the platform; it is kept
-    // because it exercises the pinning path on a real target. Changing it is
-    // safe but should be a deliberate, separately-validated edit.
+    // the sole anchor. Other targets keep verifyPeer = false and accept the
+    // self-signed peer cert directly. No platform forces the asymmetry; it is
+    // kept because it exercises the pinning path on a real target.
     private val applePinnedTrust = isAppleKNative()
     private val quicOptions =
         QuicOptions(
@@ -81,8 +68,8 @@ class QuicHarnessIntegrationTests {
         )
 
     // Apple connects via the SAN-matching DNS name "localhost" (valid.crt has
-    // DNS:localhost) so Network.framework's hostname check passes; other targets
-    // use the configured harness host (127.0.0.1).
+    // DNS:localhost) so the hostname check passes; other targets use the
+    // configured harness host (127.0.0.1).
     private val harnessHost = if (applePinnedTrust) "localhost" else QuicHarnessConfig.host
     private val connOptions = TransportConfig(bufferFactory = bufferFactory)
 
