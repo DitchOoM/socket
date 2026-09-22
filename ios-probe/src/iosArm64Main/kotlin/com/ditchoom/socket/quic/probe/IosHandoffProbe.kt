@@ -22,11 +22,15 @@ import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
-import com.ditchoom.socket.testkit.echo.EchoRead
+import com.ditchoom.socket.testkit.echo.EchoLoop
+import com.ditchoom.socket.testkit.echo.EchoLoopEnd
+import com.ditchoom.socket.testkit.echo.EchoLoopEvent
 import com.ditchoom.socket.testkit.echo.EchoSession
-import com.ditchoom.socket.testkit.echo.EchoStep
+import com.ditchoom.socket.testkit.echo.EchoStream
+import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
 import com.ditchoom.socket.testkit.echo.SilenceWatchdog
@@ -58,6 +62,7 @@ import platform.posix.fputs
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.timeIntervalSince1970
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -136,51 +141,6 @@ object IosHandoffProbe {
     private val startedAt: Double get() = NSDate().timeIntervalSince1970
 
     private fun now() = NSDate().timeIntervalSince1970.seconds
-
-    private fun elapsedMs(since: Double): Long = ((NSDate().timeIntervalSince1970 - since) * 1000).toLong()
-
-    /**
-     * One exchange: the write, then the read the session judges. A write that times out is the
-     * session's to decide; every other failure is the loop's to classify.
-     */
-    private suspend fun exchange(
-        stream: QuicByteStream,
-        session: EchoSession,
-        seq: Int,
-        payload: String,
-        sentAt: Double,
-    ): EchoStep {
-        // Write takes no ownership, so this buffer is ours to free; read transfers it, so the scoped
-        // form frees that one for us (#538) — a K/N buffer is explicitly freed with no collector
-        // behind it at all.
-        val out = BufferFactory.Default.allocate(payload.length)
-        try {
-            out.writeString(payload, Charset.UTF8)
-            out.resetForRead()
-            stream.write(out, WRITE_DEADLINE)
-        } catch (e: TimeoutCancellationException) {
-            // Only this scope's own cancellation, which wears the same type, gets out of here.
-            currentCoroutineContext().ensureActive()
-            return session.writeTimedOut(seq, waited = elapsedMs(sentAt).milliseconds, at = now())
-        } finally {
-            out.freeIfNeeded()
-        }
-        session.sent(seq, payload, now())
-        val reply =
-            try {
-                when (val resp = stream.read(session.readDeadline) { it.readString(it.remaining(), Charset.UTF8) }) {
-                    is ScopedRead.Data -> StreamReply.Echoed(resp.value)
-                    ScopedRead.End -> StreamReply.PeerEnded
-                    ScopedRead.Reset -> StreamReply.PeerReset
-                }
-            } catch (e: TimeoutCancellationException) {
-                // The deadline is where "late" begins, not where an exchange fails: the reply is still
-                // owed and is judged when it arrives.
-                currentCoroutineContext().ensureActive()
-                StreamReply.StillOwed
-            }
-        return session.reply(seq, reply, now())
-    }
 
     private fun documents(): String = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
 
@@ -356,16 +316,8 @@ object IosHandoffProbe {
                     log.emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
 
                     val stream = openStream()
-                    var seq = 0
                     var lastWire = identity.wire
                     val ticksAtConnect = loopTicks
-
-                    // Every exchange is judged by [session] when its reply arrives (#393, #599): the
-                    // invariant is that everything received is an in-order prefix of everything sent,
-                    // and a missed read deadline is where "late" begins, not where an exchange fails.
-                    // A FIN or RESET from the peer, or a run of writes it will not drain, ends the
-                    // session instead: the stream is no longer being echoed (#620).
-                    var integrityBroken = false
 
                     // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
                     // (RFC 9000 §8.2.4), so a whole Probing -> Failed sequence can fall between two
@@ -378,69 +330,46 @@ object IosHandoffProbe {
                         }
                     }
 
-                    while (NSDate().timeIntervalSince1970 < deadline) {
-                        if (identity.wire != lastWire) {
-                            log.emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
-                            lastWire = identity.wire
-                        }
-
-                        seq++
-                        // Periodic residency heartbeat: locUpdates==0 after the screen locks means
-                        // the walk is being recorded by a process iOS has stopped scheduling, and
-                        // every gap in the log below is an artefact rather than a network event.
-                        if (seq % 600 == 0) {
-                            log.emit("KEEPALIVE-STATUS echoes=$seq locUpdates=$locUpdates migrations=${ledger.succeeded}")
-                        }
-                        val sentAt = NSDate().timeIntervalSince1970
-                        val payload = "probe-$seq;"
-                        try {
-                            when (val step = exchange(stream, session, seq, payload, sentAt)) {
-                                is EchoStep.Exchanged -> {
-                                    when (step) {
-                                        is EchoStep.Exchanged.Judged ->
-                                            when (val read = step.read) {
-                                                is EchoRead.Consumed -> read.outcomes.forEach { log.emit(it.line(read.owedBytes)) }
-                                                is EchoRead.Diverged ->
-                                                    if (integrityBroken) {
-                                                        log.emit("ECHO-DIVERGED seq=$seq atByte=${read.atByte}")
-                                                    } else {
-                                                        integrityBroken = true
-                                                        log.emit("STREAM-INTEGRITY-BROKEN seq=$seq ${read.detail}")
-                                                        statusLine = "\u26a0 STREAM INTEGRITY BROKEN at byte ${read.atByte}"
-                                                    }
-                                            }
-                                        EchoStep.Exchanged.StillOwed -> Unit
+                    val loop =
+                        EchoLoop(
+                            stream = QuicEchoStream(stream),
+                            session = session,
+                            interval = echoIntervalMs.milliseconds,
+                            clock = ::now,
+                            emit = log::emit,
+                            closedBy = ::connectionClosedBy,
+                        ) { event ->
+                            when (event) {
+                                is EchoLoopEvent.Round -> {
+                                    if (identity.wire != lastWire) {
+                                        log.emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
+                                        lastWire = identity.wire
                                     }
-                                    // Progress is a completed exchange: a write the peer never drained
-                                    // is not one, so the silence watchdog sees it.
-                                    loopTicks = ticksAtConnect + session.exchanges
+                                    // Periodic residency heartbeat: locUpdates==0 after the screen locks
+                                    // means the walk is being recorded by a process iOS has stopped
+                                    // scheduling, and every gap in the log below is an artefact rather
+                                    // than a network event.
+                                    if (event.seq % 600 == 0) {
+                                        log.emit("KEEPALIVE-STATUS echoes=${event.seq} locUpdates=$locUpdates migrations=${ledger.succeeded}")
+                                    }
                                 }
-                                is EchoStep.WriteTimedOut -> log.emit(step.line)
-                                // The peer stopped echoing this stream. Leave the scope and let the outer
-                                // loop reconnect, exactly as a dead connection does — and say which of
-                                // the two it was, because they are different events.
-                                is EchoStep.Reconnect -> {
-                                    log.emit(step.line)
-                                    statusLine = "${step.end.label} — reconnecting"
-                                    return@withQuicConnection
+                                is EchoLoopEvent.IntegrityBroken -> {
+                                    statusLine = "\u26a0 STREAM INTEGRITY BROKEN at byte ${event.atByte}"
                                 }
-                            }
-                        } catch (e: Throwable) {
-                            log.emit("ECHO-FAIL seq=$seq after=${elapsedMs(sentAt)}ms err=${e::class.simpleName} msg=${e.message}")
-                            // A dead connection makes "keep going" a loop spinning against a closed
-                            // connection for the rest of the walk. Leave the scope and let the outer loop
-                            // reconnect — a reconnect is itself data, being precisely what distinguishes
-                            // "migrated" from "had to start over".
-                            if (e is QuicCloseException) {
-                                val why = e.closeReason.describe()
-                                session.ended(SessionEnd.ConnectionDead, now())
-                                log.emit("CONNECTION-DEAD seq=$seq reason=$why — leaving scope to reconnect")
-                                statusLine = "connection dead ($why) — reconnecting"
-                                return@withQuicConnection
+                                is EchoLoopEvent.Progress -> {
+                                    loopTicks = ticksAtConnect + event.exchanges
+                                }
+                                is EchoLoopEvent.Read, is EchoLoopEvent.WriteTimedOut, is EchoLoopEvent.Overdue, is EchoLoopEvent.Failed -> Unit
                             }
                         }
-                        session.overdue(now()).forEach { log.emit(it.line) }
-                        delay(echoIntervalMs)
+                    when (val end = loop.run(until = deadline.seconds)) {
+                        EchoLoopEnd.WalkOver -> Unit
+                        is EchoLoopEnd.Left -> {
+                            statusLine = "${end.step.end.label} — reconnecting"
+                        }
+                        is EchoLoopEnd.ConnectionClosed -> {
+                            statusLine = "connection dead (${end.reason}) — reconnecting"
+                        }
                     }
                 }
                 log.emit("SCOPE-EXITED cleanly")
@@ -725,8 +654,50 @@ private class MigrationTotals {
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
 
-/** Bounds one write; [EchoSession.WRITE_TIMEOUT_STREAK_LIMIT] of these in a row ends the session. */
-private val WRITE_DEADLINE = 5.seconds
+/** A [QuicCloseException] is the connection closing under the stream; anything else fails one exchange. */
+private fun connectionClosedBy(e: Throwable): EchoFailure =
+    if (e is QuicCloseException) EchoFailure.ConnectionClosed(e.closeReason.describe()) else EchoFailure.Exchange
+
+/** The probe's QUIC stream as the [EchoLoop] sees it. */
+private class QuicEchoStream(
+    private val stream: QuicByteStream,
+) : EchoStream {
+    override suspend fun write(
+        payload: String,
+        deadline: Duration,
+    ): EchoWrite {
+        // Write takes no ownership, so this buffer is ours to free; read transfers it, so the scoped
+        // form frees that one for us (#538) — a K/N buffer is explicitly freed with no collector
+        // behind it at all.
+        val out = BufferFactory.Default.allocate(payload.length)
+        try {
+            out.writeString(payload, Charset.UTF8)
+            out.resetForRead()
+            stream.write(out, deadline)
+        } catch (e: TimeoutCancellationException) {
+            // Only this scope's own cancellation, which wears the same type, gets out of here.
+            currentCoroutineContext().ensureActive()
+            return EchoWrite.TimedOut
+        } finally {
+            out.freeIfNeeded()
+        }
+        return EchoWrite.Written
+    }
+
+    override suspend fun read(deadline: Duration): StreamReply =
+        try {
+            when (val resp = stream.read(deadline) { it.readString(it.remaining(), Charset.UTF8) }) {
+                is ScopedRead.Data -> StreamReply.Echoed(resp.value)
+                ScopedRead.End -> StreamReply.PeerEnded
+                ScopedRead.Reset -> StreamReply.PeerReset
+            }
+        } catch (e: TimeoutCancellationException) {
+            // The deadline is where "late" begins, not where an exchange fails: the reply is still
+            // owed and is judged when it arrives.
+            currentCoroutineContext().ensureActive()
+            StreamReply.StillOwed
+        }
+}
 
 /**
  * How many trace events the post-mortem ring keeps. At this cadence roughly the last minute of

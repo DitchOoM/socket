@@ -254,7 +254,7 @@ public class EchoSession(
     }
 
     public companion object {
-        /** With a 5 s write deadline, a minute of writes the peer will not drain. */
+        /** With [EchoLoop.WRITE_DEADLINE], a minute of writes the peer will not drain. */
         public const val WRITE_TIMEOUT_STREAK_LIMIT: Int = 12
     }
 }
