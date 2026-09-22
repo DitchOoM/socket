@@ -4,6 +4,8 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
@@ -75,23 +77,75 @@ boringssl {
     }
 }
 
-// Resolve cargo binary — checks PATH, then ~/.cargo/bin
-val cargoBin: String by lazy {
-    val pathCargo = ProcessBuilder("which", "cargo").start()
-    if (pathCargo.waitFor() == 0) {
-        pathCargo.inputStream
-            .bufferedReader()
-            .readText()
-            .trim()
-    } else {
-        val home = System.getProperty("user.home")
-        val fallback = "$home/.cargo/bin/cargo"
-        if (file(fallback).exists()) {
-            fallback
-        } else {
-            throw GradleException("cargo not found. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
-        }
+/**
+ * The Rust toolchain every cargo build in this file runs, addressed by its own `bin` directory. Each cargo
+ * child gets that directory first on its PATH, so the `rustc` cargo resolves belongs to the same toolchain.
+ */
+sealed interface RustToolchain {
+    val binDir: File
+
+    /**
+     * rustup's active toolchain. Preferred over a `cargo` earlier on PATH: Homebrew's `rust` formula has its
+     * own sysroot, which holds only the host target and sees none of the targets rustup installed.
+     */
+    data class Rustup(
+        override val binDir: File,
+    ) : RustToolchain
+
+    /** No rustup: the `cargo` on PATH. */
+    data class Unmanaged(
+        override val binDir: File,
+    ) : RustToolchain
+}
+
+val RustToolchain.cargo: String get() = binDir.resolve("cargo").absolutePath
+
+fun RustToolchain.childPath(): String = binDir.absolutePath + File.pathSeparator + System.getenv("PATH").orEmpty()
+
+/** Trimmed stdout of [command], or why it did not exit 0 with output. */
+fun commandOutput(vararg command: String): Result<String> =
+    runCatching {
+        val process = ProcessBuilder(*command).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val out =
+            process.inputStream
+                .bufferedReader()
+                .readText()
+                .trim()
+        val exit = process.waitFor()
+        if (exit != 0 || out.isEmpty()) throw GradleException("`${command.joinToString(" ")}` exited $exit")
+        out
     }
+
+val rustToolchain: RustToolchain by lazy {
+    val home = System.getProperty("user.home")
+    val toolchain: RustToolchain =
+        commandOutput("rustup", "which", "cargo")
+            .recoverCatching { commandOutput("$home/.cargo/bin/rustup", "which", "cargo").getOrThrow() }
+            .map<RustToolchain, String> { RustToolchain.Rustup(File(it).parentFile) }
+            .recoverCatching { RustToolchain.Unmanaged(File(commandOutput("which", "cargo").getOrThrow()).parentFile) }
+            .getOrElse {
+                throw GradleException("cargo not found. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+            }
+    logger.lifecycle("quiche cargo builds use $toolchain")
+    toolchain
+}
+
+/**
+ * Fails before cargo does when this toolchain's sysroot has no std for [target]. Cargo's own E0463 note
+ * says `rustup target install` even when rustup has the target and a different toolchain's cargo ran.
+ */
+fun RustToolchain.requireTarget(target: String) {
+    val sysroot = File(commandOutput(binDir.resolve("rustc").absolutePath, "--print", "sysroot").getOrThrow())
+    if (sysroot.resolve("lib/rustlib/$target/lib").isDirectory) return
+    throw GradleException(
+        "Rust target '$target' is not installed in $this (sysroot $sysroot). " +
+            when (this) {
+                is RustToolchain.Rustup -> "Run: rustup target add $target"
+                is RustToolchain.Unmanaged ->
+                    "This cargo is not managed by rustup, so rustup cannot add targets to it: install rustup, " +
+                        "then `rustup target add $target`."
+            },
+    )
 }
 
 // --- quiche build infrastructure ---
@@ -1227,6 +1281,33 @@ fun quicheBinaryForeignVersion(
 }
 
 /**
+ * Fails when a thin 64-bit Mach-O image's symbol string pool (LC_SYMTAB `stroff`) is not 8-byte aligned.
+ * Xcode 27's ld rejects such a dylib as a link input ("mis-aligned LINKEDIT string pool"); older linkers
+ * accept it, so without this check the dylib builds green and breaks only a later link against it.
+ */
+fun requireAlignedMachOStringPool(image: File) {
+    val header = ByteBuffer.wrap(image.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+    val mhMagic64 = 0xFEEDFACF.toInt()
+    val lcSymtab = 0x2
+    if (header.getInt(0) != mhMagic64) throw GradleException("${image.absolutePath} is not a thin 64-bit Mach-O image")
+    var command = 32
+    repeat(header.getInt(16)) {
+        if (header.getInt(command) == lcSymtab) {
+            val stroff = header.getInt(command + 16).toUInt().toLong()
+            if (stroff % 8 != 0L) {
+                throw GradleException(
+                    "${image.absolutePath}: LC_SYMTAB string pool at file offset 0x${stroff.toString(16)} is not " +
+                        "8-byte aligned, so Xcode 27+ ld refuses to link against it. A non-Apple tool rewrote its " +
+                        "LINKEDIT (rust-objcopy / llvm-strip); strip macOS dylibs with Apple's `strip`.",
+                )
+            }
+            return
+        }
+        command += header.getInt(command + 4)
+    }
+}
+
+/**
  * Build quiche as a shared library for JVM/Android (loaded via JNI or FFM).
  */
 fun createBuildQuicheSharedTask(
@@ -1311,7 +1392,15 @@ fun createBuildQuicheSharedTask(
             val env = mutableMapOf<String, String>()
             // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
             // pre-built BoringSSL objects that lack LTO bitcode.
-            val baseRustflags = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            // macOS takes no `-C strip`: on Apple targets rustc strips by rewriting the linked dylib with
+            // rust-objcopy, which can leave the LINKEDIT string pool only 4-byte aligned, and Xcode 27's ld
+            // refuses to link against such a dylib. The Apple `strip -x` below strips it instead.
+            val baseRustflags =
+                if (os == "macos") {
+                    "-C opt-level=s -C codegen-units=1"
+                } else {
+                    "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+                }
             if (os == "linux" && usesExternalBssl) {
                 // External-BoringSSL path: whole-archive libssl.a + libcrypto.a INTO the cdylib so
                 // libquiche.so is SELF-CONTAINED. quiche 0.29 removed the QUICHE_BSSL_PATH mechanism;
@@ -1348,9 +1437,11 @@ fun createBuildQuicheSharedTask(
             // fallback is now `boringssl-boring-crate` (needs libclang for boring-sys' bindgen).
             val quicheFeatures = if (usesExternalBssl) "ffi,qlog" else "ffi,boringssl-boring-crate,qlog"
 
+            rustToolchain.requireTarget(cargoTarget)
+            env["PATH"] = rustToolchain.childPath()
             val process =
                 ProcessBuilder(
-                    cargoBin,
+                    rustToolchain.cargo,
                     "build",
                     "--release",
                     "--package",
@@ -1389,10 +1480,6 @@ fun createBuildQuicheSharedTask(
                         appendLine("── last ${tail.size} lines of cargo output ──")
                         tail.forEach { appendLine(it) }
                         appendLine("── full transcript: ${buildLogFile.absolutePath} ──")
-                        appendLine(
-                            "Hint: E0463 \"can't find crate for core/std\" means the Rust std for target " +
-                                "'$cargoTarget' is missing on this runner — `rustup target add $cargoTarget`.",
-                        )
                     },
                 )
             }
@@ -1438,7 +1525,12 @@ fun createBuildQuicheSharedTask(
                 } else {
                     listOf("strip", "--strip-all", destLib.absolutePath)
                 }
-            ProcessBuilder(stripCmd).inheritIO().start().waitFor()
+            val stripExit = ProcessBuilder(stripCmd).inheritIO().start().waitFor()
+            if (os == "macos") {
+                // The only symbol strip a macOS dylib gets (see baseRustflags).
+                if (stripExit != 0) throw GradleException("`${stripCmd.joinToString(" ")}` exited $stripExit")
+                requireAlignedMachOStringPool(destLib)
+            }
 
             markerFile.writeText("quiche $quicheVersion built on ${System.currentTimeMillis()}")
 
@@ -1516,12 +1608,6 @@ fun patchQuicheBuildRsForIosSim(sourceDir: File) {
  * quiche-on-Apple pivot's iOS datapath. macOS reuses [createBuildQuicheSharedTask] (it also copies the
  * .a alongside the dylib); iOS has no dylib step because the `cdylib`/dylib *link* fails on iOS while
  * K/N only needs the archive, so we use `cargo rustc --crate-type staticlib` (no dylib link attempted).
- *
- * Toolchain note (mirrors the SESSION-3 gotcha): a Homebrew `cargo` shadows rustup AND invokes the
- * `rustc` it finds on PATH, so an installed iOS target still fails `E0463 can't find crate for core`.
- * We resolve the rustup toolchain's bin dir via `rustup which rustc` and PREPEND it to the child PATH
- * so `rustc`/`core`/`std` resolve there. On a CI runner whose `cargo` is already rustup-managed
- * (dtolnay/rust-toolchain), `rustup which` simply confirms the same dir — harmless.
  */
 fun createBuildQuicheAppleStaticTask(
     libSubdir: String,
@@ -1567,38 +1653,14 @@ fun createBuildQuicheAppleStaticTask(
 
             val env = mutableMapOf<String, String>()
             env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
-
-            // Resolve the rustup toolchain bin dir and prepend it so a Homebrew cargo can't shadow
-            // rustc out from under an installed Apple target (E0463). Best-effort: if rustup is absent
-            // (CI's rustup-managed cargo), keep the inherited PATH.
-            val rustupRustc =
-                runCatching {
-                    val p = ProcessBuilder("rustup", "which", "rustc").redirectErrorStream(true).start()
-                    val out =
-                        p.inputStream
-                            .bufferedReader()
-                            .readText()
-                            .trim()
-                    if (p.waitFor() == 0 && out.isNotEmpty()) File(out).parentFile.absolutePath else null
-                }.getOrNull()
-            val basePath = System.getenv("PATH") ?: ""
-            env["PATH"] = if (rustupRustc != null) "$rustupRustc${File.pathSeparator}$basePath" else basePath
-
-            // Ensure the target is installed (no-op if already present); harmless if rustup is absent.
-            runCatching {
-                ProcessBuilder("rustup", "target", "add", rustTarget)
-                    .also { pb -> pb.environment().putAll(env) }
-                    .redirectErrorStream(true)
-                    .start()
-                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
-                    .waitFor()
-            }
+            rustToolchain.requireTarget(rustTarget)
+            env["PATH"] = rustToolchain.childPath()
 
             // `cargo rustc --crate-type staticlib`: build ONLY the .a. A plain `cargo build` would also
             // try to link the dylib, which fails for iOS targets — and K/N never needs it.
             val process =
                 ProcessBuilder(
-                    cargoBin,
+                    rustToolchain.cargo,
                     "rustc",
                     "--release",
                     "--package",
@@ -1713,24 +1775,22 @@ fun createBuildJvmJniShimTask(
         val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
         inputs.file(jniSourceFile)
         outputs.files(outputLib, markerFile)
-        // Rebuild when the marker is missing, the shim itself is gone, OR the JNI
-        // source has been edited since the marker was written. The marker is keyed
-        // only on quiche *version*, so without the source-mtime check an edit to
-        // quiche_jni.c (e.g. #63 adding nSockAddr*) leaves a stale shim in place —
-        // exactly what made macOS jvmTest fail with UnsatisfiedLinkError on a
-        // version-matched-but-stale dylib. CI side-steps this by keying its native
-        // cache on hashFiles(quiche_jni.c); local dev needs this guard.
+        // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
+        // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
+        // ship exactly once, in libquiche.$libExt, and the shim is a thin JNI forwarder.
+        val quicheShared = outputDir.resolve("libquiche.$libExt")
+        inputs.files(quicheShared)
+        // The marker is keyed only on quiche's version, so relink when either link input — quiche_jni.c
+        // or the libquiche it links against — is newer than the marker. CI's native cache is keyed on
+        // hashFiles(quiche_jni.c) as well.
         onlyIf {
             !markerFile.exists() ||
                 !outputLib.exists() ||
-                jniSourceFile.lastModified() > markerFile.lastModified()
+                jniSourceFile.lastModified() > markerFile.lastModified() ||
+                quicheShared.lastModified() > markerFile.lastModified()
         }
 
         doLast {
-            // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
-            // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
-            // ship exactly once, in libquiche.$libExt, and the shim is a thin JNI forwarder.
-            val quicheShared = outputDir.resolve("libquiche.$libExt")
             if (!quicheShared.exists()) {
                 throw GradleException(
                     "libquiche.$libExt missing at ${quicheShared.absolutePath} — " +
@@ -1768,11 +1828,11 @@ fun createBuildJvmJniShimTask(
                         // quiche_jni.c calls only quiche_* (never BoringSSL), so -lquiche resolves every
                         // reference. The dylib's install_name is @rpath/libquiche.dylib, so give the shim
                         // an @loader_path rpath to find it beside itself (NativeLibLoader extracts both
-                        // into one temp dir). -undefined error → fail the link, not a runtime dlopen.
+                        // into one temp dir). ld fails the link on an unresolved symbol by default, so a gap
+                        // surfaces here rather than at a runtime dlopen.
                         "-L${outputDir.absolutePath}",
                         "-lquiche",
                         "-Wl,-rpath,@loader_path",
-                        "-Wl,-undefined,error",
                         "-Wl,-install_name,@rpath/libquiche_jni.$libExt",
                     )
             } else {
@@ -2225,7 +2285,7 @@ registerNativeFuzz("quicConnRecvFuzzNative", "conn_recv", "conn-recv-corpus")
 
 // --- Android JNI native library build ---
 // Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
-// Requires: cargo, cargo-ndk, Android NDK, Rust Android targets
+// Requires: rustup, cargo-ndk, Android NDK, Rust Android targets
 //   rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
 //   cargo install cargo-ndk
 
@@ -2286,10 +2346,12 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
             val env = mutableMapOf<String, String>()
             env["ANDROID_NDK_HOME"] = ndk.absolutePath
             env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            rustToolchain.requireTarget(abi.rustTarget)
+            env["PATH"] = rustToolchain.childPath()
 
             val cargoResult =
                 ProcessBuilder(
-                    cargoBin,
+                    rustToolchain.cargo,
                     "ndk",
                     "--target",
                     abi.abi,
