@@ -67,6 +67,18 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
 private const val CLIENT_PORT_BASE = 42100
 
+/** The local address the primary path, and by default every probe path, is bound on. */
+internal const val SIM_LINK_HOST = "127.0.0.1"
+
+/**
+ * A second local address a probe socket can be bound on — a different link from [SIM_LINK_HOST] as the
+ * driver sees it, which is by local address.
+ */
+internal const val SIM_OTHER_LINK_HOST = "127.0.0.2"
+
+/** Every local address [PipeUdpChannelFactory] can bind; each is pre-resolved for the whole port pool. */
+private val SIM_LINK_HOSTS = listOf(SIM_LINK_HOST, SIM_OTHER_LINK_HOST)
+
 /**
  * How many probe endpoints past [CLIENT_PORT_BASE] the sim pre-resolves. A scenario that exhausts the
  * pool fails loudly in [PipeUdpChannelFactory.openPath] rather than silently resolving on the hot path.
@@ -309,6 +321,8 @@ internal class SimClientQuicConnection(
 internal class PipeUdpChannelFactory(
     private val pipe: MultiPathPipe,
     private val impairmentFor: (Int) -> PathImpairment,
+    /** The local address the next path binds on, read at open time: where the platform's default route points now. */
+    private val hostFor: () -> String,
     /**
      * Every local endpoint this factory can hand out, resolved **before** the sim starts and looked up
      * here without suspending.
@@ -319,7 +333,7 @@ internal class PipeUdpChannelFactory(
      * cadence these suites measure collapses to a single attempt. Pre-resolving keeps [openPath]
      * synchronous in effect, which is what the pre-#556 `InetSocketAddress` constructor was.
      */
-    private val localAddresses: Map<Int, SocketAddress>,
+    private val localAddresses: Map<String, Map<Int, SocketAddress>>,
     override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable,
 ) : UdpChannelFactory {
     private val paths = mutableListOf<SocketAddress>()
@@ -332,9 +346,10 @@ internal class PipeUdpChannelFactory(
     ): NewPath {
         val index = paths.size + 1 // +1: the primary was opened by the harness, not through here
         val port = if (localPort != 0) localPort else CLIENT_PORT_BASE + index
+        val host = localHost ?: hostFor()
         val local =
-            localAddresses[port]
-                ?: error("no pre-resolved local endpoint for port $port; widen CLIENT_PORT_POOL in withMigrationSim")
+            localAddresses[host]?.get(port)
+                ?: error("no pre-resolved local endpoint for $host:$port; widen CLIENT_PORT_POOL or SIM_LINK_HOSTS")
         val path = pipe.openPath(local, impairmentFor(index))
         paths += local
         return NewPath(
@@ -521,7 +536,8 @@ internal class MigrationSimEnv(
  * virtual time and run [block] against it. Everything is torn down before returning.
  *
  * [primaryImpairment] applies to the connection's original path; [probeImpairment] is consulted for
- * each path the driver opens afterwards (argument is the 1-based probe index).
+ * each path the driver opens afterwards (argument is the 1-based probe index). [probeHost] is the local
+ * address each of those binds on, read when it opens — [SIM_OTHER_LINK_HOST] is a different link.
  *
  * [serverQuicOptions] configures the server side on its own; it defaults to [quicOptions] so the two
  * ends agree unless a scenario says otherwise. The one that does is a peer at a different
@@ -539,6 +555,7 @@ internal suspend fun <R> withMigrationSim(
     seed: Long,
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
+    probeHost: () -> String = { SIM_LINK_HOST },
     quicOptions: QuicOptions = migrationSimOptions(),
     serverQuicOptions: QuicOptions = quicOptions,
     establishTimeout: Duration = 60.seconds,
@@ -564,11 +581,10 @@ internal suspend fun <R> withMigrationSim(
     // Resolve every address the sim can use up front — see PipeUdpChannelFactory.localAddresses for
     // why resolution must never happen once the driver is running.
     val clientAddresses =
-        (0..CLIENT_PORT_POOL).associate { i ->
-            (CLIENT_PORT_BASE + i) to
-                UdpSocket.resolve("127.0.0.1", CLIENT_PORT_BASE + i)
+        SIM_LINK_HOSTS.associateWith { host ->
+            (0..CLIENT_PORT_POOL).associate { i -> (CLIENT_PORT_BASE + i) to UdpSocket.resolve(host, CLIENT_PORT_BASE + i) }
         }
-    val primaryLocal = clientAddresses.getValue(CLIENT_PORT_BASE)
+    val primaryLocal = clientAddresses.getValue(SIM_LINK_HOST).getValue(CLIENT_PORT_BASE)
     val serverAddr = UdpSocket.resolve("127.0.0.1", SERVER_PORT)
 
     return coroutineScope {
@@ -582,7 +598,7 @@ internal suspend fun <R> withMigrationSim(
         val now: () -> Duration = if (scheduler == null) ({ wallOrigin.elapsedNow() }) else ({ scheduler.currentTime.milliseconds })
         val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger, now)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
-        val factory = PipeUdpChannelFactory(pipe, probeImpairment, clientAddresses)
+        val factory = PipeUdpChannelFactory(pipe, probeImpairment, probeHost, clientAddresses)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)

@@ -261,12 +261,14 @@ class PathValidationTimeoutTests {
         }
 
     /**
-     * **The leak.** Abandoning a probe must release everything opening it acquired — mirroring the
-     * `FailedValidation` arm — and must do so *then*, while the connection is still live, not at
-     * `cleanup()` when it dies. A flapping network takes this path over and over.
+     * **An abandoned probe is kept, and released when it is replaced — not leaked.** The abandon keeps
+     * the path whole ([PathSlot.Kept]) so the next migration on its link can probe it again without a
+     * spare. When a later migration replaces it instead, everything opening it acquired — socket,
+     * `recv_info`, pinned sockaddr — is released then, while the connection is still live, not at
+     * `cleanup()`. At most one abandoned probe is ever held, however often a flapping network fails.
      */
     @Test
-    fun anAbandonedProbeReleasesItsSocketRecvInfoAndSockaddr() =
+    fun anAbandonedProbeIsKeptAndReleasedWhenReplaced() =
         runTest {
             val f = Fixture(this)
             f.driver.start(this)
@@ -275,17 +277,22 @@ class PathValidationTimeoutTests {
                 f.migrate()
                 runCurrent()
                 val probed = f.factory.channels.single()
-                assertEquals(0, probed.closeCount)
-                assertEquals(0, f.api.recvInfoFrees)
 
                 testScheduler.advanceTimeBy(expectedBudget + 1.milliseconds)
                 runCurrent()
+                assertEquals(0, probed.closeCount, "the kept probe path's UDP socket was closed")
+                assertEquals(0, f.api.recvInfoFrees, "the kept probe path's recv_info was freed")
+                assertEquals(0, f.factory.releases, "the kept probe path's pinned sockaddr was released")
 
+                // A pool above the reserve: the next attempt binds a fresh socket and replaces the kept path.
+                f.stub.availableDcids = 2L
+                f.migrate()
+                runCurrent()
                 // Measured before destroy(): cleanup() would free all three anyway, so asserting after
-                // teardown would pass with no expiry-time teardown at all.
-                assertEquals(1, probed.closeCount, "the abandoned path's UDP socket was left open")
-                assertEquals(1, f.api.recvInfoFrees, "the abandoned path's recv_info was never freed")
-                assertEquals(1, f.factory.releases, "the abandoned path's pinned sockaddr was never released")
+                // teardown would pass with no replace-time teardown at all.
+                assertEquals(1, probed.closeCount, "the replaced path's UDP socket was left open")
+                assertEquals(1, f.api.recvInfoFrees, "the replaced path's recv_info was never freed")
+                assertEquals(1, f.factory.releases, "the replaced path's pinned sockaddr was never released")
             } finally {
                 f.driver.destroy()
             }
@@ -294,19 +301,16 @@ class PathValidationTimeoutTests {
     /**
      * **#447, on the exit only this suite can reach: the abandon timer.**
      *
-     * `quiche_conn_probe_path` takes a spare destination CID and links it to the path it creates
-     * (`create_path_on_client` → `link_dcid_to_path_id`), so `available_dcids()` drops the moment a
-     * probe is armed. When quiche then reports *neither* `Validated` nor `FailedValidation` — the exact
-     * silence measured on the 2026-08-17 handoff walk — the RFC 9000 §8.2.4 timer is what ends the
-     * migration, and it is therefore also the only thing that can hand the id back. It did not: the
-     * probe's sequence number went into native scratch and was never read, so this exit had no value to
-     * forget and the CID was gone for the life of the connection (#447).
+     * `quiche_conn_probe_path` links a spare destination CID to the path it creates, and when quiche
+     * reports *neither* `Validated` nor `FailedValidation` the RFC 9000 §8.2.4 timer is what ends the
+     * migration. The id must stay owned: kept with its path for the next probe on that link, and retired
+     * the moment the path is replaced — never dropped where nothing can retire it (#447).
      *
      * The companion assertions in `PathRetirementTests` cover the `FailedValidation` and refused-switch
      * exits; this one needs the virtual [SimClock], which is why it lives here.
      */
     @Test
-    fun anAbandonedProbeRetiresTheConnectionIdItConsumed() =
+    fun anAbandonedProbeKeepsTheConnectionIdItConsumedUntilItIsReplaced() =
         runTest {
             val f = Fixture(this)
             f.driver.start(this)
@@ -325,18 +329,19 @@ class PathValidationTimeoutTests {
                 runCurrent()
 
                 assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
+                assertEquals(emptyList(), f.stub.retiredDcids, "the kept probe path's id was retired while it still holds it")
+                assertEquals(setOf(0L, 1L), f.stub.linkedDcidSeqs, "the abandon must keep the probe's id with its path")
+
+                f.stub.availableDcids = 2L
+                f.migrate()
+                runCurrent()
                 assertEquals(
                     listOf(1L),
                     f.stub.retiredDcids,
-                    "the abandoned probe's destination CID was never retired — quiche keeps it linked to a " +
-                        "path nothing will use again, so it never returns to the spare pool (#447)",
+                    "the replaced probe's destination CID was never retired — quiche keeps it linked to a path " +
+                        "nothing will use again, so it never returns to the spare pool (#447)",
                 )
-                assertEquals(
-                    setOf(0L),
-                    f.stub.linkedDcidSeqs,
-                    "after the abandon, the only destination CID still linked to a path must be the one the " +
-                        "connection is living on (#447)",
-                )
+                assertEquals(setOf(0L, 2L), f.stub.linkedDcidSeqs, "only the live path's id and the new probe's may be linked")
             } finally {
                 f.driver.destroy()
             }
@@ -536,22 +541,20 @@ class PathValidationTimeoutTests {
         }
 
     /**
-     * **An abandoned probe's re-armed PATH_CHALLENGE is dropped, not misrouted out the primary
-     * socket** (issue #395 item 4).
+     * **A kept probe's re-armed PATH_CHALLENGE leaves its own socket; a replaced probe's is dropped, not
+     * misrouted out the primary socket** (issue #395 item 4).
      *
-     * Abandoning tears the driver's path entry down, but quiche still holds that path in
-     * `Validating` and re-arms `challenge_requested` on each PTO for up to `MAX_PROBING_TIMEOUTS`
-     * (path.rs). During that window `get_send_path_id` schedules datagrams whose egress address is
-     * the abandoned path — a path this driver has no socket for. Routing them "somewhere" sends a
-     * PATH_CHALLENGE out the wrong 4-tuple (the peer answers an address that never asked), and if
-     * that fallback socket's send fails, the [SendOutcome.Failed] arm aborts the entire flush —
-     * stream data queued behind the challenge included — for up to three PTOs. A datagram for a
-     * torn-down path has exactly one correct treatment: it is already lost, and RFC 9002 loss
-     * recovery owns it. Newly reachable since the 9f462e69 abandon timer, so it is pinned here
-     * beside the timer's own tests.
+     * quiche keeps a path it was told to probe in `Validating` and re-arms `challenge_requested` on each
+     * PTO for up to `MAX_PROBING_TIMEOUTS` (path.rs), so datagrams keep being scheduled on a probe path
+     * after the driver stops waiting. A kept path still has its socket, and that is where they go. Once
+     * the path is replaced there is no socket for its 4-tuple: routing its datagram "somewhere" sends a
+     * PATH_CHALLENGE out the wrong 4-tuple (the peer answers an address that never asked), and if that
+     * fallback socket's send fails, the [SendOutcome.Failed] arm aborts the entire flush — stream data
+     * queued behind the challenge included. A datagram for a torn-down path has exactly one correct
+     * treatment: it is already lost, and RFC 9002 loss recovery owns it.
      */
     @Test
-    fun anAbandonedProbesReArmedChallengeIsDroppedNotMisroutedOutThePrimarySocket() =
+    fun aReplacedProbesReArmedChallengeIsDroppedNotMisroutedOutThePrimarySocket() =
         runTest {
             val f = Fixture(this)
             f.driver.start(this)
@@ -564,17 +567,22 @@ class PathValidationTimeoutTests {
                 testScheduler.advanceTimeBy(expectedBudget + 1.milliseconds)
                 runCurrent()
                 assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
-                assertEquals(
-                    1,
-                    f.factory.channels
-                        .single()
-                        .closeCount,
-                    "the abandon must have torn the probed path down for this test to mean anything",
-                )
+                val kept = f.factory.channels.single()
+
+                f.stub.connSendQueue += 1200
+                f.stub.sendInfoFromAddrQueue += f.factory.sockAddrOfPath(1)
+                f.wake()
+                runCurrent()
+                assertEquals(1, kept.sendCount, "the kept path's re-armed challenge did not leave its own socket")
+
+                f.stub.availableDcids = 2L
+                f.migrate()
+                runCurrent()
+                assertEquals(1, kept.closeCount, "the replace must have torn the kept path down for this test to mean anything")
                 val sendsBefore = f.primaryChannel.sendCount
 
-                // The next flush carries two datagrams: quiche schedules the first on the abandoned
-                // path (its re-armed challenge), the second on the primary.
+                // The next flush carries two datagrams: quiche schedules the first on the replaced path
+                // (its re-armed challenge), the second on the primary.
                 f.stub.connSendQueue += 1200
                 f.stub.connSendQueue += 1200
                 f.stub.sendInfoFromAddrQueue += f.factory.sockAddrOfPath(1)
@@ -582,18 +590,12 @@ class PathValidationTimeoutTests {
                 f.wake()
                 runCurrent()
 
-                assertEquals(
-                    0,
-                    f.factory.channels
-                        .single()
-                        .sendCount,
-                    "a datagram reached the abandoned path's closed socket",
-                )
+                assertEquals(1, kept.sendCount, "a datagram reached the replaced path's closed socket")
                 assertEquals(
                     sendsBefore + 1,
                     f.primaryChannel.sendCount,
                     "exactly the primary-addressed datagram must egress the primary socket: one more " +
-                        "means the abandoned path's PATH_CHALLENGE was misrouted out the primary 4-tuple, " +
+                        "means the replaced path's PATH_CHALLENGE was misrouted out the primary 4-tuple, " +
                         "one fewer means the flush stalled behind the undeliverable datagram (#395 item 4)",
                 )
             } finally {

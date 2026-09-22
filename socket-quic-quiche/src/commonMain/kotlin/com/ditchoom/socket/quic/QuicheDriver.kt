@@ -560,10 +560,9 @@ class QuicheDriver(
          *
          * The retirement is not something a caller can forget, because it is not a separate step: it
          * happens here, inside the transition, since "this path stopped holding this id" and "this id
-         * was retired" are one event. Every exit from a probe — `FailedValidation`, the RFC 9000
-         * §8.2.4 abandon timer, a `quiche_conn_migrate` that refuses an already-validated path, and
-         * the ordinary supersede-by-the-next-migration — goes through it, so no exit can leave the id
-         * unretired.
+         * was retired" are one event. Every way a path stops holding its id — a kept path replaced by
+         * a fresh one, a `quiche_conn_migrate` that refuses an already-validated path, and the ordinary
+         * supersede-by-the-next-migration — goes through it, so no exit can leave the id unretired.
          *
          * Best-effort by design, like the post-migration §9.5 retirement: a refusal
          * (`OutOfIdentifiers` when this is the last usable id, or a re-retirement of an id quiche has
@@ -599,8 +598,72 @@ class QuicheDriver(
             }
         }
 
+        /**
+         * No migration is waiting on this probe any more: keep it — socket, reader and destination CID —
+         * for the next migration on the same local address ([PathSlot.Kept]). The id is carried forward,
+         * so nothing is retired.
+         */
+        fun keep(localEndpoint: QuicLocalEndpoint) {
+            when (val current = slot) {
+                is PathSlot.Linked -> transitionTo(PathSlot.Unanswered(current.dcidSeq, localEndpoint))
+                // Unreachable, as in validated().
+                PathSlot.Abandoned -> Unit
+            }
+        }
+
         private fun retire(dcidSeq: Long) {
             api.connRetireDcid(conn, dcidSeq)
+        }
+    }
+
+    /** The kept probe path ([PathSlot.Kept]), if there is one — read off the slots, never stored beside them. */
+    private sealed interface KeptPath {
+        data object None : KeptPath
+
+        class Found(
+            val entry: PathEntry,
+            val slot: PathSlot.Kept,
+        ) : KeptPath
+    }
+
+    private fun keptPath(): KeptPath {
+        for (entry in paths.values) {
+            val slot = entry.slot
+            if (slot is PathSlot.Kept) return KeptPath.Found(entry, slot)
+        }
+        return KeptPath.None
+    }
+
+    /** What a migration does with the kept path once its fresh socket has told it which local address the platform routes from. */
+    private sealed interface KeptPathUse {
+        /** Probe the kept path again — or switch to it, if the peer has answered since — and release the fresh socket unprobed. */
+        data object Resume : KeptPathUse
+
+        /** Retire the kept path and probe the fresh socket, which takes a spare. */
+        data object Replace : KeptPathUse
+    }
+
+    /**
+     * Whether a migration to [target], whose fresh socket bound [fresh], resumes [kept] or replaces it.
+     *
+     * A kept path on another local address is on another link — not where the platform routes now, and
+     * never probed with its id from here (RFC 9000 §9.5) — so it is replaced, as it is for a target that
+     * names its own endpoint. On the same address a path the peer has answered is always resumed. An
+     * unanswered one is replaced while the pool can afford a fresh socket and still hold
+     * [RESERVED_SPARE_DCIDS] back for a handoff to another link, and resumed once it cannot: a spare
+     * spent on a dead active path is never replaced, because the retirement that would earn a
+     * replacement rides that path.
+     */
+    private fun keptPathUse(
+        target: MigrationTarget,
+        kept: KeptPath.Found,
+        fresh: PathKey,
+        spares: Long,
+    ): KeptPathUse {
+        if (target !is MigrationTarget.FreshLocalEndpoint || !kept.entry.key.sameAddressAs(fresh)) return KeptPathUse.Replace
+        return when (kept.slot) {
+            is PathSlot.Answered -> KeptPathUse.Resume
+            is PathSlot.Unanswered -> if (spares > RESERVED_SPARE_DCIDS) KeptPathUse.Replace else KeptPathUse.Resume
         }
     }
 
@@ -678,8 +741,8 @@ class QuicheDriver(
     /**
      * True once any probe path has ever opened; never true before, never false after. While false,
      * [flushOutgoing] sends straight to [primary] with no decode — single-path behaviour is
-     * byte-for-byte what it always was. Once true, every datagram's egress is decoded: after an
-     * abandoned probe, quiche keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs
+     * byte-for-byte what it always was. Once true, every datagram's egress is decoded: after a
+     * replaced probe, quiche keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs
      * (`MAX_PROBING_TIMEOUTS`) with the driver's `paths` map back to a single entry — so "one path in
      * the map" stops implying "quiche only schedules on that path".
      *
@@ -2026,8 +2089,8 @@ class QuicheDriver(
                     } else {
                         val entry = paths[from]
                         if (entry == null) {
-                            // quiche scheduled this datagram on a path the driver has torn down — an
-                            // abandoned probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
+                            // quiche scheduled this datagram on a path the driver has torn down — a
+                            // replaced probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
                             // just-retired path draining its last frames. There is no socket for that
                             // 4-tuple; sending it out any other one answers the peer from an address
                             // it never probed (the misroute), and a dead fallback socket would abort
@@ -2281,7 +2344,10 @@ class QuicheDriver(
                 return
             }
         }
-        if (api.connAvailableDcids(conn) <= 0L) {
+        // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
+        // socket says which local address the platform routes from.
+        val keptResumable = cmd.target is MigrationTarget.FreshLocalEndpoint && keptPath() is KeptPath.Found
+        if (api.connAvailableDcids(conn) <= 0L && !keptResumable) {
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
@@ -2369,6 +2435,20 @@ class QuicheDriver(
             }
 
         val key = api.decodePathKey(newPath.localSockAddrAddress)
+        val kept = keptPath()
+        when (kept) {
+            KeptPath.None -> Unit
+            is KeptPath.Found ->
+                when (keptPathUse(cmd.target, kept, key, api.connAvailableDcids(conn))) {
+                    KeptPathUse.Resume -> {
+                        releaseUnprobedPath(newPath)
+                        resumeKeptPath(cmd, kept, wiring)
+                        return
+                    }
+                    // Retired below, once the fresh socket is known to be one that can be probed.
+                    KeptPathUse.Replace -> Unit
+                }
+        }
         if (paths.containsKey(key)) {
             // The platform bound the probe to a 4-tuple already in `paths` — with retirement in place
             // and AlreadyInProgress answered above, that can only be the path the connection is living
@@ -2385,6 +2465,15 @@ class QuicheDriver(
                     ),
                 ),
             )
+            return
+        }
+
+        if (kept is KeptPath.Found) teardownPath(kept.entry)
+        if (api.connAvailableDcids(conn) <= 0L) {
+            // Only a kept path on another link can bring a migration here with nothing to spend. It has
+            // been retired above, which earns a replacement wherever the active path still carries it.
+            releaseUnprobedPath(newPath)
+            cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
 
@@ -2437,8 +2526,8 @@ class QuicheDriver(
                 localLen = newPath.localSockAddrLength,
                 isPrimary = false,
                 release = newPath.release,
-                // The path now owns the connection ID quiche linked to it. Every way out of here —
-                // validated, failed, abandoned, refused — runs through teardownPath, which retires it.
+                // The path now owns the connection ID quiche linked to it. An unanswered probe keeps it
+                // (PathSlot.Kept); every way out of `paths` runs through teardownPath, which retires it.
                 slot = PathSlot.Probing(probed.dcidSeq),
             )
         paths[key] = entry
@@ -2447,6 +2536,37 @@ class QuicheDriver(
         lane = MigrationLane.Validating(PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget()))
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
+    }
+
+    /**
+     * Use the kept path for [cmd]: switch to it if the peer answered after the last migration stopped
+     * waiting, else probe it again. quiche's `probe_path` on a path it already has requests a new
+     * PATH_CHALLENGE and returns the id the path holds — it takes no spare.
+     */
+    private fun resumeKeptPath(
+        cmd: QuicheCmd.Migrate,
+        kept: KeptPath.Found,
+        wiring: MigrationCapability.Supported,
+    ) {
+        val entry = kept.entry
+        val pending = PendingMigration(entry.key, kept.slot.localEndpoint, cmd.result, pathValidationBudget())
+        when (val slot = kept.slot) {
+            is PathSlot.Answered -> switchTo(entry, pending, wiring)
+            is PathSlot.Unanswered ->
+                when (val probe = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+                    is ProbeOutcome.Probed -> {
+                        entry.transitionTo(PathSlot.Probing(probe.dcidSeq))
+                        lane = MigrationLane.Validating(pending)
+                        _pathState.value = QuicPathState.Probing(slot.localEndpoint)
+                    }
+                    // The path lost its id behind our back (a peer's retire_prior_to): it cannot be
+                    // probed again, and the next migration binds afresh.
+                    is ProbeOutcome.Rejected -> {
+                        teardownPath(entry)
+                        cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
+                    }
+                }
+        }
     }
 
     /**
@@ -2514,15 +2634,15 @@ class QuicheDriver(
      * timer instead of from quiche. `Failed` and not `Impossible`: nothing about this connection
      * says a later attempt cannot work, and `Impossible` would cancel the reactor for good.
      *
-     * The teardown mirrors the [QuichePathEventType.FailedValidation] arm exactly. Without it the
-     * probed path's socket, its `recv_info` and its pinned sockaddr stay alive for the connection's
-     * life — a per-failed-migration leak on the very code path a flapping network takes repeatedly.
+     * The path is kept, exactly as the [QuichePathEventType.FailedValidation] arm keeps it
+     * ([PathSlot.Kept]): the next migration either probes it again or replaces it, so at most one
+     * unanswered probe's socket and id are ever held.
      */
     private fun abandonPathValidationIfDue() {
         if (migrationEnabled) drainPathEvents()
         val pending = validating() ?: return
         if (!pending.isDue()) return
-        paths[pending.key]?.let { teardownPath(it) }
+        paths[pending.key]?.keep(pending.localEndpoint)
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
@@ -2537,9 +2657,16 @@ class QuicheDriver(
             when (type) {
                 QuichePathEventType.Validated -> {
                     val key = api.decodePathKey(addr(peLocalOut))
+                    val entry = paths[key]
+                    val slot = entry?.slot
+                    if (entry != null && slot is PathSlot.Unanswered) {
+                        // quiche went on probing the kept path after the migration stopped waiting, and
+                        // the peer answered. It reports that once, so the next migration switches here.
+                        entry.transitionTo(PathSlot.Answered(slot.dcidSeq, slot.localEndpoint))
+                        continue
+                    }
                     val pending = validating() ?: continue
                     if (pending.key != key) continue
-                    val entry = paths[key]
                     if (entry == null) {
                         // Internal bookkeeping race: quiche validated a path this driver no longer
                         // tracks. Observably the same as never validating, so it reports the same leaf.
@@ -2547,57 +2674,14 @@ class QuicheDriver(
                         continue
                     }
                     entry.validated()
-                    _pathState.value = QuicPathState.Validated(pending.localEndpoint)
-                    when (val outcome = api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
-                        is MigrateOutcome.Migrated -> {
-                            // Order matters: `active` moves first so nothing below (or concurrent
-                            // teardown-triggered routing) can resolve to the old entry.
-                            //
-                            // quiche 0.29's `migrate()` on an existing path returns that path's own
-                            // `active_dcid_seq` — the id `probe_path` already linked — so this
-                            // transition normally carries the same sequence forward and retires
-                            // nothing. It is written as a transition anyway because it is the one
-                            // place quiche could report a *different* id, and if it ever did, the
-                            // probe's would be orphaned: PathEntry.transitionTo retires the displaced
-                            // one instead of dropping it on the floor.
-                            val previous = active
-                            entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
-                            active = entry
-                            // The path the liveness sampler was judging is no longer the one we live
-                            // on, and the new one's counters start somewhere else — so the run of
-                            // unanswered expiries is re-baselined here, in the same statement sequence
-                            // that moves `active`. See [rebaselineActivePathLiveness].
-                            rebaselineActivePathLiveness()
-                            // RFC 9000 §9.5: retire the DCID used on the old path — done by the
-                            // teardown itself, not by a separate call with a separately-tracked
-                            // sequence number. This — with the retire-no-relink source patch — is what
-                            // clears the old path's `active_dcid_seq` inside quiche, making its slot
-                            // evictable; without it the table fills at active_conn_id_limit and the
-                            // next probe is refused.
-                            teardownPath(previous)
-                            completeMigration(
-                                pending,
-                                MigrationResult.Succeeded(pending.localEndpoint),
-                                QuicPathState.Migrated(pending.localEndpoint),
-                            )
-                        }
-                        is MigrateOutcome.Rejected -> {
-                            // quiche validated the path and then refused to switch to it. Nothing will
-                            // ever retry *this* path — the lane clears below and the next
-                            // migrate() opens a fresh socket — so leaving it in `paths` pins its DCID
-                            // and its slot in quiche's path table for the connection's life. Tear it
-                            // down, which retires.
-                            teardownPath(entry)
-                            completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
-                        }
-                    }
+                    switchTo(entry, pending, wiring)
                 }
 
                 QuichePathEventType.FailedValidation -> {
                     val key = api.decodePathKey(addr(peLocalOut))
                     val pending = validating()
                     if (pending != null && pending.key == key) {
-                        paths[key]?.let { teardownPath(it) }
+                        paths[key]?.keep(pending.localEndpoint)
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                     }
                 }
@@ -2617,6 +2701,61 @@ class QuicheDriver(
                 -> {
                     // Server-side / informational events — no client action for active migration.
                 }
+            }
+        }
+    }
+
+    /**
+     * Switch the connection onto [entry], a path the peer has validated, and complete [pending] with
+     * the outcome.
+     */
+    private fun switchTo(
+        entry: PathEntry,
+        pending: PendingMigration,
+        wiring: MigrationCapability.Supported,
+    ) {
+        _pathState.value = QuicPathState.Validated(pending.localEndpoint)
+        when (val outcome = api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+            is MigrateOutcome.Migrated -> {
+                // Order matters: `active` moves first so nothing below (or concurrent
+                // teardown-triggered routing) can resolve to the old entry.
+                //
+                // quiche 0.29's `migrate()` on an existing path returns that path's own
+                // `active_dcid_seq` — the id `probe_path` already linked — so this
+                // transition normally carries the same sequence forward and retires
+                // nothing. It is written as a transition anyway because it is the one
+                // place quiche could report a *different* id, and if it ever did, the
+                // probe's would be orphaned: PathEntry.transitionTo retires the displaced
+                // one instead of dropping it on the floor.
+                val previous = active
+                entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
+                active = entry
+                // The path the liveness sampler was judging is no longer the one we live
+                // on, and the new one's counters start somewhere else — so the run of
+                // unanswered expiries is re-baselined here, in the same statement sequence
+                // that moves `active`. See [rebaselineActivePathLiveness].
+                rebaselineActivePathLiveness()
+                // RFC 9000 §9.5: retire the DCID used on the old path — done by the
+                // teardown itself, not by a separate call with a separately-tracked
+                // sequence number. This — with the retire-no-relink source patch — is what
+                // clears the old path's `active_dcid_seq` inside quiche, making its slot
+                // evictable; without it the table fills at active_conn_id_limit and the
+                // next probe is refused.
+                teardownPath(previous)
+                completeMigration(
+                    pending,
+                    MigrationResult.Succeeded(pending.localEndpoint),
+                    QuicPathState.Migrated(pending.localEndpoint),
+                )
+            }
+            is MigrateOutcome.Rejected -> {
+                // quiche validated the path and then refused to switch to it. Nothing will
+                // ever retry *this* path — the lane clears below and the next
+                // migrate() opens a fresh socket — so leaving it in `paths` pins its DCID
+                // and its slot in quiche's path table for the connection's life. Tear it
+                // down, which retires.
+                teardownPath(entry)
+                completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
             }
         }
     }
@@ -2661,10 +2800,9 @@ class QuicheDriver(
      */
     private fun teardownPath(entry: PathEntry) {
         // First, and unconditionally: the path stops holding its destination CID, which retires it
-        // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a
-        // FailedValidation, the §8.2.4 abandon timer, a refused switch, a quiche path eviction — so
-        // this is the one place a CID can be released, and there is no way to remove a path from
-        // `paths` that bypasses it. It runs before the socket closes because it is a quiche call, not
+        // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a kept
+        // path replaced, a refused switch, a quiche path eviction — so this is the one place a CID
+        // can be released, and there is no way to remove a path from `paths` that bypasses it. It runs before the socket closes because it is a quiche call, not
         // an I/O one, and the connection is still live for all of them.
         entry.transitionTo(PathSlot.Abandoned)
         paths.remove(entry.key)
@@ -3113,6 +3251,13 @@ class QuicheDriver(
 
         /** RFC 9000 §8.2.4: "three times the larger of the current PTO or the PTO for the new path". */
         private const val PATH_VALIDATION_PTO_MULTIPLIER = 3
+
+        /**
+         * Spare destination CIDs a retry on the kept path's link will not spend on a fresh socket
+         * ([keptPathUse]): enough for one probe from another local address, which is what the next
+         * handoff to a different link needs.
+         */
+        private const val RESERVED_SPARE_DCIDS = 1L
 
         /**
          * Scratch capacity for the connection-id readers. A CID is at most 20 bytes (RFC 9000 §17.2) and

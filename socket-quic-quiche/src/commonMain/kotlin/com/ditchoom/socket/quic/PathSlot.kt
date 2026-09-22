@@ -26,14 +26,26 @@ package com.ditchoom.socket.quic
  *
  * ## The lifecycle
  * ```
- *   Probed ─┬─▶ Probing(seq) ──▶ Validated(seq) ──▶ Active(seq) ──┐
- *           │        │                 │                          │
- *           │        └── abandoned ────┴──── switch refused ──┐    │ superseded by
- *           │                                                 │    │ the next migration
- *           └── (Rejected: no path, no id) ─────────────────▶  Abandoned ◀───────┘
+ *   Probed ─┬─▶ Probing(seq) ─────────────▶ Validated(seq) ──▶ Active(seq) ──┐
+ *           │     │     ▲                        │                          │
+ *           │     │     │ probed again           │ switch refused           │ superseded by
+ *           │     ▼     │                        ▼                          │ the next migration
+ *           │   Unanswered(seq) ──▶ Answered(seq) ──▶ Active(seq)           │
+ *           │     │                    │                                    │
+ *           │     └── replaced ────────┴───────────────────────────▶  Abandoned ◀┘
+ *           └── (Rejected: no path, no id) ───────────────────────────▶  Abandoned
  * ```
  * The connection's original path starts at [Active] on sequence 0 — RFC 9000 §5.1.1's initial
  * destination CID — which is why a first migration's §9.5 retirement names `0`.
+ *
+ * ## Why an unanswered probe keeps its id
+ * A spare comes back only when a `RETIRE_CONNECTION_ID` reaches the peer and it answers with a
+ * `NEW_CONNECTION_ID`, and both ride the active path. When that path is dead — the case a handoff exists
+ * for — retiring an unanswered probe's id returns nothing, so a retry that binds a fresh socket spends a
+ * spare the peer can never replace, and the pool (`min(peer limit, own limit) - 1`, three against a peer
+ * at 4) is gone after that many probes. A [Kept] path holds its socket and its id instead, and a retry on
+ * the same local address probes it again with that same id, which RFC 9000 §9.5 permits: it forbids
+ * reusing an id only when sending from more than one local address.
  */
 internal sealed interface PathSlot {
     /**
@@ -50,6 +62,33 @@ internal sealed interface PathSlot {
     class Probing(
         override val dcidSeq: Long,
     ) : Linked
+
+    /**
+     * A probe path no migration is waiting on, kept — socket, reader and id — for the next migration on
+     * the same local address to use instead of spending a spare. At most one path is in one of these
+     * states: a migration settles the kept path (probes it again, switches to it, or replaces it)
+     * before it probes anything else.
+     */
+    sealed interface Kept : Linked {
+        /** Where the path's socket is bound — what a migration that lands here reports. */
+        val localEndpoint: QuicLocalEndpoint
+    }
+
+    /** The RFC 9000 §8.2.4 abandon budget, or quiche's own, ran out with the challenge unanswered. */
+    class Unanswered(
+        override val dcidSeq: Long,
+        override val localEndpoint: QuicLocalEndpoint,
+    ) : Kept
+
+    /**
+     * quiche validated the path after the migration had stopped waiting — it goes on probing a path
+     * whose id is still linked. quiche reports a path's validation once, so probing it again would never
+     * be answered; the next migration switches to it instead.
+     */
+    class Answered(
+        override val dcidSeq: Long,
+        override val localEndpoint: QuicLocalEndpoint,
+    ) : Kept
 
     /**
      * The peer answered the challenge (`PathEvent::Validated`), but the connection has not switched

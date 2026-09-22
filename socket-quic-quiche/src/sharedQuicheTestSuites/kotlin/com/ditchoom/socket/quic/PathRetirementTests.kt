@@ -128,7 +128,12 @@ class PathRetirementTests {
         var releases = 0
             private set
 
+        /** The IPv4 address the next path binds on — where the platform routes from. Another address is another link. */
+        var route: Long = STUB_LOOPBACK_V4
+
         fun portOfPath(index: Int): Int = portBase + index
+
+        fun sockAddrOfPath(index: Int): Long = SOCKADDR_BASE + index * SOCKADDR_STRIDE
 
         override suspend fun openPath(
             localHost: String?,
@@ -138,7 +143,7 @@ class PathRetirementTests {
             val sockAddr = SOCKADDR_BASE + index * SOCKADDR_STRIDE
             val port =
                 if (index == 1 && collideFirstPathWithPort != null) collideFirstPathWithPort else portOfPath(index)
-            api.registerSockAddr(sockAddr, port)
+            api.registerSockAddr(sockAddr, port, route)
             val channel = RetirementChannel()
             channels += channel
             return NewPath(
@@ -158,13 +163,18 @@ class PathRetirementTests {
 
     private inner class Fixture(
         collideFirstPathWithPort: Int? = null,
+        /**
+         * The spare destination CIDs the stub reports, fixed for the test. Above the driver's reserve
+         * a retry can afford a fresh socket; at it, a retry on the kept path's link probes that path.
+         */
+        spares: Long = 4L,
     ) {
         val stub =
             StubQuicheApi().apply {
                 established = true
                 // The peer issued spare destination CIDs, so handleMigrate reaches the probe
                 // instead of answering NoSpareConnectionId.
-                availableDcids = 4L
+                availableDcids = spares
                 registerSockAddr(primaryAddr, primaryPort)
             }
         val api = CountingFreeApi(stub)
@@ -204,8 +214,11 @@ class PathRetirementTests {
          * next `afterCommand` drains it. Callers `runCurrent()` after this; the migration result is
          * then completed (or the test's `isCompleted` assertion says why not).
          */
-        suspend fun validate(index: Int) {
-            stub.pathEvents += StubPathEvent(QuichePathEventType.Validated, factory.portOfPath(index))
+        suspend fun validate(
+            index: Int,
+            v4: Long = STUB_LOOPBACK_V4,
+        ) {
+            stub.pathEvents += StubPathEvent(QuichePathEventType.Validated, factory.portOfPath(index), v4)
             wake()
         }
 
@@ -498,22 +511,18 @@ class PathRetirementTests {
         }
 
     /**
-     * **#447: a probe that fails validation must give its destination CID back.**
+     * **A probe that fails validation keeps its path and its destination CID — it does not leak them.**
      *
-     * `quiche_conn_probe_path` does not merely arm a PATH_CHALLENGE — `create_path_on_client` takes
-     * `lowest_available_dcid_seq()` and links it to the path it just made, so the id leaves the spare
-     * pool immediately. When the peer never answers, `on_failed_validation()` sets the path to
-     * `Failed` and touches `active_dcid_seq` not at all: quiche will never hand that id back, and the
-     * path itself is not even evictable, because `Path::unused()` requires `active_dcid_seq.is_none()`.
-     *
-     * Before the [PathSlot] lifecycle the driver wrote the probe's sequence number into native scratch
-     * and never read it, so this exit had **no value to forget**. One unanswered challenge — routine on
-     * real cellular — cost the connection a CID permanently; a few of them left every later `migrate()`
-     * answering `NoSpareConnectionId` for the rest of the connection's life (measured live against
-     * Google, 2026-08-22).
+     * `quiche_conn_probe_path` takes `lowest_available_dcid_seq()` and links it to the path it makes,
+     * and `on_failed_validation()` never unlinks it, so a path the driver walks away from holds its id
+     * for good (#447). The driver does not walk away: the path is kept ([PathSlot.Kept]), socket open,
+     * so the next migration on the same local address can probe it again with that id instead of
+     * spending a spare — the only kind a dead active path cannot earn back. What it holds is still owned
+     * by exactly one path state, and [aRetryThatCanAffordAFreshSocketReplacesTheKeptPathAndRetiresItsId]
+     * shows it is retired the moment the path is replaced.
      */
     @Test
-    fun aFailedPathValidationRetiresTheConnectionIdTheProbeConsumed() =
+    fun aFailedPathValidationKeepsTheProbePathAndItsConnectionId() =
         runTest {
             val f = Fixture()
             f.driver.start(this)
@@ -536,19 +545,199 @@ class PathRetirementTests {
                     result.await(),
                     "the failed validation was not reported to the caller",
                 )
+                assertEquals(emptyList(), f.stub.retiredDcids, "the kept probe path's id was retired while the path still holds it")
                 assertEquals(
-                    listOf(1L),
-                    f.stub.retiredDcids,
-                    "the failed probe's destination CID was never retired — quiche keeps it linked to a " +
-                        "path that will never be used again, so it is gone from the spare pool for the " +
-                        "life of the connection (#447)",
-                )
-                assertEquals(
-                    setOf(0L),
+                    setOf(0L, 1L),
                     f.stub.linkedDcidSeqs,
-                    "after a failed migration the only destination CID still linked to a path must be the " +
-                        "one the connection is living on (#447)",
+                    "after a failed migration the connection holds exactly its own id and the kept probe path's",
                 )
+                assertEquals(0, f.factory.channels[0].closeCount, "the kept probe path's socket was closed")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A retry on the kept path's link, with the pool at its reserve, probes that path again with the
+     * id it already holds** — the #631 fix at the driver level.
+     *
+     * The fresh socket is still opened, because on a platform that assigns the local endpoint that is the
+     * only way to learn which address the platform routes from; on the same address it is released
+     * unprobed. Five consecutive failures link nothing new and retire nothing: the dead-link run costs
+     * the connection one id, however long it lasts.
+     */
+    @Test
+    fun aRetryOnTheKeptPathsLinkProbesItAgainWithTheConnectionIdItHolds() =
+        runTest {
+            val f = Fixture(spares = 1L)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                repeat(5) { attempt ->
+                    val result = f.migrate()
+                    runCurrent()
+                    f.failValidation(1)
+                    runCurrent()
+                    assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
+                    assertEquals(attempt + 1, f.factory.opened, "attempt ${attempt + 1} never opened its fresh socket")
+                }
+                assertEquals(
+                    List(5) { f.factory.sockAddrOfPath(1) },
+                    f.stub.probedSockAddrs,
+                    "every attempt must probe the kept path; a probe of any other socket spends a spare the " +
+                        "dead active path can never earn back (#631)",
+                )
+                assertEquals(setOf(0L, 1L), f.stub.linkedDcidSeqs, "the retries linked another id")
+                assertEquals(emptyList(), f.stub.retiredDcids, "the retries retired an id the kept path still holds")
+                assertEquals(0, f.factory.channels[0].closeCount, "the kept probe path's socket was closed")
+                assertEquals(
+                    List(4) { 1 },
+                    f.factory.channels
+                        .drop(1)
+                        .map { it.closeCount },
+                    "each retry's fresh socket must be released unprobed",
+                )
+
+                val recovered = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                assertEquals(
+                    MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", f.factory.portOfPath(1))),
+                    recovered.await(),
+                    "the link answered the kept path's next probe, so the connection must land on it",
+                )
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **With spares to spare, a retry binds a fresh socket and the kept path's id is retired.** A pool
+     * above the reserve buys a fresh 4-tuple per attempt, as every attempt had before there was a kept
+     * path — and on a live active path the retirement earns a replacement, so it stays there.
+     */
+    @Test
+    fun aRetryThatCanAffordAFreshSocketReplacesTheKeptPathAndRetiresItsId() =
+        runTest {
+            val f = Fixture(spares = 4L)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.migrate()
+                runCurrent()
+                f.failValidation(1)
+                runCurrent()
+                assertEquals(setOf(0L, 1L), f.stub.linkedDcidSeqs, "the first probe was not kept")
+
+                f.migrate()
+                runCurrent()
+                assertEquals(listOf(1L), f.stub.retiredDcids, "the replaced kept path's id was not retired")
+                assertEquals(setOf(0L, 2L), f.stub.linkedDcidSeqs, "the fresh socket's probe must hold the only other id")
+                assertEquals(1, f.factory.channels[0].closeCount, "the replaced kept path's socket was left open")
+                assertEquals(1, f.factory.releases, "the replaced kept path's pinned sockaddr was never released")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A kept path on another link is replaced even at the reserve.** A fresh socket on another local
+     * address says the platform routes from somewhere else now, and the reserve exists for exactly that
+     * handoff: it needs one spare, because RFC 9000 §9.5 forbids sending the kept path's id from a
+     * second local address.
+     */
+    @Test
+    fun aKeptPathOnAnotherLinkIsReplacedEvenAtTheReserve() =
+        runTest {
+            val f = Fixture(spares = 1L)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.migrate()
+                runCurrent()
+                f.failValidation(1)
+                runCurrent()
+
+                f.factory.route = OTHER_LINK_V4
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(
+                    listOf(f.factory.sockAddrOfPath(1), f.factory.sockAddrOfPath(2)),
+                    f.stub.probedSockAddrs,
+                    "the second attempt must probe the socket on the new link, not the kept path on the old one",
+                )
+                assertEquals(listOf(1L), f.stub.retiredDcids, "the kept path on the old link was not retired")
+                f.validate(2, OTHER_LINK_V4)
+                runCurrent()
+                val moved = result.assertSucceeded()
+                assertEquals(f.factory.portOfPath(2), moved.localEndpoint.port)
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **…and with nothing to spend, it is retired and the migration refused.** Probing it on a link the
+     * platform has left would report a result about the wrong link. Retiring it is what can earn a
+     * spare back wherever the active path still carries the retirement, and the refusal is the
+     * retryable [MigrationResult.Unmoved.Failed.NoSpareConnectionId].
+     */
+    @Test
+    fun aKeptPathOnAnotherLinkWithNothingToSpendIsRetiredAndTheMigrationRefused() =
+        runTest {
+            val f = Fixture(spares = 1L)
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.migrate()
+                runCurrent()
+                f.failValidation(1)
+                runCurrent()
+
+                f.stub.availableDcids = 0L
+                f.factory.route = OTHER_LINK_V4
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, result.await())
+                assertEquals(2, f.factory.opened, "the fresh socket that says where the platform routes from was never opened")
+                assertEquals(listOf(f.factory.sockAddrOfPath(1)), f.stub.probedSockAddrs, "nothing may be probed without an id")
+                assertEquals(listOf(1L), f.stub.retiredDcids, "the kept path on the old link was not retired")
+                assertEquals(1, f.factory.channels[1].closeCount, "the unprobed fresh socket was left open")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A kept path the peer answers late is switched to without another probe.** quiche goes on probing
+     * a path whose id is still linked after the driver has stopped waiting, and reports the validation
+     * once; a fresh PATH_CHALLENGE on an already-validated path is answered but reported never, so a
+     * migration that probed it again would time out on a working path, every time.
+     */
+    @Test
+    fun aKeptPathThePeerAnsweredLateIsSwitchedToWithoutAnotherProbe() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.migrate()
+                runCurrent()
+                f.failValidation(1)
+                runCurrent()
+                f.validate(1) // the late answer, with no migration waiting
+                runCurrent()
+
+                val result = f.migrate()
+                runCurrent()
+                assertEquals(
+                    MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", f.factory.portOfPath(1))),
+                    result.await(),
+                    "the path the peer answered was not switched to",
+                )
+                assertEquals(listOf(f.factory.sockAddrOfPath(1)), f.stub.probedSockAddrs, "the answered path was probed again")
+                assertEquals(listOf(0L), f.stub.retiredDcids, "only the migrated-from path's id is retired")
             } finally {
                 f.driver.destroy()
             }
@@ -721,12 +910,12 @@ class PathRetirementTests {
     /**
      * **The systemic statement of #447**: failed migrations must not accumulate.
      *
-     * One leaked CID is a curiosity; the defect is that they add up. A flapping network produces failed
-     * probes one after another, and each one used to cost a spare permanently — so after roughly
-     * `active_connection_id_limit` handoffs the connection could no longer migrate at all, and answered
-     * `NoSpareConnectionId` to every attempt for the rest of its life. This walks five consecutive
-     * failures and asserts the invariant that makes that impossible: after each one, the *only*
-     * destination CID linked to a path is the one the connection is living on.
+     * One leaked CID is a curiosity; the defect is that they add up — after roughly
+     * `active_connection_id_limit` failed handoffs the connection could no longer migrate at all. This
+     * walks five consecutive failures with spares to spare and asserts the invariant that makes that
+     * impossible: after each one, the only destination CIDs linked to a path are the one the connection
+     * is living on and the one the kept probe path holds — each earlier probe's id retired as its path
+     * was replaced.
      */
     @Test
     fun repeatedFailedMigrationsNeverAccumulateLinkedConnectionIds() =
@@ -747,17 +936,16 @@ class PathRetirementTests {
                     runCurrent()
                     assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, result.await())
                     assertEquals(
-                        setOf(0L),
+                        setOf(0L, attempt + 1L),
                         f.stub.linkedDcidSeqs,
-                        "after ${attempt + 1} failed migration(s) the connection is still holding CIDs for " +
-                            "paths it has torn down — this is the accumulation that ends in " +
-                            "NoSpareConnectionId forever (#447)",
+                        "after ${attempt + 1} failed migration(s) the connection holds ids for paths it has " +
+                            "replaced — this is the accumulation that ends in NoSpareConnectionId forever (#447)",
                     )
                 }
                 assertEquals(
-                    listOf(1L, 2L, 3L, 4L, 5L),
+                    listOf(1L, 2L, 3L, 4L),
                     f.stub.retiredDcids,
-                    "each failed probe must retire its OWN id, in order — retiring the same one twice, or " +
+                    "each replaced probe must retire its OWN id, in order — retiring the same one twice, or " +
                         "one the connection is still using, would be a different defect wearing this fix",
                 )
             } finally {
@@ -814,7 +1002,10 @@ class PathRetirementTests {
     }
 
     private companion object {
-        /** [StubQuicheApi]'s `sockAddrV4` answer for every registered sockaddr (127.0.0.1). */
+        /** [StubQuicheApi]'s default `sockAddrV4` answer for a registered sockaddr (127.0.0.1). */
         const val STUB_LOOPBACK_V4 = 0x7F000001L
+
+        /** A second local address (10.0.0.2) — another link, as the driver sees it. */
+        const val OTHER_LINK_V4 = 0x0A000002L
     }
 }

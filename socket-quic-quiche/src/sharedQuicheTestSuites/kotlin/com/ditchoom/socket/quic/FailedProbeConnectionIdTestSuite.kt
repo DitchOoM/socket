@@ -20,9 +20,10 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Shared regression guard for #447: **a migration whose probe is never answered must give its
- * destination connection ID back**, so a run of failed handoffs cannot disable migration for the
- * rest of the connection's life.
+ * Shared regression guard for #447: **a migration whose probe is never answered must not strand its
+ * destination connection ID** — the driver keeps it with the probe path for the next probe and retires
+ * it when that path is replaced — so a run of failed handoffs cannot disable migration for the rest of
+ * the connection's life.
  *
  * ## The defect
  * `quiche_conn_probe_path` is not a passive question. `create_path_on_client` takes

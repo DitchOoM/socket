@@ -12,9 +12,14 @@ import kotlin.time.Duration
  */
 sealed interface MigrationTarget {
     /**
-     * A fresh, platform-chosen local endpoint on the current default interface. The only request every
+     * A platform-chosen local endpoint on the current default interface. The only request every
      * platform can serve — Network.framework assigns the endpoint itself, so a named endpoint is not
      * bindable on Apple at all — and what automatic migration always issues.
+     *
+     * When the last migration's probe went unanswered from an endpoint on that same interface, and the
+     * connection's spare connection ids are down to the one it keeps for a handoff to another link, that
+     * endpoint is probed again instead of a new one bound: a spare spent on a dead path is never
+     * replaced, and RFC 9000 §9.5 lets a connection id be reused from the same local address.
      */
     data object FreshLocalEndpoint : MigrationTarget
 

@@ -530,19 +530,27 @@ internal class StubQuicheApi : QuicheApi {
      */
     private val sockAddrPorts = mutableMapOf<Long, Int>()
 
-    /** Declare that the sockaddr at [addr] is `127.0.0.1:[port]`. See [sockAddrPorts]. */
+    /** The IPv4 address each registered sockaddr carries — [STUB_SOCKADDR_V4] unless registered otherwise. */
+    private val sockAddrHosts = mutableMapOf<Long, Long>()
+
+    /**
+     * Declare that the sockaddr at [addr] is `[v4]:[port]` — `127.0.0.1` by default; another address
+     * is another link as the driver sees it. See [sockAddrPorts].
+     */
     fun registerSockAddr(
         addr: Long,
         port: Int,
+        v4: Long = STUB_SOCKADDR_V4,
     ) {
         sockAddrPorts[addr] = port
+        sockAddrHosts[addr] = v4
     }
 
     override fun sockAddrFamily(addr: Long) = if (addr in sockAddrPorts) 4 else 0
 
     override fun sockAddrPort(addr: Long) = sockAddrPorts[addr] ?: 0
 
-    override fun sockAddrV4(addr: Long) = if (addr in sockAddrPorts) LOOPBACK_V4 else 0L
+    override fun sockAddrV4(addr: Long) = sockAddrHosts[addr] ?: 0L
 
     override fun sockAddrV6Hi(addr: Long) = 0L
 
@@ -597,15 +605,29 @@ internal class StubQuicheApi : QuicheApi {
         peerAddr: Long,
         peerLen: Int,
     ): ProbeOutcome {
-        val outcome = connProbeOutcomes.removeFirstOrNull() ?: ProbeOutcome.Probed(nextProbeDcidSeq++)
-        // Mirror quiche: only a probe that actually created a path consumes (links) an id. Every
-        // failure inside create_path_on_client returns before link_dcid_to_path_id.
-        if (outcome is ProbeOutcome.Probed) {
-            linkedDcidSeqs += outcome.dcidSeq
-            pathDcidSeqs[localAddr] = outcome.dcidSeq
+        probedSockAddrs += localAddr
+        connProbeOutcomes.removeFirstOrNull()?.let { scripted ->
+            if (scripted is ProbeOutcome.Probed) {
+                linkedDcidSeqs += scripted.dcidSeq
+                pathDcidSeqs[localAddr] = scripted.dcidSeq
+            }
+            return scripted
         }
-        return outcome
+        // Mirror quiche's `probe_path` on a path it already has: it requests a new challenge and
+        // answers the id the path holds — linking none — or INVALID_STATE once that id is retired.
+        pathDcidSeqs[localAddr]?.let { held ->
+            return if (held in linkedDcidSeqs) ProbeOutcome.Probed(held) else ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
+        }
+        // A new path: quiche links a spare to it (create_path_on_client → link_dcid_to_path_id). Only a
+        // probe that creates a path consumes an id; every failure in there returns before the link.
+        val seq = nextProbeDcidSeq++
+        linkedDcidSeqs += seq
+        pathDcidSeqs[localAddr] = seq
+        return ProbeOutcome.Probed(seq)
     }
+
+    /** The local sockaddr of every [connProbePath] call, in order — which path each probe named. */
+    val probedSockAddrs: MutableList<Long> = mutableListOf()
 
     override fun connNewScid(
         conn: QuicheConn,
@@ -873,7 +895,7 @@ internal class StubQuicheApi : QuicheApi {
         // decodes THAT pointer to find which path the event is about. Model it by registering the
         // out-pointer under the event's port, so `decodePathKey(localOut)` yields the same PathKey the
         // probed path was opened with. Writing bytes would be a lie — this stub decodes no real memory.
-        registerSockAddr(localOut, event.localPort)
+        registerSockAddr(localOut, event.localPort, event.localV4)
         return event.type
     }
 
@@ -888,11 +910,11 @@ internal class StubQuicheApi : QuicheApi {
         /** Live-iterator handles: distinct so [streamIterNext] knows which queue it is draining. */
         const val READABLE_ITER = 2L
         const val WRITABLE_ITER = 1L
-
-        /** The v4 address every registered synthetic sockaddr claims; only the port distinguishes them. */
-        const val LOOPBACK_V4 = 0x7F000001L
     }
 }
+
+/** The v4 address (127.0.0.1) a registered synthetic sockaddr claims unless it is registered with another. */
+internal const val STUB_SOCKADDR_V4 = 0x7F000001L
 
 /**
  * One entry in [StubQuicheApi.pathEvents]: what quiche reports, and for which local port.
@@ -903,4 +925,6 @@ internal class StubQuicheApi : QuicheApi {
 internal class StubPathEvent(
     val type: QuichePathEventType,
     val localPort: Int,
+    /** The IPv4 address of the event's local sockaddr, as [StubQuicheApi.registerSockAddr] takes it. */
+    val localV4: Long = STUB_SOCKADDR_V4,
 )
