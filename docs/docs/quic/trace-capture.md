@@ -129,9 +129,24 @@ val capture = QuicTraceCapture(
 ```
 
 quiche opens the qlog with `create_new`, so the path must be unique per connection — a repeated
-name is refused and that connection has no qlog. `QUIC_QLOG_DIR` (or the `quic.qlog.dir` system
-property on the JVM) is the door for a capture that names no qlog: every connection then writes
-`quiche-<role>-<session id>.sqlog` there.
+name is refused and that connection has no qlog.
+
+A `QlogTarget.File` grows for the connection's whole life. For a long-running capture, name a
+`QlogTarget.Budgeted(directory, name)` instead: quiche writes the connection's qlog as a run of
+segments (`<name>.sqlog`, then `<name>_seg0002.sqlog` and on), and the shared `QlogDirectory` holds
+every connection in it to a `QlogBudget` — per-connection segments, directory bytes and connection
+records — keeping each connection's head and latest segment and reporting every segment it drops or
+connection it refuses as a `QlogEvent`:
+
+```kotlin
+val qlog = QlogDirectory(dir, QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1)) { event -> log(event.line) }
+// ...then per connection: qlog = QlogTarget.Budgeted(qlog, name)
+```
+
+`QUIC_QLOG_DIR` (or the `quic.qlog.dir` system property on the JVM) is the door for a capture that
+names no qlog: every connection then writes `quiche-<role>-<session id>.sqlog` segments there, under
+one budget per directory (`QUIC_QLOG_WALK_MINUTES`, `QUIC_QLOG_WALK_ECHO_MS`,
+`QUIC_QLOG_WALK_LANES`), with every drop recorded in the directory's `qlog-budget.log`.
 
 ## Event types
 

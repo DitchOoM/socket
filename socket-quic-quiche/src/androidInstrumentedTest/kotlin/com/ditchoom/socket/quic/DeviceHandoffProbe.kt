@@ -17,6 +17,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogBudget
+import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -42,6 +44,8 @@ import com.ditchoom.socket.testkit.migration.forRun
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.BuildRevision
+import com.ditchoom.socket.testkit.walk.DiskFree
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.WalkTargets
@@ -148,25 +152,60 @@ class DeviceHandoffProbe {
         // know lanes reads nothing it recognises instead of two lanes merged into one.
         fun emit(line: String) = write("${WalkLane.RUN_TOKEN} $line")
 
-        // Frame-level evidence, off by default: quiche's own record, one .sqlog per connection in the
-        // app's external files dir where `adb pull` can reach it, named by the same stem as the
-        // connection's trace (conn-v6-0003.sqlog beside conn-v6-0003.trace). Named here, per connection,
-        // rather than through the `quic.qlog.dir` door: that door named the file by the native handle,
-        // which the next connection reuses, so quiche's create_new refused every qlog after the first
-        // (#621). Off by default because at a 100ms cadence it is megabytes per minute and it is an
-        // instrument, not a feature.
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Every walk this rig has lost was lost by a START.
         val kept = PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog"))
-        val qlog = if (arg("probeQlog", "").isNotEmpty()) WalkQlog.Into(File(dir, "qlog").also { it.mkdirs() }) else WalkQlog.Off
+
+        // The replay trace's budget follows this run's own duration, cadence and lanes (see
+        // [TraceBudget]) and is shared by every lane; -e probeTraceBudgetMb overrides the ceiling for a
+        // run that wants a different one.
+        val derived = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = targets.lanes.size)
+        val budget = arg("probeTraceBudgetMb", "").let { if (it.isEmpty()) derived else derived.withMegabytes(it.toLong()) }
+
+        // Frame-level evidence, off by default: quiche's own record, a run of .sqlog segments per
+        // connection in the app's external files dir where `adb pull` can reach it, named by the same
+        // stem as the connection's trace (conn-v6-0003.sqlog beside conn-v6-0003.trace). Each lane keeps
+        // its own budget, derived like the trace's and together held to half of what the disk has left
+        // once the trace's budget is set aside: a full disk would drop qlog writes silently, and this log
+        // with them. Every drop is a line of the lane that made it. Off by default because it is an
+        // instrument, not a feature.
+        val diskFreeAtStart = DiskFree.ofReading(dir.usableSpace)
+        val qlog =
+            if (arg("probeQlog", "").isNotEmpty()) {
+                val qlogDir = File(dir, "qlog").also { it.mkdirs() }
+                val perLane = QlogBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = 1)
+                val laneBudget =
+                    when (diskFreeAtStart) {
+                        is DiskFree.Known -> perLane.fittedTo((diskFreeAtStart.bytes - budget.bytes) / 2 / targets.lanes.size)
+                        DiskFree.Unknown -> perLane
+                    }
+                WalkQlog.Into(
+                    qlogDir,
+                    targets.lanes.associate { lane ->
+                        val laneEmit = lane.log(::write)
+                        lane.label to QlogDirectory(qlogDir.absolutePath, laneBudget) { event -> laneEmit(event.line) }
+                    },
+                )
+            } else {
+                WalkQlog.Off
+            }
 
         log.writeText("")
         emit(kept.line)
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
-                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog",
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog ${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
+                diskFreeAtStart.line,
         )
         emit(targets.lanesLine(echoIntervalMs.milliseconds))
+        when (qlog) {
+            WalkQlog.Off -> Unit
+            is WalkQlog.Into ->
+                targets.lanes.forEach { lane ->
+                    val directory = qlog.byLane.getValue(lane.label)
+                    lane.log(::write)(directory.budget.line)
+                }
+        }
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
         // `TraceToFixture` without re-walking anything. Per connection rather than one file because
@@ -174,11 +213,7 @@ class DeviceHandoffProbe {
         // origin — a single shared sink interleaves every reconnect into something no fixture can be
         // built from.
         //
-        // Affordable at this rig's cadence, which is the only reason it can be unconditional. The
-        // budget follows this run's own duration, cadence and lanes (see [TraceBudget]) and is shared
-        // by every lane; -e probeTraceBudgetMb overrides the ceiling for a run that wants a different one.
-        val derived = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = targets.lanes.size)
-        val budget = arg("probeTraceBudgetMb", "").let { if (it.isEmpty()) derived else derived.withMegabytes(it.toLong()) }
+        // Affordable at this rig's cadence, which is the only reason it can be unconditional.
         emit(budget.line)
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
@@ -226,13 +261,13 @@ class DeviceHandoffProbe {
                                 val connection = traceFiles.next(lane)
                                 // Tee: the lane's ring keeps the cross-connection tail its watchdog needs,
                                 // the file keeps this connection's own replayable trace. The qlog rides
-                                // along unchanged.
+                                // along unchanged; its directory reports every segment, drop and refusal as
+                                // a line of this lane.
                                 connection.copy(
                                     sink =
                                         TraceSink { event ->
                                             probe.ring.emit(event)
                                             connection.sink.emit(event)
-                                            if (event is TraceEvent.QlogRefused) laneEmit("QLOG-REFUSED path=${event.path}")
                                         },
                                 )
                             },
@@ -355,7 +390,7 @@ class DeviceHandoffProbe {
                 launch {
                     while (isActive && System.currentTimeMillis() < deadline) {
                         delay(HEARTBEAT_INTERVAL_MS)
-                        val vitals = "${processMemory()} ${battery(ctx)} ${transport(ctx)}"
+                        val vitals = "${processMemory()} ${battery(ctx)} ${transport(ctx)} ${DiskFree.ofReading(dir.usableSpace).line}"
                         lanes.forEach { probe ->
                             probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
                             when (val beat = probe.watch.beat()) {
@@ -930,14 +965,16 @@ private class RingTraceSink(
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
 
-/** Whether this walk records quiche's qlog, and into which directory. */
+/** Whether this walk records quiche's qlog, and each lane's budgeted directory for it. */
 private sealed interface WalkQlog {
     data object Off : WalkQlog {
         override fun toString(): String = "off"
     }
 
+    /** Every lane writes into [dir], each under its own [QlogDirectory] budget, keyed by lane label. */
     data class Into(
         val dir: File,
+        val byLane: Map<String, QlogDirectory>,
     ) : WalkQlog {
         override fun toString(): String = dir.absolutePath
     }
@@ -949,8 +986,8 @@ private sealed interface WalkQlog {
  * `conn-v6-0003`, so the two records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
- * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget here covers the trace; the
+ * qlog's is each lane's [QlogDirectory]'s.
  */
 private class WalkTraceFiles(
     private val dir: File,
@@ -992,7 +1029,7 @@ private class WalkTraceFiles(
         val target =
             when (qlog) {
                 WalkQlog.Off -> QlogTarget.Off
-                is WalkQlog.Into -> QlogTarget.File(File(qlog.dir, "$name.sqlog").absolutePath)
+                is WalkQlog.Into -> QlogTarget.Budgeted(qlog.byLane.getValue(lane.label), name)
             }
         return QuicConnectionCapture(sink, target)
     }

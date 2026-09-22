@@ -19,3 +19,20 @@ package com.ditchoom.socket.quic
  * never be set.
  */
 internal expect fun qlogDir(): String?
+
+/**
+ * A setting read from the JVM system property [property] or, where there is none (and on every other
+ * platform), the environment variable [variable]. Blank is [EnvironmentSetting.Unset] on both.
+ */
+internal expect fun environmentSetting(
+    property: String,
+    variable: String,
+): EnvironmentSetting
+
+internal sealed interface EnvironmentSetting {
+    data object Unset : EnvironmentSetting
+
+    data class Value(
+        val text: String,
+    ) : EnvironmentSetting
+}

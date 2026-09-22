@@ -25,8 +25,9 @@ else
   echo "no replay traces on the device — the walk is NOT replayable. Check that the probe build carries the trace sink." >&2
 fi
 
-# quiche's own frame-level record, when the run had it on (start.sh turns it on). One .sqlog per
-# connection, decrypted by quiche itself — evidence that does not pass through this library's code.
+# quiche's own frame-level record, when the run had it on (start.sh turns it on): a run of .sqlog
+# segments per connection, decrypted by quiche itself — evidence that does not pass through this
+# library's code.
 QLOG="/sdcard/Android/data/$PKG/files/qlog"
 if adbs shell "ls $QLOG/*.sqlog 2>/dev/null" | grep -q .; then
   qlog="$(dirname "$0")/logs/$stamp-$TAG-qlog"; mkdir -p "$qlog"

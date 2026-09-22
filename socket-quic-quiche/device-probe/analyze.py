@@ -167,6 +167,22 @@ def analyze(path, lines, lane=None):
     print(f"  trace budget: {'SPENT at t+' + str(spent[0][0] // 1000) + 's — the rest of the run is NOT replayable' if spent else 'never spent'}")
     print(f"  heartbeat gaps > 3 min: {len(hb_gaps)}" + (" — " + ", ".join(f"{g / 60000:.0f} min ending t+{at / 1000:.0f}s" for g, at in hb_gaps[:5]) if hb_gaps else ""))
     print(f"  previous run at start: {prev[0][13:] if prev else '(pre-rotation build: a START deleted whatever was there)'}")
+    # Which build ran, what the disk had, and everything the qlog budget dropped — the probe writes
+    # them down because none can be read from outside the phone afterwards. Printed when the log
+    # carries them, so a log from before they existed analyses exactly as it always did.
+    build = re.search(r"\bbuild=(\S+)", starts[0]) if starts else None
+    if build:
+        print(f"  build: {build.group(1)}" + (" — NOT STAMPED: which probe ran is unrecorded" if build.group(1).startswith("unknown") else ""))
+    disk = [m.group(1) for _, b in events if b.startswith(("START ", "HEARTBEAT")) for m in [re.search(r"diskFreeMb=(\S+)", b)] if m]
+    if disk:
+        print(f"  disk free: {disk[0]} MB at start, {disk[-1]} MB at the last heartbeat")
+    qbudget = [b for _, b in events if b.startswith("QLOG-BUDGET ")]
+    if qbudget:
+        print(f"  qlog budget: {qbudget[0][len('QLOG-BUDGET '):]}")
+    for tag in ("QLOG-TRUNCATED", "QLOG-EVICTED", "QLOG-REFUSED", "QLOG-ROTATION-REFUSED", "QLOG-DELETE-FAILED"):
+        hits = [(t, b) for t, b in events if b.startswith(tag + " ")]
+        if hits:
+            print(f"  {tag}: {len(hits)} — first at t+{hits[0][0] // 1000}s: {hits[0][1][:140]}")
     import os
     traces_dir = os.path.splitext(path)[0] + "-traces"
     if os.path.isdir(traces_dir):
