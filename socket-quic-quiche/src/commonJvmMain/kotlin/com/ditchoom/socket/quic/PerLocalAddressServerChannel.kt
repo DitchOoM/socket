@@ -18,8 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
+import kotlin.coroutines.CoroutineContext
 
 /**
  * A wildcard server bind that answers **from the address the client dialled**.
@@ -74,9 +76,8 @@ import kotlin.concurrent.Volatile
  *
  * One reader coroutine per socket, fanning into a **rendezvous** channel: no buffering, so a slow
  * consumer applies backpressure to the readers rather than accumulating pooled receive buffers, and
- * there is no queue to leak on close. The one datagram a reader may be holding when the scope is
- * cancelled is freed by that reader, because a pooled payload whose consumer never arrives is
- * native memory leaked for good.
+ * there is no queue to leak on close. A reader hands each payload to that channel and never touches
+ * it again: the receiver owns what it takes, and the channel frees what nobody took (see [inbound]).
  *
  * A receive on a closed composite **yields** [DatagramReadResult.Closed] rather than throwing — the
  * contract every member keeps (`NioDatagramChannel` spells it out at its own close race) and the
@@ -84,11 +85,23 @@ import kotlin.concurrent.Volatile
  */
 internal class PerLocalAddressServerChannel private constructor(
     private val members: List<AddressedDatagramChannel>,
+    readerContext: CoroutineContext,
 ) : AddressedDatagramChannel {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + readerContext)
 
-    /** Rendezvous: see the concurrency note. Carries the socket so a reply can retrace the path. */
-    private val inbound = Channel<Pair<AddressedDatagramChannel, DatagramReadResult>>(Channel.RENDEZVOUS)
+    /**
+     * Rendezvous: see the concurrency note. Carries the socket so a reply can retrace the path.
+     *
+     * The single arbiter of a payload in flight. A reader's `send` throws `CancellationException` both
+     * when [close] cancels it before the hand-off and when the hand-off completed but the reader had
+     * not yet resumed — the receiver then holds a datagram the server may already have routed to a
+     * connection. Only the channel can tell the two apart, so only the channel frees: exactly the
+     * payloads no receiver took.
+     */
+    private val inbound =
+        Channel<Pair<AddressedDatagramChannel, DatagramReadResult>>(Channel.RENDEZVOUS) { (_, result) ->
+            freeUndeliveredDatagram(result)
+        }
 
     /**
      * peer -> the socket its last datagram arrived on, i.e. the local address it dialled.
@@ -132,15 +145,10 @@ internal class PerLocalAddressServerChannel private constructor(
                             // serve their addresses. The reader retires; close() reports the rest.
                             break
                         }
+                    // The payload is [inbound]'s from here, delivered or not.
                     try {
                         inbound.send(member to result)
-                    } catch (e: CancellationException) {
-                        // Nobody will take this datagram, so nobody will free it. Pooled receive
-                        // buffers are native memory: free it here or it is gone for good.
-                        (result as? DatagramReadResult.Received)?.datagram?.payload?.freeNativeMemory()
-                        throw e
-                    } catch (_: Throwable) {
-                        (result as? DatagramReadResult.Received)?.datagram?.payload?.freeNativeMemory()
+                    } catch (_: ClosedSendChannelException) {
                         break
                     }
                     if (result is DatagramReadResult.Closed) break
@@ -258,8 +266,14 @@ internal class PerLocalAddressServerChannel private constructor(
                 fromLocal = null,
             )
 
-        /** Wrap [members], or hand back the single socket unchanged when there is nothing to compose. */
-        internal fun of(members: List<AddressedDatagramChannel>): AddressedDatagramChannel =
-            if (members.size == 1) members.single() else PerLocalAddressServerChannel(members)
+        /**
+         * Wrap [members], or hand back the single socket unchanged when there is nothing to compose.
+         * [readerContext] is where the member readers run: `Dispatchers.IO` in production, a stepped
+         * dispatcher in a test that needs to hold a reader between two of its steps.
+         */
+        internal fun of(
+            members: List<AddressedDatagramChannel>,
+            readerContext: CoroutineContext = Dispatchers.IO,
+        ): AddressedDatagramChannel = if (members.size == 1) members.single() else PerLocalAddressServerChannel(members, readerContext)
     }
 }

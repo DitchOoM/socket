@@ -75,7 +75,7 @@ sealed interface QuicheCmd {
          * A second release is [RecvPacketReleasedTwice], naming both doors — the packet is the only
          * owner of its buffer, so a second door can only mean a second owner, and that is a defect to
          * be named where it happens rather than found later as a pool guard tripping under someone
-         * else (#588).
+         * else.
          */
         fun release(door: ReleaseDoor) {
             when (val previous = lifetimeRef.exchange(PacketLifetime.Released(door))) {
@@ -310,8 +310,8 @@ internal fun QuicError.wireCloseError(): QuicError = if (code < 0) QuicError.NoE
 
 /**
  * A [QuicheCmd.RecvPacket] was released through a second door. The packet is the single owner of its
- * buffer, so this is always a second owner — the defect behind #588 and #578, named at the release
- * that is one too many instead of surfacing later as a pool guard under whichever command came next.
+ * buffer, so this is always a second owner, named at the release that is one too many instead of
+ * surfacing later as a pool guard under whichever command came next.
  */
 internal class RecvPacketReleasedTwice(
     first: QuicheCmd.ReleaseDoor,
