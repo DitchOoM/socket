@@ -37,6 +37,10 @@ say "APK installed" "${inst:-NOT INSTALLED}"
 [ -n "$inst" ] || fail=1
 notif=$(adbs shell dumpsys package "$PKG" 2>/dev/null | grep -E "POST_NOTIFICATIONS.*granted=true" | head -1)
 say "POST_NOTIFICATIONS" "${notif:+granted}${notif:-NOT granted (adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS)}"
+# Not fatal: without it the OS-NET line reports the radio's registration and bearer as NotReported and
+# carries every other fact, which is the point of each field having its own typed absence.
+phone=$(adbs shell dumpsys package "$PKG" 2>/dev/null | grep -E "READ_PHONE_STATE.*granted=true" | head -1)
+say "READ_PHONE_STATE" "${phone:+granted}${phone:-not granted — OS-NET cell.reg/bearer will read NotReported (adb shell pm grant $PKG android.permission.READ_PHONE_STATE)}"
 wl=$(adbs shell dumpsys deviceidle whitelist 2>/dev/null | grep -c "$PKG")
 say "doze whitelist" "$([ "$wl" -gt 0 ] && echo yes || echo "NO (run ./doze.sh)")"
 [ "$wl" -gt 0 ] || fail=1

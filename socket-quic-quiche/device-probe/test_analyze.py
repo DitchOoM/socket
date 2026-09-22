@@ -28,9 +28,22 @@ def analyze(log_text):
         return run(path)
 
 
+# The three OS network records the synthetic walk carries, device-wide: on Wi-Fi, onto cellular at the
+# handoff, back onto Wi-Fi just before the run ends. Written by the probe under `lane=run`.
+# These two are pinned verbatim on the Kotlin side (OsNetworkFactsTests), so this walk log is
+# seeded with text the probe really writes rather than an approximation of it.
+WIFI_OS_NET = ("state=Routable|Link:Wifi:441492361229|Confirmed v4=SiteLocal v6=LinkLocal "
+               "cell=Reported(sim=Ready,reg=InService,data=Disconnected,roaming=Roaming,bearer=Lte) "
+               "links=wlan0=192.168.1.6,fe80::4c2a:8bff:fe31:9f10")
+CELL_OS_NET = ("state=Routable|Link:Cellular:559036687885|Confirmed v4=SiteLocal v6=Global "
+               "cell=Reported(sim=Ready,reg=InService,data=Connected,roaming=Home,bearer=Nr) "
+               "links=rmnet_data0=100.79.14.2,2600:387:f:6e13::41,fe80::9c1e:22ff:fe08:114c")
+
+
 def two_lane_log():
     """Two lanes over two minutes and one handoff at t+60s: v4 migrates in 46 ms without missing an echo;
-    v6 loses four probes, goes 16.75 s without an answered echo, then migrates in 764 ms."""
+    v6 loses four probes, goes 16.75 s without an answered echo, then migrates in 764 ms. The device
+    leaves Wi-Fi for cellular at the handoff and comes back just before the end."""
     lines = []
 
     def at(t, lane, body):
@@ -41,6 +54,10 @@ def two_lane_log():
     at(1, "run", "LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125")
     at(2, "run", "TRACE-BUDGET mb=512 plannedExchanges=960 lanes=2")
     at(3, "run", "WAKELOCK acquired held=true timeoutMs=240000")
+    at(4, "run", "OS-NET-SOURCE monitor=PlatformSignalled/RouteAndInternet cellular=Signalled")
+    at(5, "run", f"OS-NET {WIFI_OS_NET}")
+    at(59_500, "run", f"OS-NET {CELL_OS_NET}")
+    at(120_450, "run", f"OS-NET {WIFI_OS_NET}")
     for lane, offset in (("v4", 0), ("v6", 125)):
         at(offset + 10, lane, f"CONNECT-ATTEMPT n=1 target={'178.156.248.95:44433' if lane == 'v4' else '[2a01:4ff:f4:eb1a::1]:44433'} family={lane}")
         at(offset + 60, lane, "CONNECTED session=aa wire=aa alpn=test")
@@ -105,6 +122,35 @@ class LaneDemuxTests(unittest.TestCase):
         self.assertEqual(1, len(rows), out)
         self.assertIn("v4: Succeeded 46ms, echo gap 0.2s", rows[0])
         self.assertIn("v6: PathNotValidated×4 → Succeeded 764ms, echo gap 16.8s", rows[0])
+
+    def test_the_os_timeline_is_printed_once_for_the_device_as_a_field_diff(self):
+        out = analyze(two_lane_log()[0])
+
+        self.assertEqual(1, out.count("OS network (what the OS said"), "the device's record is not per lane")
+        os_section = out[out.index("OS network (what the OS said"):out.index("=== lane")]
+        self.assertIn("source: monitor=PlatformSignalled/RouteAndInternet cellular=Signalled", os_section)
+        self.assertIn("changes: 3", os_section)
+        # The first record is printed whole; later ones show only what moved, which is the one thing a
+        # reader lining an OS event up against a handoff needs.
+        self.assertIn(f"t+0s {WIFI_OS_NET}", os_section)
+        self.assertIn("v6: LinkLocal -> Global", os_section)
+        self.assertIn("state: Routable|Link:Wifi:441492361229|Confirmed -> Routable|Link:Cellular:559036687885|Confirmed",
+                      os_section)
+        self.assertIn("data=Connected", os_section)
+        # ...and the lane sections do not repeat it.
+        self.assertNotIn("OS network (what the OS said", section(out, "v4"))
+
+    def test_each_lane_reports_whether_its_connections_died_near_an_os_event(self):
+        text, _ = two_lane_log()
+
+        near = analyze(text)
+        self.assertIn("OS-NET within ±30s of a connection ending: 1/1", section(near, "v4"))
+        self.assertIn("OS-NET within ±30s of a connection ending: 1/1", section(near, "v6"))
+
+        # Drop the OS record that sat beside the end: the death is now one the OS never mentioned.
+        orphaned = analyze("".join(l + "\n" for l in text.splitlines() if "t=120450ms" not in l))
+        self.assertIn("OS-NET within ±30s of a connection ending: 0/1 — no OS event near t+120s",
+                      section(orphaned, "v4"))
 
     def test_a_log_without_lane_tokens_analyses_exactly_as_before_lanes(self):
         """A real one-lane walk excerpt (hours of echoes cut out, so its verdicts describe the excerpt), against

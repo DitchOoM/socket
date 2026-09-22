@@ -41,18 +41,24 @@ internal object TraceToFixture {
      * publishes states without an observation sequence, so there is no density for a gap to jump; the
      * replay path that *does* honour it is `NetworkMonitorScript` → `ScriptedNetworkMonitor`, via
      * `networkMonitorScriptFromTrace`.
+     *
+     * `OS_NET` is dropped for a third: the sim has no radio, no interfaces and no addresses, so there
+     * is nothing to inject the OS's account of them into. It is the record of *why* the monitor said
+     * what it said, which [window] keeps in the windowed trace for a reader — it simply does not fire.
      */
     fun toSimEvents(events: List<TraceEvent>): List<SimEvent> =
-        events.filter { it.isInput && it !is TraceEvent.NetCapability && it !is TraceEvent.NetGap }.map { event ->
-            val at = event.at
-            when (event) {
-                is TraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)
-                is TraceEvent.Error -> SimEvent.RecvError(at, SimError("${event.type}: ${event.message}"))
-                is TraceEvent.Net -> SimEvent.Net(at, event.state)
-                is TraceEvent.Liveness -> SimEvent.Liveness(at, event.result)
-                else -> error("not a timed input event: $event")
+        events
+            .filter { it.isInput && it !is TraceEvent.NetCapability && it !is TraceEvent.NetGap && it !is TraceEvent.OsNet }
+            .map { event ->
+                val at = event.at
+                when (event) {
+                    is TraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)
+                    is TraceEvent.Error -> SimEvent.RecvError(at, SimError("${event.type}: ${event.message}"))
+                    is TraceEvent.Net -> SimEvent.Net(at, event.state)
+                    is TraceEvent.Liveness -> SimEvent.Liveness(at, event.result)
+                    else -> error("not a timed input event: $event")
+                }
             }
-        }
 
     /**
      * The input events of [events] from [from] to [to] inclusive, re-based so [from] is the fixture's
@@ -72,6 +78,7 @@ internal object TraceToFixture {
                 is TraceEvent.Net -> event.copy(at = at)
                 is TraceEvent.NetGap -> event.copy(at = at)
                 is TraceEvent.NetCapability -> event.copy(at = at)
+                is TraceEvent.OsNet -> event.copy(at = at)
                 is TraceEvent.Liveness -> event.copy(at = at)
                 else -> error("not an input event: $event")
             }
