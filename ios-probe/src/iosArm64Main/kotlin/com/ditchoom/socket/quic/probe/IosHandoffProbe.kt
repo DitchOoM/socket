@@ -21,6 +21,8 @@ import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.trace.QlogBudget
+import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -42,6 +44,8 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.WalkLane
+import com.ditchoom.socket.testkit.walk.BuildRevision
+import com.ditchoom.socket.testkit.walk.DiskFree
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import com.ditchoom.socket.quic.read
@@ -60,6 +64,8 @@ import kotlinx.coroutines.launch
 import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileSystemFreeSize
+import platform.Foundation.NSNumber
 import platform.Foundation.NSLog
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.posix.fclose
@@ -208,14 +214,16 @@ object IosHandoffProbe {
         // appended to across walks.
         val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
         val log = Logger(logPath(), startedAt)
-        log.emit("START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()}")
+        val diskFreeAtStart = diskFree()
+        log.emit(
+            "START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()} " +
+                "${BuildRevision.parse(PROBE_BUILD_STAMP).line} ${diskFreeAtStart.line}",
+        )
         log.emit(kept)
         log.emit(targets.lanesLine(echoIntervalMs.milliseconds))
-        // quiche's own frame-level record, one .sqlog per connection: evidence written by quiche
-        // itself, not by this library's code. ~650 KB per 2 min at 250 ms per lane. Each connection
-        // names its own file from the same stem as its trace (conn-v6-0003.sqlog beside
-        // conn-v6-0003.trace); the environment door used to name it by the native handle, which the
-        // next connection reuses, so quiche's create_new refused every qlog after the first (#621).
+        // quiche's own frame-level record: evidence written by quiche itself, not by this library's
+        // code. Each connection writes a run of .sqlog segments named from the same stem as its trace
+        // (conn-v6-0003.sqlog beside conn-v6-0003.trace).
         NSFileManager.defaultManager.createDirectoryAtPath(qlogDir(), true, null, null)
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
@@ -226,8 +234,24 @@ object IosHandoffProbe {
         // lane: at 250 ms the trace is ~8 MB/hour per lane on this phone.
         val budget = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = targets.lanes.size)
         log.emit(budget.line)
+        // Each lane keeps its own qlog budget, derived like the trace's and together held to half of
+        // what the disk has left once the trace's budget is set aside — this phone's free space cannot
+        // be read from outside it, and a full disk would drop qlog writes silently, and this log with
+        // them. Every drop is a line of the lane that made it.
+        val perLane = QlogBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = 1)
+        val laneBudget =
+            when (diskFreeAtStart) {
+                is DiskFree.Known -> perLane.fittedTo((diskFreeAtStart.bytes - budget.bytes) / 2 / targets.lanes.size)
+                DiskFree.Unknown -> perLane
+            }
+        val qlog =
+            targets.lanes.associate { lane ->
+                val laneEmit = log.forLane(lane)
+                laneEmit(laneBudget.line)
+                lane.label to QlogDirectory(qlogDir(), laneBudget) { event -> laneEmit(event.line) }
+            }
         val traceFiles =
-            WalkTraceFiles(traceDir(), qlogDir(), targets.lanes, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir(), qlog, targets.lanes, budget.bytes) { spent ->
                 log.emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point.",
@@ -253,7 +277,7 @@ object IosHandoffProbe {
             GlobalScope.launch(Dispatchers.Default) {
                 while (NSDate().timeIntervalSince1970 < deadline) {
                     delay(HEARTBEAT_INTERVAL_MS)
-                    val vitals = "locUpdates=$locUpdates ${residentMemory()} ${battery()}"
+                    val vitals = "locUpdates=$locUpdates ${residentMemory()} ${battery()} ${diskFree().line}"
                     lanes.forEach { probe ->
                         probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
                         when (val beat = probe.watch.beat()) {
@@ -317,7 +341,6 @@ object IosHandoffProbe {
                                     TraceSink { event ->
                                         probe.ring.emit(event)
                                         connection.sink.emit(event)
-                                        if (event is TraceEvent.QlogRefused) emit("QLOG-REFUSED path=${event.path}")
                                     },
                             )
                         },
@@ -731,6 +754,13 @@ private class MigrationTotals {
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
 
+/** Free space on the volume holding this app's Documents, as the file system reports it. */
+private fun diskFree(): DiskFree {
+    val documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
+    val free = NSFileManager.defaultManager.attributesOfFileSystemForPath(documents, null)?.get(NSFileSystemFreeSize) as? NSNumber
+    return if (free == null) DiskFree.Unknown else DiskFree.ofReading(free.longLongValue)
+}
+
 /** A [QuicCloseException] is the connection closing under the stream; anything else fails one exchange. */
 private fun connectionClosedBy(e: Throwable): EchoFailure =
     if (e is QuicCloseException) EchoFailure.ConnectionClosed(e.closeReason.describe()) else EchoFailure.Exchange
@@ -789,12 +819,12 @@ private const val RING_CAPACITY = 256
  * `conn-v6-0003`, so the two records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
- * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
- * qlog is quiche's own record, its volume follows the walk's length rather than its connection count.
+ * killed by a reboot or a pulled cable must not lose its tail. The budget here covers the trace; the
+ * qlog's is each lane's [QlogDirectory]'s, keyed by lane label in [qlog].
  */
 private class WalkTraceFiles(
     private val dir: String,
-    private val qlogDir: String,
+    private val qlog: Map<String, QlogDirectory>,
     lanes: List<WalkLane>,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
@@ -839,7 +869,7 @@ private class WalkTraceFiles(
                     }
                 }
             }
-        return QuicConnectionCapture(sink, QlogTarget.File("$qlogDir/$name.sqlog"))
+        return QuicConnectionCapture(sink, QlogTarget.Budgeted(qlog.getValue(lane.label), name))
     }
 }
 

@@ -178,7 +178,7 @@ class QlogDirectoryTests {
 
     @Test
     fun theRealWalkFitsInsideItsOwnBudget() {
-        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds)
+        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1)
 
         assertEquals(3452L * 1024 * 1024, budget.directoryBytes)
         assertEquals(24_134_400L, budget.segmentBytes, "one hour at the measured rate")
@@ -193,22 +193,23 @@ class QlogDirectoryTests {
     }
 
     @Test
-    fun theWalkServersBudgetHoldsEveryClientsWholeWalk() {
-        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, clients = 2)
+    fun theWalkServersBudgetHoldsEveryLanesWholeWalk() {
+        // Two walking devices, one lane per address family each.
+        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 4)
 
-        assertEquals(2 * 3452L * 1024 * 1024, budget.directoryBytes)
-        assertEquals(150, budget.connectionSegments, "a connection may fill its own client's share, not another's")
-        assertEquals(9000, budget.directoryConnections)
+        assertEquals(4 * 3452L * 1024 * 1024, budget.directoryBytes)
+        assertEquals(150, budget.connectionSegments, "a connection may fill its own lane's share, not another's")
+        assertEquals(18000, budget.directoryConnections)
         assertEquals(
-            "QLOG-BUDGET mb=6904 segmentKb=23568 connectionSegments=150 connections=9000 " +
-                "walkMinutes=4500 echoIntervalMs=250 clients=2 plannedExchanges=1080000",
+            "QLOG-BUDGET mb=13808 segmentKb=23568 connectionSegments=150 connections=18000 " +
+                "walkMinutes=4500 echoIntervalMs=250 lanes=4 plannedExchanges=4320000",
             budget.line,
         )
     }
 
     @Test
     fun aBudgetFittedToASmallDiskSaysSo() {
-        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds).fittedTo(1024L * 1024 * 1024)
+        val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1).fittedTo(1024L * 1024 * 1024)
 
         assertEquals(1024L * 1024 * 1024, budget.directoryBytes)
         assertTrue(budget.line.endsWith("fittedToAvailableMb=1024"), budget.line)

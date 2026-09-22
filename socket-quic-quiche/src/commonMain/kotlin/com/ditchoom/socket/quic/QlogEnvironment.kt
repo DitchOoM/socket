@@ -16,8 +16,9 @@ import kotlin.time.Duration.Companion.milliseconds
  * there counts against it too.
  *
  * The budget is [QlogBudget.forWalk] for the walk the directory's server serves — `QUIC_QLOG_WALK_MINUTES`,
- * `QUIC_QLOG_WALK_ECHO_MS` and `QUIC_QLOG_WALK_CLIENTS` (JVM: `quic.qlog.walk.minutes`,
- * `quic.qlog.walk.echo.ms`, `quic.qlog.walk.clients`), each defaulting to the device rig's own walk.
+ * `QUIC_QLOG_WALK_ECHO_MS` and `QUIC_QLOG_WALK_LANES`, the concurrent connections of every walking
+ * device together (JVM: `quic.qlog.walk.minutes`, `quic.qlog.walk.echo.ms`, `quic.qlog.walk.lanes`),
+ * each defaulting to the device rig's own walk: two phones, one lane per address family each.
  * Every line the directory reports goes to stdout and to [NOTES] inside the directory, so a pull of the
  * qlog carries its own record of what was dropped and under which budget.
  */
@@ -73,7 +74,7 @@ internal object QlogEnvironment {
         companion object {
             const val DEFAULT_MINUTES = 4500
             const val DEFAULT_ECHO_MS = 250
-            const val DEFAULT_CLIENTS = 2
+            const val DEFAULT_LANES = 4
 
             fun read(): WalkSettings {
                 val ignored = mutableListOf<String>()
@@ -92,8 +93,8 @@ internal object QlogEnvironment {
                 }
                 val minutes = number("quic.qlog.walk.minutes", "QUIC_QLOG_WALK_MINUTES", DEFAULT_MINUTES)
                 val echoMs = number("quic.qlog.walk.echo.ms", "QUIC_QLOG_WALK_ECHO_MS", DEFAULT_ECHO_MS)
-                val clients = number("quic.qlog.walk.clients", "QUIC_QLOG_WALK_CLIENTS", DEFAULT_CLIENTS)
-                return WalkSettings(QlogBudget.forWalk(minutes, echoMs.milliseconds, clients), ignored)
+                val lanes = number("quic.qlog.walk.lanes", "QUIC_QLOG_WALK_LANES", DEFAULT_LANES)
+                return WalkSettings(QlogBudget.forWalk(minutes, echoMs.milliseconds, lanes), ignored)
             }
         }
     }

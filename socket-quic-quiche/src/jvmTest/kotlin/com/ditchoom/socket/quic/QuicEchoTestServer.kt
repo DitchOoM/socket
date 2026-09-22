@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.testkit.walk.BuildRevision
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -37,6 +38,11 @@ import kotlin.time.Duration.Companion.seconds
  * The optional third arg lets the harness container pin `14433` deliberately,
  * because docker publishes a fixed port and the compose file is the one place
  * where a constant is the contract.
+ *
+ * Before READY it prints a START line naming the commit the jar was built from and what the server
+ * records (`qlog=off`, or the `QUIC_QLOG_DIR` directory and its budget), and writes the same line into
+ * that directory's notes, so a pulled capture names the build that wrote it and a server that is
+ * recording nothing says so in its first line.
  */
 fun main(args: Array<String>) {
     require(args.size == 2 || args.size == 3) { "Usage: QuicEchoTestServer <cert.crt> <cert.key> [port]" }
@@ -61,6 +67,9 @@ fun main(args: Array<String>) {
         )
     val tlsConfig = QuicTlsConfig(certChainPath = certPath, privKeyPath = keyPath)
 
+    println(startLine(requestedPort))
+    System.out.flush()
+
     runBlocking(Dispatchers.IO) {
         withQuicServer(port = requestedPort, tlsConfig = tlsConfig, quicOptions = quicOptions) {
             // `port` here is the scope's *bound* port, not what we asked for — with requestedPort = 0
@@ -74,6 +83,34 @@ fun main(args: Array<String>) {
         }
     }
 }
+
+/**
+ * The server's START line: the commit it was built from and what it records. When it records qlog,
+ * the line also goes into the qlog directory's notes, so the capture itself names the build that
+ * wrote it.
+ */
+internal fun startLine(requestedPort: Int): String {
+    val revision = serverBuildRevision()
+    return when (val dir = qlogDir()) {
+        null -> "START ${revision.line} port=$requestedPort qlog=off"
+        else -> {
+            val directory = QlogEnvironment.directory(dir)
+            "START ${revision.line} port=$requestedPort qlog=${directory.path} ${directory.budget.line}".also {
+                QlogEnvironment.appendNote(
+                    dir,
+                    it,
+                )
+            }
+        }
+    }
+}
+
+/** The commit stamped into this jar by `generateBuildStamp`; a run from the build's classes carries none. */
+private fun serverBuildRevision(): BuildRevision =
+    QlogEnvironment::class.java
+        .getResourceAsStream("/build-revision.txt")
+        ?.use { BuildRevision.parse(it.readBytes().decodeToString()) }
+        ?: BuildRevision.Unknown(BuildRevision.UnknownRevision.NotPackaged)
 
 /**
  * Serve one accepted connection the way the harness echo server does: echo every stream chunk, echo

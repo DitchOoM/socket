@@ -54,7 +54,7 @@ class QlogBudget private constructor(
         /** A short run still gets room for its handshakes and a migration or two. */
         const val FLOOR_MB: Long = 256L
 
-        /** Per client: past this, a walk is long enough that its operator should choose the number. */
+        /** Per lane: past this, a walk is long enough that its operator should choose the number. */
         const val CEILING_MB: Long = 4_096L
 
         /** Smaller than a handshake's own record would rotate before the connection said anything. */
@@ -64,33 +64,35 @@ class QlogBudget private constructor(
         private const val MAX_WALK_SEGMENT_BYTES: Long = 64L * MEBIBYTE
 
         /**
-         * The budget for a walk of [minutes] at one echo per [echoInterval], serving [clients] at once.
+         * The budget for a walk of [minutes] at one echo per [echoInterval] on each of [lanes]
+         * concurrent connections — one lane per target on a probe, every walking device's lanes on
+         * the echo server.
          *
-         * Each client's share is its planned exchanges at [BYTES_PER_EXCHANGE], doubled for what does
+         * Each lane's share is its planned exchanges at [BYTES_PER_EXCHANGE], doubled for what does
          * not scale with the echo loop (handshakes, migrations, loss recovery) — so a walk that goes
-         * as planned never evicts anything — and floored and capped per client. A segment is one hour
-         * of one client's traffic, so a pull mid-walk collects everything older than an hour, and one
-         * connection may fill its client's whole share, because a client's connections are serial and
-         * any one of them may span the walk. A client makes at most one connection a minute however
-         * often its attempts fail — the probes' reconnect backoff tops out at 60 s — so the directory
-         * keeps [minutes] connection records per client.
+         * as planned never evicts anything — and floored and capped per lane. A segment is one hour
+         * of one lane's traffic, so a pull mid-walk collects everything older than an hour, and one
+         * connection may fill its lane's whole share, because a lane's connections are serial and any
+         * one of them may span the walk. A lane makes at most one connection a minute however often
+         * its attempts fail — the probes' reconnect backoff tops out at 60 s — so the directory keeps
+         * [minutes] connection records per lane.
          */
         fun forWalk(
             minutes: Int,
             echoInterval: Duration,
-            clients: Int = 1,
+            lanes: Int,
         ): QlogBudget {
             val intervalMs = echoInterval.inWholeMilliseconds.coerceAtLeast(1L)
-            val clientCount = clients.coerceAtLeast(1)
-            val plannedExchanges = minutes.coerceAtLeast(1).toLong() * 60_000L / intervalMs
-            val clientBytes = (plannedExchanges * BYTES_PER_EXCHANGE * 2 / MEBIBYTE).coerceIn(FLOOR_MB, CEILING_MB) * MEBIBYTE
+            val laneCount = lanes.coerceAtLeast(1)
+            val laneExchanges = minutes.coerceAtLeast(1).toLong() * 60_000L / intervalMs
+            val laneBytes = (laneExchanges * BYTES_PER_EXCHANGE * 2 / MEBIBYTE).coerceIn(FLOOR_MB, CEILING_MB) * MEBIBYTE
             val segmentBytes = (BYTES_PER_EXCHANGE * (3_600_000L / intervalMs)).coerceIn(MIN_WALK_SEGMENT_BYTES, MAX_WALK_SEGMENT_BYTES)
             return clamped(
                 segmentBytes = segmentBytes,
-                connectionSegments = ((clientBytes + segmentBytes - 1) / segmentBytes).toInt(),
-                directoryBytes = clientBytes * clientCount,
-                directoryConnections = minutes.coerceAtLeast(1) * clientCount,
-                origin = QlogBudgetOrigin.Walk(minutes, intervalMs, clientCount, plannedExchanges),
+                connectionSegments = ((laneBytes + segmentBytes - 1) / segmentBytes).toInt(),
+                directoryBytes = laneBytes * laneCount,
+                directoryConnections = minutes.coerceAtLeast(1) * laneCount,
+                origin = QlogBudgetOrigin.Walk(minutes, intervalMs, laneCount, laneExchanges * laneCount),
             )
         }
 
@@ -129,15 +131,15 @@ class QlogBudget private constructor(
 sealed interface QlogBudgetOrigin {
     val line: String
 
-    /** [QlogBudget.forWalk]. */
+    /** [QlogBudget.forWalk]; [plannedExchanges] counts every lane's. */
     data class Walk(
         val minutes: Int,
         val echoIntervalMs: Long,
-        val clients: Int,
+        val lanes: Int,
         val plannedExchanges: Long,
     ) : QlogBudgetOrigin {
         override val line: String
-            get() = "walkMinutes=$minutes echoIntervalMs=$echoIntervalMs clients=$clients plannedExchanges=$plannedExchanges"
+            get() = "walkMinutes=$minutes echoIntervalMs=$echoIntervalMs lanes=$lanes plannedExchanges=$plannedExchanges"
     }
 
     /** [QlogBudget.of]. */

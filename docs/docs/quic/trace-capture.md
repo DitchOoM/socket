@@ -139,14 +139,14 @@ records — keeping each connection's head and latest segment and reporting ever
 connection it refuses as a `QlogEvent`:
 
 ```kotlin
-val qlog = QlogDirectory(dir, QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds)) { event -> log(event.line) }
+val qlog = QlogDirectory(dir, QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1)) { event -> log(event.line) }
 // ...then per connection: qlog = QlogTarget.Budgeted(qlog, name)
 ```
 
 `QUIC_QLOG_DIR` (or the `quic.qlog.dir` system property on the JVM) is the door for a capture that
 names no qlog: every connection then writes `quiche-<role>-<session id>.sqlog` segments there, under
 one budget per directory (`QUIC_QLOG_WALK_MINUTES`, `QUIC_QLOG_WALK_ECHO_MS`,
-`QUIC_QLOG_WALK_CLIENTS`), with every drop recorded in the directory's `qlog-budget.log`.
+`QUIC_QLOG_WALK_LANES`), with every drop recorded in the directory's `qlog-budget.log`.
 
 ## Event types
 

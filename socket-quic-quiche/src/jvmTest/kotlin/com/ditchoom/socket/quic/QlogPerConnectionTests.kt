@@ -137,6 +137,36 @@ class QlogPerConnectionTests {
             }
         }
 
+    @Test
+    fun theEnvironmentDoorKeepsItsBudgetAndItsLossesInTheDirectoryItWrites() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib(QlogPerConnectionTests::class) {
+                val dir = Files.createTempDirectory("qlog-624-env-budget").toFile()
+                // An earlier server process's record, which this one must count rather than ignore.
+                File(dir, "quiche-server-0123abcd.sqlog").writeText("x".repeat(1000))
+                val sessions = withQlogDir(dir) { twoConsecutiveConnections(options) }
+
+                val notes = File(dir, "qlog-budget.log").readText()
+                assertTrue(
+                    "QLOG-BUDGET mb=13808 segmentKb=23568 connectionSegments=150 connections=18000 walkMinutes=4500 " +
+                        "echoIntervalMs=250 lanes=4" in notes,
+                    "the directory must say which budget it keeps, in the directory a pull collects:\n$notes",
+                )
+                assertTrue("QLOG-INHERITED connections=1 files=1 bytes=1000" in notes, "the earlier record is counted:\n$notes")
+                assertEquals(2, clientQlogs(dir).size, "one client qlog per connection for sessions $sessions")
+            }
+        }
+
+    @Test
+    fun theEchoServersStartLineNamesItsBuildAndWhatItRecords() {
+        val dir = Files.createTempDirectory("qlog-624-start").toFile()
+        val line = withQlogDir(dir) { startLine(requestedPort = 44433) }
+
+        assertTrue(line.startsWith("START build=unknown(NotPackaged) port=44433 qlog=${dir.absolutePath} QLOG-BUDGET mb="), line)
+        assertTrue(line in File(dir, "qlog-budget.log").readText(), "the START line is in the notes a pull collects")
+        assertEquals("START build=unknown(NotPackaged) port=44433 qlog=off", startLine(requestedPort = 44433))
+    }
+
     private companion object {
         const val QLOG_DIR_PROPERTY = "quic.qlog.dir"
         const val CLIENT_VANTAGE = "\"vantage_point\":{\"type\":\"client\"}"
