@@ -16,9 +16,10 @@ sealed interface QuicConnectionState {
     /** TLS 1.3 handshake in progress. */
     data object Handshaking : QuicConnectionState
 
-    /** Handshake complete, streams can be opened. */
+    /** Handshake complete, streams can be opened. [resumption] is how the handshake used a session ticket. */
     data class Established(
         val negotiatedAlpn: String,
+        val resumption: QuicResumptionOutcome = QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered),
     ) : QuicConnectionState
 
     /** Graceful close in progress (CONNECTION_CLOSE sent, waiting for acknowledgment). */

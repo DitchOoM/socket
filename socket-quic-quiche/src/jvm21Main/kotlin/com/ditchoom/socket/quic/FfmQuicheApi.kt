@@ -135,6 +135,10 @@ class FfmQuicheApi private constructor(
     private val hEnableEarlyData by lazy {
         downcall("quiche_config_enable_early_data", FunctionDescriptor.ofVoid(ADDRESS))
     }
+    private val hSetTicketKey by lazy {
+        // int quiche_config_set_ticket_key(quiche_config *config, const uint8_t *key, size_t key_len)
+        downcall("quiche_config_set_ticket_key", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG))
+    }
     private val hGrease by lazy {
         downcall("quiche_config_grease", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
     }
@@ -193,6 +197,24 @@ class FfmQuicheApi private constructor(
     }
     private val hIsTimedOut by lazy {
         downcall("quiche_conn_is_timed_out", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+    }
+    private val hConnSetSession by lazy {
+        // int quiche_conn_set_session(quiche_conn *conn, const uint8_t *buf, size_t buf_len)
+        downcall("quiche_conn_set_session", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG))
+    }
+    private val hConnSession by lazy {
+        // void quiche_conn_session(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
+        downcall("quiche_conn_session", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hIsResumed by lazy {
+        downcall("quiche_conn_is_resumed", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+    }
+    private val hIsInEarlyData by lazy {
+        downcall("quiche_conn_is_in_early_data", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+    }
+    private val hEarlyDataReason by lazy {
+        // uint32_t quiche_conn_early_data_reason(const quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_early_data_reason", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     }
     private val hTimeoutNanos by lazy {
         downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
@@ -502,6 +524,12 @@ class FfmQuicheApi private constructor(
     override fun configEnableEarlyData(config: QuicheConfig) {
         hEnableEarlyData.invokeExact(seg(config.handle))
     }
+
+    override fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ): Int = hSetTicketKey.invokeExact(seg(config.handle), seg(keyAddr), keyLen.toLong()) as Int
 
     override fun configGrease(
         config: QuicheConfig,
@@ -843,6 +871,24 @@ class FfmQuicheApi private constructor(
     override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(seg(conn.handle)) as Boolean
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(seg(conn.handle)) as Boolean
+
+    override fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = hConnSetSession.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Int
+
+    override fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = copyConnBytes(hConnSession, conn, buf, bufLen)
+
+    override fun connIsResumed(conn: QuicheConn): Boolean = hIsResumed.invokeExact(seg(conn.handle)) as Boolean
+
+    override fun connIsInEarlyData(conn: QuicheConn): Boolean = hIsInEarlyData.invokeExact(seg(conn.handle)) as Boolean
+
+    override fun connEarlyDataReason(conn: QuicheConn): Int = hEarlyDataReason.invokeExact(seg(conn.handle)) as Int
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = hTimeoutNanos.invokeExact(seg(conn.handle)) as Long

@@ -107,7 +107,7 @@ internal suspend fun buildAppleQuicConnection(
             quiche_config_set_application_protos(config, alpnPtr, alpnBuf.remaining().convert())
             alpnBuf.freeNativeMemory()
 
-            applyQuicOptions(quicOptions, AppleQuicConfigCalls(config))
+            applyQuicOptions(quicOptions, AppleQuicConfigCalls(config), QuicRole.Client)
 
             // Pinned CA trust anchors: load the PEM bundle as BoringSSL's verification
             // anchors, the same trust every quiche platform enforces. quiche only
@@ -205,6 +205,11 @@ internal suspend fun buildAppleQuicConnection(
             scidBuf.freeNativeMemory()
             quiche_config_free(config)
 
+            // Offer the previous connection's session, if any — before anything is sent, the only
+            // moment quiche accepts one.
+            val conn = QuicheConn(connPtr.rawValue.toLong())
+            val sessionOffer = api.offerSession(conn, quicOptions.resumption, bufferFactory)
+
             // Create recvInfo/sendInfo from the same pinned sockaddr encodings.
             val recvInfo = api.recvInfoNew(peerSockAddr.address, peerSockAddr.length, localSockAddr.address, localSockAddr.length)
             val sendInfo = api.sendInfoNew()
@@ -212,7 +217,7 @@ internal suspend fun buildAppleQuicConnection(
             val driver =
                 QuicheDriver(
                     rawApi = api,
-                    conn = QuicheConn(connPtr.rawValue.toLong()),
+                    conn = conn,
                     bufferFactory = bufferFactory,
                     recvInfo = recvInfo,
                     sendInfo = sendInfo,
@@ -250,6 +255,7 @@ internal suspend fun buildAppleQuicConnection(
                         peerSockAddr.free()
                         localSockAddr.free()
                     },
+                    sessionOffer = sessionOffer,
                 )
 
             val connJob = SupervisorJob(parentScope.coroutineContext[Job])
@@ -272,7 +278,9 @@ internal suspend fun buildAppleQuicConnection(
             // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here
             // on owes the channel and the scope, and must not free them a second time.
             progress = ConnectProgress.DriverStarted(udpChannel)
-            quicConn.awaitEstablished(timeout)
+            runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
+                quicConn.awaitEstablished(timeout)
+            }
             // Connection owns teardown via onRelease now — hand ownership over before the pin check so
             // the failure `finally` releases nothing; a pin mismatch tears down via quicConn.close().
             progress = ConnectProgress.ConnectionOwnsTeardown
@@ -411,6 +419,8 @@ internal class AppleQuicConnection(
     override val pathState: StateFlow<QuicPathState> = driver.pathState
 
     override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
+
+    override val sessionTicket: StateFlow<QuicSessionTicketState> get() = driver.sessionTicket
 
     override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {

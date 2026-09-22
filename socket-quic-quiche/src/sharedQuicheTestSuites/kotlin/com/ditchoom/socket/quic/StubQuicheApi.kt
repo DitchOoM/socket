@@ -161,6 +161,12 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun configEnableEarlyData(config: QuicheConfig) {}
 
+    override fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ) = 0
+
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
@@ -340,6 +346,25 @@ internal class StubQuicheApi : QuicheApi {
     @Volatile var timedOut = false
 
     override fun connIsTimedOut(conn: QuicheConn) = timedOut
+
+    /** No session is ever issued, offered or resumed: a full handshake with nothing to remember. */
+    override fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connIsResumed(conn: QuicheConn) = false
+
+    override fun connIsInEarlyData(conn: QuicheConn) = false
+
+    override fun connEarlyDataReason(conn: QuicheConn) = QuicEarlyDataReason.NO_SESSION_OFFERED
 
     /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline
      *  is the only thing that can wake the driver loop — see the keepalive driver tests. */

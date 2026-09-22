@@ -134,6 +134,12 @@ object JniQuicheApi : QuicheApi {
 
     override fun configEnableEarlyData(config: QuicheConfig) = nConfigEnableEarlyData(config.handle)
 
+    override fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ): Int = nConfigSetTicketKey(config.handle, keyAddr, keyLen)
+
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
@@ -324,6 +330,24 @@ object JniQuicheApi : QuicheApi {
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
+
+    override fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSetSession(conn.handle, buf, bufLen)
+
+    override fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSession(conn.handle, buf, bufLen)
+
+    override fun connIsResumed(conn: QuicheConn): Boolean = nConnIsResumed(conn.handle)
+
+    override fun connIsInEarlyData(conn: QuicheConn): Boolean = nConnIsInEarlyData(conn.handle)
+
+    override fun connEarlyDataReason(conn: QuicheConn): Int = nConnEarlyDataReason(conn.handle)
 
     override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(conn, peer = true)
 
@@ -767,6 +791,12 @@ object JniQuicheApi : QuicheApi {
 
     @JvmStatic private external fun nConfigEnableEarlyData(config: Long)
 
+    @JvmStatic private external fun nConfigSetTicketKey(
+        config: Long,
+        keyAddr: Long,
+        keyLen: Int,
+    ): Int
+
     @JvmStatic private external fun nConfigGrease(
         config: Long,
         v: Boolean,
@@ -937,6 +967,24 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnIsClosed(conn: Long): Boolean
 
     @JvmStatic private external fun nConnIsTimedOut(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnSetSession(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnSession(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnIsResumed(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnIsInEarlyData(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnEarlyDataReason(conn: Long): Int
 
     @JvmStatic private external fun nConnTimeoutAsNanos(conn: Long): Long
 

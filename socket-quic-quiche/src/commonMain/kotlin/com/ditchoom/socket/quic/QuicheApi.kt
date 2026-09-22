@@ -137,6 +137,17 @@ interface QuicheApi {
 
     fun configEnableEarlyData(config: QuicheConfig)
 
+    /**
+     * Set the key that encrypts the session tickets this config's server issues
+     * (`quiche_config_set_ticket_key`): [keyLen] bytes at [keyAddr], which BoringSSL requires to be 48.
+     * Returns 0, or a negative quiche error code.
+     */
+    fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ): Int
+
     fun configGrease(
         config: QuicheConfig,
         v: Boolean,
@@ -254,6 +265,47 @@ interface QuicheApi {
     fun connIsClosed(conn: QuicheConn): Boolean
 
     fun connIsTimedOut(conn: QuicheConn): Boolean
+
+    // --- Session resumption and 0-RTT (RFC 8446 §2.2, RFC 9001 §4.6) ---
+    // No defaults: a backend that did not bind these would resume nothing and say nothing, so every
+    // implementation states what it reports.
+
+    /**
+     * Offer a serialized session for resumption (`quiche_conn_set_session`) — [bufLen] bytes at [buf],
+     * as [connSession] produced them. Valid only on a client connection before its first send or
+     * receive. Returns 0, or a negative quiche error code when quiche cannot use the bytes.
+     */
+    fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
+     * Copy the connection's serialized session (`quiche_conn_session`) into [buf]: the TLS session from
+     * the server's latest NewSessionTicket plus the server's transport parameters. Same snprintf-style
+     * contract as [connPeerCert]; `0` means no ticket has arrived.
+     */
+    fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /** Whether the handshake resumed a session (`quiche_conn_is_resumed`). */
+    fun connIsResumed(conn: QuicheConn): Boolean
+
+    /**
+     * Whether the handshake is in progress and far enough along to send or receive 0-RTT data
+     * (`quiche_conn_is_in_early_data`).
+     */
+    fun connIsInEarlyData(conn: QuicheConn): Boolean
+
+    /**
+     * BoringSSL's `ssl_early_data_reason_t` for the connection (`quiche_conn_early_data_reason`, a
+     * patched-in export): why 0-RTT was accepted or not. Decoded by [QuicEarlyDataReason].
+     */
+    fun connEarlyDataReason(conn: QuicheConn): Int
 
     /**
      * Pin libquiche's internal clock for the **calling thread** to [nanos] — a monotonic reading in

@@ -341,7 +341,13 @@ data class QuicOptions(
     val certificateHashVerification: CertificateHashVerification = CertificateHashVerification.HashOnly,
     /** Enable Path MTU Discovery. */
     val enablePmtuDiscovery: Boolean = false,
-    /** Enable 0-RTT early data. */
+    /**
+     * **Server-side**: accept 0-RTT from resuming clients, and issue session tickets that permit it
+     * (RFC 9001 §4.6.1). Off by default: 0-RTT data can be replayed (RFC 8446 §8, RFC 9001 §9.2), so
+     * enable it only for an application protocol whose early requests are safe to process twice.
+     *
+     * Ignored for the client role, which asks for 0-RTT per connection through [resumption].
+     */
     val enableEarlyData: Boolean = false,
     /** Enable GREASE (Generate Random Extensions And Sustain Extensibility). */
     val enableGrease: Boolean = true,
@@ -380,6 +386,14 @@ data class QuicOptions(
      * string (see `QuicTraceRecorder`).
      */
     val trace: QuicTraceCapture? = null,
+    /**
+     * **Client-side**: the session this connection offers — [QuicResumption.None] for a full
+     * handshake, or a ticket an earlier connection received ([QuicScope.sessionTicket]) to resume it,
+     * optionally with 0-RTT data. The handshake's answer is [QuicScope.resumption].
+     *
+     * Ignored for the server role.
+     */
+    val resumption: QuicResumption = QuicResumption.None,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

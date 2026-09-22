@@ -20,6 +20,9 @@ import kotlinx.coroutines.flow.flow
  */
 private val NeverMigratedPath: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
 
+/** The [QuicScope.sessionTicket] default, shared for the same reason as [NeverMigratedPath]. */
+private val NeverIssuedTicket: StateFlow<QuicSessionTicketState> = MutableStateFlow(QuicSessionTicketState.NotIssued)
+
 /**
  * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
  *
@@ -73,6 +76,22 @@ interface QuicScope : CoroutineScope {
      * [com.ditchoom.socket.NetworkMonitor]. See [QuicConnection.networkAtClose].
      */
     val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
+
+    /**
+     * How this connection's handshake used a session ticket: whether one was offered, whether the server
+     * resumed it, and whether 0-RTT was accepted. Settled by the time user code runs in a scope block.
+     *
+     * Defaults to a full handshake with no ticket offered — the truthful answer for a scope with no
+     * handshake behind it. [QuicConnection] derives it from [QuicConnectionState.Established].
+     */
+    val resumption: QuicResumptionOutcome get() = QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered)
+
+    /**
+     * The newest session ticket the server has issued on this connection, to offer on a later one
+     * through [QuicOptions.resumption]. Stays readable after the connection closes, so a reconnect can
+     * take it from the connection it replaces. A server-accepted connection is never issued one.
+     */
+    val sessionTicket: StateFlow<QuicSessionTicketState> get() = NeverIssuedTicket
 
     /**
      * The [BufferFactory] this connection allocates from — the one passed via

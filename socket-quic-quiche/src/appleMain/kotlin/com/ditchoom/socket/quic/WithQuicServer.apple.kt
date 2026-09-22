@@ -68,7 +68,8 @@ internal suspend fun buildAppleQuicServer(
         api.configSetApplicationProtos(config, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
         alpnBuf.freeNativeMemory()
 
-        applyQuicOptions(quicOptions, AppleQuicConfigCalls(config.handle.toCPointer()!!))
+        applyQuicOptions(quicOptions, AppleQuicConfigCalls(config.handle.toCPointer()!!), QuicRole.Server)
+        api.applySessionTicketKeys(config, tlsConfig.sessionTicketKeys, bufferFactory)
 
         // Bind the shared server socket via :socket-udp (dual-stack by default) with a QUIC-sized receive
         // staging buffer. One channel serves every accepted connection.

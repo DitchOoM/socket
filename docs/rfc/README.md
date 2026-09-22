@@ -40,6 +40,8 @@ Exactly the RFCs the codebase actually cites, by citation count at the time of v
 | [9002](rfc9002.txt) | QUIC Loss Detection and Congestion Control | 12 |
 | [7301](rfc7301.txt) | TLS Application-Layer Protocol Negotiation Extension | 8 |
 | [5280](rfc5280.txt) | Internet X.509 PKI Certificate and CRL Profile | 8 |
+| [9001](rfc9001.txt) | Using TLS to Secure QUIC | session resumption and 0-RTT (§4.6, §9.2) |
+| [8446](rfc8446.txt) | The Transport Layer Security (TLS) Protocol Version 1.3 | session tickets and 0-RTT replay (§2.2, §4.6.1, §8) |
 
 Cited fewer than eight times and deliberately not vendored: 8489, 8305, 9287, 9113, 7983, 9147, 9110,
 and the documentation-only address ranges 5737 / 3849. Fetch one with `./fetch.sh 8489` if a piece of

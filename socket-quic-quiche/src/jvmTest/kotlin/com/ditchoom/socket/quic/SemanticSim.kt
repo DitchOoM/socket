@@ -202,14 +202,14 @@ internal suspend fun <R> withSemanticSim(
         encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
             api.configSetApplicationProtos(serverCfg, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
         }
-        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, serverCfg))
+        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, serverCfg), QuicRole.Server)
 
         // --- client config (mirrors buildJvmQuicConnection; verifyPeer=false → no CA loading) ---
         val clientCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
         encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
             api.configSetApplicationProtos(clientCfg, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
         }
-        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, clientCfg))
+        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, clientCfg), QuicRole.Client)
 
         // --- client conn ---
         val serverName = "localhost"

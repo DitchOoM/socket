@@ -76,6 +76,19 @@ interface QuicConnection : QuicScope {
                 else -> error("negotiatedAlpn is only available while the connection is established (state: $s)")
             }
 
+    /**
+     * Derived from [state] like [negotiatedAlpn]: the driver publishes the handshake's resumption outcome
+     * in [QuicConnectionState.Established]. Readable while the connection is established.
+     */
+    override val resumption: QuicResumptionOutcome
+        get() =
+            when (val s = state.value) {
+                is QuicConnectionState.Established -> s.resumption
+                is QuicConnectionState.Closed -> throw QuicCloseException(s.reason, RESUMPTION_UNAVAILABLE)
+                QuicConnectionState.Idle, QuicConnectionState.Handshaking, QuicConnectionState.Draining ->
+                    throw QuicCloseException(QuicCloseReason.Unspecified, "$RESUMPTION_UNAVAILABLE (state: $s)")
+            }
+
     /** Close the connection with a QUIC error. Called by the scope when the block ends. */
     suspend fun close(error: QuicError = QuicError.NoError)
 
@@ -86,3 +99,5 @@ interface QuicConnection : QuicScope {
      */
     override suspend fun closeWithError(errorCode: Long) = close(QuicError.ApplicationError(errorCode))
 }
+
+private const val RESUMPTION_UNAVAILABLE = "resumption is only available while the connection is established"

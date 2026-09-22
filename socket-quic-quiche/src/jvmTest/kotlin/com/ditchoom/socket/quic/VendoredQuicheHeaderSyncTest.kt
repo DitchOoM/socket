@@ -154,9 +154,13 @@ private val TYPES_AND_MACROS =
         "quiche_transport_params",
     )
 
-/** Declarations this repository adds on purpose — the caller-clock patch's FFI, absent upstream. */
+/**
+ * Declarations this repository adds on purpose, absent upstream: the caller-clock patch's FFI and the
+ * `early_data_reason` export (`patchQuicheEarlyDataReasonFfi`).
+ */
 private val OURS =
     setOf(
         "quiche_set_virtual_time_nanos",
         "quiche_clear_virtual_time",
+        "quiche_conn_early_data_reason",
     )
