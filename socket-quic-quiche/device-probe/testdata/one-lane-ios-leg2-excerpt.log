@@ -1,0 +1,291 @@
+t=0ms START device=ios targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 echoIntervalMs=250 qlog=/var/mobile/Containers/Data/Application/F584FE2E-5D14-4C36-BD66-C6D10AC83167/Documents/qlog
+t=2ms PREVIOUS-RUN none
+t=4ms TRACE-BUDGET mb=1182 plannedExchanges=1080000
+t=6ms CONNECT-ATTEMPT n=1 target=178.156.248.95:44433 family=v4
+t=80ms CONNECTED session=f2d3eea00e13b55571b3371b2063ce2024d2c7c9 wire=f2d3eea00e13b55571b3371b2063ce2024d2c7c9 alpn=test
+t=80ms PATH Original
+t=126ms ECHO-OK seq=1 rtt=44ms pending=0B
+t=416ms ECHO-OK seq=2 rtt=37ms pending=0B
+t=709ms ECHO-OK seq=3 rtt=39ms pending=0B
+t=1006ms ECHO-OK seq=4 rtt=40ms pending=0B
+t=1307ms ECHO-OK seq=5 rtt=45ms pending=0B
+t=1606ms ECHO-OK seq=6 rtt=44ms pending=0B
+t=1906ms ECHO-OK seq=7 rtt=43ms pending=0B
+t=2206ms ECHO-OK seq=8 rtt=42ms pending=0B
+t=2508ms ECHO-OK seq=9 rtt=45ms pending=0B
+t=2808ms ECHO-OK seq=10 rtt=42ms pending=0B
+t=3105ms ECHO-OK seq=11 rtt=44ms pending=0B
+t=3399ms ECHO-OK seq=12 rtt=41ms pending=0B
+t=3694ms ECHO-OK seq=13 rtt=39ms pending=0B
+t=3989ms ECHO-OK seq=14 rtt=39ms pending=0B
+t=4284ms ECHO-OK seq=15 rtt=41ms pending=0B
+t=4579ms ECHO-OK seq=16 rtt=42ms pending=0B
+t=4877ms ECHO-OK seq=17 rtt=43ms pending=0B
+t=5175ms ECHO-OK seq=18 rtt=41ms pending=0B
+t=5474ms ECHO-OK seq=19 rtt=43ms pending=0B
+t=5773ms ECHO-OK seq=20 rtt=42ms pending=0B
+t=6066ms ECHO-OK seq=21 rtt=41ms pending=0B
+t=6362ms ECHO-OK seq=22 rtt=42ms pending=0B
+t=6658ms ECHO-OK seq=23 rtt=42ms pending=0B
+t=6958ms ECHO-OK seq=24 rtt=45ms pending=0B
+t=7260ms ECHO-OK seq=25 rtt=48ms pending=0B
+t=7559ms ECHO-OK seq=26 rtt=41ms pending=0B
+t=7861ms ECHO-OK seq=27 rtt=45ms pending=0B
+t=8162ms ECHO-OK seq=28 rtt=45ms pending=0B
+t=8460ms ECHO-OK seq=29 rtt=42ms pending=0B
+t=8756ms ECHO-OK seq=30 rtt=40ms pending=0B
+t=9048ms ECHO-OK seq=31 rtt=40ms pending=0B
+t=9341ms ECHO-OK seq=32 rtt=41ms pending=0B
+t=9640ms ECHO-OK seq=33 rtt=45ms pending=0B
+t=9937ms ECHO-OK seq=34 rtt=42ms pending=0B
+t=10236ms ECHO-OK seq=35 rtt=42ms pending=0B
+t=10540ms ECHO-OK seq=36 rtt=46ms pending=0B
+t=10843ms ECHO-OK seq=37 rtt=46ms pending=0B
+t=11142ms ECHO-OK seq=38 rtt=43ms pending=0B
+t=11442ms ECHO-OK seq=39 rtt=46ms pending=0B
+t=11742ms ECHO-OK seq=40 rtt=43ms pending=0B
+t=12038ms ECHO-OK seq=41 rtt=41ms pending=0B
+t=12338ms ECHO-OK seq=42 rtt=43ms pending=0B
+t=12631ms ECHO-OK seq=43 rtt=40ms pending=0B
+t=12927ms ECHO-OK seq=44 rtt=41ms pending=0B
+t=13225ms ECHO-OK seq=45 rtt=45ms pending=0B
+t=13522ms ECHO-OK seq=46 rtt=41ms pending=0B
+t=13816ms ECHO-OK seq=47 rtt=40ms pending=0B
+t=14114ms ECHO-OK seq=48 rtt=41ms pending=0B
+t=14409ms ECHO-OK seq=49 rtt=40ms pending=0B
+t=14708ms ECHO-OK seq=50 rtt=46ms pending=0B
+t=15003ms ECHO-OK seq=51 rtt=43ms pending=0B
+t=15307ms ECHO-OK seq=52 rtt=47ms pending=0B
+t=15611ms ECHO-OK seq=53 rtt=46ms pending=0B
+t=15905ms ECHO-OK seq=54 rtt=41ms pending=0B
+t=16109228ms ECHO-LATE seq=61671 rtt=332ms late=+257ms deadline=74ms pending=12B
+t=16109482ms ECHO-LATE seq=61672 rtt=256ms late=+181ms deadline=74ms pending=12B
+t=16109737ms ECHO-OK seq=61673 rtt=256ms pending=12B
+t=16109991ms ECHO-OK seq=61674 rtt=255ms pending=12B
+t=16110246ms ECHO-OK seq=61675 rtt=257ms pending=12B
+t=16110501ms ECHO-OK seq=61676 rtt=256ms pending=12B
+t=16110755ms ECHO-OK seq=61677 rtt=255ms pending=12B
+t=16111009ms ECHO-OK seq=61678 rtt=255ms pending=12B
+t=16111262ms ECHO-OK seq=61679 rtt=255ms pending=12B
+t=16111521ms ECHO-OK seq=61680 rtt=260ms pending=12B
+t=16111776ms ECHO-OK seq=61681 rtt=257ms pending=12B
+t=16112031ms ECHO-OK seq=61682 rtt=256ms pending=12B
+t=16112285ms ECHO-OK seq=61683 rtt=256ms pending=12B
+t=16112539ms ECHO-OK seq=61684 rtt=255ms pending=12B
+t=16112794ms ECHO-OK seq=61685 rtt=256ms pending=12B
+t=16113048ms ECHO-OK seq=61686 rtt=255ms pending=12B
+t=16113302ms ECHO-OK seq=61687 rtt=256ms pending=12B
+t=16113556ms ECHO-OK seq=61688 rtt=255ms pending=12B
+t=16113810ms ECHO-OK seq=61689 rtt=255ms pending=12B
+t=16114068ms ECHO-OK seq=61690 rtt=259ms pending=12B
+t=16114327ms ECHO-OK seq=61691 rtt=260ms pending=12B
+t=16114585ms ECHO-OK seq=61692 rtt=260ms pending=12B
+t=16114840ms ECHO-OK seq=61693 rtt=256ms pending=12B
+t=16115096ms ECHO-OK seq=61694 rtt=257ms pending=12B
+t=16115351ms ECHO-OK seq=61695 rtt=257ms pending=12B
+t=16115604ms ECHO-OK seq=61696 rtt=255ms pending=12B
+t=16115863ms ECHO-OK seq=61697 rtt=260ms pending=12B
+t=16116119ms ECHO-OK seq=61698 rtt=258ms pending=12B
+t=16116373ms ECHO-OK seq=61699 rtt=256ms pending=12B
+t=16116628ms ECHO-OK seq=61700 rtt=256ms pending=12B
+t=16116882ms ECHO-OK seq=61701 rtt=255ms pending=12B
+t=16117136ms ECHO-OK seq=61702 rtt=255ms pending=12B
+t=16117394ms ECHO-OK seq=61703 rtt=259ms pending=12B
+t=16117648ms ECHO-OK seq=61704 rtt=255ms pending=12B
+t=16117907ms ECHO-OK seq=61705 rtt=260ms pending=12B
+t=16118163ms ECHO-OK seq=61706 rtt=258ms pending=12B
+t=16118421ms ECHO-OK seq=61707 rtt=259ms pending=12B
+t=16118679ms ECHO-OK seq=61708 rtt=259ms pending=12B
+t=16118938ms ECHO-OK seq=61709 rtt=260ms pending=12B
+t=16119196ms ECHO-OK seq=61710 rtt=260ms pending=12B
+t=16119455ms ECHO-OK seq=61711 rtt=260ms pending=12B
+t=16119709ms ECHO-OK seq=61712 rtt=256ms pending=12B
+t=16119977ms ECHO-OK seq=61713 rtt=269ms pending=12B
+t=16120230ms ECHO-OK seq=61714 rtt=263ms pending=12B
+t=16120795ms ECHO-OVERDUE seq=61715 waited=566ms deadline=304ms
+t=16120796ms ECHO-OVERDUE seq=61716 waited=309ms deadline=305ms
+t=16121362ms ECHO-OVERDUE seq=61717 waited=309ms deadline=305ms
+t=16121930ms ECHO-OVERDUE seq=61718 waited=311ms deadline=305ms
+t=16122497ms ECHO-OVERDUE seq=61719 waited=311ms deadline=305ms
+t=16123061ms ECHO-OVERDUE seq=61720 waited=307ms deadline=305ms
+t=16123626ms ECHO-OVERDUE seq=61721 waited=311ms deadline=305ms
+t=16124122ms PATH Probing(endpoint=100.92.108.100:58558)
+t=16124192ms ECHO-OVERDUE seq=61722 waited=307ms deadline=305ms
+t=16124756ms ECHO-OVERDUE seq=61723 waited=309ms deadline=305ms
+t=16125322ms ECHO-OVERDUE seq=61724 waited=309ms deadline=305ms
+t=16125883ms ECHO-OVERDUE seq=61725 waited=307ms deadline=305ms
+t=16126448ms ECHO-OVERDUE seq=61726 waited=311ms deadline=305ms
+t=16127015ms ECHO-OVERDUE seq=61727 waited=309ms deadline=305ms
+t=16127120ms PATH Failed(result=PathNotValidated)
+t=16127121ms MIGRATION-ATTEMPT n=1 outcome=PathNotValidated tookMs=2999
+t=16127381ms PATH Probing(endpoint=100.92.108.100:57049)
+t=16127583ms ECHO-OVERDUE seq=61728 waited=311ms deadline=305ms
+t=16128152ms ECHO-OVERDUE seq=61729 waited=311ms deadline=305ms
+t=16128728ms ECHO-OVERDUE seq=61730 waited=311ms deadline=305ms
+t=16129290ms ECHO-OVERDUE seq=61731 waited=306ms deadline=305ms
+t=16129852ms ECHO-OVERDUE seq=61732 waited=306ms deadline=305ms
+t=16130384ms PATH Failed(result=PathNotValidated)
+t=16130386ms MIGRATION-ATTEMPT n=2 outcome=PathNotValidated tookMs=3003
+t=16130420ms ECHO-OVERDUE seq=61733 waited=311ms deadline=305ms
+t=16130890ms PATH Probing(endpoint=100.92.108.100:61882)
+t=16130986ms ECHO-OVERDUE seq=61734 waited=311ms deadline=305ms
+t=16131555ms ECHO-OVERDUE seq=61735 waited=311ms deadline=305ms
+t=16132120ms ECHO-OVERDUE seq=61736 waited=308ms deadline=305ms
+t=16132688ms ECHO-OVERDUE seq=61737 waited=311ms deadline=305ms
+t=16133251ms ECHO-OVERDUE seq=61738 waited=307ms deadline=305ms
+t=16133819ms ECHO-OVERDUE seq=61739 waited=311ms deadline=305ms
+t=16133893ms PATH Failed(result=PathNotValidated)
+t=16133894ms MIGRATION-ATTEMPT n=3 outcome=PathNotValidated tookMs=3003
+t=16134380ms ECHO-OVERDUE seq=61740 waited=308ms deadline=305ms
+t=16134905ms PATH Probing(endpoint=100.92.108.100:59778)
+t=16134941ms ECHO-OVERDUE seq=61741 waited=307ms deadline=305ms
+t=16135509ms ECHO-OVERDUE seq=61742 waited=311ms deadline=305ms
+t=16136077ms ECHO-OVERDUE seq=61743 waited=311ms deadline=305ms
+t=16136641ms ECHO-OVERDUE seq=61744 waited=311ms deadline=305ms
+t=16137205ms ECHO-OVERDUE seq=61745 waited=311ms deadline=305ms
+t=16137773ms ECHO-OVERDUE seq=61746 waited=311ms deadline=305ms
+t=16137908ms PATH Failed(result=PathNotValidated)
+t=16137909ms MIGRATION-ATTEMPT n=4 outcome=PathNotValidated tookMs=3003
+t=16138334ms ECHO-OVERDUE seq=61747 waited=307ms deadline=305ms
+t=16138900ms ECHO-OVERDUE seq=61748 waited=311ms deadline=305ms
+t=16139460ms ECHO-OVERDUE seq=61749 waited=307ms deadline=305ms
+t=16139914ms PATH Probing(endpoint=100.92.108.100:51522)
+t=16140024ms ECHO-OVERDUE seq=61750 waited=306ms deadline=305ms
+t=16140588ms ECHO-OVERDUE seq=61751 waited=311ms deadline=305ms
+t=16140678ms PATH Validated(endpoint=100.92.108.100:51522)
+t=16140679ms PATH Migrated(endpoint=100.92.108.100:51522)
+t=16140679ms MIGRATION-ATTEMPT n=5 outcome=Succeeded tookMs=764
+t=16140845ms WIRE-CID-ROTATED session=f2d3eea00e13b55571b3371b2063ce2024d2c7c9 wire=f57d86098d23a379e6d0001329013c8894ee9651
+t=16140884ms HEARTBEAT attempt=1 locUpdates=1 rss=36208kB vsz=400852MB battery=25% unplugged
+t=16141158ms ECHO-OVERDUE seq=61752 waited=311ms deadline=305ms
+t=16141411ms ECHO-LATE seq=61715 rtt=21182ms late=+20877ms deadline=304ms pending=12B
+t=16141412ms ECHO-LATE seq=61716 rtt=20924ms late=+20619ms deadline=305ms pending=12B
+t=16141412ms ECHO-LATE seq=61717 rtt=20358ms late=+20053ms deadline=305ms pending=12B
+t=16141412ms ECHO-LATE seq=61718 rtt=19792ms late=+19487ms deadline=305ms pending=12B
+t=16141413ms ECHO-LATE seq=61719 rtt=19225ms late=+18920ms deadline=305ms pending=12B
+t=16141413ms ECHO-LATE seq=61720 rtt=18658ms late=+18353ms deadline=305ms pending=12B
+t=16141413ms ECHO-LATE seq=61721 rtt=18096ms late=+17791ms deadline=305ms pending=12B
+t=16141414ms ECHO-LATE seq=61722 rtt=17526ms late=+17221ms deadline=305ms pending=12B
+t=16141414ms ECHO-LATE seq=61723 rtt=16964ms late=+16659ms deadline=305ms pending=12B
+t=16141415ms ECHO-LATE seq=61724 rtt=16398ms late=+16093ms deadline=305ms pending=12B
+t=16141415ms ECHO-LATE seq=61725 rtt=15835ms late=+15530ms deadline=305ms pending=12B
+t=16141416ms ECHO-LATE seq=61726 rtt=15274ms late=+14969ms deadline=305ms pending=12B
+t=16141416ms ECHO-LATE seq=61727 rtt=14705ms late=+14400ms deadline=305ms pending=12B
+t=16141416ms ECHO-LATE seq=61728 rtt=14138ms late=+13833ms deadline=305ms pending=12B
+t=16141417ms ECHO-LATE seq=61729 rtt=13570ms late=+13265ms deadline=305ms pending=12B
+t=16141417ms ECHO-LATE seq=61730 rtt=12994ms late=+12688ms deadline=305ms pending=12B
+t=16141418ms ECHO-LATE seq=61731 rtt=12427ms late=+12122ms deadline=305ms pending=12B
+t=16141418ms ECHO-LATE seq=61732 rtt=11865ms late=+11560ms deadline=305ms pending=12B
+t=16141418ms ECHO-LATE seq=61733 rtt=11302ms late=+10997ms deadline=305ms pending=12B
+t=16141419ms ECHO-LATE seq=61734 rtt=10736ms late=+10431ms deadline=305ms pending=12B
+t=16141419ms ECHO-LATE seq=61735 rtt=10167ms late=+9862ms deadline=305ms pending=12B
+t=16141419ms ECHO-LATE seq=61736 rtt=9599ms late=+9294ms deadline=305ms pending=12B
+t=16141420ms ECHO-LATE seq=61737 rtt=9034ms late=+8729ms deadline=305ms pending=12B
+t=16141420ms ECHO-LATE seq=61738 rtt=8467ms late=+8162ms deadline=305ms pending=12B
+t=16141420ms ECHO-LATE seq=61739 rtt=7902ms late=+7597ms deadline=305ms pending=12B
+t=16141421ms ECHO-LATE seq=61740 rtt=7339ms late=+7034ms deadline=305ms pending=12B
+t=16141421ms ECHO-LATE seq=61741 rtt=6777ms late=+6472ms deadline=305ms pending=12B
+t=16141421ms ECHO-LATE seq=61742 rtt=6213ms late=+5908ms deadline=305ms pending=12B
+t=16141422ms ECHO-LATE seq=61743 rtt=5644ms late=+5339ms deadline=305ms pending=12B
+t=16141422ms ECHO-LATE seq=61744 rtt=5081ms late=+4776ms deadline=305ms pending=12B
+t=16141422ms ECHO-LATE seq=61745 rtt=4517ms late=+4212ms deadline=305ms pending=12B
+t=16141422ms ECHO-LATE seq=61746 rtt=3949ms late=+3644ms deadline=305ms pending=12B
+t=16141423ms ECHO-LATE seq=61747 rtt=3384ms late=+3079ms deadline=305ms pending=12B
+t=16141423ms ECHO-LATE seq=61748 rtt=2822ms late=+2517ms deadline=305ms pending=12B
+t=16141423ms ECHO-LATE seq=61749 rtt=2258ms late=+1953ms deadline=305ms pending=12B
+t=16141423ms ECHO-LATE seq=61750 rtt=1693ms late=+1388ms deadline=305ms pending=12B
+t=16141424ms ECHO-LATE seq=61751 rtt=1134ms late=+829ms deadline=305ms pending=12B
+t=16141424ms ECHO-LATE seq=61752 rtt=564ms late=+259ms deadline=305ms pending=12B
+t=16141682ms ECHO-OK seq=61753 rtt=272ms pending=12B
+t=16141937ms ECHO-OK seq=61754 rtt=257ms pending=12B
+t=16142196ms ECHO-OK seq=61755 rtt=259ms pending=12B
+t=16142451ms ECHO-OK seq=61756 rtt=257ms pending=12B
+t=16142710ms ECHO-OK seq=61757 rtt=260ms pending=12B
+t=16142967ms ECHO-OK seq=61758 rtt=258ms pending=12B
+t=16143226ms ECHO-OK seq=61759 rtt=261ms pending=12B
+t=16143485ms ECHO-OK seq=61760 rtt=260ms pending=12B
+t=16143743ms ECHO-OK seq=61761 rtt=260ms pending=12B
+t=16144001ms ECHO-OK seq=61762 rtt=259ms pending=12B
+t=16144256ms ECHO-OK seq=61763 rtt=256ms pending=12B
+t=16144511ms ECHO-OK seq=61764 rtt=257ms pending=12B
+t=16144770ms ECHO-OK seq=61765 rtt=260ms pending=12B
+t=16145027ms ECHO-OK seq=61766 rtt=258ms pending=12B
+t=16145285ms ECHO-OK seq=61767 rtt=260ms pending=12B
+t=16145540ms ECHO-OK seq=61768 rtt=256ms pending=12B
+t=16145798ms ECHO-OK seq=61769 rtt=260ms pending=12B
+t=16146052ms ECHO-OK seq=61770 rtt=255ms pending=12B
+t=16146311ms ECHO-OK seq=61771 rtt=260ms pending=12B
+t=16146572ms ECHO-OK seq=61772 rtt=263ms pending=12B
+t=16146840ms ECHO-OK seq=61773 rtt=277ms pending=12B
+t=16147096ms ECHO-OK seq=61774 rtt=267ms pending=12B
+t=16147354ms ECHO-OK seq=61775 rtt=260ms pending=12B
+t=16147607ms ECHO-OK seq=61776 rtt=255ms pending=12B
+t=16147866ms ECHO-OK seq=61777 rtt=260ms pending=12B
+t=16148120ms ECHO-OK seq=61778 rtt=256ms pending=12B
+t=16148379ms ECHO-OK seq=61779 rtt=260ms pending=12B
+t=16148637ms ECHO-OK seq=61780 rtt=260ms pending=12B
+t=16148895ms ECHO-OK seq=61781 rtt=260ms pending=12B
+t=16149154ms ECHO-OK seq=61782 rtt=260ms pending=12B
+t=16149412ms ECHO-OK seq=61783 rtt=260ms pending=12B
+t=16149667ms ECHO-OK seq=61784 rtt=256ms pending=12B
+t=16149925ms ECHO-OK seq=61785 rtt=260ms pending=12B
+t=16150184ms ECHO-OK seq=61786 rtt=261ms pending=12B
+t=16150441ms ECHO-OK seq=61787 rtt=259ms pending=12B
+t=16150696ms ECHO-OK seq=61788 rtt=257ms pending=12B
+t=16150955ms ECHO-OK seq=61789 rtt=260ms pending=12B
+t=16151212ms ECHO-OK seq=61790 rtt=259ms pending=12B
+t=16151468ms ECHO-OK seq=61791 rtt=257ms pending=12B
+t=16151726ms ECHO-OK seq=61792 rtt=260ms pending=12B
+t=16151982ms ECHO-OK seq=61793 rtt=257ms pending=12B
+t=16152241ms ECHO-OK seq=61794 rtt=259ms pending=12B
+t=16152499ms ECHO-OK seq=61795 rtt=260ms pending=12B
+t=16152753ms ECHO-OK seq=61796 rtt=255ms pending=12B
+t=16153011ms ECHO-OK seq=61797 rtt=259ms pending=12B
+t=16153268ms ECHO-OK seq=61798 rtt=258ms pending=12B
+t=16153520ms KEEPALIVE-STATUS echoes=61800 locUpdates=1 migrations=1
+t=16153522ms ECHO-OK seq=61799 rtt=255ms pending=12B
+t=16153777ms ECHO-OK seq=61800 rtt=256ms pending=12B
+t=16154034ms ECHO-OK seq=61801 rtt=258ms pending=12B
+t=16154290ms ECHO-OK seq=61802 rtt=256ms pending=12B
+t=16154547ms ECHO-OK seq=61803 rtt=258ms pending=12B
+t=16154804ms ECHO-OK seq=61804 rtt=258ms pending=12B
+t=16155061ms ECHO-OK seq=61805 rtt=258ms pending=12B
+t=16155319ms ECHO-OK seq=61806 rtt=258ms pending=12B
+t=16155576ms ECHO-OK seq=61807 rtt=258ms pending=12B
+t=16155833ms ECHO-OK seq=61808 rtt=258ms pending=12B
+t=16156091ms ECHO-OK seq=61809 rtt=259ms pending=12B
+t=16156346ms ECHO-OK seq=61810 rtt=256ms pending=12B
+t=16156603ms ECHO-OK seq=61811 rtt=258ms pending=12B
+t=16156856ms ECHO-OK seq=61812 rtt=254ms pending=12B
+t=16157113ms ECHO-OK seq=61813 rtt=258ms pending=12B
+t=16157367ms ECHO-OK seq=61814 rtt=254ms pending=12B
+t=28745372ms ECHO-LATE seq=109689 rtt=510ms late=+225ms deadline=285ms pending=13B
+t=28745715ms ECHO-OVERDUE seq=109690 waited=539ms deadline=287ms
+t=28746327ms ECHO-LATE seq=109690 rtt=1151ms late=+863ms deadline=287ms pending=13B
+t=28746584ms ECHO-OK seq=109691 rtt=259ms pending=13B
+t=28746842ms ECHO-OK seq=109692 rtt=260ms pending=13B
+t=28747099ms ECHO-OK seq=109693 rtt=259ms pending=13B
+t=28747354ms ECHO-OK seq=109694 rtt=258ms pending=13B
+t=28747608ms ECHO-OK seq=109695 rtt=255ms pending=13B
+t=28747863ms ECHO-OK seq=109696 rtt=256ms pending=13B
+t=28748118ms ECHO-OK seq=109697 rtt=256ms pending=13B
+t=28748373ms ECHO-OK seq=109698 rtt=257ms pending=13B
+t=28748628ms ECHO-OK seq=109699 rtt=257ms pending=13B
+t=28748883ms ECHO-OK seq=109700 rtt=257ms pending=13B
+t=28749139ms ECHO-OK seq=109701 rtt=257ms pending=13B
+t=28749393ms ECHO-OK seq=109702 rtt=256ms pending=13B
+t=28749648ms ECHO-OK seq=109703 rtt=256ms pending=13B
+t=28749902ms ECHO-OK seq=109704 rtt=255ms pending=13B
+t=28750155ms ECHO-OK seq=109705 rtt=255ms pending=13B
+t=28750410ms ECHO-OK seq=109706 rtt=256ms pending=13B
+t=28750664ms ECHO-OK seq=109707 rtt=255ms pending=13B
+t=28750918ms ECHO-OK seq=109708 rtt=255ms pending=13B
+t=28751172ms ECHO-OK seq=109709 rtt=255ms pending=13B
+t=28751426ms ECHO-OK seq=109710 rtt=255ms pending=13B
+t=28751680ms ECHO-OK seq=109711 rtt=255ms pending=13B
+t=28751934ms ECHO-OK seq=109712 rtt=255ms pending=13B
+t=28752187ms ECHO-OK seq=109713 rtt=255ms pending=13B
+t=28752441ms ECHO-OK seq=109714 rtt=255ms pending=13B
+t=28752695ms ECHO-OK seq=109715 rtt=255ms pending=13B
+t=28752948ms ECHO-OK seq=109716 rtt=255ms pending=13B
+t=28753202ms ECHO-OK seq=109717 rtt=255ms pending=13B

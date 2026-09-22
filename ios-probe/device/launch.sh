@@ -4,8 +4,8 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 # Optional 1st argument: the target(s) for this launch. One host (an IPv6 literal, another box), or a
-# COMMA-separated rotation the probe walks one target per connection attempt, so one phone covers both
-# address families on one route:
+# COMMA-separated list, one lane per host, all running at once, so one phone exercises both address
+# families on every network it crosses:
 #   ./launch.sh "178.156.248.95,2a01:4ff:f4:eb1a::1"
 # Comma, not colon — an IPv6 literal is made of colons. Quote it: it is ONE argument to -host, which
 # the app reads from UserDefaults' argument domain. Omitted = the app's default.

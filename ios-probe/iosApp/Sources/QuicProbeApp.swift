@@ -13,8 +13,8 @@ import probe
 ///    probe so the recording itself carries the proof (`KEEPALIVE-STATUS … locUpdates=N`); if that
 ///    count is stuck at zero after the screen locks, every gap in the log below it is an artefact of
 ///    suspension rather than a network event.
-/// 2. **Shows the one line an operator mid-walk can act on** — has it migrated, and has the new path
-///    carried enough traffic to be worth anything.
+/// 2. **Shows the lines an operator mid-walk can act on**, one per lane — has each family's connection
+///    migrated, and has the new path carried enough traffic to be worth anything.
 ///
 /// Location data itself is never read, stored, or logged: only the number of updates.
 @main
@@ -39,9 +39,9 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     // lands in UserDefaults' argument domain, so an IPv6 literal (or any other server) is one launch
     // away. A tap on the icon launches with no arguments and gets the default.
     //
-    // COMMA-SEPARATED is a rotation, one target per connection attempt, so one phone covers both
-    // address families on one route: `-host "178.156.248.95,2a01:4ff:f4:eb1a::1"`. A colon cannot
-    // be the separator — an IPv6 literal is made of them.
+    // COMMA-SEPARATED is one lane per target, all running at once, so one phone exercises both
+    // address families on every network it crosses: `-host "178.156.248.95,2a01:4ff:f4:eb1a::1"`.
+    // A colon cannot be the separator — an IPv6 literal is made of them.
     var hosts: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95,2a01:4ff:f4:eb1a::1"
     var port: Int32 = 44433
     var minutes: Int32 = 4500
@@ -127,6 +127,7 @@ struct ProbeView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("QUIC handoff probe").font(.title2).bold()
 
+            // The walk's own state, then one line per lane (`v4: …`, `v6: …`).
             Text(runner.status)
                 .font(.system(.body, design: .monospaced))
                 .fixedSize(horizontal: false, vertical: true)

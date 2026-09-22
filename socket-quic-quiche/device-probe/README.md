@@ -62,15 +62,17 @@ The deadline is the path's own probe timeout (RFC 9002 §6.2.1), computed from t
 probe measures, so it is ~1 s before the first reply and settles to a few times the smoothed RTT.
 A coalesced read (several replies in one chunk) still gives every exchange its own round trip.
 
-## Address families: one walk covers both
+## Address families: one lane per target
 
-Through 2026-09 each phone was pinned to one server address — the iPhone to
-`2a01:4ff:f4:eb1a::1`, this phone to `178.156.248.95` — so address family was confounded with
-device. Any difference between the two recordings could be the family or the phone, and nothing in
-either log could tell them apart.
+A walk pinned to one server address confounds address family with device, and one connection that
+rotates its target per attempt tests one family for as long as the network holds still — a phone on
+a stable network keeps one connection for the whole run.
 
-The probe therefore rotates its target **per connection attempt**: attempt 1 takes the first target,
-attempt 2 the second, and so on round. One device, one route, both families.
+The probe therefore runs **one lane per target, all at once**. Each lane keeps its own connection to
+its own target for the whole walk, with its own attempts, echo session, migration ledger, reconnect
+backoff, silence watchdog and stall ring, so every family is exercised on every network the device
+crosses and one lane's trouble cannot hide in the other's numbers. The second lane starts half an
+interval after the first, so their sends interleave.
 
 ```bash
 SERVER_HOST="178.156.248.95,2a01:4ff:f4:eb1a::1" device-probe/start.sh 4500 250    # Android
@@ -79,35 +81,39 @@ ios-probe/device/launch.sh "178.156.248.95,2a01:4ff:f4:eb1a::1"                 
 
 **The separator is a comma**, never a colon — an IPv6 literal is made of colons. Quote the list: it
 is one argument, and it reaches the Android probe through `am instrument -e probeHost` and the iOS
-app through `-host` in UserDefaults' argument domain. One host is one target on every attempt,
-exactly as every walk before this.
+app through `-host` in UserDefaults' argument domain. One host is one lane.
 
-⚠️ There is deliberately **no fallback inside an attempt**. This is not Happy Eyeballs. A target the
-device cannot reach must fail *its own* attempt and be recorded against itself; the next attempt
-moves to the next target. A probe that quietly retried the other family would hide the one thing the
-rotation exists to measure — a family that does not work on some network.
+⚠️ A lane **never falls back** to another family. This is not Happy Eyeballs. A target the device
+cannot reach fails its own lane's attempts, which back off (up to 60 s between tries) and are each
+recorded; that failure is the measurement. A probe that quietly used the other family would hide
+the one thing lanes exist to measure — a family that does not work on some network.
 
 The QUIC client cannot do this itself: every platform's builder resolves the hostname internally, so
 `TransportConfig.nameResolution` and the connect racer reach TCP only. That gap is issue #615; until
 it closes, the family is the probe's to choose and to record.
 
-Every line that can be attributed to a family carries it, in the log's own `key=value` style:
+Every line starts with its lane — the target's family, `v6-2` for a second v6 target — or `run` for
+the run's own lines:
 
 ```
-START … targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 …
-CONNECT-ATTEMPT n=7 target=[2a01:4ff:f4:eb1a::1]:44433 family=v6
-MIGRATION-LEDGER connection=7 family=v6 attempts=3 succeeded=2 outcomes=[…]
-ECHO-LIVENESS connection=7 family=v6 LIVE — answered=…
-447-VERDICT connection=7 family=v6 PASS — …
+lane=run START … targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 …
+lane=run LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125
+lane=v6 CONNECT-ATTEMPT n=7 target=[2a01:4ff:f4:eb1a::1]:44433 family=v6
+lane=v6 ECHO-OK seq=1234 rtt=44ms pending=0B
+lane=v6 447-VERDICT connection=7 family=v6 PASS — …
+lane=run MIGRATION-TOTALS connections=9 …        (the lanes' sum; each lane logs its own first)
 ```
 
 An IPv6 literal is bracketed in `target=` so its own colons cannot be read as the port separator.
 `family=` is `v4` or `v6` for a literal and `resolver` for a name — a name's family is whichever the
-platform resolver picks, which the probe cannot know, so it says so instead of guessing.
+platform resolver picks, which the probe cannot know, so it says so instead of guessing. Trace and
+qlog files are named by lane: `conn-v6-0007.trace` beside `conn-v6-0007.sqlog`.
 
-`analyze.py` groups the per-connection reporting by that key and prints a per-family summary. A log
-written before the rotation carries no `family=` at all: it groups under `unknown` and everything
-else analyses exactly as before.
+`analyze.py` demultiplexes on the lane token, analyses each lane exactly as it analyses a whole
+one-lane log, and adds a paired table: one row per handoff with what every lane's path did and how
+long each went without an answered echo. A log without the token (every walk before lanes) is one
+lane and analyses exactly as before; an analyzer from before lanes reads a lane log as empty rather
+than merging its lanes. `status.sh` (both rigs) prints a line per lane.
 
 ## Dry run (about 15 minutes)
 

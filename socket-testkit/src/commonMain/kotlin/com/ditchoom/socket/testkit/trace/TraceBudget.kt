@@ -7,18 +7,20 @@ import kotlin.time.Duration
  * echo cadence rather than fixed: a constant sized for one cadence is silently wrong for every
  * other, and the tail of a multi-day run is exactly where the handoff worth replaying lands.
  *
- * Doubled for the events that do not scale with the echo loop (path changes, reconnects,
- * heartbeats), floored so a short run still has room to record something, and capped so a
- * reconnect storm still cannot fill the device, which is what a budget is for.
+ * Multiplied by the walk's lanes, each of which runs its own echo loop for the whole run; doubled
+ * for the events that do not scale with the echo loop (path changes, reconnects, heartbeats);
+ * floored so a short run still has room to record something; and capped so a reconnect storm still
+ * cannot fill the device, which is what a budget is for.
  */
 public data class TraceBudget(
     val bytes: Long,
     val plannedExchanges: Long,
+    val lanes: Int,
 ) {
     public val megabytes: Long get() = bytes / MEBIBYTE
 
-    /** The log line, in the grammar the walk logs are grepped for. */
-    public val line: String get() = "TRACE-BUDGET mb=$megabytes plannedExchanges=$plannedExchanges"
+    /** The log line, in the grammar the walk logs are grepped for. [plannedExchanges] counts every lane's. */
+    public val line: String get() = "TRACE-BUDGET mb=$megabytes plannedExchanges=$plannedExchanges lanes=$lanes"
 
     /** The same plan with an operator-chosen ceiling, for a run that wants a different one. */
     public fun withMegabytes(megabytes: Long): TraceBudget = copy(bytes = megabytes * MEBIBYTE)
@@ -37,10 +39,11 @@ public data class TraceBudget(
         public fun forWalk(
             minutes: Int,
             echoInterval: Duration,
+            lanes: Int,
         ): TraceBudget {
-            val plannedExchanges = minutes.toLong() * 60_000L / echoInterval.inWholeMilliseconds
+            val plannedExchanges = minutes.toLong() * 60_000L / echoInterval.inWholeMilliseconds * lanes
             val megabytes = (plannedExchanges * BYTES_PER_EXCHANGE * 2 / MEBIBYTE).coerceIn(FLOOR_MB, CEILING_MB)
-            return TraceBudget(bytes = megabytes * MEBIBYTE, plannedExchanges = plannedExchanges)
+            return TraceBudget(bytes = megabytes * MEBIBYTE, plannedExchanges = plannedExchanges, lanes = lanes)
         }
     }
 }

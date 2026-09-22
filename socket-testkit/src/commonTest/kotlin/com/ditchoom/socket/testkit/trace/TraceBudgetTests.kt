@@ -15,7 +15,7 @@ class TraceBudgetTests {
 
     @Test
     fun theRealRunFitsInsideItsOwnBudget() {
-        val budget = TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds)
+        val budget = TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1)
 
         assertEquals(1_080_000L, budget.plannedExchanges)
         assertEquals(1182L, budget.megabytes)
@@ -28,27 +28,38 @@ class TraceBudgetTests {
 
     @Test
     fun aShortRunStillGetsTheFloor() {
-        assertEquals(TraceBudget.FLOOR_MB, TraceBudget.forWalk(minutes = 2, echoInterval = 250.milliseconds).megabytes)
+        assertEquals(TraceBudget.FLOOR_MB, TraceBudget.forWalk(minutes = 2, echoInterval = 250.milliseconds, lanes = 1).megabytes)
     }
 
     @Test
     fun aRunCannotOutgrowTheCeiling() {
-        assertEquals(TraceBudget.CEILING_MB, TraceBudget.forWalk(minutes = 100_000, echoInterval = 100.milliseconds).megabytes)
+        assertEquals(TraceBudget.CEILING_MB, TraceBudget.forWalk(minutes = 100_000, echoInterval = 100.milliseconds, lanes = 1).megabytes)
     }
 
     @Test
     fun theLineNamesBothInputs() {
         assertEquals(
-            "TRACE-BUDGET mb=1182 plannedExchanges=1080000",
-            TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds).line,
+            "TRACE-BUDGET mb=1182 plannedExchanges=1080000 lanes=1",
+            TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1).line,
         )
     }
 
     @Test
     fun anOverrideChangesTheCeilingAndNothingElse() {
-        val overridden = TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds).withMegabytes(2000)
+        val overridden = TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1).withMegabytes(2000)
 
         assertEquals(2000L, overridden.megabytes)
         assertEquals(1_080_000L, overridden.plannedExchanges)
+    }
+
+    /** Each lane runs its own echo loop for the whole walk, so the default two-lane walk plans twice the trace. */
+    @Test
+    fun twoLanesDoubleTheBudgetAndStayUnderTheCeiling() {
+        val budget = TraceBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 2)
+
+        assertEquals(2_160_000L, budget.plannedExchanges)
+        assertEquals(2364L, budget.megabytes)
+        assertTrue(budget.megabytes < TraceBudget.CEILING_MB, "${budget.megabytes} MB")
+        assertEquals("TRACE-BUDGET mb=2364 plannedExchanges=2160000 lanes=2", budget.line)
     }
 }

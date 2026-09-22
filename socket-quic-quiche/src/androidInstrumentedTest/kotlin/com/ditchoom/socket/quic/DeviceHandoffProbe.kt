@@ -42,6 +42,8 @@ import com.ditchoom.socket.testkit.migration.forRun
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.LaneWatch
+import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +52,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.AssumptionViolatedException
@@ -87,9 +90,10 @@ import kotlin.time.Duration.Companion.seconds
  *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
  * ```
  *
- * `probeHost` is a comma-separated rotation: attempt 1 takes the first, attempt 2 the second, and so
- * on round. One host is one target on every attempt, exactly as every walk before the rotation.
- * Rotation, and why it never falls back inside an attempt: see [WalkTargets].
+ * `probeHost` is a comma-separated list, one lane per host, all running at once: each lane keeps its
+ * own connection to its own target for the whole walk, so every family is exercised on every network
+ * the device crosses. Every line names its lane (`lane=v6 ECHO-OK …`), or `lane=run` for the run's
+ * own. Lanes, and why a lane never falls back to another family: see [WalkTargets].
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceHandoffProbe {
@@ -112,7 +116,7 @@ class DeviceHandoffProbe {
                     throw AssumptionViolatedException(
                         "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
                     )
-                is WalkTargetsParse.Rotation -> parsed.targets
+                is WalkTargetsParse.Parsed -> parsed.targets
             }
         val minutes = arg("probeMinutes", "12").toInt()
         // The read deadline is not an argument: each connection's [EchoSession] derives it from the
@@ -132,7 +136,7 @@ class DeviceHandoffProbe {
 
         fun now() = (System.currentTimeMillis() - started).milliseconds
 
-        fun emit(line: String) {
+        fun write(line: String) {
             val t = System.currentTimeMillis() - started
             val rendered = "t=${t}ms $line"
             log.appendText(rendered + "\n")
@@ -140,9 +144,13 @@ class DeviceHandoffProbe {
             android.util.Log.i("QuicHandoffProbe", rendered)
         }
 
+        // A line of the whole run's. Every line names who it belongs to, so an analyzer that does not
+        // know lanes reads nothing it recognises instead of two lanes merged into one.
+        fun emit(line: String) = write("${WalkLane.RUN_TOKEN} $line")
+
         // Frame-level evidence, off by default: quiche's own record, one .sqlog per connection in the
-        // app's external files dir where `adb pull` can reach it, named by the same sequence number as
-        // the connection's trace (conn-NNNN.sqlog beside conn-NNNN.trace). Named here, per connection,
+        // app's external files dir where `adb pull` can reach it, named by the same stem as the
+        // connection's trace (conn-v6-0003.sqlog beside conn-v6-0003.trace). Named here, per connection,
         // rather than through the `quic.qlog.dir` door: that door named the file by the native handle,
         // which the next connection reuses, so quiche's create_new refused every qlog after the first
         // (#621). Off by default because at a 100ms cadence it is megabytes per minute and it is an
@@ -158,71 +166,31 @@ class DeviceHandoffProbe {
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
                 "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog",
         )
-
-        // The in-memory tail the stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
-        // record of the walk: it holds about a minute and is drained only when the echo loop stops,
-        // so a migration the connection *recovers from* — every event #574 is about — never reached
-        // the log at all. That is why the 2026-09-08 walk had to be diagnosed by arithmetic on the
-        // gaps between human log lines, and why the first root cause drawn that way was wrong.
-        val ring =
-            RingTraceSink(
-                RING_CAPACITY,
-            ) { emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
+        emit(targets.lanesLine(echoIntervalMs.milliseconds))
 
         // The record of the walk: one file per connection, appended as it happens, replayable through
         // `TraceToFixture` without re-walking anything. Per connection rather than one file because
         // the v1 grammar carries no connection id and each connection stamps against its own clock
         // origin — a single shared sink interleaves every reconnect into something no fixture can be
-        // built from, which is exactly what `QuicTraceCapture(ring)` was doing here.
+        // built from.
         //
         // Affordable at this rig's cadence, which is the only reason it can be unconditional. The
-        // budget follows this run's own duration and cadence (see [TraceBudget]); -e probeTraceBudgetMb
-        // overrides the ceiling for a run that wants a different one.
-        val derived = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds)
+        // budget follows this run's own duration, cadence and lanes (see [TraceBudget]) and is shared
+        // by every lane; -e probeTraceBudgetMb overrides the ceiling for a run that wants a different one.
+        val derived = TraceBudget.forWalk(minutes, echoIntervalMs.milliseconds, lanes = targets.lanes.size)
         val budget = arg("probeTraceBudgetMb", "").let { if (it.isEmpty()) derived else derived.withMegabytes(it.toLong()) }
         emit(budget.line)
         val traceDir = File(dir, "traces")
         traceDir.mkdirs()
         val traceFiles =
-            WalkTraceFiles(traceDir, qlog, budget.bytes) { spent ->
+            WalkTraceFiles(traceDir, qlog, targets.lanes, budget.bytes) { spent ->
                 emit(
                     "TRACE-BUDGET-SPENT bytes=$spent — trace capture stopped; the walk continues but is no " +
                         "longer replayable past this point. Raise -e probeTraceBudgetMb for the next run.",
                 )
             }
 
-        val options =
-            QuicOptions(
-                alpnProtocols = listOf("test"),
-                verifyPeer = false,
-                trace =
-                    QuicTraceCapture(
-                        captureFor = {
-                            val connection = traceFiles.next()
-                            // Tee: the ring keeps the cross-connection tail the watchdog needs, the file
-                            // keeps this connection's own replayable trace. The qlog rides along unchanged.
-                            connection.copy(
-                                sink =
-                                    TraceSink { event ->
-                                        ring.emit(event)
-                                        connection.sink.emit(event)
-                                        if (event is TraceEvent.QlogRefused) emit("QLOG-REFUSED path=${event.path}")
-                                    },
-                            )
-                        },
-                        // The connectivity stream is half of every migration question — which trigger
-                        // fired, and whether the platform had even noticed the link yet. It was off.
-                        recordNetworkObservations = true,
-                    ),
-                // Long enough that a dead path is not immediately reaped, short enough that the walk
-                // shows a death rather than a hang. Keepalive keeps an idle connection honest.
-                idleTimeout = 30.seconds,
-                keepAliveInterval = 5.seconds,
-                migration = MigrationPolicy.Automatic,
-            )
-
         val deadline = started + minutes * 60_000L
-        var attempt = 0
 
         // A coroutine `delay` does NOT wake the application processor from suspend, so both the echo
         // loop and the QUIC keepalive stall the moment the screen locks — i.e. exactly when this probe
@@ -234,54 +202,59 @@ class DeviceHandoffProbe {
         wakeLock.acquire(minutes * 60_000L + 120_000L)
         emit("WAKELOCK acquired held=${wakeLock.isHeld} timeoutMs=${minutes * 60_000L + 120_000L}")
 
-        // Live status in the shade, so the walk can be driven by what the connection actually did
-        // rather than by a stopwatch. See [ProbeStatus].
-        val status = ProbeStatus(ctx, ::emit)
+        // One lane per target, all at once (see [WalkTargets]). Everything a lane counts is its own —
+        // attempts, sessions, migration ledgers, backoff, watchdog, stall ring — so one lane's trouble
+        // cannot hide in the other's numbers, and nothing is shared between lanes but the log and the
+        // trace budget.
+        val lanes = targets.lanes.map { ProbeLane(it, ::write) }
 
-        // Per-handoff migration capture. Without it a green run is over-read: #447 only bites when a
-        // probe goes UNANSWERED, and on a healthy handoff every probe is answered on the first try —
-        // so a run of thirty clean migrations proves #445 and says nothing whatever about #447, while
-        // reading exactly as if it had validated both. See [MigrationLedger].
-        val totals = MigrationTotals()
-        // ...and whether the stream those migrations carried was actually being echoed (#620): a path
-        // layer that keeps validating while every echo goes unanswered must not read as a pass.
-        val liveness = EchoLivenessTotals()
+        // Live status in the shade, one line per lane, so the walk can be driven by what each
+        // connection actually did rather than by a stopwatch. See [ProbeStatus].
+        val status = ProbeStatus(ctx, ::emit, targets.lanes)
 
-        runBlocking(Dispatchers.IO) {
-            // A heartbeat once a minute, whatever the connection is doing: the process's own memory
-            // (the #538 walk died of a native leak nothing logged until the OOM), the battery, and the
-            // transport the device is on. Over a multi-day run this is the trend line the echo lines
-            // cannot give, and the one line a reader can grep to see the probe was alive at 03:00.
-            val heartbeat =
-                launch {
-                    // The silence watchdog: a live process is not a live echo loop, so [loopTicks] counts completed exchanges.
-                    val watchdog = SilenceWatchdog(QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
-                    while (isActive && System.currentTimeMillis() < deadline) {
-                        delay(HEARTBEAT_INTERVAL_MS)
-                        emit("HEARTBEAT attempt=$attempt ${processMemory()} ${battery(ctx)} ${transport(ctx)}")
-                        when (val beat = watchdog.beat(loopTicks)) {
-                            SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
-                            is SilenceWatchdog.Beat.Stalled -> {
-                                emit(beat.line(attempt, ring.size()))
-                                ring.drain().forEach { emit("STALL-TRACE $it") }
-                                emit("STALL-TRACE-END")
-                            }
-                            is SilenceWatchdog.Beat.Recovered -> emit(beat.line)
-                        }
-                    }
-                }
+        suspend fun runLane(probe: ProbeLane) {
+            val lane = probe.lane
+            val target = lane.target
+            val laneEmit = probe.emit
+            val options =
+                QuicOptions(
+                    alpnProtocols = listOf("test"),
+                    verifyPeer = false,
+                    trace =
+                        QuicTraceCapture(
+                            captureFor = {
+                                val connection = traceFiles.next(lane)
+                                // Tee: the lane's ring keeps the cross-connection tail its watchdog needs,
+                                // the file keeps this connection's own replayable trace. The qlog rides
+                                // along unchanged.
+                                connection.copy(
+                                    sink =
+                                        TraceSink { event ->
+                                            probe.ring.emit(event)
+                                            connection.sink.emit(event)
+                                            if (event is TraceEvent.QlogRefused) laneEmit("QLOG-REFUSED path=${event.path}")
+                                        },
+                                )
+                            },
+                            // The connectivity stream is half of every migration question — which
+                            // trigger fired, and whether the platform had even noticed the link yet.
+                            recordNetworkObservations = true,
+                        ),
+                    // Long enough that a dead path is not immediately reaped, short enough that the
+                    // walk shows a death rather than a hang. Keepalive keeps an idle connection honest.
+                    idleTimeout = 30.seconds,
+                    keepAliveInterval = 5.seconds,
+                    migration = MigrationPolicy.Automatic,
+                )
             var retryDelayMs = RECONNECT_MIN_MS
             while (System.currentTimeMillis() < deadline) {
-                attempt++
+                val attempt = probe.watch.nextAttempt()
                 val attemptStarted = System.currentTimeMillis()
-                // Rotated per attempt, never inside one: the attempt that cannot reach its target is
-                // the measurement, so it fails here and the NEXT attempt moves to the next family.
-                val target = targets.forAttempt(attempt)
-                emit("CONNECT-ATTEMPT n=$attempt ${target.line}")
-                if (attempt > 1) status.onEnded("reconnecting (attempt $attempt)")
+                laneEmit("CONNECT-ATTEMPT n=$attempt ${target.line}")
+                if (attempt > 1) status.onEnded(lane, "reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
                 // exhausted on the previous connection says nothing about this one.
-                val ledger = MigrationLedger(::emit)
+                val ledger = MigrationLedger(laneEmit)
                 // Per connection too: what is still owed when a connection ends is what failed on it,
                 // and how long it went without an answered echo is its own verdict.
                 val session = EchoSession(connectedAt = now())
@@ -291,22 +264,22 @@ class DeviceHandoffProbe {
                     // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                     // flowing fine. So it has to cover the whole walk, not the handshake.
                     withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
-                        emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
+                        laneEmit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
 
                         val stream = openStream()
                         var lastWire = identity.wire
-                        val ticksAtConnect = loopTicks
+                        probe.watch.connected()
 
-                        // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
-                        // loop below. Phase 4 bounds an unanswered path probe at ~3s (RFC 9000 §8.2.4),
-                        // so a whole Probing -> Failed -> Probing sequence can fall between two samples
-                        // of a 2s poll and go UNCOUNTED — which would make a working fix look broken,
-                        // because the acceptance criterion here is "N handoffs produce N migration
-                        // attempts". StateFlow still conflates, but now at collector speed.
+                        // A DEDICATED collector rather than a poll inside the echo loop. Phase 4 bounds
+                        // an unanswered path probe at ~3s (RFC 9000 §8.2.4), so a whole Probing ->
+                        // Failed -> Probing sequence can fall between two samples of a poll and go
+                        // UNCOUNTED — which would make a working fix look broken, because the acceptance
+                        // criterion here is "N handoffs produce N migration attempts". StateFlow still
+                        // conflates, but now at collector speed.
                         launch {
                             pathState.collect {
-                                emit("PATH $it")
-                                status.onPath(it.toString())
+                                laneEmit("PATH $it")
+                                status.onPath(lane, it.toString())
                                 ledger.onPath(it)
                             }
                         }
@@ -317,7 +290,7 @@ class DeviceHandoffProbe {
                                 session = session,
                                 interval = echoIntervalMs.milliseconds,
                                 clock = ::now,
-                                emit = ::emit,
+                                emit = laneEmit,
                                 // The typed reason, side included: "we sent a frame the peer rejected" and
                                 // "the peer sent us one" are opposite bugs, and a device log is all we get
                                 // from a real handoff (#437).
@@ -328,62 +301,127 @@ class DeviceHandoffProbe {
                                     // successful migration looks like.
                                     is EchoLoopEvent.Round ->
                                         if (identity.wire != lastWire) {
-                                            emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
+                                            laneEmit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
                                             lastWire = identity.wire
                                         }
-                                    is EchoLoopEvent.Read -> status.onRead(event.read)
-                                    is EchoLoopEvent.IntegrityBroken -> status.onBroken(event.atByte)
-                                    is EchoLoopEvent.Progress -> {
-                                        loopTicks = ticksAtConnect + event.exchanges
-                                    }
-                                    is EchoLoopEvent.WriteTimedOut -> status.onWriteTimeout(event.owedBytes)
-                                    is EchoLoopEvent.Overdue -> status.onOverdue()
-                                    is EchoLoopEvent.Failed -> status.onFailure(event.owedBytes)
+                                    is EchoLoopEvent.Read -> status.onRead(lane, event.read)
+                                    is EchoLoopEvent.IntegrityBroken -> status.onBroken(lane, event.atByte)
+                                    is EchoLoopEvent.Progress -> probe.watch.progressed(event.exchanges)
+                                    is EchoLoopEvent.WriteTimedOut -> status.onWriteTimeout(lane, event.owedBytes)
+                                    is EchoLoopEvent.Overdue -> status.onOverdue(lane)
+                                    is EchoLoopEvent.Failed -> status.onFailure(lane, event.owedBytes)
                                 }
                             }
                         when (val end = loop.run(until = minutes.minutes)) {
                             EchoLoopEnd.WalkOver -> Unit
-                            is EchoLoopEnd.Left -> status.onEnded("${end.step.end.label} — reconnecting")
-                            is EchoLoopEnd.ConnectionClosed -> status.onEnded("connection dead (${end.reason}) — reconnecting")
+                            is EchoLoopEnd.Left -> status.onEnded(lane, "${end.step.end.label} — reconnecting")
+                            is EchoLoopEnd.ConnectionClosed -> status.onEnded(lane, "connection dead (${end.reason}) — reconnecting")
                         }
                     }
-                    emit("SCOPE-EXITED cleanly")
+                    laneEmit("SCOPE-EXITED cleanly")
                     session.ended(SessionEnd.WalkOver, now())
                 } catch (e: Throwable) {
-                    emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                    laneEmit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
                 }
                 val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
                 // Tagged with the family it happened on, so every verdict is attributable to one.
                 val tag = target.connectionTag(attempt)
-                report.lines(tag).forEach(::emit)
+                report.lines(tag).forEach(laneEmit)
                 ledger.report(tag, report.liveness)
-                totals.absorb(ledger)
-                liveness.absorb(attempt, report)
+                probe.totals.absorb(ledger)
+                probe.liveness.absorb(attempt, report)
                 if (System.currentTimeMillis() < deadline) {
                     // Back off while attempts die young — a flight in airplane mode is hours of
-                    // "network unreachable", and a fixed 3 s retry would be thousands of connects (each
-                    // a socket, a quiche config and two log lines) for nothing. A connection that lived
-                    // resets the delay, so the first retry after a real handoff is still prompt.
+                    // "network unreachable", and a family the network does not carry is a whole walk of
+                    // it; a fixed 3 s retry would be thousands of connects for nothing. The failures
+                    // are the measurement, so each is still logged. A connection that lived resets the
+                    // delay, so the first retry after a real handoff is still prompt.
                     val lived = System.currentTimeMillis() - attemptStarted
                     retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
-                    emit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
+                    laneEmit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
                     delay(retryDelayMs)
                 }
             }
+        }
+
+        runBlocking(Dispatchers.IO) {
+            // A heartbeat once a minute, whatever the connections are doing: the process's own memory
+            // (the #538 walk died of a native leak nothing logged until the OOM), the battery, and the
+            // transport the device is on. Over a multi-day run this is the trend line the echo lines
+            // cannot give, and the one line a reader can grep to see the probe was alive at 03:00. One
+            // per lane, each beating that lane's own silence watchdog: a live process is not a live
+            // echo loop, and one lane going round is not the other going round.
+            val heartbeat =
+                launch {
+                    while (isActive && System.currentTimeMillis() < deadline) {
+                        delay(HEARTBEAT_INTERVAL_MS)
+                        val vitals = "${processMemory()} ${battery(ctx)} ${transport(ctx)}"
+                        lanes.forEach { probe ->
+                            probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
+                            when (val beat = probe.watch.beat()) {
+                                SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
+                                is SilenceWatchdog.Beat.Stalled -> {
+                                    probe.emit(beat.line(probe.watch.attempt, probe.ring.size()))
+                                    probe.ring.drain().forEach { probe.emit("STALL-TRACE $it") }
+                                    probe.emit("STALL-TRACE-END")
+                                }
+                                is SilenceWatchdog.Beat.Recovered -> probe.emit(beat.line)
+                            }
+                        }
+                    }
+                }
+            lanes
+                .map { probe ->
+                    launch {
+                        delay(probe.lane.stagger(echoIntervalMs.milliseconds, lanes.size))
+                        runLane(probe)
+                    }
+                }.joinAll()
             heartbeat.cancel()
         }
 
         if (wakeLock.isHeld) wakeLock.release()
         emit("WAKELOCK released")
-        totals.report(::emit, liveness.verdict())
-        emit("DONE attempts=$attempt log=${log.absolutePath}")
+        // Each lane's totals and verdicts are its own; the run's line is their sum.
+        val run = MigrationTotals()
+        lanes.forEach { probe ->
+            probe.totals.report(probe.emit, probe.liveness.verdict())
+            run.add(probe.totals)
+        }
+        emit(run.line)
+        emit("DONE attempts=${lanes.sumOf { it.watch.attempt }} lanes=${lanes.size} log=${log.absolutePath}")
     }
 }
 
+/** What one lane of the walk owns, apart from the connection in flight. */
+private class ProbeLane(
+    val lane: WalkLane,
+    write: (String) -> Unit,
+) {
+    val emit: (String) -> Unit = lane.log(write)
+    val watch = LaneWatch(lane, QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
+
+    // The in-memory tail the lane's stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
+    // record of the walk: it holds about a minute and is drained only when the echo loop stops.
+    val ring =
+        RingTraceSink(
+            RING_CAPACITY,
+        ) { emit("SEND-STALLED $it — the driver bounded a wedged send and closed the path; a reconnect should follow") }
+
+    // Per-handoff migration capture, rolled up per lane. Without it a green run is over-read: #447
+    // only bites when a probe goes UNANSWERED, and on a healthy handoff every probe is answered on the
+    // first try. See [MigrationLedger].
+    val totals = MigrationTotals()
+
+    // ...and whether the stream those migrations carried was actually being echoed (#620): a path
+    // layer that keeps validating while every echo goes unanswered must not read as a pass.
+    val liveness = EchoLivenessTotals()
+}
+
 /**
- * A live status notification for the walk — because the operator cannot watch logcat while walking,
- * and the one question a walk actually raises is "has it moved yet, and has the new path carried
- * enough traffic that I can go back?".
+ * A live status notification for the walk, one line per lane — because the operator cannot watch
+ * logcat while walking, and the one question a walk actually raises is "has it moved yet, and has the
+ * new path carried enough traffic that I can go back?", asked of every family.
  *
  * Reactive, not a countdown: every line is driven by an event the probe observed (a path-state change,
  * an echo, an integrity break). The number that answers "can I move on" is **echoes since the last
@@ -399,20 +437,25 @@ class DeviceHandoffProbe {
 private class ProbeStatus(
     private val ctx: Context,
     private val emit: (String) -> Unit,
+    lanes: List<WalkLane>,
 ) {
     private val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
 
     @Volatile
     private var usable = false
-    private val path = AtomicReference("connecting")
-    private val migrations = AtomicInteger()
-    private val echoes = AtomicInteger()
-    private val sinceMove = AtomicInteger()
-    private val late = AtomicInteger()
-    private val overdue = AtomicInteger()
-    private val pending = AtomicInteger()
-    private val integrity = AtomicReference<Integrity>(Integrity.Intact)
     private val lastPostedAt = AtomicLong()
+
+    /** One lane's line in the shade; each counter is written by that lane's coroutines only. */
+    private class LaneStatus {
+        val path = AtomicReference("connecting")
+        val migrations = AtomicInteger()
+        val echoes = AtomicInteger()
+        val sinceMove = AtomicInteger()
+        val late = AtomicInteger()
+        val overdue = AtomicInteger()
+        val pending = AtomicInteger()
+        val integrity = AtomicReference<Integrity>(Integrity.Intact)
+    }
 
     private sealed interface Integrity {
         data object Intact : Integrity
@@ -421,6 +464,10 @@ private class ProbeStatus(
             val atByte: Int,
         ) : Integrity
     }
+
+    private val lanes: Map<String, LaneStatus> = lanes.associate { it.label to LaneStatus() }
+
+    private fun of(lane: WalkLane): LaneStatus = lanes.getValue(lane.label)
 
     init {
         val mgr = manager
@@ -448,45 +495,65 @@ private class ProbeStatus(
         post()
     }
 
-    fun onPath(state: String) {
-        path.set(state.substringBefore('(').substringAfterLast('.'))
+    fun onPath(
+        lane: WalkLane,
+        state: String,
+    ) {
+        val s = of(lane)
+        s.path.set(state.substringBefore('(').substringAfterLast('.'))
         if (state.contains("Migrated")) {
-            migrations.incrementAndGet()
-            sinceMove.set(0)
+            s.migrations.incrementAndGet()
+            s.sinceMove.set(0)
         }
         post(force = true)
     }
 
-    fun onRead(read: EchoRead.Consumed) {
-        echoes.addAndGet(read.outcomes.size)
-        sinceMove.addAndGet(read.outcomes.size)
-        late.addAndGet(read.outcomes.count { it is EchoOutcome.Late })
-        pending.set(read.owedBytes)
+    fun onRead(
+        lane: WalkLane,
+        read: EchoRead.Consumed,
+    ) {
+        val s = of(lane)
+        s.echoes.addAndGet(read.outcomes.size)
+        s.sinceMove.addAndGet(read.outcomes.size)
+        s.late.addAndGet(read.outcomes.count { it is EchoOutcome.Late })
+        s.pending.set(read.owedBytes)
         post()
     }
 
-    fun onOverdue() {
-        overdue.incrementAndGet()
+    fun onOverdue(lane: WalkLane) {
+        of(lane).overdue.incrementAndGet()
         post()
     }
 
-    fun onWriteTimeout(owedBytes: Int) {
-        pending.set(owedBytes)
+    fun onWriteTimeout(
+        lane: WalkLane,
+        owedBytes: Int,
+    ) {
+        of(lane).pending.set(owedBytes)
         post()
     }
 
-    fun onFailure(owedBytes: Int) {
-        pending.set(owedBytes)
+    fun onFailure(
+        lane: WalkLane,
+        owedBytes: Int,
+    ) {
+        of(lane).pending.set(owedBytes)
         post(force = true)
     }
 
-    fun onBroken(atByte: Int) {
-        integrity.set(Integrity.Broken(atByte))
+    fun onBroken(
+        lane: WalkLane,
+        atByte: Int,
+    ) {
+        of(lane).integrity.set(Integrity.Broken(atByte))
         post(force = true)
     }
 
-    fun onEnded(reason: String) {
-        path.set(reason)
+    fun onEnded(
+        lane: WalkLane,
+        reason: String,
+    ) {
+        of(lane).path.set(reason)
         post(force = true)
     }
 
@@ -505,22 +572,28 @@ private class ProbeStatus(
             val last = lastPostedAt.get()
             if (now - last < STATUS_MIN_INTERVAL_MS || !lastPostedAt.compareAndSet(last, now)) return
         }
-        val moved = migrations.get()
+        val breaks =
+            lanes.entries.flatMap { (label, s) ->
+                when (val integrity = s.integrity.get()) {
+                    Integrity.Intact -> emptyList()
+                    is Integrity.Broken -> listOf("⚠ STREAM INTEGRITY BROKEN on $label at byte ${integrity.atByte}")
+                }
+            }
         val title =
-            when (val state = integrity.get()) {
-                is Integrity.Broken -> "⚠ STREAM INTEGRITY BROKEN at byte ${state.atByte}"
-                Integrity.Intact ->
-                    if (moved ==
-                        0
-                    ) {
-                        "QUIC probe · no migration yet"
-                    } else {
-                        "QUIC probe · $moved migration(s) · ${sinceMove.get()} echoes since"
+            if (breaks.isEmpty()) {
+                "QUIC probe · " +
+                    lanes.entries.joinToString(" · ") { (label, s) ->
+                        val moved = s.migrations.get()
+                        if (moved == 0) "$label no migration yet" else "$label $moved migration(s), ${s.sinceMove.get()} echoes since"
                     }
+            } else {
+                breaks.joinToString(" · ")
             }
         val text =
-            "path=${path.get()} · echoes=${echoes.get()} · late=${late.get()} · overdue=${overdue.get()} · " +
-                "intact=${if (integrity.get() is Integrity.Intact) "yes" else "NO"} · pending=${pending.get()}B"
+            lanes.entries.joinToString("\n") { (label, s) ->
+                "$label path=${s.path.get()} · echoes=${s.echoes.get()} · late=${s.late.get()} · overdue=${s.overdue.get()} · " +
+                    "intact=${if (s.integrity.get() is Integrity.Intact) "yes" else "NO"} · pending=${s.pending.get()}B"
+            }
         runCatching {
             val builder =
                 Notification
@@ -712,7 +785,7 @@ private class MigrationLedger(
     }
 }
 
-/** Run-wide roll-up of every connection's [MigrationLedger] — the line the operator reads at the end. */
+/** One lane's roll-up of every connection's [MigrationLedger], or the run's sum of them — the lines the operator reads at the end. */
 private class MigrationTotals {
     var connections = 0
     var attempts = 0
@@ -726,17 +799,33 @@ private class MigrationTotals {
 
     fun absorb(ledger: MigrationLedger) = ledger.fold(this)
 
+    /** Another lane's totals, summed in: every counter is per connection, so the sum is the run's. */
+    fun add(other: MigrationTotals) {
+        connections += other.connections
+        attempts += other.attempts
+        succeeded += other.succeeded
+        unanswered += other.unanswered
+        probedAfterUnanswered += other.probedAfterUnanswered
+        answeredAfterUnanswered += other.answeredAfterUnanswered
+        succeededAfterUnanswered += other.succeededAfterUnanswered
+        noSpareAfterUnanswered += other.noSpareAfterUnanswered
+        other.leaves.forEach { (k, v) -> leaves[k] = (leaves[k] ?: 0) + v }
+    }
+
+    val line: String
+        get() {
+            val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
+            return "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
+                "unansweredProbes=$unanswered probedAfterUnanswered=$probedAfterUnanswered " +
+                "answeredAfterUnanswered=$answeredAfterUnanswered " +
+                "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]"
+        }
+
     fun report(
         emit: (String) -> Unit,
         liveness: RunLiveness,
     ) {
-        val breakdown = leaves.entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
-        emit(
-            "MIGRATION-TOTALS connections=$connections attempts=$attempts succeeded=$succeeded " +
-                "unansweredProbes=$unanswered probedAfterUnanswered=$probedAfterUnanswered " +
-                "answeredAfterUnanswered=$answeredAfterUnanswered " +
-                "noSpareAfterUnanswered=$noSpareAfterUnanswered outcomes=[$breakdown]",
-        )
+        emit(line)
         emit(liveness.line)
         // Every "after" counter only ever advanced inside the connection whose probe was lost, so
         // summing them cannot let a RECONNECT's fresh pool answer for the old one — the over-read
@@ -753,16 +842,6 @@ private class MigrationTotals {
         emit("447-VERDICT run ${history.verdict().forRun(connections, liveness).line}")
     }
 }
-
-/**
- * Exchanges completed across every connection — what the silence watchdog compares beat to beat.
- *
- * Every other counter here measures what the loop *did*, which makes a loop that did nothing
- * indistinguishable from one that was never asked to. This one measures that it is still going
- * round; a write the peer never drained does not advance it (#620).
- */
-@Volatile
-private var loopTicks: Int = 0
 
 /** A [QuicCloseException] is the connection closing under the stream; anything else fails one exchange. */
 private fun connectionClosedBy(e: Throwable): EchoFailure =
@@ -865,9 +944,9 @@ private sealed interface WalkQlog {
 }
 
 /**
- * One file-backed [TraceSink] per connection, under a shared byte budget, and beside it the qlog
- * quiche writes for that connection — both named from one sequence number, `conn-NNNN`, so the two
- * records of a connection pair by name.
+ * One file-backed [TraceSink] per connection, under a byte budget every lane shares, and beside it the
+ * qlog quiche writes for that connection — both named by the lane and its own connection count,
+ * `conn-v6-0003`, so the two records of a connection pair by name.
  *
  * Appends per event rather than holding a writer open: a walk reconnects hundreds of times, and a run
  * killed by a reboot or a pulled cable must not lose its tail. The budget covers the trace only: the
@@ -876,10 +955,11 @@ private sealed interface WalkQlog {
 private class WalkTraceFiles(
     private val dir: File,
     private val qlog: WalkQlog,
+    lanes: List<WalkLane>,
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
-    private val connections = AtomicInteger(0)
+    private val connections: Map<String, AtomicInteger> = lanes.associate { it.label to AtomicInteger() }
     private val budget = AtomicReference<TraceSpend>(TraceSpend.Live(0L))
 
     /** Lock-free: the thread whose CAS moves the budget to [TraceSpend.Spent] is the one that reports it. */
@@ -900,8 +980,8 @@ private class WalkTraceFiles(
         }
     }
 
-    fun next(): QuicConnectionCapture {
-        val name = "conn-" + connections.incrementAndGet().toString().padStart(4, '0')
+    fun next(lane: WalkLane): QuicConnectionCapture {
+        val name = lane.fileStem(connections.getValue(lane.label).incrementAndGet())
         val file = File(dir, "$name.trace")
         val sink =
             TraceSink { event ->
