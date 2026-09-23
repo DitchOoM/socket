@@ -6,8 +6,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -17,6 +15,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.installAndroidApplicationContext
+import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
@@ -42,6 +43,7 @@ import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
 import com.ditchoom.socket.testkit.migration.forConnection
 import com.ditchoom.socket.testkit.migration.forRun
+import com.ditchoom.socket.testkit.osnet.OsNetWatch
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -56,6 +58,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -99,6 +102,9 @@ import kotlin.time.Duration.Companion.seconds
  * own connection to its own target for the whole walk, so every family is exercised on every network
  * the device crosses. Every line names its lane (`lane=v6 ECHO-OK …`), or `lane=run` for the run's
  * own. Lanes, and why a lane never falls back to another family: see [WalkTargets].
+ *
+ * What the OS said about the device's network — the radio, the links, their address families — is
+ * recorded once for the whole run, under `lane=run`: see [OsNetWatch].
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceHandoffProbe {
@@ -259,6 +265,22 @@ class DeviceHandoffProbe {
         // connection actually did rather than by a stopwatch. See [ProbeStatus].
         val status = ProbeStatus(ctx, ::emit, targets.lanes)
 
+        // What the OS itself says about this device's network — the radio, the links, their address
+        // families — recorded once for the whole run under `lane=run`, because it is one fact about
+        // the phone rather than one per lane (see [OsNetWatch]). Every lane's live connection trace
+        // gets a copy, so an offline replay of any one connection carries the network it was on.
+        // App Startup normally captures the Context before any app code runs, but an instrumented-test
+        // process is not an app; without it the process default would be the POLLING monitor and the
+        // OS ladder would be recorded on a 5 s cadence instead of on the platform's own callbacks.
+        NetworkMonitor.installAndroidApplicationContext(ctx)
+        val monitor = NetworkMonitor.processDefault()
+        val osSource = AndroidOsNetworkSource(ctx)
+        val osNet = OsNetWatch(osSource, ::now, ::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } })
+        // The radio can move while the connectivity callbacks stay silent — a SIM registering, data
+        // roaming coming up — and that is a state the ladder alone cannot tell from airplane mode.
+        // Where the platform will push it (API 31+), it is recorded when it happens.
+        osSource.register { osNet.sample(monitor.state.value) }
+
         suspend fun runLane(probe: ProbeLane) {
             val lane = probe.lane
             val target = lane.target
@@ -271,6 +293,10 @@ class DeviceHandoffProbe {
                         QuicTraceCapture(
                             captureFor = {
                                 val connection = traceFiles.next(lane)
+                                // The network the device is already on, so a fixture cut from this
+                                // connection starts from it rather than from whatever changed later.
+                                osNet.seed(connection.sink)
+                                probe.trace.value = connection.sink
                                 // Tee: the lane's ring keeps the cross-connection tail its watchdog needs,
                                 // the file keeps this connection's own replayable trace. The qlog rides
                                 // along unchanged; its directory reports every segment, drop and refusal as
@@ -376,6 +402,7 @@ class DeviceHandoffProbe {
                 } catch (e: Throwable) {
                     laneEmit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
                 }
+                probe.trace.value = Discarded
                 val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
                 // Tagged with the family it happened on, so every verdict is attributable to one.
                 val tag = target.connectionTag(attempt)
@@ -408,7 +435,11 @@ class DeviceHandoffProbe {
                 launch {
                     while (isActive && System.currentTimeMillis() < deadline) {
                         delay(HEARTBEAT_INTERVAL_MS)
-                        val vitals = "${processMemory()} ${battery(ctx)} ${transport(ctx)} ${DiskFree.ofReading(dir.usableSpace).line}"
+                        // Once per beat, whatever the platform did or did not signal: a telephony-only
+                        // change on a device that cannot push one is recorded within a minute rather
+                        // than never. Nothing is written unless something actually moved.
+                        osNet.sample(monitor.state.value)
+                        val vitals = "${processMemory()} ${battery(ctx)} ${DiskFree.ofReading(dir.usableSpace).line}"
                         lanes.forEach { probe ->
                             probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
                             when (val beat = probe.watch.beat()) {
@@ -423,6 +454,10 @@ class DeviceHandoffProbe {
                         }
                     }
                 }
+            // Every platform observation is a sample, including the ones NetworkMonitor.state
+            // de-dupes away — a link flapping while the rung folds back to itself is exactly when the
+            // OS has most to say.
+            val osFollow = launch { osNet.follow(monitor) }
             lanes
                 .map { probe ->
                     launch {
@@ -430,8 +465,10 @@ class DeviceHandoffProbe {
                         runLane(probe)
                     }
                 }.joinAll()
+            osFollow.cancel()
             heartbeat.cancel()
         }
+        osSource.unregister()
 
         if (wakeLock.isHeld) wakeLock.release()
         emit("WAKELOCK released")
@@ -453,6 +490,14 @@ private class ProbeLane(
 ) {
     val emit: (String) -> Unit = lane.log(write)
     val watch = LaneWatch(lane, QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
+
+    /**
+     * Where a device-level record goes right now: this lane's live connection's trace, or [Discarded]
+     * between connections. The OS network facts are one fact about the phone that every lane's trace
+     * needs a copy of, and a lane with no connection open has nowhere to put it — writing it into the
+     * file of a connection that already ended would date-stamp a dead record.
+     */
+    val trace = MutableStateFlow(Discarded)
 
     // The in-memory tail the lane's stall watchdog dumps inline — see [RingTraceSink]. It is NOT the
     // record of the walk: it holds about a minute and is drained only when the echo loop stops.
@@ -983,6 +1028,9 @@ private class RingTraceSink(
 /** How many trace events the post-mortem ring keeps — roughly the last minute of transport activity. */
 private const val RING_CAPACITY = 256
 
+/** A lane with no connection open: a device-level record has nowhere to land, so it lands nowhere. */
+private val Discarded = TraceSink { }
+
 /** Whether this walk records quiche's qlog, and each lane's budgeted directory for it. */
 private sealed interface WalkQlog {
     data object Off : WalkQlog {
@@ -1108,21 +1156,6 @@ private fun battery(ctx: Context): String =
         val pct = if (level >= 0 && scale > 0) (100L * level / scale) else -1
         "battery=$pct% plugged=${if (plugged != 0) "yes" else "no"}"
     }.getOrElse { "battery=unreadable(${it::class.simpleName})" }
-
-/** The transport of the active network (Wi-Fi, cellular, none), as the OS sees it right now. */
-private fun transport(ctx: Context): String =
-    runCatching {
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return "net=none"
-        val kind =
-            when {
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
-                else -> "other"
-            }
-        "net=$kind validated=${caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
-    }.getOrElse { "net=unreadable(${it::class.simpleName})" }
 
 /**
  * How much of a walk's trace budget is left.

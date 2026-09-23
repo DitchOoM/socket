@@ -140,6 +140,53 @@ long each went without an answered echo. A log without the token (every walk bef
 lane and analyses exactly as before; an analyzer from before lanes reads a lane log as empty rather
 than merging its lanes. `status.sh` (both rigs) prints a line per lane.
 
+## What the OS thought: the `OS-NET` record
+
+A lane is a connection; the network underneath it is the **device's**. So `OS-NET` is written once,
+under `lane=run`, every time anything in it changes — and `analyze.py` shares it into every lane the
+way it already shares `START`, rather than the probe writing one copy per lane that could disagree.
+
+```
+lane=run OS-NET-SOURCE monitor=PlatformSignalled/RouteAndInternet cellular=Signalled
+lane=run OS-NET state=Offline v4=Absent v6=LinkLocal \
+    cell=Reported(sim=Ready,reg=InService,data=Disconnected,roaming=Roaming,bearer=Lte) \
+    links=wlan0=fe80::4c2a:8bff:fe31:9f10
+```
+
+That one line separates states the ladder alone renders identically. The phone above is `Offline`
+with a perfectly healthy radio: SIM ready, registered on LTE, **roaming**, and no data bearer
+because data roaming is off — indistinguishable, to everything a walk used to record, from airplane
+mode, a dead SIM or a basement. Once it joins Wi-Fi the same line reads
+`state=Routable|Link:Wifi:441492361229|Confirmed v4=SiteLocal v6=LinkLocal`, and that `v6=LinkLocal`
+is the other answer it carries: this Wi-Fi hands out no routable IPv6, so a v6 lane on it has
+nothing to walk on.
+
+- `state=` is the `NetworkState` rung, identity and reachability, pipe-joined into one token.
+- `v4=` / `v6=` are `Absent` / `LinkLocal` / `SiteLocal` (RFC 1918, CGNAT, ULA) / `Global` — the
+  widest reach any up, non-loopback link carries.
+- `cell=` is `NotReported` (no radio) or `Reported(sim,reg,data,roaming,bearer)`. **A field the
+  platform will not answer says `NotReported`**, never a blank and never a plausible default.
+- `links=` is every up, non-loopback interface with its addresses, zone suffix stripped.
+
+What each platform can say:
+
+| | Android | iOS |
+|---|---|---|
+| rung, identity, links, address families | yes | yes |
+| SIM state, registration, data state, roaming | yes (`reg`/`bearer` need `READ_PHONE_STATE`) | **never** — no public API, and `CTCarrier` has returned placeholders since iOS 16 |
+| radio technology | yes (`READ_PHONE_STATE`) | yes (`CTTelephonyNetworkInfo`) |
+| pushed on change | `TelephonyCallback` (API 31+) | `CTRadioAccessTechnologyDidChangeNotification` |
+
+`install.sh` grants `READ_PHONE_STATE`; `preflight.sh` reports it. Without the grant the two fields
+that need it say `NotReported` and everything else still lands. Every change is also a
+`TraceEvent.OsNet` in the live connection's replay trace, and a connection's trace is seeded with the
+network the device was already on when it opened — so a fixture cut from the middle of a walk carries
+its baseline. `analyze.py` prints the device's timeline once, as a field-by-field diff, and per lane
+reports how many connection endings had an `OS-NET` change within ±30 s of them.
+
+Committed fixtures of the states above live in `OsNetworkFixtures` (`:socket-testkit`), so an
+analysis of "registered, roaming, no bearer" can be written and tested with no device.
+
 ## Dry run (about 15 minutes)
 
 ```bash

@@ -6,6 +6,7 @@ import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReachResolution
+import com.ditchoom.socket.testkit.osnet.decodeOsNetworkFacts
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration.Companion.nanoseconds
@@ -110,6 +111,10 @@ internal fun encodeTraceLine(event: TraceEvent): String =
             is TraceEvent.NetGap -> {
                 append("NET_GAP ")
                 append(event.dropped)
+            }
+            is TraceEvent.OsNet -> {
+                append("OS_NET ")
+                append(event.facts.line)
             }
             is TraceEvent.NetCapability -> {
                 append("NET_CAP ")
@@ -226,6 +231,10 @@ internal fun decodeTraceLine(line: String): TraceEvent {
         // after the format shipped. A reader predating it fails the unknown-event branch below rather
         // than mis-parsing, and a trace without gap lines means "no claim" — never a fabricated zero.
         "NET_GAP" -> TraceEvent.NetGap(at, fields.toLong())
+        // `v1` still: OS_NET is a new line kind in the existing version, exactly as NET_GAP and
+        // QLOG_REFUSED were added after the format shipped. Its own fields are `key=value`, so a
+        // field added to it later does not shift the ones already written.
+        "OS_NET" -> TraceEvent.OsNet(at, decodeOsNetworkFacts(fields))
         "NET_CAP" -> {
             val (mechanism, resolution) = fields.split(' ', limit = 2)
             TraceEvent.NetCapability(at, MonitorCapability(decodeMechanism(mechanism), decodeResolution(resolution)))
@@ -289,7 +298,7 @@ internal fun decodeNetworkState(s: String): NetworkState {
     }
 }
 
-private fun encodeInternetAccess(access: InternetAccess): String =
+internal fun encodeInternetAccess(access: InternetAccess): String =
     when (access) {
         InternetAccess.Unobserved -> "Unobserved"
         InternetAccess.Observed.Confirmed -> "Confirmed"
@@ -302,7 +311,7 @@ private fun encodeInternetAccess(access: InternetAccess): String =
             }
     }
 
-private fun decodeInternetAccess(s: String): InternetAccess =
+internal fun decodeInternetAccess(s: String): InternetAccess =
     when (s) {
         "Unobserved" -> InternetAccess.Unobserved
         "Confirmed" -> InternetAccess.Observed.Confirmed
@@ -317,7 +326,7 @@ private fun decodeInternetAccess(s: String): InternetAccess =
 // <mechanism>  := PlatformSignalled | Static | Unknown | Polled(<nanos>)
 // <resolution> := RouteAndInternet | RouteOnly | LinkOnly | Asserted
 
-private fun encodeMechanism(mechanism: MonitorMechanism): String =
+internal fun encodeMechanism(mechanism: MonitorMechanism): String =
     when (mechanism) {
         MonitorMechanism.PlatformSignalled -> "PlatformSignalled"
         MonitorMechanism.Static -> "Static"
@@ -335,7 +344,7 @@ private fun decodeMechanism(s: String): MonitorMechanism =
         else -> throw IllegalArgumentException("malformed MonitorMechanism '$s'")
     }
 
-private fun encodeResolution(resolution: ReachResolution): String =
+internal fun encodeResolution(resolution: ReachResolution): String =
     when (resolution) {
         ReachResolution.RouteAndInternet -> "RouteAndInternet"
         ReachResolution.RouteOnly -> "RouteOnly"
@@ -423,11 +432,12 @@ private fun splitTopLevel(s: String): List<String> {
     return out
 }
 
-// Minimal %-escape for NetworkKind.Other's free-form platform label — the only free-form string in
-// the NET_ID grammar — so a raw label can never contain the delimiters ' ', ':', '(', ')', ','.
+// Minimal %-escape for every free-form platform label in the grammar — NetworkKind.Other's, the
+// cellular bearer's, and an OS_NET link name — so a raw label can never contain a delimiter of any
+// of them: ' ', ':', '(', ')', ',', '|', ';', '='.
 // Char-level (no ByteArray): non-delimiter characters, including non-ASCII, pass through unchanged.
 
-private fun escapeLabel(raw: String): String =
+internal fun escapeLabel(raw: String): String =
     buildString(raw.length) {
         for (c in raw) {
             when (c) {
@@ -437,6 +447,9 @@ private fun escapeLabel(raw: String): String =
                 '(' -> append("%28")
                 ')' -> append("%29")
                 ',' -> append("%2C")
+                '|' -> append("%7C")
+                ';' -> append("%3B")
+                '=' -> append("%3D")
                 '\n' -> append("%0A")
                 '\r' -> append("%0D")
                 else -> append(c)
@@ -444,7 +457,7 @@ private fun escapeLabel(raw: String): String =
         }
     }
 
-private fun unescapeLabel(escaped: String): String =
+internal fun unescapeLabel(escaped: String): String =
     buildString(escaped.length) {
         var i = 0
         while (i < escaped.length) {

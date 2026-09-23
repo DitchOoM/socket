@@ -2,6 +2,7 @@ package com.ditchoom.socket.testkit.trace
 
 import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.testkit.osnet.OsNetworkFacts
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
@@ -96,7 +97,7 @@ enum class TraceSilencePhase { None, Building, Declared }
  * [parse]/[parseAll] decode it back, so `parse(e.toString()) == e` holds for every variant.
  *
  * Two roles, mirroring RFC_DETERMINISTIC_SIMULATION.md §2:
- *  - **Input events** ([DgramIn], [Error], [Net], [NetGap], [NetCapability], [Liveness]) are replayable — the
+ *  - **Input events** ([DgramIn], [Error], [Net], [NetGap], [NetCapability], [OsNet], [Liveness]) are replayable — the
  *    fixture codegen turns them into a `simFixture` timeline injected through the deterministic
  *    seams, and the round-trip bar holds exactly.
  *  - **Observations** ([DgramOut], [State], [PathState], [Stats]) are the golden trajectory —
@@ -297,6 +298,29 @@ sealed interface TraceEvent {
     }
 
     /**
+     * What the **OS** said about the device's network at this instant — the radio, the links and
+     * their addresses, beside the ladder rung [Net] carries. Input event.
+     *
+     * [Net] records how far the monitor said traffic reaches; this records *why it said that*. Without
+     * it, airplane mode, a missing SIM, a SIM registered on a roaming carrier with no data bearer, and
+     * a basement all reduce to the same `Offline`, and nothing in a walk says whether the device had
+     * IPv6 at all. See [OsNetworkFacts].
+     *
+     * Written by the walk probe, once per **change**, rather than by the driver's monitor collector:
+     * it is one device-wide fact, and a probe holding several connections at once would otherwise
+     * record N copies of it that could disagree. It is an input rather than an observation because it
+     * describes the environment the endpoint was in, not what the endpoint did — but no deterministic
+     * seam consumes it, so replay carries it through (`TraceToFixture.window`) and never injects it,
+     * exactly as [NetCapability] and [NetGap] are carried and not fired.
+     */
+    data class OsNet(
+        override val at: Duration,
+        val facts: OsNetworkFacts,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * The recorded monitor's [MonitorCapability]. Input event, emitted **once**, at the instant the
      * recorder subscribes.
      *
@@ -356,7 +380,7 @@ sealed interface TraceEvent {
     val isInput: Boolean
         get() =
             when (this) {
-                is DgramIn, is Error, is Net, is NetGap, is NetCapability, is Liveness -> true
+                is DgramIn, is Error, is Net, is NetGap, is NetCapability, is OsNet, is Liveness -> true
                 // StreamLoss is an OBSERVATION: it records what this endpoint did with bytes it had
                 // already received. Replay drives the transport from the far side, so feeding one back
                 // in would be replaying our own reaction, not the input that caused it. QlogRefused is

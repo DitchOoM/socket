@@ -17,6 +17,12 @@ A probe with lanes (one concurrent connection per target) prefixes every line wi
 `lane=run` for the run's own. Each lane is analysed exactly as a whole log is, then the lanes are
 paired handoff by handoff. A log without the token is one lane and prints exactly what it always did.
 
+`OS-NET` is a DEVICE fact, not a lane one — the radio, the links, their address families — so the
+probe writes it once under `lane=run` and it is shared into every lane the way `START` is. Its
+timeline is printed once, as a field-by-field diff, and each lane reports whether its connections'
+deaths had an OS-NET change anywhere near them. A log with no OS-NET line at all is from a build
+before this record existed and analyses exactly as it always did.
+
 The family comes from each connection's own `MIGRATION-LEDGER`/`ECHO-LIVENESS`/`447-VERDICT` line
 (`connection=N family=FAM`), falling back to the covering `CONNECT-ATTEMPT`'s `target=`/`family=`
 keys only where a connection has none of those. A log written before the rotation carries none of
@@ -42,6 +48,49 @@ def parse(line):
     return (int(m.group(1)), m.group(2)) if m else (None, line)
 
 
+# --- OS network ---------------------------------------------------------------------------------
+#
+# `OS-NET <k=v> …` is what the operating system said about the device: the ladder rung, the radio's
+# registration / data / roaming / bearer, and every up link with its addresses. It is written once
+# per CHANGE, device-wide, so the timeline below is the whole run's and each entry shows only the
+# fields that moved — the point is to line an OS event up against what QUIC did at the same instant.
+OS_NET = "OS-NET "
+OS_NET_SOURCE = "OS-NET-SOURCE "
+# Past this, a connection's death and an OS event are two separate stories.
+OS_NET_NEAR_MS = 30_000
+# A change per line is readable; a pathological run is summarised rather than dumped.
+OS_NET_MAX_SHOWN = 200
+
+
+def os_net_fields(body):
+    """`k=v k=v …` as a dict. Every OS-NET field is space-free by construction, so this is total."""
+    return dict(token.split("=", 1) for token in body.split(" ") if "=" in token)
+
+
+def print_os_network(events):
+    """The device's OS timeline, as a field-by-field diff. Silent on a log that carries none."""
+    source = [b[len(OS_NET_SOURCE):] for _, b in events if b.startswith(OS_NET_SOURCE)]
+    changes = [(t, b[len(OS_NET):]) for t, b in events if b.startswith(OS_NET)]
+    if not source and not changes:
+        return
+    print("\nOS network (what the OS said — one record for the whole device, shared into every lane):")
+    print(f"  source: {source[0] if source else '(never declared)'}")
+    print(f"  changes: {len(changes)}")
+    previous = {}
+    for t, body in changes[:OS_NET_MAX_SHOWN]:
+        fields = os_net_fields(body)
+        if not previous:
+            shown = body
+        else:
+            moved = [f"{k}: {previous.get(k, '(absent)')} -> {v}" for k, v in fields.items() if previous.get(k) != v]
+            gone = [f"{k}: {v} -> (absent)" for k, v in previous.items() if k not in fields]
+            shown = " | ".join(moved + gone) or "(re-reported, nothing moved)"
+        print(f"  t+{t / 1000:.0f}s {shown}")
+        previous = fields
+    if len(changes) > OS_NET_MAX_SHOWN:
+        print(f"  … {len(changes) - OS_NET_MAX_SHOWN} more change(s) not shown")
+
+
 def analyze(path, lines, lane=None):
     """Everything below, for one lane's lines — or for a whole log that predates lanes (lane=None)."""
     events = [parse(l) for l in lines]
@@ -51,6 +100,10 @@ def analyze(path, lines, lane=None):
     starts = [b for _, b in events if b.startswith("START ")]
     print("START:", starts[0] if starts else "(none)")
     print(f"lines={len(lines)} duration={last_t / 3600000:.2f}h")
+    # For a log with no lane tokens this IS the whole log, so the device timeline belongs here. A
+    # laned log has it printed once by main(), above the lanes, rather than repeated per lane.
+    if lane is None:
+        print_os_network(events)
 
     # connections — a connection ends at the first of: the stream going (peer FIN/RESET, writes stalled),
     # the connection dying, or the scope exiting; the stream lines come first, so they name the real end.
@@ -194,6 +247,17 @@ def analyze(path, lines, lane=None):
         print(f"  replay traces: {n_traces} file(s) for {n_conns} connection(s)" + ("" if n_traces >= n_conns else " — SOME CONNECTIONS HAVE NO TRACE"))
     else:
         print(f"  replay traces: no {os.path.basename(traces_dir)}/ beside the log — pull.sh puts it there")
+    # A connection that died with no OS-NET change anywhere near it died for a reason the OS never
+    # mentioned: either the transport's own, or a record that had stopped. Silent on a log with no
+    # OS-NET line, which is every log written before the probe recorded one.
+    os_changes = [t for t, b in events if b.startswith(OS_NET)]
+    if os_changes:
+        unexplained = [et for et, _ in ends if not any(abs(x - et) <= OS_NET_NEAR_MS for x in os_changes)]
+        explained = len(ends) - len(unexplained)
+        detail = "" if not unexplained else (
+            " — no OS event near " + ", ".join(f"t+{t / 1000:.0f}s" for t in unexplained[:6])
+            + (f" (+{len(unexplained) - 6} more)" if len(unexplained) > 6 else ""))
+        print(f"  OS-NET within ±{OS_NET_NEAR_MS // 1000}s of a connection ending: {explained}/{len(ends)}{detail}")
 
     # verbatim: the lines that matter
     for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
@@ -397,7 +461,8 @@ def analyze(path, lines, lane=None):
 # exactly as before.
 LANE = re.compile(r"^lane=(\S+) (.*)$")
 RUN_LANE = "run"
-SHARED_RUN_LINES = ("START ", "PREVIOUS-RUN", "TRACE-BUDGET", "WAKELOCK")
+# OS-NET / OS-NET-SOURCE are the device's, so every lane is analysed against the same OS timeline.
+SHARED_RUN_LINES = ("START ", "PREVIOUS-RUN", "TRACE-BUDGET", "WAKELOCK", "OS-NET")
 
 
 def demux(lines):
@@ -485,6 +550,8 @@ def main():
     for _, b in run:
         if b.startswith(("MIGRATION-TOTALS", "DONE")):
             print(f"  run: {b[:200]}")
+    # The device's own timeline, once: it is the run's, not any lane's.
+    print_os_network(run)
     shared = [(t, b) for t, b in run if b.startswith(SHARED_RUN_LINES)]
     for n in names:
         print(f"\n=================== lane {n} ===================")

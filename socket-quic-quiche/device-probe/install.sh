@@ -13,3 +13,6 @@ echo "local  $local_sha"
 echo "device $device_sha"
 [ "$local_sha" = "$device_sha" ] && echo "INSTALL PROVEN" || { echo "INSTALL MISMATCH"; exit 1; }
 adbs shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
+# READ_PHONE_STATE is what makes the OS-NET line carry the radio's registration state and its
+# bearer. Without it those two say NotReported and the rest of the record still lands.
+adbs shell pm grant "$PKG" android.permission.READ_PHONE_STATE || true

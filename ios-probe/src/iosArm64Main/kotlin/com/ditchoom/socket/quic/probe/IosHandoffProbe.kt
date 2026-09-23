@@ -2,9 +2,12 @@
 
 package com.ditchoom.socket.quic.probe
 
+import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.forConnection
 import com.ditchoom.socket.testkit.migration.forRun
+import com.ditchoom.socket.testkit.osnet.OsNetWatch
 import kotlin.concurrent.AtomicArray
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
@@ -118,6 +121,9 @@ import platform.darwin.task_info
  * the app polls [status] for the one line an operator mid-walk can act on. The app is also
  * responsible for staying resident: a coroutine `delay` does not keep iOS from suspending the
  * process, so the host app holds a background location session for the duration.
+ *
+ * What the OS said about the device's network — the radio, the links, their address families — is
+ * recorded once for the whole run, under `lane=run`: see [OsNetWatch] and [IosOsNetworkSource].
  */
 object IosHandoffProbe {
     @Volatile
@@ -281,6 +287,15 @@ object IosHandoffProbe {
         probeLanes = lanes
         statusLine = "walking · ${lanes.size} lane(s)"
 
+        // What iOS itself says about this device's network — the radio technology, the links and their
+        // address families — recorded once for the whole run under `lane=run`, because it is one fact
+        // about the phone rather than one per lane (see [OsNetWatch]). Every lane's live connection
+        // trace gets a copy, so an offline replay of any one connection carries the network it was on.
+        val monitor = NetworkMonitor.processDefault()
+        val osSource = IosOsNetworkSource()
+        val osNet = OsNetWatch(osSource, ::now, log::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } })
+        osSource.register { osNet.sample(monitor.state.value) }
+
         // A heartbeat once a minute whatever the connections are doing: residency (locUpdates), the
         // process's resident memory, and the battery — the trend line a multi-day log needs, and the
         // one line that says the probe was alive at 03:00 even while the network was gone. One per
@@ -290,6 +305,9 @@ object IosHandoffProbe {
             GlobalScope.launch(Dispatchers.Default) {
                 while (NSDate().timeIntervalSince1970 < deadline) {
                     delay(HEARTBEAT_INTERVAL_MS)
+                    // Once per beat, whatever the platform did or did not push: nothing is written
+                    // unless something actually moved.
+                    osNet.sample(monitor.state.value)
                     val vitals = "locUpdates=$locUpdates ${residentMemory()} ${battery()} ${diskFree().line}"
                     lanes.forEach { probe ->
                         probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
@@ -306,16 +324,21 @@ object IosHandoffProbe {
                     }
                 }
             }
+        // Every platform observation is a sample, including the ones NetworkMonitor.state de-dupes
+        // away — a link flapping while the rung folds back to itself is when the OS has most to say.
+        val osFollow = GlobalScope.launch(Dispatchers.Default) { osNet.follow(monitor) }
         coroutineScope {
             lanes
                 .map { probe ->
                     launch {
                         delay(probe.lane.stagger(echoIntervalMs.milliseconds, lanes.size))
-                        runLane(probe, traceFiles, minutes, echoIntervalMs, deadline)
+                        runLane(probe, traceFiles, osNet, minutes, echoIntervalMs, deadline)
                     }
                 }.joinAll()
         }
+        osFollow.cancel()
         heartbeat.cancel()
+        osSource.unregister()
 
         // Each lane's totals and verdicts are its own; the run's line is their sum.
         val run = MigrationTotals()
@@ -332,6 +355,7 @@ object IosHandoffProbe {
     private suspend fun runLane(
         probe: ProbeLane,
         traceFiles: WalkTraceFiles,
+        osNet: OsNetWatch,
         minutes: Int,
         echoIntervalMs: Long,
         deadline: Double,
@@ -347,6 +371,10 @@ object IosHandoffProbe {
                     QuicTraceCapture(
                         captureFor = {
                             val connection = traceFiles.next(lane)
+                            // The network the phone is already on, so a fixture cut from this connection
+                            // starts from it rather than from whatever changed later.
+                            osNet.seed(connection.sink)
+                            probe.trace.value = connection.sink
                             // Tee: the lane's ring keeps the cross-connection tail its watchdog needs, the
                             // file keeps this connection's own replayable trace. The qlog rides along.
                             connection.copy(
@@ -444,6 +472,7 @@ object IosHandoffProbe {
             } catch (e: Throwable) {
                 emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
             }
+            probe.trace.value = Discarded
             val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
             // Tagged with the family it happened on, so every verdict is attributable to one.
             val tag = target.connectionTag(attempt)
@@ -472,6 +501,13 @@ private class ProbeLane(
 ) {
     val emit: (String) -> Unit = log.forLane(lane)
     val watch = LaneWatch(lane, QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
+
+    /**
+     * Where a device-level record goes right now: this lane's live connection's trace, or [Discarded]
+     * between connections. The OS network facts are one fact about the phone that every lane's trace
+     * needs a copy of, and a lane with no connection open has nowhere to put it.
+     */
+    val trace = AtomicReference<TraceSink>(Discarded)
 
     // The in-memory tail the lane's stall watchdog dumps inline. It is NOT the record of the walk: it
     // holds about a minute and is drained only when the echo loop stops.
@@ -827,6 +863,9 @@ private class QuicEchoStream(
  * megabytes of hex for a run measured in days.
  */
 private const val RING_CAPACITY = 256
+
+/** A lane with no connection open: a device-level record has nowhere to land, so it lands nowhere. */
+private val Discarded = TraceSink { }
 
 /**
  * One file-backed [TraceSink] per connection, under a byte budget every lane shares, and beside it the
