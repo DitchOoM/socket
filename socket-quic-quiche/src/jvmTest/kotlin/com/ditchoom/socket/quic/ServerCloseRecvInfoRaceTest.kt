@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -86,8 +88,8 @@ class ServerCloseRecvInfoRaceTest {
             launch {
                 try {
                     commonJvmWithQuicConnection(
-                        hostname = "127.0.0.1",
-                        port = serverPort,
+                        endpoint = QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), serverPort),
+                        serverName = "localhost",
                         quicOptions = opts,
                         connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
                         timeout = 15.seconds,

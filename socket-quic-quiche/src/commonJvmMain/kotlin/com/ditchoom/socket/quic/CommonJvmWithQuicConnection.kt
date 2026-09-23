@@ -30,8 +30,8 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
  * the real native calls the driver makes — how reactive keepalive is asserted to actually PING.
  */
 internal suspend fun <R> commonJvmWithQuicConnection(
-    hostname: String,
-    port: Int,
+    endpoint: QuicEndpoint,
+    serverName: String,
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
@@ -40,7 +40,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     block: suspend QuicScope.() -> R,
 ): R =
     withTimeout(timeout) {
-        val connection = buildJvmQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, api, tuning)
+        val connection = buildJvmQuicConnection(endpoint, serverName, quicOptions, connectionOptions, timeout, api, tuning)
         try {
             connection.block()
         } finally {
@@ -58,8 +58,8 @@ internal suspend fun <R> commonJvmWithQuicConnection(
  * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` reach it.
  */
 internal suspend fun buildJvmQuicConnection(
-    hostname: String,
-    port: Int,
+    endpoint: QuicEndpoint,
+    serverName: String,
     requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
@@ -76,7 +76,7 @@ internal suspend fun buildJvmQuicConnection(
     // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
     val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-client/$hostname:$port"))
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-client/$serverName@$endpoint"))
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
     // acquired and hands over entirely once the connection owns its own release.
     var progress: ConnectProgress = ConnectProgress.BeforeChannel
@@ -134,7 +134,9 @@ internal suspend fun buildJvmQuicConnection(
         // binds the route's source address like all the others, never an unnamed bind. The factory is
         // built here rather than at the migration wiring below because the primary path is the first
         // thing it opens.
-        val peer = UdpSocket.resolve(hostname, port)
+        // The endpoint is already a literal, so this is an encoding rather than a lookup: the name was
+        // resolved once at the connect entry and every candidate reaches here as an address.
+        val peer = UdpSocket.resolve(endpoint.address.ip, endpoint.port)
         val codec = SocketAddressCodec(hostOsSockAddrLayout())
         val path =
             binding.openClientPath(peer) {
@@ -154,9 +156,10 @@ internal suspend fun buildJvmQuicConnection(
         progress = ConnectProgress.ChannelOpen(udpChannel)
         val localAddress = path.localAddress
 
-        // 3. Server name — null-terminated UTF-8 in buffer
-        val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
-        serverNameBuf.writeString(hostname, com.ditchoom.buffer.Charset.UTF8)
+        // 3. Server name — null-terminated UTF-8 in buffer. The peer's identity, never the endpoint:
+        // this is what goes into SNI and what the certificate is verified against.
+        val serverNameBuf = bufferFactory.allocate(serverName.length + 1)
+        serverNameBuf.writeString(serverName, com.ditchoom.buffer.Charset.UTF8)
         serverNameBuf.writeByte(0) // null terminator
         serverNameBuf.resetForRead()
         val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
@@ -181,7 +184,7 @@ internal suspend fun buildJvmQuicConnection(
             try {
                 api.connect(
                     serverNameAddr,
-                    hostname.length,
+                    serverName.length,
                     scidAddr,
                     QUIC_MAX_CONN_ID_LEN,
                     localSockAddr.address,

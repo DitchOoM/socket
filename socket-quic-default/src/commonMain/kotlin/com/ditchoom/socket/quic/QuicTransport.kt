@@ -49,7 +49,13 @@ class QuicSessionTransport(
     ): QuicConnection =
         try {
             withTimeout(config.connectTimeout) {
-                engine.connect(hostname, port, quicOptions, config, config.connectTimeout)
+                engine.connect(
+                    QuicClientBinding.OwnSocket,
+                    QuicPeer.Named(hostname, port),
+                    quicOptions,
+                    config,
+                    config.connectTimeout,
+                )
             }
         } catch (e: TimeoutCancellationException) {
             throw SocketTimeoutException(

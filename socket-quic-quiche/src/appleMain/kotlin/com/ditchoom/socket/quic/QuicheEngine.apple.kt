@@ -30,8 +30,8 @@ object QuicheEngine : QuicEngine {
 
     override suspend fun connect(
         binding: QuicClientBinding,
-        hostname: String,
-        port: Int,
+        endpoint: QuicEndpoint,
+        serverName: String,
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
@@ -46,8 +46,8 @@ object QuicheEngine : QuicEngine {
         val observation = ConnectionNetworkObservation.of(monitor, RealDriverClock)
         val connection =
             buildAppleQuicConnection(
-                hostname,
-                port,
+                endpoint,
+                serverName,
                 quicOptions,
                 transport,
                 timeout,

@@ -66,17 +66,50 @@ suspend fun <R> withQuicConnection(
     timeout: Duration = 15.seconds,
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
     block: suspend QuicScope.() -> R,
+): R = withQuicConnection(QuicPeer.Named(hostname, port), quicOptions, connectionOptions, timeout, binding) { block() }
+
+/**
+ * Establish a QUIC connection to [peer] and run [block] with the resulting [QuicScope] — the same
+ * lifecycle as the `hostname`/`port` form, over a peer stated as a candidate set.
+ *
+ * Every candidate is dialled for the one identity [QuicPeer.serverName] names, paced by
+ * [TransportConfig.connectPacing], and the first handshake to complete is the connection; every other
+ * candidate is cancelled or closed before [block] starts. [block] is handed the [QuicCandidateRace]
+ * saying which candidate won and why each of the others did not.
+ *
+ * This is the peer-to-peer connect primitive. Both peers publish their candidates — a global IPv6
+ * address, the server-reflexive IPv4 pair a NAT was observed to assign — and dial the other's set with
+ * [ConnectPacing.Simultaneous][com.ditchoom.socket.ConnectPacing.Simultaneous], so every candidate gets
+ * an outbound packet at once and each NAT has a binding open before the peer's first flight arrives.
+ * The handshake that completes is the pair that worked; a relay candidate in the same set is what
+ * happens when none of the direct ones do.
+ *
+ * ```kotlin
+ * val peer = QuicPeer.Candidates(signalling.candidatesOf(peerId), serverName = peerId)
+ * val config = TransportConfig(connectPacing = ConnectPacing.Simultaneous)
+ * withQuicConnection(peer, options.pinnedTo(peerCertificateHash), config) { race ->
+ *     signalling.report(race)   // the nominated pair, and why the others lost
+ * }
+ * ```
+ */
+suspend fun <R> withQuicConnection(
+    peer: QuicPeer,
+    quicOptions: QuicOptions,
+    connectionOptions: TransportConfig = TransportConfig(),
+    timeout: Duration = 15.seconds,
+    binding: QuicClientBinding = QuicClientBinding.OwnSocket,
+    block: suspend QuicScope.(QuicCandidateRace) -> R,
 ): R {
     // Set between connect returning and the block starting — the single sequential coroutine below,
     // no suspension point in between — so the catch can tell which phase the deadline caught.
     var established = false
     try {
         return withTimeout(timeout) {
-            val connection =
-                defaultQuicEngine.connect(binding, hostname, port, quicOptions, connectionOptions, timeout)
+            val raced = defaultQuicEngine.connectRacing(binding, peer, quicOptions, connectionOptions, timeout)
+            val connection = raced.connection
             established = true
             try {
-                connection.block()
+                connection.block(raced.candidateRace)
             } finally {
                 connection.close()
             }

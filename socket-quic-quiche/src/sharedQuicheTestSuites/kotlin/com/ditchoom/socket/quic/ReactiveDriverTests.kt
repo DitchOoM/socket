@@ -1058,6 +1058,40 @@ class ReactiveDriverTests {
             }
         }
 
+    @Test
+    fun peerCertRead_cancelledWithInflightRead_waitsForDriverBeforeReturning() =
+        runQuicTest {
+            // The third command site that hands quiche a raw buffer address. Its caller —
+            // verifyServerCertificateHashes — frees that buffer in a `finally`, so returning while the
+            // PeerCert command is still queued leaves quiche writing the certificate into memory the
+            // allocator has handed to somebody else. A pinned peer whose connect is cancelled (a
+            // candidate that loses a connect race, a caller's own withTimeout) is the ordinary way there.
+            val api = StubQuicheApi()
+            val udpGate = CompletableDeferred<Unit>()
+            val driver = gatedStartupDriver(api, udpGate)
+            driver.start(this)
+            val der = bufferFactory.allocate(64)
+            try {
+                val read =
+                    async {
+                        runCatching {
+                            withTimeout(150.milliseconds) { readPeerCertDerThroughDriver(driver, der, 64) }
+                        }
+                    }
+                assertNull(
+                    withTimeoutOrNull(600) { read.await() },
+                    "the certificate read unwound while its PeerCert command was still in-flight — the " +
+                        "driver could write the DER into the buffer its caller is about to free",
+                )
+                udpGate.complete(Unit)
+                withTimeout(2.seconds) { read.await() }
+            } finally {
+                if (!udpGate.isCompleted) udpGate.complete(Unit)
+                der.freeNativeMemory()
+                driver.destroy()
+            }
+        }
+
     // ---- Reactive keepalive ----
 
     @Test

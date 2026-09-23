@@ -9,6 +9,10 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.NameResolution
+import com.ditchoom.socket.Resolution
+import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,8 +41,8 @@ class QuicEngineSharedPortCompatTests {
 
         override suspend fun connect(
             binding: QuicClientBinding,
-            hostname: String,
-            port: Int,
+            endpoint: QuicEndpoint,
+            serverName: String,
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
@@ -120,15 +124,23 @@ class QuicEngineSharedPortCompatTests {
      * The client half of the same promise: the deprecated `connect(hostname, port, …)` still
      * compiles and lands on the binding form as [QuicClientBinding.OwnSocket], so a call site that
      * never heard of shared ports keeps its own socket.
+     *
+     * The name is resolved by the config rather than by the platform because the name form now turns
+     * into candidates before any engine is asked — the engine dials an address, not a name — and this
+     * suite is about the binding, not about what DNS a test runner happens to have.
      */
     @Test
     @Suppress("DEPRECATION")
     fun theDeprecatedHostPortConnectStillOwnsItsSocket() =
         runQuicTest {
             val engine = RecordingEngine()
+            val config =
+                TransportConfig(
+                    nameResolution = NameResolution.Via { Resolution.Resolved(listOf(ResolvedAddress("127.0.0.1", IpFamily.V4))) },
+                )
 
             assertFailsWith<UnsupportedOperationException> {
-                engine.connect("example.com", 443, options, TransportConfig(), 5.seconds)
+                engine.connect("example.com", 443, options, config, 5.seconds)
             }
             assertEquals(QuicClientBinding.OwnSocket, engine.lastClientBinding)
         }

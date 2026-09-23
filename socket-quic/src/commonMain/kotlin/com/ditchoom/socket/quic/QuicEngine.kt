@@ -25,9 +25,34 @@ interface QuicEngine {
     val capabilities: EngineCapabilities
 
     /**
-     * Open a client QUIC connection to [hostname]:[port], suspending through the TLS 1.3 handshake.
-     * The returned [QuicConnection] is established; the caller (normally [withQuicConnection]) owns
-     * its [close][QuicConnection.close]. [timeout] bounds establishment.
+     * Open a client QUIC connection to one [endpoint], presenting [serverName], suspending through the
+     * TLS 1.3 handshake. The returned [QuicConnection] is established; the caller (normally
+     * [withQuicConnection]) owns its [close][QuicConnection.close]. [timeout] bounds establishment.
+     *
+     * The endpoint and the name are two arguments because they answer two questions: where the
+     * datagrams go, and who the peer has to prove it is. A candidate set is many endpoints and one
+     * identity, so an engine that derived the name from the endpoint could not be raced — it would put
+     * an IP literal into SNI and verify the certificate against it.
+     *
+     * An engine connects to exactly one endpoint. Resolving a name, racing several candidates and
+     * tearing down the ones that lose are [QuicEngine.connect] with a [QuicPeer], one implementation
+     * above this one.
+     *
+     * A failure must leave nothing behind — no socket, no quiche connection, no pinned memory — and so
+     * must a **cancellation**, which is the ordinary way a losing candidate ends.
+     */
+    suspend fun connect(
+        binding: QuicClientBinding,
+        endpoint: QuicEndpoint,
+        serverName: String,
+        quicOptions: QuicOptions,
+        transport: TransportConfig,
+        timeout: Duration,
+    ): QuicConnection
+
+    /**
+     * Open a client QUIC connection to [hostname]:[port], racing every address the name resolves to
+     * (see [QuicEngine.connect] with a [QuicPeer]).
      */
     suspend fun connect(
         binding: QuicClientBinding,
@@ -36,7 +61,7 @@ interface QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection
+    ): QuicConnection = connect(binding, QuicPeer.Named(hostname, port), quicOptions, transport, timeout)
 
     @Deprecated(
         "Superseded by QuicClientBinding, which also expresses a shared port.",

@@ -16,6 +16,10 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.NameResolution
+import com.ditchoom.socket.Resolution
+import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
@@ -48,7 +52,7 @@ class QuicTransportTest {
     fun connect_projectsOneStream_roundTrips() =
         runBlocking {
             val engine = FakeQuicEngine()
-            val stream = QuicTransport(opts, engine).connect("example.com", 443, TransportConfig())
+            val stream = QuicTransport(opts, engine).connect("example.com", 443, literalResolution)
 
             assertEquals(
                 QuicClientBinding.OwnSocket,
@@ -74,7 +78,7 @@ class QuicTransportTest {
     fun connect_streamReset_mapsToConnectionReset() =
         runBlocking {
             val engine = FakeQuicEngine(openStreamDelegate = ThrowingByteStream())
-            val stream = QuicTransport(opts, engine).connect("example.com", 443, TransportConfig())
+            val stream = QuicTransport(opts, engine).connect("example.com", 443, literalResolution)
 
             val e =
                 assertFailsWith<SocketClosedException.ConnectionReset> {
@@ -100,7 +104,7 @@ class QuicTransportTest {
         runBlocking {
             val engine = FakeQuicEngine()
             val out =
-                QuicTransport(opts, engine).withMux("h", 443, MuxStringCodec) {
+                QuicTransport(opts, engine).withMux("h", 443, MuxStringCodec, config = literalResolution) {
                     // this: StreamMux<String> — agnostic multiplex surface, same code would run over WT.
                     val conn = openBidirectional()
                     conn.send("ping")
@@ -115,13 +119,23 @@ class QuicTransportTest {
         runBlocking {
             val engine = FakeQuicEngine()
             val opened =
-                QuicSessionTransport(opts, engine).use("h", 443) { scope ->
+                QuicSessionTransport(opts, engine).use("h", 443, literalResolution) { scope ->
                     scope.openStream()
                     "done"
                 }
             assertEquals("done", opened)
             assertTrue(engine.connection!!.closed, "use{} must close the established connection")
         }
+
+    /**
+     * These tests dial a fake engine, so the names they use have no addresses. Resolution now happens at
+     * the connect entry rather than inside the engine, so the name has to become a candidate here — the
+     * transport under test is what is being asked about, never the platform resolver.
+     */
+    private val literalResolution =
+        TransportConfig(
+            nameResolution = NameResolution.Via { Resolution.Resolved(listOf(ResolvedAddress("127.0.0.1", IpFamily.V4))) },
+        )
 
     // --- fakes ---
 
@@ -134,8 +148,8 @@ class QuicTransportTest {
 
         override suspend fun connect(
             binding: QuicClientBinding,
-            hostname: String,
-            port: Int,
+            endpoint: QuicEndpoint,
+            serverName: String,
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: kotlin.time.Duration,
