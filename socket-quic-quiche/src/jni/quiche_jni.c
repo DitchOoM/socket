@@ -147,6 +147,14 @@ JNIEXPORT void JNICALL JNI_FN(nConfigEnableEarlyData)(
     quiche_config_enable_early_data((quiche_config *)(uintptr_t)config);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConfigSetTicketKey)(
+    JNIEnv *env, jclass cls, jlong config, jlong key_addr, jint key_len) {
+    return (jint)quiche_config_set_ticket_key(
+        (quiche_config *)(uintptr_t)config,
+        (const uint8_t *)(uintptr_t)key_addr,
+        (size_t)key_len);
+}
+
 JNIEXPORT void JNICALL JNI_FN(nConfigGrease)(
     JNIEnv *env, jclass cls, jlong config, jboolean v) {
     quiche_config_grease((quiche_config *)(uintptr_t)config, (bool)v);
@@ -485,6 +493,32 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnIsClosed)(JNIEnv *env, jclass cls, jlong 
 
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsTimedOut)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_timed_out((const quiche_conn *)(uintptr_t)conn);
+}
+
+/* --- Session resumption and 0-RTT --- */
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSetSession)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_set_session(
+        (quiche_conn *)(uintptr_t)conn, (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+/* The serialized session from the server's latest NewSessionTicket. 0 = none has arrived. */
+JNIEXPORT jint JNICALL JNI_FN(nConnSession)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_session, conn, buf, buf_len);
+}
+
+JNIEXPORT jboolean JNICALL JNI_FN(nConnIsResumed)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jboolean)quiche_conn_is_resumed((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jboolean JNICALL JNI_FN(nConnIsInEarlyData)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jboolean)quiche_conn_is_in_early_data((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnEarlyDataReason)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jint)quiche_conn_early_data_reason((const quiche_conn *)(uintptr_t)conn);
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnTimeoutAsNanos)(JNIEnv *env, jclass cls, jlong conn) {

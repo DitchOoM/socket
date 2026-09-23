@@ -91,12 +91,14 @@ internal suspend fun buildJvmQuicConnection(
     val config = api.configNew(QUICHE_PROTOCOL_VERSION)
     try {
         // ALPN — writes directly into buffer (zero-copy)
-        encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
+        // A 0-RTT connection offers exactly its session's protocol — see [clientAlpnOffer], which
+        // refuses before any socket opens if this caller's options do not list it.
+        encodeAlpnList(clientAlpnOffer(quicOptions), bufferFactory).use { alpnBuf ->
             val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
             api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
         }
 
-        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
+        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
 
         // CA trust anchors. Two sources, in priority order:
         //  1. Caller-pinned anchors: load exactly the supplied PEM bundle so non-Apple targets
@@ -194,6 +196,10 @@ internal suspend fun buildJvmQuicConnection(
                 scidBuf.freeNativeMemory()
             }
 
+        // Offer the previous connection's session, if any — before anything is sent, the only moment
+        // quiche accepts one.
+        val sessionOffer = api.offerSession(conn, quicOptions.resumption, bufferFactory)
+
         // 6. Build recvInfo/sendInfo for the connection from the same pinned sockaddr encodings.
         val connRecvInfo =
             api.recvInfoNew(
@@ -241,6 +247,7 @@ internal suspend fun buildJvmQuicConnection(
                     peerSockAddr.free()
                     localSockAddr.free()
                 },
+                sessionOffer = sessionOffer,
             )
         // Create a child scope for this connection — cancelled by the connection's
         // onRelease teardown when the withQuicConnection wrapper closes it.
@@ -268,7 +275,9 @@ internal suspend fun buildJvmQuicConnection(
         // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here on
         // owes the channel, the config and the scope, and must not free them a second time.
         progress = ConnectProgress.DriverStarted(udpChannel)
-        quicConnection.awaitEstablished(timeout)
+        runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConnection)) {
+            quicConnection.awaitEstablished(timeout)
+        }
         // The connection now owns its full teardown (config + scopes + the UDP channel) via onRelease,
         // so the `finally` below must release nothing. A verification failure past this point tears the
         // connection down via quicConnection.close() instead (inside verifyServerCertificateHashes).

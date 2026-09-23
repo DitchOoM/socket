@@ -229,6 +229,12 @@ class QuicheDriver(
      * that.
      */
     private val silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
+    /**
+     * The session a client offered before starting this driver — what a full handshake's
+     * [QuicFullHandshakeReason] is read from, and whether the first flight is held for 0-RTT writes.
+     * [SessionOffer.None] for a client without a ticket and for every server.
+     */
+    private val sessionOffer: SessionOffer = SessionOffer.None,
 ) {
     /**
      * The quiche FFI. When [clock] is a virtual-time clock ([DriverTime.Virtual]) the backend api is
@@ -247,6 +253,26 @@ class QuicheDriver(
 
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
+
+    private val _sessionTicket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
+
+    /** The newest session ticket the server issued a client connection; latched at close. See [QuicScope.sessionTicket]. */
+    val sessionTicket: StateFlow<QuicSessionTicketState> = _sessionTicket
+
+    /** Whether stream data became readable while the handshake was in progress: 0-RTT data a server accepted. */
+    internal sealed interface EarlyStreamData {
+        data object None : EarlyStreamData
+
+        /** [streamId] was readable while the handshake was still in progress. */
+        data class Received(
+            val streamId: Long,
+        ) : EarlyStreamData
+    }
+
+    /** The first stream readable before the handshake completed, latched by [discoverNewStreams]. */
+    @Volatile
+    internal var earlyStreamData: EarlyStreamData = EarlyStreamData.None
+        private set
 
     /**
      * A close reason this driver decided on itself and that quiche cannot carry back to it.
@@ -1465,6 +1491,10 @@ class QuicheDriver(
                 QuicRole.Server -> Unit
             }
             qlog = enableQlog()
+            when (val flight = sessionOffer.firstFlight) {
+                FirstFlight.Immediate -> Unit
+                is FirstFlight.HeldForEarlyData -> holdFirstFlight(flight)
+            }
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
             // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner
@@ -1514,34 +1544,8 @@ class QuicheDriver(
                     break
                 }
                 when {
-                    cmd is QuicheCmd.Migrate -> {
-                        // Guarded like execute() below: a throw with the command already dequeued
-                        // would otherwise leave its deferred permanently uncompleted (see
-                        // failCommandExceptionally).
-                        try {
-                            handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
-                        } catch (t: Throwable) {
-                            failCommandExceptionally(cmd, t)
-                            throw t
-                        }
-                        lastActivity = clock.markNow()
-                    }
-                    cmd is PathOpened -> {
-                        try {
-                            continueMigration(cmd)
-                        } catch (t: Throwable) {
-                            failCommandExceptionally(cmd, t)
-                            throw t
-                        }
-                        lastActivity = clock.markNow()
-                    }
                     cmd != null -> {
-                        try {
-                            execute(cmd)
-                        } catch (t: Throwable) {
-                            failCommandExceptionally(cmd, t)
-                            throw t
-                        }
+                        dispatch(cmd)
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired: the deadline it belongs to decides what happens, and nothing else.
@@ -1617,6 +1621,50 @@ class QuicheDriver(
                 }
                 cleanup()
             }
+        }
+    }
+
+    /**
+     * Execute commands without flushing until [flight] is released, so the 0-RTT writes queued meanwhile
+     * leave in the first flight alongside the ClientHello (RFC 9001 §4.6.1).
+     *
+     * Only opening a stream and a write quiche takes whole keep the flight held; anything else — a read,
+     * a write the remembered flow control cannot take, a close — needs the network, so it is executed and
+     * the flight released. That is what keeps a block that waits on the peer from waiting forever.
+     */
+    private suspend fun holdFirstFlight(flight: FirstFlight.HeldForEarlyData) {
+        while (true) {
+            val cmd =
+                select<QuicheCmd?> {
+                    flight.released.onAwait { null }
+                    commands.onReceiveCatching { it.getOrNull() }
+                } ?: return
+            if (!currentCoroutineContext().isActive) {
+                failCommand(cmd)
+                return
+            }
+            dispatch(cmd)
+            val queuedOnly =
+                when (cmd) {
+                    is QuicheCmd.OpenStream -> true
+                    is QuicheCmd.StreamSend -> cmd.result.isCompleted && cmd.result.getCompleted().result == cmd.bufLen
+                    else -> false
+                }
+            if (!queuedOnly) return
+        }
+    }
+
+    /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
+    private fun dispatch(cmd: QuicheCmd) {
+        try {
+            when (cmd) {
+                is QuicheCmd.Migrate -> handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
+                is PathOpened -> continueMigration(cmd)
+                else -> execute(cmd)
+            }
+        } catch (t: Throwable) {
+            failCommandExceptionally(cmd, t)
+            throw t
         }
     }
 
@@ -1813,13 +1861,13 @@ class QuicheDriver(
                 cmd.result.complete(Unit)
             }
 
-            is QuicheCmd.Migrate -> handleMigrateSync(cmd) // routed via run() to handleMigrate; defensive only
-            is PathOpened -> handlePathOpenedSync(cmd) // routed via run() to continueMigration; defensive only
+            is QuicheCmd.Migrate -> handleMigrateSync(cmd) // routed via dispatch() to handleMigrate; defensive only
+            is PathOpened -> handlePathOpenedSync(cmd) // routed via dispatch() to continueMigration; defensive only
         }
     }
 
     /**
-     * Unreachable — [run] matches [QuicheCmd.Migrate] *before* calling [execute], so this arm exists
+     * Unreachable — [dispatch] matches [QuicheCmd.Migrate] *before* calling [execute], so this arm exists
      * only to keep [execute]'s `when` exhaustive. If it ever ran, no path would have been opened, so
      * [MigrationResult.Unmoved.Failed.PathNotValidated] is the honest report: nothing moved, and a
      * later attempt (dispatched correctly) could still succeed.
@@ -1890,6 +1938,9 @@ class QuicheDriver(
         try {
             while (true) {
                 val streamId = api.streamIterNext(iter) ?: break
+                if (_state.value is QuicConnectionState.Handshaking && earlyStreamData is EarlyStreamData.None) {
+                    earlyStreamData = EarlyStreamData.Received(streamId.id)
+                }
                 val existing = streams[streamId.id]
                 if (existing != null) {
                     existing.dataSignal.trySend(Unit)
@@ -1916,7 +1967,11 @@ class QuicheDriver(
 
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
-            _state.value = QuicConnectionState.Established(readNegotiatedAlpn())
+            _state.value =
+                QuicConnectionState.Established(
+                    readNegotiatedAlpn(),
+                    QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
+                )
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
@@ -1931,6 +1986,9 @@ class QuicheDriver(
         // peer of a migrating client would run dry after ~MAX_SPARE_SCIDS migrations. The steady state
         // costs one connScidsLeft read per wake, alongside the two state reads above.
         if (_state.value is QuicConnectionState.Established) {
+            // The server sends its tickets after the handshake; one length read per wake until the first
+            // arrives, and the newest is latched again at close.
+            if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
             val issued = issueSpareCids()
             val retired = drainRetiredScids()
             // The routing table is set to what quiche says, not adjusted by what just happened: the
@@ -1964,6 +2022,29 @@ class QuicheDriver(
     }
 
     /**
+     * Publish the newest session ticket quiche holds, on a client. Never regresses an issued ticket to
+     * none. Server connections are issued nothing, so they do not ask.
+     */
+    private fun refreshSessionTicket() {
+        when (role) {
+            QuicRole.Server -> Unit
+            QuicRole.Client ->
+                // The ticket is read with the protocol this connection negotiated, which is what an offer
+                // of it will speak; before the handshake settles there is neither a ticket nor a protocol.
+                when (val settled = _state.value) {
+                    is QuicConnectionState.Established ->
+                        when (val latest = api.readSessionTicket(conn, bufferFactory, settled.negotiatedAlpn)) {
+                            QuicSessionTicketState.NotIssued -> Unit
+                            is QuicSessionTicketState.Issued -> _sessionTicket.value = latest
+                        }
+                    QuicConnectionState.Idle, QuicConnectionState.Handshaking, QuicConnectionState.Draining,
+                    is QuicConnectionState.Closed,
+                    -> Unit
+                }
+        }
+    }
+
+    /**
      * Transition to [QuicConnectionState.Closed], closing the command channel **before** publishing
      * the new state. These are two coupled signals; a caller/test that keys off `state == Closed`
      * (e.g. `state.first { it is Closed }`) must be able to rely on `commands.isClosedForSend` being
@@ -1986,6 +2067,7 @@ class QuicheDriver(
         // the log line is written. This is the whole point of freezing here rather than in a collector:
         // the connection's scope children are cancelled at close, so a state collector may never run.
         networkObservation.freeze()
+        refreshSessionTicket()
         drainReadableStreamsIntoSlots()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())

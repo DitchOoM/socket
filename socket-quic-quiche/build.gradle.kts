@@ -235,8 +235,56 @@ fun downloadQuicheSource(
     // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
     // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheRetiredCidRecvIsDrop(sourceDir)
+    // Export `Connection::early_data_reason` through the C FFI, the one 0-RTT fact the C API lacks:
+    // whether the server accepted early data. Idempotent, fails loudly if upstream exports it itself.
+    patchQuicheEarlyDataReasonFfi(sourceDir)
 
     return sourceDir
+}
+
+/**
+ * Append `quiche_conn_early_data_reason` to quiche's `ffi.rs`: BoringSSL's `ssl_early_data_reason_t`
+ * for the connection, which quiche's Rust API returns from `Connection::early_data_reason` and its C
+ * API never exports. Without it a client cannot tell a resumption whose 0-RTT the server accepted from
+ * one whose 0-RTT it declined — `quiche_conn_is_resumed` is true for both.
+ *
+ * The declaration lives in the committed vendored `libs/quiche/include/quiche.h`, which is the header
+ * the cinterop and the JNI shim compile against.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the symbol itself throws, telling you to delete this patch.
+ */
+fun patchQuicheEarlyDataReasonFfi(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-early-data-reason"
+    if (text.contains(marker)) return
+    if (text.contains("fn quiche_conn_early_data_reason")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_early_data_reason — upstream added it. " +
+                "DELETE patchQuicheEarlyDataReasonFfi and its call site, and check the upstream signature " +
+                "against the declaration in libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "pub extern \"C\" fn quiche_conn_is_in_early_data(conn: &Connection) -> bool {"
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "$marker: `$anchor` not found in quiche/src/ffi.rs — a quiche bump moved the early-data FFI. " +
+                "Re-fit patchQuicheEarlyDataReasonFfi next to it.",
+        )
+    }
+    val export =
+        """
+        |
+        |// $marker: why 0-RTT was or was not accepted (BoringSSL ssl_early_data_reason_t).
+        |#[no_mangle]
+        |pub extern "C" fn quiche_conn_early_data_reason(conn: &Connection) -> u32 {
+        |    conn.early_data_reason()
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: quiche_conn_early_data_reason FFI export")
 }
 
 /**

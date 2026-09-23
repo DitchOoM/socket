@@ -67,7 +67,8 @@ internal suspend fun buildJvmQuicServer(
             api.configSetApplicationProtos(config, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
         }
 
-        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
+        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Server)
+        api.applySessionTicketKeys(config, tlsConfig.sessionTicketKeys, bufferFactory)
 
         // Bind the shared unconnected server socket via :socket-udp, sized to QUIC datagrams (not the
         // 64 KB UDP ceiling). One channel serves every accepted connection.

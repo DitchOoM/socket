@@ -34,6 +34,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_pacing_rate
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
+import com.ditchoom.socket.quic.quiche.quiche_config_set_ticket_key
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_active_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_application_proto
@@ -43,9 +44,12 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
+import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
+import com.ditchoom.socket.quic.quiche.quiche_conn_is_in_early_data
+import com.ditchoom.socket.quic.quiche.quiche_conn_is_resumed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
 import com.ditchoom.socket.quic.quiche.quiche_conn_local_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
@@ -66,8 +70,10 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
+import com.ditchoom.socket.quic.quiche.quiche_conn_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_keylog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
@@ -247,6 +253,12 @@ internal object CinteropQuicheApi : QuicheApi {
     ) = quiche_config_discover_pmtu(config.handle.toCPointer()!!, v)
 
     override fun configEnableEarlyData(config: QuicheConfig) = quiche_config_enable_early_data(config.handle.toCPointer()!!)
+
+    override fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ): Int = quiche_config_set_ticket_key(config.handle.toCPointer()!!, keyAddr.toCPointer()!!, keyLen.convert())
 
     override fun configGrease(
         config: QuicheConfig,
@@ -638,6 +650,27 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun connIsClosed(conn: QuicheConn): Boolean = quiche_conn_is_closed(conn.handle.toCPointer()!!)
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = quiche_conn_is_timed_out(conn.handle.toCPointer()!!)
+
+    override fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = quiche_conn_set_session(conn.handle.toCPointer()!!, buf.toCPointer()!!, bufLen.convert())
+
+    override fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        copyConnBytes(buf, bufLen) { out, outLen ->
+            quiche_conn_session(conn.handle.toCPointer()!!, out, outLen)
+        }
+
+    override fun connIsResumed(conn: QuicheConn): Boolean = quiche_conn_is_resumed(conn.handle.toCPointer()!!)
+
+    override fun connIsInEarlyData(conn: QuicheConn): Boolean = quiche_conn_is_in_early_data(conn.handle.toCPointer()!!)
+
+    override fun connEarlyDataReason(conn: QuicheConn): Int = quiche_conn_early_data_reason(conn.handle.toCPointer()!!).toInt()
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = quiche_conn_timeout_as_nanos(conn.handle.toCPointer()!!)

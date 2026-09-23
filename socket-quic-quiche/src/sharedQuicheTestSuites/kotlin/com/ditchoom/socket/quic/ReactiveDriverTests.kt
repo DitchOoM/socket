@@ -241,7 +241,7 @@ class ReactiveDriverTests {
                 sendOpenStream(driver)
                 assertIs<QuicConnectionState.Established>(driver.state.value)
 
-                api.closed = true
+                api.closesOnLocalClose = true
 
                 val d2 = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
@@ -268,7 +268,7 @@ class ReactiveDriverTests {
                 sendOpenStream(driver)
                 assertIs<QuicConnectionState.Established>(driver.state.value)
 
-                api.closed = true
+                api.closesOnLocalClose = true
                 val d2 = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
                 d2.await()
@@ -301,7 +301,7 @@ class ReactiveDriverTests {
 
             try {
                 sendOpenStream(driver)
-                api.closed = true
+                api.closesOnLocalClose = true
                 val d2 = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
                 d2.await()
@@ -329,7 +329,7 @@ class ReactiveDriverTests {
 
             try {
                 sendOpenStream(driver)
-                api.closed = true
+                api.closesOnLocalClose = true
                 val d2 = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
                 d2.await()
@@ -387,7 +387,7 @@ class ReactiveDriverTests {
 
             try {
                 sendOpenStream(driver)
-                api.closed = true
+                api.closesOnLocalClose = true
                 val d2 = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
                 d2.await()
@@ -449,10 +449,11 @@ class ReactiveDriverTests {
             val driver = createTestDriver(api, udpChannel = gatedUdp)
             driver.start(this)
             try {
-                // Barrier: let the startup afterCommand finish (state → Established, its flush
-                // already done) before arming `closed`, so the startup path can't see closed early.
+                // Established is published partway through the startup wake, which still checks
+                // connIsClosed after it — so the connection closes on our Close command, never on a
+                // flag the test flips while that wake is finishing.
                 withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Established } }
-                api.closed = true
+                api.closesOnLocalClose = true
                 val done = CompletableDeferred<Unit>()
                 driver.commands.send(QuicheCmd.Close(QuicError.NoError, done))
                 withTimeout(2.seconds) { done.await() }
@@ -876,7 +877,7 @@ class ReactiveDriverTests {
                 api.readableStreams.addLast(slot.id.id)
                 api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 4, fin = true))
                 api.closed = true
-                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+                driver.commands.trySend(QuicheCmd.Stats(CompletableDeferred())) // a wake; already closed if the last one saw `closed`
 
                 val result = withTimeout(2.seconds) { read.await() }
                 val data = assertIs<ReadResult.Data>(result, "buffered bytes must outrank the End verdict")
@@ -908,7 +909,7 @@ class ReactiveDriverTests {
                 api.readableStreams.addLast(slot.id.id)
                 api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 7, fin = true))
                 api.closed = true
-                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+                driver.commands.trySend(QuicheCmd.Stats(CompletableDeferred())) // a wake; already closed if the last one saw `closed`
                 withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
 
                 val result = adapter.streamRead(slot.id, bufferFactory, 1024, 2.seconds)
@@ -943,7 +944,7 @@ class ReactiveDriverTests {
                 api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 11, fin = false))
                 api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 5, fin = true))
                 api.closed = true
-                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+                driver.commands.trySend(QuicheCmd.Stats(CompletableDeferred())) // a wake; already closed if the last one saw `closed`
                 withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
 
                 val first = stream.read(2.seconds)

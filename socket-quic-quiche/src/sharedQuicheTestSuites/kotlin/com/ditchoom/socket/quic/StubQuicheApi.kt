@@ -161,6 +161,12 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun configEnableEarlyData(config: QuicheConfig) {}
 
+    override fun configSetTicketKey(
+        config: QuicheConfig,
+        keyAddr: Long,
+        keyLen: Int,
+    ) = 0
+
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
@@ -334,12 +340,38 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connIsEstablished(conn: QuicheConn) = established
 
-    override fun connIsClosed(conn: QuicheConn) = closed
+    /**
+     * When true, [connIsClosed] also reports closed once [connClose] has been called, so a test's own
+     * Close command closes the connection. Arming [closed] from the test thread instead races the driver
+     * loop, which may still be finishing a wake and reach its own `connIsClosed` check first.
+     */
+    @Volatile var closesOnLocalClose = false
+
+    override fun connIsClosed(conn: QuicheConn) = closed || (closesOnLocalClose && closeInitiated)
 
     /** When true, [connIsTimedOut] reports a timeout — drives the IdleTimeout close-reason fallback. */
     @Volatile var timedOut = false
 
     override fun connIsTimedOut(conn: QuicheConn) = timedOut
+
+    /** No session is ever issued, offered or resumed: a full handshake with nothing to remember. */
+    override fun connSetSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connSession(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connIsResumed(conn: QuicheConn) = false
+
+    override fun connIsInEarlyData(conn: QuicheConn) = false
+
+    override fun connEarlyDataReason(conn: QuicheConn) = QuicEarlyDataReason.NO_SESSION_OFFERED
 
     /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline
      *  is the only thing that can wake the driver loop — see the keepalive driver tests. */

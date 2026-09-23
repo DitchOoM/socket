@@ -113,6 +113,8 @@ internal class JvmQuicConnection(
 
     override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
 
+    override val sessionTicket: StateFlow<QuicSessionTicketState> get() = driver.sessionTicket
+
     override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {
             val deferred = CompletableDeferred<MigrationResult>()

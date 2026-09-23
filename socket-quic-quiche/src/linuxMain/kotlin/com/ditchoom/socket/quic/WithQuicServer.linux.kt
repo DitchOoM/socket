@@ -66,7 +66,8 @@ internal suspend fun buildLinuxQuicServer(
         api.configSetApplicationProtos(config, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
         alpnBuf.freeNativeMemory()
 
-        applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config.handle.toCPointer()!!))
+        applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config.handle.toCPointer()!!), QuicRole.Server)
+        api.applySessionTicketKeys(config, tlsConfig.sessionTicketKeys, bufferFactory)
 
         // Bind the shared unconnected server socket via :socket-udp with a QUIC-sized receive staging
         // buffer. One channel serves every accepted connection.

@@ -111,7 +111,25 @@ internal fun resolveStreamWritePolicy(options: QuicOptions): WritePolicy =
     WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE)
 
 /**
- * Apply all [QuicOptions] to a quiche config via platform-specific [calls].
+ * Whether a quiche config for [role] enables 0-RTT. A server accepts it when [QuicOptions.enableEarlyData]
+ * says so; a client offers it only on a connection whose [QuicOptions.resumption] carries early data —
+ * never implicitly, since 0-RTT data can be replayed (RFC 8446 §8).
+ */
+internal fun earlyDataEnabled(
+    options: QuicOptions,
+    role: QuicRole,
+): Boolean =
+    when (role) {
+        QuicRole.Server -> options.enableEarlyData
+        QuicRole.Client ->
+            when (options.resumption) {
+                QuicResumption.None, is QuicResumption.Resume -> false
+                is QuicResumption.ResumeWithEarlyData -> true
+            }
+    }
+
+/**
+ * Apply all [QuicOptions] to a quiche config for [role] via platform-specific [calls].
  *
  * This is the single source of truth for config sequencing — JVM and Linux
  * both delegate here instead of duplicating the logic.
@@ -119,6 +137,7 @@ internal fun resolveStreamWritePolicy(options: QuicOptions): WritePolicy =
 internal fun applyQuicOptions(
     options: QuicOptions,
     calls: QuicConfigCalls,
+    role: QuicRole,
 ) {
     // Transport
     calls.setMaxIdleTimeout(options.idleTimeout.inWholeMilliseconds)
@@ -168,7 +187,7 @@ internal fun applyQuicOptions(
     }
 
     calls.discoverPmtu(options.enablePmtuDiscovery)
-    if (options.enableEarlyData) calls.enableEarlyData()
+    if (earlyDataEnabled(options, role)) calls.enableEarlyData()
     calls.grease(options.enableGrease)
 
     // Unreliable datagrams (RFC 9221) — only when explicitly enabled.

@@ -30,6 +30,8 @@ internal class DriverQuicConnection(
 
     override val quicheDriver: QuicheDriver get() = driver
 
+    override val sessionTicket: StateFlow<QuicSessionTicketState> get() = driver.sessionTicket
+
     /**
      * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
      * because it rotates — so this is rebuilt per read rather than stored.

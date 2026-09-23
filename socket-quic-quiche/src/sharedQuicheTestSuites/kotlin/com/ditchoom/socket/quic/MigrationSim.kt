@@ -603,11 +603,14 @@ internal suspend fun <R> withMigrationSim(
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
         val clientCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
-        listOf(serverCfg to serverQuicOptions, clientCfg to quicOptions).forEach { (cfg, options) ->
+        listOf(
+            Triple(serverCfg, serverQuicOptions, QuicRole.Server),
+            Triple(clientCfg, quicOptions, QuicRole.Client),
+        ).forEach { (cfg, options, role) ->
             val alpn = encodeAlpnList(options.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(options, SimQuicConfigCalls(api, cfg))
+            applyQuicOptions(options, SimQuicConfigCalls(api, cfg), role)
         }
         simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             val rc = api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong())
