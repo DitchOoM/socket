@@ -59,6 +59,12 @@ class QuicConnectRaceTests {
         data class RejectsTheCertificate(
             val after: Duration,
         ) : Answer
+
+        /**
+         * The connect is refused for the caller's own arguments, before a socket is opened — every
+         * attempt is built from the same [QuicOptions], so every endpoint refuses it identically.
+         */
+        data object RefusesTheArguments : Answer
     }
 
     private fun v6(
@@ -126,6 +132,8 @@ class QuicConnectRaceTests {
                 }
                 is Answer.Completes -> delay(answer.after)
                 is Answer.CompletesRegardless -> withContext(NonCancellable) { delay(answer.after) }
+                Answer.RefusesTheArguments ->
+                    throw EarlyDataProtocolNotOfferedException("resume-proto", quicOptions.alpnProtocols)
                 is Answer.RejectsTheCertificate -> {
                     delay(answer.after)
                     // unknown_ca (48), exactly as quiche reports a TLS alert through a CRYPTO_ERROR.
@@ -323,6 +331,34 @@ class QuicConnectRaceTests {
                 engine.startedAt,
                 "the peer's certificate is the same at every endpoint, so the second candidate must " +
                     "never have been dialled — otherwise one honest certificate error becomes a list of them",
+            )
+            assertEquals(emptyList(), engine.open())
+        }
+
+    @Test
+    fun aConnectRefusedForItsOwnArgumentsEndsTheRaceAtTheFirstCandidate() =
+        runTest {
+            val engine =
+                ScriptedEngine(
+                    this,
+                    mapOf(v6(1) to Answer.RefusesTheArguments, v4(2) to Answer.Completes(10.milliseconds)),
+                )
+            assertFailsWith<EarlyDataProtocolNotOfferedException> {
+                engine.connectRacing(
+                    QuicClientBinding.OwnSocket,
+                    QuicPeer.Candidates(listOf(v6(1), v4(2)), "peer.example"),
+                    options,
+                    TransportConfig(),
+                    30.seconds,
+                )
+            }
+
+            assertEquals(
+                listOf(0L),
+                engine.startedAt,
+                "every attempt is built from the one QuicOptions the caller passed, so an argument the " +
+                    "connect does not permit is refused identically at every endpoint — reporting it once " +
+                    "per candidate would turn one programming error into a list of them",
             )
             assertEquals(emptyList(), engine.open())
         }

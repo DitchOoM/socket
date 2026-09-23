@@ -118,14 +118,26 @@ sealed interface QuicResumption {
      * connection may speak — or the connect fails with [EarlyDataProtocolNotOfferedException] before
      * anything is sent.
      *
-     * [write] runs exactly once, before [withQuicConnection]'s block. Its writes are queued, not sent,
-     * until it returns — so it must not wait on the peer; a read, or a write the session's remembered
-     * flow control cannot take whole, releases the first flight at that point. If the server does not
-     * accept 0-RTT the bytes are sent again once the handshake completes, so they reach the server
-     * exactly once either way; [QuicScope.resumption] says which happened.
+     * [write] runs before [withQuicConnection]'s block. Its writes are queued, not sent, until it
+     * returns — so it must not wait on the peer; a read, or a write the session's remembered flow
+     * control cannot take whole, releases the first flight at that point. On the connection that
+     * results the bytes reach the server exactly once: if the server does not accept 0-RTT they are
+     * sent again after the handshake instead of early, and [QuicScope.resumption] says which happened.
      *
-     * The streams [write] opens are ordinary streams of the connection; to keep one for the main block,
-     * hand it out — for example through a `CompletableDeferred` completed inside [write].
+     * ## ⚠️ One connect is not one attempt
+     * A connect races its peer's candidate endpoints ([QuicPeer]), and each attempt is its own
+     * connection — so [write] runs **once per attempt the race reaches, concurrently**, and an attempt
+     * that loses has already sent what it wrote. Write it to be correct run that way:
+     *
+     *  - hold no state of its own, and read no one-shot source — a `Channel`, a single-use stream, a
+     *    counter — because every attempt reads the same one;
+     *  - publish nothing to the outer block. A `CompletableDeferred` completed inside [write] is
+     *    completed by whichever attempt reached it first, which need not be the one that won, so the
+     *    block would be handed a stream on a connection that is already closed. Open the streams the
+     *    main block needs in the main block; what [write] opens belongs to its own attempt.
+     *
+     * This is the local half of the replay warning above: what is written here must be safe for the
+     * server to act on more than once, and racing is one of the ways that happens.
      */
     class ResumeWithEarlyData(
         val ticket: QuicSessionTicket,
