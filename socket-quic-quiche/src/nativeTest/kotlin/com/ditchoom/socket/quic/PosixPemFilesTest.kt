@@ -58,8 +58,8 @@ class PosixPemFilesTest {
 
         override suspend fun connect(
             binding: QuicClientBinding,
-            hostname: String,
-            port: Int,
+            endpoint: QuicEndpoint,
+            serverName: String,
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
