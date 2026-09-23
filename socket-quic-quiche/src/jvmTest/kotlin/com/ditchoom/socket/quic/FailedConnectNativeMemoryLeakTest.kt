@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -86,7 +88,14 @@ class FailedConnectNativeMemoryLeakTest {
                 val api = ConnectRefusingApi(loadQuicheApi())
                 assertLeaksNothing(attempts = REFUSED_ATTEMPTS, exit = "quiche_connect refused") {
                     runCatching {
-                        buildJvmQuicConnection(RECEIVER_HOST, RECEIVER_PORT, options, transport, CONNECT_TIMEOUT, api)
+                        buildJvmQuicConnection(
+                            QuicEndpoint(ResolvedAddress(RECEIVER_HOST, IpFamily.V4), RECEIVER_PORT),
+                            RECEIVER_HOST,
+                            options,
+                            transport,
+                            CONNECT_TIMEOUT,
+                            api,
+                        )
                     }.isSuccess
                 }
             }

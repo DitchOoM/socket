@@ -20,6 +20,17 @@ class UnsupportedQuicEngine(
 
     override suspend fun connect(
         binding: QuicClientBinding,
+        endpoint: QuicEndpoint,
+        serverName: String,
+        quicOptions: QuicOptions,
+        transport: TransportConfig,
+        timeout: Duration,
+    ): QuicConnection = throw UnsupportedOperationException(connectReason)
+
+    // Also overridden, so a connect on a platform with no UDP fails before it resolves a name: the
+    // inherited implementation would ask the resolver first and only then find there is no engine.
+    override suspend fun connect(
+        binding: QuicClientBinding,
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,

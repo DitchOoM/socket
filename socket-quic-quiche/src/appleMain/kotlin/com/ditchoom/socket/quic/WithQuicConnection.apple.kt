@@ -69,8 +69,8 @@ private const val MAX_CONN_ID_LEN = 20
  * not carry it. The peer/local sockaddr encodings are pinned for the driver's life (freed via onCleanup).
  */
 internal suspend fun buildAppleQuicConnection(
-    hostname: String,
-    port: Int,
+    endpoint: QuicEndpoint,
+    serverName: String,
     requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
@@ -99,7 +99,11 @@ internal suspend fun buildAppleQuicConnection(
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
-                    ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create quiche config")
+                    ?: throw SocketConnectionException.Refused(
+                        endpoint.address.ip,
+                        endpoint.port,
+                        platformError = "Failed to create quiche config",
+                    )
 
             // ALPN
             val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
@@ -138,7 +142,9 @@ internal suspend fun buildAppleQuicConnection(
             // UdpSocket.connect waits until NW is ready + assigns the local endpoint, cancellably (so the
             // QUIC timeout interrupts a stuck connect and never leaks the nw_connection_t); we map its
             // typed connect failure to the QUIC error contract.
-            val peer = UdpSocket.resolve(hostname, port)
+            // The endpoint is already a literal, so this is an encoding rather than a lookup: the name
+            // was resolved once at the connect entry and every candidate reaches here as an address.
+            val peer = UdpSocket.resolve(endpoint.address.ip, endpoint.port)
             val codec = SocketAddressCodec(appleSockAddrLayout)
             val path =
                 try {
@@ -160,7 +166,7 @@ internal suspend fun buildAppleQuicConnection(
                     }
                 } catch (e: UdpConnectException) {
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = e.message)
+                    throw SocketConnectionException.Refused(endpoint.address.ip, endpoint.port, platformError = e.message)
                 } catch (t: Throwable) {
                     quiche_config_free(config)
                     throw t
@@ -186,7 +192,9 @@ internal suspend fun buildAppleQuicConnection(
 
             val connPtr =
                 quiche_connect(
-                    hostname,
+                    // The peer's identity — SNI and what the certificate is verified against — never the
+                    // endpoint the datagrams go to.
+                    serverName,
                     scidPtr,
                     MAX_CONN_ID_LEN.convert(),
                     localSockAddr.address.toCPointer<sockaddr>(),
@@ -199,7 +207,11 @@ internal suspend fun buildAppleQuicConnection(
                     // to release; only what that stage does not know about is freed here.
                     scidBuf.freeNativeMemory()
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
+                    throw SocketConnectionException.Refused(
+                        endpoint.address.ip,
+                        endpoint.port,
+                        platformError = "quiche_connect failed",
+                    )
                 }
 
             scidBuf.freeNativeMemory()

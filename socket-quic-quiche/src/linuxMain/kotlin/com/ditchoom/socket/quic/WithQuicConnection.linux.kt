@@ -64,8 +64,8 @@ private const val MAX_CONN_ID_LEN = 20
  * heap sockaddr copies + the fd — nothing in the arena — so returning from inside it is safe.
  */
 internal suspend fun buildLinuxQuicConnection(
-    hostname: String,
-    port: Int,
+    endpoint: QuicEndpoint,
+    serverName: String,
     requestedOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
@@ -94,7 +94,11 @@ internal suspend fun buildLinuxQuicConnection(
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
-                    ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create quiche config")
+                    ?: throw SocketConnectionException.Refused(
+                        endpoint.address.ip,
+                        endpoint.port,
+                        platformError = "Failed to create quiche config",
+                    )
 
             // ALPN
             val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
@@ -131,7 +135,9 @@ internal suspend fun buildLinuxQuicConnection(
             // :socket-udp path with a QUIC-sized receive staging buffer, through the same factory that
             // opens every migration path — so the first path binds the route's source address like all
             // the others, never an unnamed bind.
-            val peer = UdpSocket.resolve(hostname, port)
+            // The endpoint is already a literal, so this is an encoding rather than a lookup: the name
+            // was resolved once at the connect entry and every candidate reaches here as an address.
+            val peer = UdpSocket.resolve(endpoint.address.ip, endpoint.port)
             val codec = SocketAddressCodec(linuxSockAddrLayout)
             val path =
                 binding.openClientPath(peer) {
@@ -166,7 +172,9 @@ internal suspend fun buildLinuxQuicConnection(
 
             val connPtr =
                 quiche_connect(
-                    hostname,
+                    // The peer's identity — SNI and what the certificate is verified against — never the
+                    // endpoint the datagrams go to.
+                    serverName,
                     scidPtr,
                     MAX_CONN_ID_LEN.convert(),
                     localSockAddr.address.toCPointer<sockaddr>(),
@@ -179,7 +187,11 @@ internal suspend fun buildLinuxQuicConnection(
                     // to release; only what that stage does not know about is freed here.
                     scidBuf.freeNativeMemory()
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
+                    throw SocketConnectionException.Refused(
+                        endpoint.address.ip,
+                        endpoint.port,
+                        platformError = "quiche_connect failed",
+                    )
                 }
 
             scidBuf.freeNativeMemory()

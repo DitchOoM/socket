@@ -33,9 +33,10 @@ import kotlin.time.Duration.Companion.seconds
  *   ([NameResolution], sealed): the platform's own way by default, or a caller's [HostResolver]
  *   whose candidates are tried in order on every platform.
  * - [connectPacing] — how attempts across those addresses are paced ([ConnectPacing], sealed):
- *   RFC 8305 §5 staggered by default, or sequential. Apple's and Node's [NameResolution.Platform]
- *   paths ignore it, each handing one endpoint to the platform's own family race; an injected resolver
- *   is paced on every platform.
+ *   RFC 8305 §5 staggered by default, sequential, or simultaneous. Apple's and Node's
+ *   [NameResolution.Platform] TCP paths ignore it, each handing one endpoint to the platform's own
+ *   family race; an injected resolver is paced on every platform, and a QUIC connect is paced on every
+ *   platform because it races the handshake itself.
  * - [tls] — the unified [TlsConfig]; `null` = plaintext.
  * - [io] — platform I/O + TCP knobs ([IoTuning]), injected rather than read from a process-global.
  * - [networkId] — typed identity of the network path this connect happens over

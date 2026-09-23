@@ -5,6 +5,8 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -46,8 +48,8 @@ class QuicKeepAlivePingSeamTest {
                     val serverJob = launch { echoEveryStream() }
                     try {
                         commonJvmWithQuicConnection(
-                            hostname = "127.0.0.1",
-                            port = port,
+                            endpoint = QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
+                            serverName = "localhost",
                             quicOptions = opts,
                             connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
                             timeout = 10.seconds,

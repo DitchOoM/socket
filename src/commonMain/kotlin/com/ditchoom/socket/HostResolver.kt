@@ -90,8 +90,14 @@ sealed interface NameResolution {
     ) : NameResolution
 }
 
-/** The addresses a connect to [host] tries, in order; a name without one is [SocketUnknownHostException]. */
-internal suspend fun NameResolution.candidatesFor(host: String): List<ResolvedAddress> {
+/**
+ * The addresses a connect to [host] tries, in order; a name without one is [SocketUnknownHostException].
+ *
+ * Public because a QUIC connect resolves at its own entry rather than inside each platform's
+ * connection builder: quiche is handed a literal endpoint and the name separately, so the name has to
+ * become addresses one level above the backend.
+ */
+suspend fun NameResolution.candidatesFor(host: String): List<ResolvedAddress> {
     val resolver =
         when (this) {
             NameResolution.Platform -> HostResolver.platform()

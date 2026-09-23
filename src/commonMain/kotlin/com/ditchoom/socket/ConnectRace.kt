@@ -19,6 +19,15 @@ sealed interface ConnectPacing {
     data object Sequential : ConnectPacing
 
     /**
+     * Every candidate at once. RFC 8305 §5 staggers so a race costs at most one extra connection per
+     * delay, which is the right trade when the candidates are one server's addresses. It is the wrong
+     * trade when the first packet to each candidate is doing work of its own: a peer-to-peer connect
+     * sends to every candidate simultaneously so each NAT sees an outbound packet before the peer's
+     * arrives, and a stagger would delay exactly the punches it depends on.
+     */
+    data object Simultaneous : ConnectPacing
+
+    /**
      * RFC 8305 §5. The next attempt starts [attemptDelay] after the previous one unless that one has
      * already completed, a failure starts the next at once, the first success wins, and every other
      * attempt is cancelled. One that completes after losing is closed, never leaked.
@@ -56,8 +65,15 @@ sealed interface AttemptVerdict {
  * owns its own cleanup on failure or cancellation; [verdict] says whether a failure ends the race;
  * [close] releases a connection that completed after the race was decided, and its own failure
  * never costs the winner. The first success is the answer; the last failure is the error.
+ *
+ * Every attempt that has not completed when the race is decided is cancelled, and one that completes
+ * anyway is handed to [close] — so an attempt is either the answer, closed, or cancelled, and there
+ * is no fourth thing for a connection to be.
+ *
+ * Public because the QUIC handshake races the same way a TCP connect does: it is the same mechanism
+ * over a different attempt, and a second copy of it would be a second set of lifetime bugs.
  */
-internal suspend fun <C, T> connectRace(
+suspend fun <C, T> connectRace(
     candidates: List<C>,
     pacing: ConnectPacing,
     verdict: (Throwable) -> AttemptVerdict,
@@ -67,6 +83,9 @@ internal suspend fun <C, T> connectRace(
     require(candidates.isNotEmpty()) { "a connect needs at least one address" }
     return when (pacing) {
         ConnectPacing.Sequential -> firstReachable(candidates, verdict, attempt)
+        // Zero delay is the simultaneous case exactly: the pacer's per-attempt wait returns at once,
+        // so the loop launches every candidate in one pass without any of them having started.
+        ConnectPacing.Simultaneous -> staggered(candidates, Duration.ZERO, verdict, close, attempt)
         is ConnectPacing.Staggered -> staggered(candidates, pacing.attemptDelay, verdict, close, attempt)
     }
 }
