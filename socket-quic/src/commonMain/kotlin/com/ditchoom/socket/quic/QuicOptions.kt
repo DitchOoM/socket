@@ -399,6 +399,9 @@ data class QuicOptions(
      * ([QuicResumption.ResumeWithEarlyData]) or without ([QuicResumption.Resume]) 0-RTT data. The
      * handshake's answer is [QuicScope.resumption].
      *
+     * Every attempt of a connect offers it, and a raced connect makes several — so a
+     * [QuicResumption.ResumeWithEarlyData] block runs once per attempt. See its documentation.
+     *
      * Ignored for the server role.
      */
     val resumption: QuicResumption = QuicResumption.None,

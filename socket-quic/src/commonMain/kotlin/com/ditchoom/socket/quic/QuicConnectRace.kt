@@ -85,10 +85,17 @@ suspend fun QuicEngine.connect(
  * [com.ditchoom.socket.ConnectionFailureReason.TlsBadCertificate], so [AttemptVerdict.of] calls it
  * fatal without help; what needs saying here is that quiche reports the same class of failure as a
  * TLS alert inside a [QuicCloseException].
+ *
+ * The other kind of failure no candidate can improve on is a rejected *argument*: every attempt is
+ * built from the one [QuicOptions] the caller passed, so a connect it does not permit is refused
+ * identically at every endpoint. [EarlyDataProtocolNotOfferedException] is that case — it is raised
+ * before an attempt opens a socket, so retrying it would open none either, just report the same
+ * programming error once per candidate.
  */
 fun quicConnectVerdict(error: Throwable): AttemptVerdict =
     when {
         error is QuicCloseException && error.quicError.isAboutThePeersIdentity() -> AttemptVerdict.Fatal
+        error is EarlyDataProtocolNotOfferedException -> AttemptVerdict.Fatal
         else -> AttemptVerdict.of(error)
     }
 

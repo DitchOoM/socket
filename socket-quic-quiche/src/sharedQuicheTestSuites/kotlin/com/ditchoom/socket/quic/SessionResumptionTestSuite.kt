@@ -6,6 +6,9 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.managed
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.ResolvedAddress
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -13,6 +16,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -391,6 +397,58 @@ abstract class SessionResumptionTestSuite {
     }
 
     /** A full-handshake connection that exchanges once and returns the ticket the server issued it. */
+    @Test
+    @OptIn(ExperimentalAtomicApi::class)
+    fun anEarlyDataBlockRunsOncePerCandidateTheRaceReaches() =
+        runQuicTest(timeout = 60.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = acceptsEarlyData) {
+                    val seen = serveEach(this)
+                    try {
+                        val ticket = firstConnection(port)
+                        seen.next()
+
+                        val runs = AtomicInt(0)
+                        val options =
+                            clientOptions.copy(
+                                resumption =
+                                    QuicResumption.ResumeWithEarlyData(ticket) {
+                                        runs.incrementAndFetch()
+                                        val stream = openStream()
+                                        stream.writeText(EARLY_PAYLOAD)
+                                        stream.shutdownSend()
+                                    },
+                            )
+                        // A blackhole first, so the race really reaches both candidates: the block runs at
+                        // the top of every attempt, before that attempt has heard anything from the network,
+                        // and the second candidate starts one attempt delay later and wins.
+                        val peer =
+                            QuicPeer.Candidates(
+                                listOf(
+                                    QuicEndpoint(ResolvedAddress(BLACKHOLE, IpFamily.V4), port),
+                                    QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
+                                ),
+                                serverName = "127.0.0.1",
+                            )
+                        val race = withQuicConnection(peer, options, TransportConfig(), timeout = 30.seconds) { it }
+
+                        assertIs<QuicCandidateRace.Raced>(race, "two candidates were offered, so this was a race")
+                        assertEquals(
+                            2,
+                            runs.load(),
+                            "a 0-RTT block belongs to a connection ATTEMPT, not to a connect: each attempt is " +
+                                "its own connection with its own first flight, so a raced connect runs the " +
+                                "caller's block once per candidate it reaches. Its documentation is what tells " +
+                                "callers to write it so that is safe; this is what makes the claim true. " +
+                                "Race: $race",
+                        )
+                    } finally {
+                        seen.job.cancel()
+                    }
+                }
+            }
+        }
+
     private suspend fun firstConnection(port: Int): QuicSessionTicket =
         withQuicConnection("127.0.0.1", port, clientOptions, timeout = 10.seconds) {
             assertEquals(QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered), resumption, "no ticket was offered")
@@ -464,6 +522,9 @@ abstract class SessionResumptionTestSuite {
 
         /** Nothing listens here: a connect that reaches the network is a connect that checked too late. */
         const val DEAD_PORT = 1
+
+        /** RFC 5737 documentation address: nothing routes it, so a candidate there never answers. */
+        const val BLACKHOLE = "192.0.2.1"
         const val FIRST_PAYLOAD = "first"
         const val EARLY_PAYLOAD = "early-hello"
         const val LATE_PAYLOAD = "late-hello"
