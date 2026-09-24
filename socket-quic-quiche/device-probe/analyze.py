@@ -10,6 +10,10 @@ STREAM-INTEGRITY-BROKEN / CONNECTION-DEAD line verbatim, a RE-DERIVED ECHO-LIVEN
 RE-DERIVED #447 verdict gated by it — each of those per connection AND rolled up per address
 family, so a walk answers "does v6 behave differently from v4 on this device and this route".
 
+Stall-watchdog alarms are grouped by the lane phase that owed progress (Echoing, Connecting,
+Backoff); for a log written before the alarm named its phase, the phase is read off the lane's last
+lifecycle line.
+
 A log whose echo loop timed echoes by its own schedule rather than by their arrival (no
 `LOOP-SCHEDULE` line) is flagged RTT-UNRELIABLE, and its rtt comes from in-sync echoes only.
 
@@ -38,7 +42,7 @@ verdicts can be recomputed here without reinstalling the probe and restarting a 
 """
 import re
 import sys
-from collections import Counter
+from collections import Counter, namedtuple
 
 T = re.compile(r"^t=(\d+)ms (.*)$")
 
@@ -89,6 +93,65 @@ def print_os_network(events):
         previous = fields
     if len(changes) > OS_NET_MAX_SHOWN:
         print(f"  … {len(changes) - OS_NET_MAX_SHOWN} more change(s) not shown")
+
+
+# --- Stall watchdog ------------------------------------------------------------------------------
+#
+# `STALL-SUSPECTED phase=<P> attempt=<N> [loopTicks=<K>] waited=<W>s bound=<B>s — …` names the lane
+# phase that owed progress: Echoing (loop ticks), Connecting (a connect that neither connected nor
+# failed), Backoff (a backoff past its deadline). A build before phases wrote
+# `STALL-SUSPECTED loopTicks=<K> unchanged for <W>s attempt=<N>` in every phase alike, so a lane with
+# no connection at all read as a stalled echo loop; for those the phase is inferred from the lane's
+# last lifecycle line before the alarm.
+STALL_PHASED = re.compile(r"STALL-SUSPECTED phase=(\w+) attempt=(\d+)(?: loopTicks=\d+)? waited=(\d+)s bound=(\d+)s")
+STALL_UNPHASED = re.compile(r"STALL-SUSPECTED loopTicks=\d+ unchanged for (\d+)s attempt=(\d+)")
+LIFECYCLE = (("CONNECT-ATTEMPT", "Connecting"), ("CONNECTED ", "Echoing"), ("RECONNECTING", "Backoff"))
+
+
+# One STALL-SUSPECTED line. `bound_s` is the probe's own for a phased line; for an unphased one it is
+# None and `inferred_from` names the lifecycle line (and its time) the phase was read from.
+Stall = namedtuple("Stall", "t phase attempt waited_s bound_s inferred_from inferred_at")
+
+
+def stalls(events):
+    """Every STALL-SUSPECTED line, as a Stall."""
+    found = []
+    phase, since, since_t = "Backoff", "the start stagger", 0
+    for t, b in events:
+        for prefix, name in LIFECYCLE:
+            if b.startswith(prefix) and t is not None:
+                phase, since, since_t = name, prefix.strip(), t
+        m = STALL_PHASED.match(b)
+        if m:
+            found.append(Stall(t, m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), None, None))
+            continue
+        m = STALL_UNPHASED.match(b)
+        if m:
+            found.append(Stall(t, phase, int(m.group(2)), int(m.group(1)), None, since, since_t))
+    return found
+
+
+def print_stalls(events):
+    """Stalls grouped by the phase that owed progress. Silent on a log with none."""
+    found = stalls(events)
+    if not found:
+        return
+    recovered = sum(1 for _, b in events if b.startswith("STALL-RECOVERED"))
+    by_phase = Counter(s.phase for s in found)
+    print(f"\nstalls by phase: {len(found)} suspected, {recovered} recovered — "
+          + " ".join(f"{p}={by_phase[p]}" for p in sorted(by_phase)))
+    for s in found:
+        at = f"t+{(s.t or 0) / 1000:.0f}s"
+        if s.inferred_from is None:
+            detail = f"bound={s.bound_s}s"
+        else:
+            detail = (f"(pre-phase line: phase inferred from {s.inferred_from} at t+{s.inferred_at / 1000:.0f}s,"
+                      f" {((s.t or 0) - s.inferred_at) / 1000:.0f}s earlier)")
+        print(f"  {at} phase={s.phase} attempt={s.attempt} waited={s.waited_s}s {detail}")
+    in_backoff = sum(1 for s in found if s.inferred_from is not None and s.phase == "Backoff")
+    if in_backoff:
+        print(f"  {in_backoff} pre-phase alarm(s) fired in a reconnect backoff: the lane had no connection and so no"
+              f" echo loop to stall — not a hang")
 
 
 def analyze(path, lines, lane=None):
@@ -258,6 +321,8 @@ def analyze(path, lines, lane=None):
             " — no OS event near " + ", ".join(f"t+{t / 1000:.0f}s" for t in unexplained[:6])
             + (f" (+{len(unexplained) - 6} more)" if len(unexplained) > 6 else ""))
         print(f"  OS-NET within ±{OS_NET_NEAR_MS // 1000}s of a connection ending: {explained}/{len(ends)}{detail}")
+
+    print_stalls(events)
 
     # verbatim: the lines that matter
     for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
