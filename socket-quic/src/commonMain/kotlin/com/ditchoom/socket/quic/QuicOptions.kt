@@ -405,6 +405,13 @@ data class QuicOptions(
      * Ignored for the server role.
      */
     val resumption: QuicResumption = QuicResumption.None,
+    /**
+     * **Client-side, under [MigrationPolicy.Automatic]**: whether a second link is kept attached for a
+     * dead path to move onto. Defaults to [StandbyLink.KeepCellularReady]; a no-op off Android. Ignored
+     * for the server role and under [MigrationPolicy.Manual] and [MigrationPolicy.Forbidden], which do
+     * not migrate on their own.
+     */
+    val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

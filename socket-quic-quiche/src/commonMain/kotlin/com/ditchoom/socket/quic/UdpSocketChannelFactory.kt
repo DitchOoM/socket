@@ -90,6 +90,13 @@ internal class UdpSocketChannelFactory(
     internal suspend fun openPrimaryChannel(): ConnectedDatagramChannel =
         openChannel.open(peer.host, peer.port, bindHostFor(null), 0, receiveBufferSize, recvBufferFactory)
 
+    /**
+     * This factory with every socket — route probe and path alike — opened through [opener] instead.
+     * A standby link's factory: the same peer, codec and buffers, with sockets pinned to that link.
+     */
+    internal fun openingWith(opener: ConnectedUdpOpener): UdpSocketChannelFactory =
+        UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufferFactory, receiveBufferSize, localEndpointSupport, opener)
+
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,

@@ -13,8 +13,10 @@ import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
@@ -1823,6 +1825,178 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * The field case [StandbyLink.KeepCellularReady] exists for: Wi-Fi goes dark, the platform keeps
+     * naming it, and every socket the default route opens lands on the dead link. A standby link is
+     * already attached, so the data-plane trigger moves onto it at once instead of probing the dead
+     * link until the platform catches up.
+     *
+     * Then the platform does catch up and names the standby link as its default. The connection is
+     * already there, so that is no handoff: one migration, not two.
+     */
+    @Test
+    fun aDeadPathMovesOntoAnAttachedStandbyLinkAndStaysWhenThePlatformNamesIt() =
+        runTest {
+            val scheduler = testScheduler
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 612_301L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    // The Wi-Fi link is dead to every socket the default route opens on it.
+                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    standby = SimStandby.Link(CELLULAR, MutableStateFlow(SimAttach.Attached)),
+                ) {
+                    val echo = echoOver(this)
+                    try {
+                        assertEquals("before", echo.round("before"))
+                        awaitSpareDcids()
+
+                        val wentDark = scheduler.currentTime
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        val after = runCatching { echo.round("after") }.getOrElse { "CONNECTION DIED: $it" }
+                        val recoveredIn = (scheduler.currentTime - wentDark).milliseconds
+
+                        assertEquals(
+                            "after",
+                            after,
+                            "the connection never re-homed onto the attached standby link. Attempts: " +
+                                "${client.attempts}, pipe: ${pipeTraffic()}",
+                        )
+                        assertEquals(WIFI, monitor.state.value.networkId, "the platform must still be naming the dead link")
+                        val moved = assertIs<MigrationResult.Succeeded>(client.attempts.single(), "attempts: ${client.attempts}")
+                        assertEquals(
+                            SIM_OTHER_LINK_HOST,
+                            moved.localEndpoint.host,
+                            "the move must land on the standby link, not on another socket on the dead one",
+                        )
+                        assertTrue(
+                            recoveredIn < ANDROID_MONITOR_LAG,
+                            "re-homing took $recoveredIn, no faster than the platform noticing ($ANDROID_MONITOR_LAG)",
+                        )
+
+                        // The platform catches up and names the standby link as its default.
+                        monitor.setNetworkId(CELLULAR)
+                        assertEquals("settled", echo.round("settled"))
+                        delay(BLIP_SETTLE)
+                        assertEquals(
+                            1,
+                            client.attempts.size,
+                            "the platform naming the link the connection already moved to must not move it " +
+                                "again: ${client.attempts}",
+                        )
+                    } finally {
+                        echo.stop()
+                    }
+                }
+            }
+        }
+
+    /**
+     * A standby link that attaches while a data-plane retry is backing off is taken at once. The
+     * backoff is waiting for something to change, and somewhere to go is that change.
+     */
+    @Test
+    fun aStandbyLinkThatAttachesDuringABackoffIsTakenWithoutWaitingItOut() =
+        runTest {
+            val scheduler = testScheduler
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val attach = MutableStateFlow<SimAttach>(SimAttach.Detached)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 612_302L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    standby = SimStandby.Link(CELLULAR, attach),
+                ) {
+                    val echo = echoOver(this)
+                    try {
+                        assertEquals("before", echo.round("before"))
+                        awaitSpareDcids()
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        // Data in flight on the dead path: what makes it go silent at all.
+                        val after = client.async { runCatching { echo.round("after") }.getOrElse { "CONNECTION DIED: $it" } }
+
+                        // Attach just after a failed attempt, while the reactor is in its backoff.
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (client.attempts.size < FAILED_BEFORE_ATTACH) delay(10.milliseconds)
+                        }
+                        val failed = client.attempts.toList()
+                        assertTrue(
+                            failed.all { it is MigrationResult.Unmoved.Failed },
+                            "every attempt on the dead link must fail: $failed",
+                        )
+                        val attachedAt = scheduler.currentTime
+                        attach.value = SimAttach.Attached
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (client.attempts.size <= FAILED_BEFORE_ATTACH) delay(10.milliseconds)
+                        }
+                        val tookOver = (scheduler.currentTime - attachedAt).milliseconds
+
+                        val moved =
+                            assertIs<MigrationResult.Succeeded>(client.attempts[FAILED_BEFORE_ATTACH], "attempts: ${client.attempts}")
+                        assertEquals(SIM_OTHER_LINK_HOST, moved.localEndpoint.host)
+                        assertTrue(
+                            tookOver < BACKOFF_AFTER_THIRD_ATTEMPT,
+                            "the move onto the standby link finished $tookOver after it attached — not before " +
+                                "the $BACKOFF_AFTER_THIRD_ATTEMPT backoff it should have cut short",
+                        )
+                        assertEquals("after", after.await(), "attempts: ${client.attempts}")
+                    } finally {
+                        echo.stop()
+                    }
+                }
+            }
+        }
+
+    /** An echo stream over a sim connection: [round] writes a payload and reads the server's echo of it. */
+    private class SimEcho(
+        private val stop: () -> Unit,
+        private val stream: QuicByteStream,
+    ) {
+        suspend fun round(payload: String): String {
+            val out = BufferFactory.network().allocate(payload.length)
+            out.writeString(payload, Charset.UTF8)
+            out.resetForRead()
+            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+            out.freeNativeMemory()
+            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
+            if (r !is ReadResult.Data) return "NO_DATA"
+            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+        }
+
+        suspend fun stop() {
+            stream.close()
+            stop.invoke()
+        }
+    }
+
+    private suspend fun echoOver(sim: MigrationSimScope): SimEcho {
+        val serverJob =
+            sim.client.launch {
+                val st = sim.server.acceptStream()
+                while (true) {
+                    val d = st.read(60.seconds)
+                    if (d !is ReadResult.Data) break
+                    st.write(d.buffer, 30.seconds)
+                    d.buffer.freeIfNeeded()
+                }
+            }
+        return SimEcho({ serverJob.cancel() }, sim.client.openStream())
+    }
+
+    /**
      * A recorded trace says which of the reactor's two triggers woke a migration.
      *
      * The load-bearing assertion is the negative one: the monitor never moves here, so a trace claiming
@@ -2419,6 +2593,15 @@ abstract class MigrationSimTestSuite {
 
         /** A second Wi-Fi network — a different link from both [WIFI] and [CELLULAR]. */
         val OTHER_WIFI = NetworkId.Link(NetworkKind.Wifi, 3L)
+
+        /** Dead-link attempts before the standby link attaches, in the backoff-cutting scenario. */
+        const val FAILED_BEFORE_ATTACH = 3
+
+        /**
+         * The reactor's backoff after its third failed attempt (250ms doubling). A standby link that
+         * attaches inside it must not wait it out.
+         */
+        val BACKOFF_AFTER_THIRD_ATTEMPT = 1.seconds
 
         /**
          * How long the real connection survived on its dead path before `IdleTimeout` killed it, on the

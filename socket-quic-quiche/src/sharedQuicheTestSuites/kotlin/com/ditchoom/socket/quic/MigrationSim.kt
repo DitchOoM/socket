@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.sim.resolve
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CompletableDeferred
@@ -26,7 +27,10 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.withContext
@@ -309,6 +313,31 @@ internal class SimClientQuicConnection(
         } catch (_: ClosedSendChannelException) {
             MigrationResult.Unmoved.Impossible.ConnectionClosed
         }.also { _attempts += it }
+
+    /** A migration through [via], recorded beside [migrate]'s — what a [StandbyPath.Ready] calls. */
+    suspend fun migrateVia(via: PathVia): MigrationResult = driver.migrateVia(via).also { _attempts += it }
+}
+
+/**
+ * A standby link beside the default route, for [withMigrationSim]: [None], or a link on
+ * [SIM_OTHER_LINK_HOST] that the reactor may move onto while [attach] says it is attached.
+ */
+internal sealed interface SimStandby {
+    data object None : SimStandby
+
+    class Link(
+        val id: NetworkId,
+        val attach: StateFlow<SimAttach>,
+        /** Per standby path opened on it, 1-based — the same shape as `probeImpairment`. */
+        val impairment: (Int) -> PathImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+    ) : SimStandby
+}
+
+/** Whether a [SimStandby.Link] is attached right now. */
+internal sealed interface SimAttach {
+    data object Attached : SimAttach
+
+    data object Detached : SimAttach
 }
 
 /**
@@ -567,6 +596,8 @@ internal suspend fun <R> withMigrationSim(
      * asserting the constants back to themselves. Client only — the server never migrates.
      */
     silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
+    /** A link beside the default route that the reactor can move onto — see [StandbyLink]. */
+    standby: SimStandby = SimStandby.None,
     block: suspend MigrationSimScope.() -> R,
 ): R {
     // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
@@ -796,6 +827,7 @@ internal suspend fun <R> withMigrationSim(
                     resolveNetworkMonitor(quicOptions.networkMonitor),
                     clientDriver.pathLiveness,
                     simCapture,
+                    simStandbyPaths(standby, pipe, clientAddresses, client),
                 )
                 MigrationSimScope(
                     client,
@@ -853,3 +885,32 @@ sealed interface ActivePathReading {
         val rttvar: Duration,
     ) : ActivePathReading
 }
+
+/**
+ * [standby] as the [StandbyPaths] the reactor reads. A [SimStandby.Link]'s paths are opened by a
+ * [PipeUdpChannelFactory] of their own on [SIM_OTHER_LINK_HOST] — the sim's pinned socket — so a
+ * default-route path and a standby path can never land on the same link.
+ */
+private fun simStandbyPaths(
+    standby: SimStandby,
+    pipe: MultiPathPipe,
+    localAddresses: Map<String, Map<Int, SocketAddress>>,
+    client: SimClientQuicConnection,
+): StandbyPaths =
+    when (standby) {
+        SimStandby.None -> StandbyPaths.None
+        is SimStandby.Link -> {
+            val factory = PipeUdpChannelFactory(pipe, standby.impairment, { SIM_OTHER_LINK_HOST }, localAddresses)
+            val ready = StandbyPath.Ready(standby.id) { client.migrateVia(PathVia.Standby(factory)) }
+
+            fun pathFor(attach: SimAttach): StandbyPath =
+                when (attach) {
+                    SimAttach.Attached -> ready
+                    SimAttach.Detached -> StandbyPath.Unavailable
+                }
+            object : StandbyPaths {
+                override val current: StandbyPath get() = pathFor(standby.attach.value)
+                override val changes: Flow<StandbyPath> = standby.attach.map(::pathFor)
+            }
+        }
+    }

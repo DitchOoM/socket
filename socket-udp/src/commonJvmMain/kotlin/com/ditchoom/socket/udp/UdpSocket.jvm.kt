@@ -80,6 +80,33 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
+    ): ConnectedDatagramChannel = connectPrepared(remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory) {}
+
+    /**
+     * [connect], with [pin] applied to the socket before it binds. On Android that is
+     * `Network.bindSocket`, which routes the socket over one network whatever the default network is;
+     * a pin that throws `IOException` fails the connect with a typed [UdpConnectException], like any
+     * other refused step. JVM/Android only.
+     */
+    suspend fun connect(
+        remoteHost: String,
+        remotePort: Int,
+        localHost: String?,
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+        pin: DatagramSocketPin,
+    ): ConnectedDatagramChannel =
+        connectPrepared(remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory) { pin.pin(socket()) }
+
+    private suspend fun connectPrepared(
+        remoteHost: String,
+        remotePort: Int,
+        localHost: String?,
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+        beforeBind: NioChannel.() -> Unit,
     ): ConnectedDatagramChannel {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
@@ -90,6 +117,7 @@ actual object UdpSocket {
         return try {
             NioChannel.open().closedIfSetupFails {
                 configureBlocking(false)
+                beforeBind()
                 bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
                 connect(peer.toInetSocketAddress())
                 // Connected mode reports the typed maybe-known LocalAddress (no fail-fast contract here).

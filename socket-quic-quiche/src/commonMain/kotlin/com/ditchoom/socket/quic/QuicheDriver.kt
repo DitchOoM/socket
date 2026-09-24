@@ -2473,7 +2473,11 @@ class QuicheDriver(
             }
             PeerMigrationPermission.Permitted -> Unit
         }
-        val factory = wiring.channelFactory
+        val factory =
+            when (val via = cmd.via) {
+                PathVia.DefaultRoute -> wiring.channelFactory
+                is PathVia.Standby -> via.factory
+            }
         // Refuse a local endpoint this platform cannot bind, rather than opening a socket somewhere
         // else and reporting Succeeded. On Apple `UdpSocket.connect` hands the endpoint to NWConnection
         // and its own comment calls localHost/localPort "advisory", so honouring this request is not

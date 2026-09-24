@@ -77,3 +77,6 @@ fun NetworkMonitor.Companion.hasAndroidApplicationContext(): Boolean = applicati
 fun NetworkMonitor.Companion.resetAndroidContextForTesting() {
     applicationContext.set(null)
 }
+
+/** The captured application [Context], read at the moment of use; `null` until one is installed. */
+internal fun androidApplicationContext(): Context? = applicationContext.get()

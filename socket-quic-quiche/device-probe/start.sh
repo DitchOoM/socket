@@ -21,10 +21,13 @@ MIN="${1:?minutes}"; EI="${2:-250}"; BUDGET="${3:-}"
 # Key logs are always on too: the TLS secrets that decrypt each lane's traces without this library.
 # They stay in the app's private files dir and only pull.sh (run-as) takes them off the phone.
 BUDGET_ARG=""; [ -n "$BUDGET" ] && BUDGET_ARG="-e probeTraceBudgetMb $BUDGET"
+# STANDBY_LINK=OnDemand ./start.sh ... runs without the held cellular standby link, for an A/B against
+# the default (KeepCellularReady). The START line names the one in effect.
+STANDBY_ARG=""; [ -n "${STANDBY_LINK:-}" ] && STANDBY_ARG="-e probeStandbyLink $STANDBY_LINK"
 # probeHost is one host or a COMMA-separated list of lanes (see common.sh). Quoted twice on purpose: once
 # for this shell and once for the device's, because a list is one argument and an IPv6 literal must
 # reach the probe with its colons intact.
-adbs shell "nohup am instrument -w -e class $PROBE_CLASS -e probeHost '$SERVER_HOST' -e probePort $SERVER_PORT -e probeMinutes $MIN -e probeEchoIntervalMs $EI -e probeQlog 1 -e probeKeyLog 1 $BUDGET_ARG $RUNNER > /dev/null 2>&1 &"
+adbs shell "nohup am instrument -w -e class $PROBE_CLASS -e probeHost '$SERVER_HOST' -e probePort $SERVER_PORT -e probeMinutes $MIN -e probeEchoIntervalMs $EI -e probeQlog 1 -e probeKeyLog 1 $BUDGET_ARG $STANDBY_ARG $RUNNER > /dev/null 2>&1 &"
 sleep 8
 echo "== first lines =="; adbs shell head -6 "$DEVICE_LOG"
 echo "== process =="; adbs shell pidof "$PKG" || echo "(no process yet)"

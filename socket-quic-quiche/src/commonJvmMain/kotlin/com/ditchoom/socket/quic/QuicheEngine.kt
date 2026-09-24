@@ -56,7 +56,14 @@ object QuicheEngine : QuicEngine {
         // Auto-migration (QuicOptions.migration, Automatic by default): re-home on a link change, or
         // on the connection's own evidence that the path it is on has stopped answering — the
         // driver's `pathLiveness`, which is why this is wired here and not from inside the reactor.
-        wireAutoMigration(quicOptions, connection, monitor, connection.quicheDriver.pathLiveness, capture)
+        wireAutoMigration(
+            quicOptions,
+            connection,
+            monitor,
+            connection.quicheDriver.pathLiveness,
+            capture,
+            standbyPathsFor(quicOptions, monitor, connection),
+        )
         return connection
     }
 

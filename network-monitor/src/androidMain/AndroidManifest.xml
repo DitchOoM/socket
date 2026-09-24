@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- CellularStandby: ConnectivityManager.requestNetwork keeps cellular attached beside Wi-Fi. A
+         normal permission, granted at install. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
 
     <!--
       App Startup: contribute NetworkMonitorInitializer to androidx.startup's InitializationProvider so

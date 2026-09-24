@@ -32,6 +32,8 @@ internal class JvmQuicConnection(
     override val bufferFactory: BufferFactory,
     override val remoteAddress: SocketAddress,
     private val scope: CoroutineScope,
+    /** Where the primary path came from: whether this connection owns a factory that can open more. */
+    internal val pathOrigin: ClientPathOrigin,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
     QuicheBackedConnection,
