@@ -1997,6 +1997,123 @@ abstract class MigrationSimTestSuite {
     }
 
     /**
+     * **A path that goes dark under an application that keeps writing is still declared silent within
+     * [SILENT_PATH_PATIENCE]** — the 2026-09-24 Samsung walk, v4 connections 1 and 2.
+     *
+     * RFC 9002 §6.2.1 times the PTO from the *most recent* ack-eliciting send, so a sender that writes
+     * more often than its backed-off PTO pushes the next expiry out on every write and quiche's expiry
+     * count stops moving. The walk probe writes an echo every 250ms. On connection 1 (PTO 193ms) one
+     * expiry fired, the backed-off 386ms never did, and silence was declared 11.6s later, only because
+     * the 2700-byte congestion window filled and the writes stopped. On connection 2 (PTO 329ms) no
+     * expiry fired at all in 10.9s. The platform reported Offline first.
+     *
+     * Two arms: [WALK_ECHO_INTERVAL], where the first expiry fires and the second never does, and
+     * [FAST_WRITE_INTERVAL], under the path's own PTO, where none fires. The downlink alone is dark and
+     * the monitor never moves, so the only trigger that can re-home the connection is the data-plane
+     * one. The bound is one write interval (the first write the path fails to answer) plus
+     * [SILENT_PATH_PATIENCE], plus [UNANSWERED_WRITE_SLACK] for the probe to be put on the wire.
+     */
+    @Test
+    fun aPathThatGoesDarkUnderAWritingApplicationIsDeclaredSilentWithinThePatience() =
+        runTest {
+            val scheduler = testScheduler
+
+            class Arm(
+                val writeInterval: Duration,
+                val detection: Detection,
+                val expiriesSpent: Long,
+                val attempts: List<MigrationResult>,
+            )
+
+            suspend fun runArm(writeInterval: Duration): Arm {
+                val monitor = SimNetworkMonitor.on(WIFI)
+                val downlinkDark =
+                    PathImpairment(
+                        latency = DEFAULT_PATH_LATENCY,
+                        reach = LinkReach(uplink = PathReach.Open, downlink = PathReach.Dark),
+                    )
+                lateinit var arm: Arm
+                withMigrationSim(
+                    simEnv(),
+                    seed = 924_001L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    serverQuicOptions = migrationSimOptions(idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD),
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy before the path goes dark")
+                        awaitSpareDcids()
+
+                        val probedAt = CompletableDeferred<Long>()
+                        val probeWatcher =
+                            client.launch {
+                                clientDriver.pathState.first { it is QuicPathState.Probing }
+                                probedAt.complete(scheduler.currentTime)
+                            }
+                        val writer =
+                            client.launch {
+                                while (true) {
+                                    stream.send("w")
+                                    delay(writeInterval)
+                                }
+                            }
+                        val expiriesAtDark = clientDriver.stats().pathStats?.totalPtoCount ?: 0L
+                        val primary = pipe.paths().first()
+                        val wentDark = scheduler.currentTime
+                        pipe.impair(primary.local, downlinkDark)
+                        // Read while the connection is open: a closed one has no path to report.
+                        var expiriesSeen = expiriesAtDark
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK) {
+                            while (!probedAt.isCompleted && clientDriver.state.value !is QuicConnectionState.Closed) {
+                                clientDriver.stats().pathStats?.let { expiriesSeen = it.totalPtoCount }
+                                delay(50.milliseconds)
+                            }
+                        }
+                        val detection =
+                            if (probedAt.isCompleted) {
+                                Detection.Probed((probedAt.await() - wentDark).milliseconds)
+                            } else {
+                                Detection.ClosedFirst
+                            }
+                        val expiriesSpent = expiriesSeen - expiriesAtDark
+                        writer.cancel()
+                        probeWatcher.cancel()
+                        assertEquals(
+                            WIFI,
+                            monitor.state.value.networkId,
+                            "the platform must stay silent for this to measure the data plane",
+                        )
+                        arm = Arm(writeInterval, detection, expiriesSpent, client.attempts.toList())
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+                return arm
+            }
+
+            wrapTestBody {
+                for (writeInterval in listOf(WALK_ECHO_INTERVAL, FAST_WRITE_INTERVAL)) {
+                    val arm = runArm(writeInterval)
+                    val bound = arm.writeInterval + SILENT_PATH_PATIENCE + UNANSWERED_WRITE_SLACK
+                    val detection = arm.detection
+                    assertTrue(
+                        detection is Detection.Probed && detection.after <= bound,
+                        "writing every ${arm.writeInterval}, the dark path was $detection" +
+                            ", past the $bound bound, having spent ${arm.expiriesSpent} loss-detection expiries. " +
+                            "Each write re-arms the PTO from the latest send (RFC 9002 §6.2.1), so the expiry count " +
+                            "stalls and a ceiling judged only on an expiry never gets asked. Attempts: ${arm.attempts}",
+                    )
+                }
+            }
+        }
+
+    /**
      * A recorded trace says which of the reactor's two triggers woke a migration.
      *
      * The load-bearing assertion is the negative one: the monitor never moves here, so a trace claiming
@@ -2583,6 +2700,21 @@ abstract class MigrationSimTestSuite {
             }
         }
 
+    /** How a dark path's episode ended for [aPathThatGoesDarkUnderAWritingApplicationIsDeclaredSilentWithinThePatience]. */
+    private sealed interface Detection {
+        /** The reactor started probing [after] the path went dark. */
+        data class Probed(
+            val after: Duration,
+        ) : Detection {
+            override fun toString() = "probed $after after it went dark"
+        }
+
+        /** The connection closed without the path ever being declared silent. */
+        data object ClosedFirst : Detection {
+            override fun toString() = "never probed before the connection closed"
+        }
+    }
+
     private companion object {
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
@@ -2621,6 +2753,15 @@ abstract class MigrationSimTestSuite {
          * measurement, never a threshold: nothing in production reads it.
          */
         val ANDROID_MONITOR_LAG = 11_500.milliseconds
+
+        /** The 2026-09-24 walk probe's echo cadence (`echoIntervalMs=250`). */
+        val WALK_ECHO_INTERVAL = 250.milliseconds
+
+        /** A write cadence under the sim path's PTO, so no expiry fires at all: the walk's v4 connection 2. */
+        val FAST_WRITE_INTERVAL = 100.milliseconds
+
+        /** Room for the reactor to put its probe on the wire once silence is declared. */
+        val UNANSWERED_WRITE_SLACK = 500.milliseconds
 
         /**
          * The cellular excursion #385 recorded on a real iPhone ride trace — Wi-Fi → cellular → Wi-Fi
