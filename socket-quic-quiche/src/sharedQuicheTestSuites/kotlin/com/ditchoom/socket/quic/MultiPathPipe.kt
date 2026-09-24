@@ -31,13 +31,14 @@ import kotlin.time.Duration
  * loopback burst of 12 migrations survives both patched and unpatched quiche (RTT≈0 leaves no window),
  * while a real ~40ms path reproduced it immediately.
  *
- * [reach] is the #447 condition: a [PathReach.Dark] path swallows everything in both directions, so the
- * PATH_CHALLENGE is never answered and validation runs out its RFC 9000 §8.2.4 budget. It is a
- * property of the path rather than of the pipe so one path can die while the others stay healthy —
- * which is what a real handoff looks like and what `ImpairedPipe.blackhole` (whole-pipe) cannot model.
+ * [reach] is the #447 condition: a [PathReach.Dark] path swallows everything, so the PATH_CHALLENGE
+ * is never answered and validation runs out its RFC 9000 §8.2.4 budget. It is a property of the path
+ * rather than of the pipe so one path can die while the others stay healthy — which is what a real
+ * handoff looks like and what `ImpairedPipe.blackhole` (whole-pipe) cannot model.
  * [PathReach.DarkUntil] is the walk's cellular attach: a link that is dark for a while and then
  * answers every path on it, which no per-path or per-index blackhole can express. [PathReach.HeldUntil]
- * is the same attach on a link that queues instead of dropping.
+ * is the same attach on a link that queues instead of dropping. [LinkReach] gives each direction its
+ * own reach, because a link can fail one way only.
  *
  * [mtu] is #637's condition, and it is keyed on *size* where [reach] is keyed on time: a link that
  * carries the connection perfectly and silently swallows anything past [LinkMtu.Bounded.bytes]. A
@@ -49,9 +50,40 @@ internal data class PathImpairment(
     val latency: Duration = Duration.ZERO,
     val jitter: Duration = Duration.ZERO,
     val loss: Double = 0.0,
-    val reach: PathReach = PathReach.Open,
+    val reach: LinkReach = LinkReach.Open,
     val mtu: LinkMtu = LinkMtu.Unbounded,
 )
+
+/** Which way a datagram crosses a path, from the client's side: [Uplink] is client→server. */
+internal enum class LinkDirection { Uplink, Downlink }
+
+/**
+ * A path's [PathReach] in each direction.
+ *
+ * The 2026-09-20 iPhone walk (leg 3, connection 1) is why this is two values: every PATH_CHALLENGE
+ * the phone sent reached the server, which answered each within 0.1 ms, and not one datagram
+ * of any size came back for 30 s. A reach shared by both directions can only say "the path is dark",
+ * which also stops the probes, so the server never answers and nothing distinguishes the two
+ * failures. Each direction takes any [PathReach], so a link that is dark one way and attaches late
+ * the other is a value like any other.
+ */
+internal data class LinkReach(
+    val uplink: PathReach,
+    val downlink: PathReach,
+) {
+    /** The same reach both ways: a link that dies, attaches or holds as a whole. */
+    constructor(bothWays: PathReach) : this(bothWays, bothWays)
+
+    fun toward(direction: LinkDirection): PathReach =
+        when (direction) {
+            LinkDirection.Uplink -> uplink
+            LinkDirection.Downlink -> downlink
+        }
+
+    companion object {
+        val Open: LinkReach = LinkReach(PathReach.Open)
+    }
+}
 
 /**
  * Whether a path carries datagrams, and when: always, never, only once the sim's clock reaches an
@@ -112,8 +144,8 @@ internal sealed interface LinkMtu {
  * One seeded [Random] under a lock draws a **fixed two draws per datagram** (loss roll, jitter
  * fraction) in pipe-arrival order, the same discipline [ImpairmentConfig] documents: the decision
  * sequence is a pure function of the seed and arrival order, never of which impairments are enabled.
- * A dark-path ([PathReach]) drop consumes **no** draws, so killing a path mid-run does not shift
- * the seeded sequence of everything around it.
+ * A dark-path ([PathReach]) drop consumes **no** draws in either direction, so killing a path, or
+ * one direction of it, mid-run does not shift the seeded sequence of everything around it.
  *
  * Delivery uses `delay()` on [scope], so under `runTest` the whole substrate runs on virtual time and
  * an 80ms path costs no wall clock. Zero computed delay enqueues synchronously, keeping a
@@ -152,6 +184,12 @@ internal class MultiPathPipe(
         @Volatile var dropped = 0
 
         @Volatile var blackholed = 0
+
+        /** Datagrams this path actually handed to the server — [sentToServer] less everything the link swallowed. */
+        @Volatile var deliveredToServer = 0
+
+        /** Datagrams this path actually handed to the client — [sentToClient] less everything the link swallowed. */
+        @Volatile var deliveredToClient = 0
 
         /** Datagrams the link swallowed for exceeding its [LinkMtu.Bounded.bytes] — #637's observable. */
         @Volatile var oversized = 0
@@ -260,25 +298,27 @@ internal class MultiPathPipe(
     }
 
     /**
-     * Apply [path]'s impairment to one datagram and schedule (or drop) it. Returns whether it will be
-     * delivered. The impairment is symmetric — it belongs to the link, not to a direction — so an 80ms
-     * path costs 80ms each way regardless of who sent.
+     * Apply [path]'s impairment to one datagram crossing it toward [direction], and schedule (or drop)
+     * it. Latency, jitter, loss and MTU belong to the link, so an 80ms path costs 80ms each way
+     * regardless of who sent; only [PathImpairment.reach] is per direction.
      */
     private fun schedule(
         path: Path,
+        direction: LinkDirection,
         source: PlatformBuffer,
         len: Int,
         origin: String,
         deliver: (PipeDatagram) -> Unit,
     ) {
         val impairment = path.impairment
+        val reach = impairment.reach.toward(direction)
         var delay = Duration.ZERO
         synchronized(lock) {
             // Before every drop branch: the size an endpoint chose is a fact about the sender, not
             // about whether this link happened to carry it.
             if (len > path.stats.largestOffered) path.stats.largestOffered = len
             val dark =
-                when (val reach = impairment.reach) {
+                when (reach) {
                     PathReach.Open, is PathReach.HeldUntil -> false
                     PathReach.Dark -> true
                     is PathReach.DarkUntil -> now() < reach.at
@@ -305,7 +345,7 @@ internal class MultiPathPipe(
                 return
             }
             val held =
-                when (val reach = impairment.reach) {
+                when (reach) {
                     is PathReach.HeldUntil -> (reach.at - now()).coerceAtLeast(Duration.ZERO)
                     PathReach.Open, PathReach.Dark, is PathReach.DarkUntil -> Duration.ZERO
                 }
@@ -359,9 +399,13 @@ internal class MultiPathPipe(
             target: SendTarget,
         ): SendOutcome {
             path.stats.sentToServer++
-            schedule(path, buffer, len, "client->server@${path.local.port}") {
+            schedule(path, LinkDirection.Uplink, buffer, len, "client->server@${path.local.port}") {
                 // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
-                if (toServer.trySend(ServerDatagram(it, path.local)).isFailure) ledger.release(it)
+                if (toServer.trySend(ServerDatagram(it, path.local)).isFailure) {
+                    ledger.release(it)
+                } else {
+                    path.stats.deliveredToServer++
+                }
             }
             // A datagram lost on the wire still LEFT this endpoint. Same contract ImpairedPipe states:
             // impairment models the wire, not a send failure, and conflating them would make these
@@ -392,9 +436,13 @@ internal class MultiPathPipe(
             val path = synchronized(lock) { to?.let { pathsByKey[it] } ?: pathsByAddr.values.firstOrNull() }
             if (path == null) return SendOutcome.Sent // replied to an address the sim never opened
             path.stats.sentToClient++
-            schedule(path, buffer, len, "server->client@${path.local.port}") {
+            schedule(path, LinkDirection.Downlink, buffer, len, "server->client@${path.local.port}") {
                 // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
-                if (path.inbound.trySend(it).isFailure) ledger.release(it)
+                if (path.inbound.trySend(it).isFailure) {
+                    ledger.release(it)
+                } else {
+                    path.stats.deliveredToClient++
+                }
             }
             return SendOutcome.Sent
         }

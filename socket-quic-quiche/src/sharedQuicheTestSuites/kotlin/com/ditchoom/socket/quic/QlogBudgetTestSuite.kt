@@ -152,7 +152,7 @@ abstract class QlogBudgetTestSuite {
                         withMigrationSim(
                             simEnv(),
                             seed = 627_100L + n,
-                            primaryImpairment = PathImpairment(reach = PathReach.Dark),
+                            primaryImpairment = PathImpairment(reach = LinkReach(PathReach.Dark)),
                             quicOptions = migrationSimOptions(trace = captureInto(directory, name)),
                             establishTimeout = 2.seconds,
                         ) { }
