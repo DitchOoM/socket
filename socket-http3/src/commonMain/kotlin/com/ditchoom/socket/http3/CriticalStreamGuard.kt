@@ -68,13 +68,11 @@ internal class CriticalStreamGuard {
      * abort the connection with, or `null` when the connection itself has already ended and this is
      * teardown rather than the peer closing a critical stream.
      *
-     * **The distinction is not visible in the read result**, which is why it is made here rather than at
-     * each reader. `QuicheDriver` answers a read parked on a stream whose connection has gone away with
-     * `ReadResult.End` — its `StreamRecvResult.ConnectionGone` arm, byte-for-byte the value a peer's FIN
-     * produces (a typed connection-gone read result needs buffer's `ReadResult` to gain a case).
-     * Reading `End` as the peer's FIN unconditionally would therefore report every
-     * clean close as a protocol violation the peer never committed — worse than silence, because it
-     * accuses. [connectionEnded] is the fact that tells them apart.
+     * A read on a stream whose connection ended without the peer's FIN throws the connection's
+     * [com.ditchoom.socket.quic.QuicCloseException] rather than returning end-of-stream, so a reader
+     * reaching here normally saw a real FIN. [connectionEnded] still guards the teardown edge: a peer
+     * that FINs its critical streams as part of closing the connection is ending the connection, not
+     * committing the violation, and reporting it would accuse the peer of one.
      *
      * Returning the violation rather than a `Boolean` for the same reason [claim] does: the caller
      * cannot end up choosing the error code itself.

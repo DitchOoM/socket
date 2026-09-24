@@ -23,9 +23,8 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Shared **idle-timeout / keepalive** test suite (issue #87, suite #5). Verifies the two halves of QUIC
  * idle behaviour that were previously untested:
- *  - an idle connection times out and transitions cleanly to closed (a pending read returns
- *    [ReadResult.End], and `withQuicConnection` returns normally — not a thrown read-timeout, not an
- *    abrupt cancellation);
+ *  - an idle connection times out, and a read pending on it throws [QuicCloseException] carrying the
+ *    local idle timeout — not [ReadResult.End], not a read-timeout, not an abrupt cancellation;
  *  - **activity resets the idle timer**: a connection kept busy with traffic spaced closer than the
  *    idle timeout stays alive well past that timeout (the QUIC keepalive property — the library exposes
  *    no PING interval, so application traffic stands in for it).
@@ -33,7 +32,7 @@ import kotlin.time.Duration.Companion.seconds
  * Same 3-tier shape as the other suites: commonTest abstract + per-platform [testTlsConfig]; Android has
  * a self-contained parallel copy (`AndroidQuicIdleTimeoutTests`).
  *
- * **Determinism.** The idle test asserts the *kind* of result (clean End vs a thrown read-timeout), not
+ * **Determinism.** The idle test asserts the *kind* of result (typed close vs a thrown read-timeout), not
  * a wall-clock value, so it's robust: if idle-timeout never fired, the read would block to its own
  * (longer) timeout and the test would fail. The keepalive test uses a gap far below the idle timeout
  * (generous margin) so scheduling jitter can't make it flake.
@@ -49,13 +48,15 @@ abstract class QuicIdleTimeoutTestSuite {
     // ---- tests -------------------------------------------------------------------------------------
 
     /**
-     * An idle connection must time out and close cleanly. The server accepts the stream then stays in
-     * the connection (so it doesn't close on handler-return); with no traffic, the idle timer fires and
-     * the client's pending read returns [ReadResult.End]. If idle-timeout didn't fire, the read would
-     * block to its own (longer) timeout and throw — failing the test.
+     * An idle connection must time out, and a read pending on it must say so: the server accepts the
+     * stream then stays in the connection without ever FINing it; with no traffic, the idle timer fires
+     * and the client's pending read throws [QuicCloseException] with a local [QuicError.IdleTimeout].
+     * [ReadResult.End] would claim the peer finished the stream, which it never did. If idle-timeout
+     * didn't fire, the read would block to its own (longer) timeout and throw a
+     * `TimeoutCancellationException` instead — failing the test.
      */
     @Test
-    fun idleConnectionTimesOutWithCleanEnd() =
+    fun idleTimeoutFailsAPendingReadWithTheTypedClose() =
         // Budget covers several withLiveQuicConnection attempts: on a virtualized macOS runner's loopback a
         // connection can come up drain-storm-wedged (handshakes, then passes no bytes after a transient
         // network-down flap), so a warmup probe retries a fresh connection before the real idle-out wait. The
@@ -80,12 +81,18 @@ abstract class QuicIdleTimeoutTestSuite {
                             if (stream.echoOnce("warmup") != "warmup") retryConnection()
                             confirmLive()
                             // Connection proven live — now go idle. With no traffic the idle timer fires and
-                            // the pending read returns End. If idle-timeout didn't fire, the read blocks to its
-                            // own (longer) timeout and throws — failing the test.
-                            val result = stream.read(READ_TIMEOUT)
-                            assertTrue(
-                                result is ReadResult.End,
-                                "idle timeout should close the stream cleanly (End) within $READ_TIMEOUT, got $result",
+                            // the pending read throws the typed close; the server never sent FIN.
+                            val closed =
+                                assertFailsWith<QuicCloseException>(
+                                    "a read pending across the idle timeout must throw the typed close within " +
+                                        "$READ_TIMEOUT — End would claim a FIN the peer never sent",
+                                ) {
+                                    stream.read(READ_TIMEOUT)
+                                }
+                            assertEquals(
+                                QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                                closed.closeReason,
+                                "the pending read must carry the local idle timeout that ended the connection",
                             )
                         }
                     } finally {
@@ -496,7 +503,7 @@ abstract class QuicIdleTimeoutTestSuite {
         // wall-clock without altering any timing relationship — see [Duration.scaled]. Ratios, not
         // absolutes, carry the assertions here.
         private val IDLE_TIMEOUT = 2.seconds.scaled
-        private val READ_TIMEOUT = 10.seconds.scaled // 5× IDLE_TIMEOUT so a working idle-close returns End first
+        private val READ_TIMEOUT = 10.seconds.scaled // 5× IDLE_TIMEOUT so a working idle-close fires first
 
         // The production default, and the timer that must NOT be the one ending the stalled handshake:
         // far longer than that test's 2s bound, so only the bound can fire inside runQuicTest's budget.

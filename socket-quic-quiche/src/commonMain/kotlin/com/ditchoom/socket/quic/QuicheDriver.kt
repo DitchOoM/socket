@@ -3564,6 +3564,20 @@ class DriverStreamAdapter(
             ?.let { ReadResult.Data(it) }
 
     /**
+     * The read verdict once the connection is gone and [pendingData] is dry, taken from the slot's
+     * latched [StreamEnd]: a peer FIN is [ReadResult.End], a peer RESET_STREAM is [ReadResult.Reset],
+     * and a stream still [StreamEnd.Open] — the connection ended with no FIN for this stream (an idle
+     * timeout, a CONNECTION_CLOSE, a local close) — throws the connection's typed close. Never End for
+     * a stream the peer did not finish.
+     */
+    private fun verdictAfterConnectionGone(): ReadResult =
+        when (slot.end) {
+            StreamEnd.Fin -> ReadResult.End
+            is StreamEnd.Reset -> ReadResult.Reset
+            StreamEnd.Open -> throw driver.connectionClosed()
+        }
+
+    /**
      * Release the teardown-drained chunks this stream will never deliver. Called when the read side is
      * gone for good ([QuicheStreamByteStream.close] / [QuicheStreamByteStream.reset]) — after that no
      * `read()` can hand them out, so holding them would leak a pooled/native buffer per undelivered chunk.
@@ -3795,8 +3809,8 @@ class DriverStreamAdapter(
                             is StreamRecvResult.ConnectionGone -> {
                                 // Includes the teardown sentinel from failCommand: the connection went away
                                 // while this StreamRecv was queued, so whatever quiche still held for us was
-                                // drained into the slot on the way out — deliver it before ending the stream.
-                                return@withTimeout takePending() ?: ReadResult.End
+                                // drained into the slot on the way out — deliver it before the verdict.
+                                return@withTimeout takePending() ?: verdictAfterConnectionGone()
                             }
                         }
                     }
@@ -3828,11 +3842,11 @@ class DriverStreamAdapter(
         } catch (_: ClosedSendChannelException) {
             // The connection closed before this read could enqueue its StreamRecv. transitionToClosed
             // drains quiche into the slot *before* closing `commands`, so anything still owed to this
-            // stream is queued by the time we can observe the closure — hand it over, don't call End.
-            return pendingData() ?: ReadResult.End
+            // stream is queued by the time we can observe the closure — hand it over before the verdict.
+            return pendingData() ?: verdictAfterConnectionGone()
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
             // Same, for a reader parked on dataSignal when cleanup() closed it.
-            return pendingData() ?: ReadResult.End
+            return pendingData() ?: verdictAfterConnectionGone()
         } finally {
             // Taken from the queue but never delivered — an external cancellation unwound us after the
             // take (the timeout case returned it above). Put it back so the next read() still gets it.

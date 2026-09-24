@@ -19,7 +19,8 @@ import kotlinx.coroutines.sync.Mutex
  * Adapts a receive-only [ByteSource] to a typed [Receiver] using a [Codec] — the honest counterpart of
  * [CodecConnection] for a **unidirectional inbound** stream. [receive] decodes framed messages until
  * the peer FINs ([ReadResult.End]), at which point the flow completes (EOF). A peer reset surfaces as
- * a [SocketClosedException.ConnectionReset].
+ * a [SocketClosedException.ConnectionReset]; a connection that ends without the peer's FIN fails the
+ * flow with the transport's typed close (on QUIC, a `QuicCloseException` carrying the reason).
  *
  * There is no send side (it is a [ByteSource], not a [com.ditchoom.buffer.flow.ByteStream]); the
  * receive side discovers its end rather than announcing it, which is why there is no `close()` here.

@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -357,19 +358,21 @@ class QuicLocalServerTests {
     /**
      * Anti-vacuous guard for [replyLostInFlightIsRetransmittedBeforeTheServerCloses], and the
      * pre-#321 behaviour written down: with [QuicCloseLinger.Immediate] the same scenario loses the
-     * reply outright. If the proxy ever stopped dropping the reply burst — the one way the positive
-     * test could pass without the fix doing anything — this would start passing the payload through
-     * and fail here instead.
+     * reply outright, and the client's read reports the server's CONNECTION_CLOSE as the typed
+     * [QuicCloseException] — the stream's FIN never arrived, so it is not an end-of-stream. If the proxy
+     * ever stopped dropping the reply burst — the one way the positive test could pass without the fix
+     * doing anything — the client would read the whole reply and its FIN, and this would fail.
      */
     @Test
     fun replyLostInFlightIsTruncatedByAnImmediateClose() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                val received = replyUnderDroppedDatagrams(QuicCloseLinger.Immediate, readBudget = 4.seconds)
-                assertTrue(
-                    received.length < replyPayload.length,
-                    "closing immediately after the handler cannot deliver a dropped reply — got ${received.length} bytes",
-                )
+                assertFailsWith<QuicCloseException>(
+                    "closing immediately after the handler cannot deliver a dropped reply, and the client's " +
+                        "read must report that close rather than a clean end-of-stream",
+                ) {
+                    replyUnderDroppedDatagrams(QuicCloseLinger.Immediate, readBudget = 4.seconds)
+                }
             }
         }
 
@@ -436,8 +439,10 @@ class QuicLocalServerTests {
                     }
 
                 try {
-                    received = done.await()
+                    // Settled before the drop check so a typed close still gets the anti-vacuous assert.
+                    val outcome = runCatching { done.await() }
                     assertTrue(proxy.droppedCount > 0, "no datagram was dropped — the impairment never fired")
+                    received = outcome.getOrThrow()
                 } finally {
                     clientJob.cancel()
                     serverJob.cancel()

@@ -68,7 +68,10 @@ suspend fun ByteSource.readInto(
     return bytesRead
 }
 
-/** Emits chunks until clean EOF or reset (both terminate the flow quietly). */
+/**
+ * Emits chunks until clean EOF or reset (both terminate the flow quietly). A connection that ends
+ * without either fails the flow with the transport's typed close (on QUIC, a `QuicCloseException`).
+ */
 fun ByteSource.readFlow(deadline: Duration = readPolicy.toDeadline()): Flow<ReadBuffer> =
     flow {
         while (isOpen) {

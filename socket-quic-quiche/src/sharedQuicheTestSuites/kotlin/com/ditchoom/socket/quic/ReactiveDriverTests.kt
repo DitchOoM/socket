@@ -1236,7 +1236,8 @@ class ReactiveDriverTests {
         runQuicTest {
             // The terminal path the wall-clock integration test (QuicIdleTimeoutTestSuite) covers, made
             // deterministic: quiche's idle timer fires, quiche idle-closes, and the driver must transition to
-            // Closed AND close its command channel (the coupled signal a parked read keys off to return End).
+            // Closed AND close its command channel (the coupled signal a parked read keys off to throw the
+            // typed close — [ReadOnIdleCloseIsTypedTests]).
             // No keepalive (so the fire is handed to quiche); closeOnTimeout makes that fire idle-close.
             val api = StubQuicheApi()
             api.connTimeout = 50.milliseconds

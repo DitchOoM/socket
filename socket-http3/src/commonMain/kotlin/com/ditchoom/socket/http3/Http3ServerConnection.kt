@@ -13,6 +13,7 @@ import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
@@ -148,6 +149,11 @@ class Http3ServerConnection internal constructor(
                 } catch (_: QuicStreamException) {
                     // Peer STOP_SENDING / RESET_STREAM on this one stream (e.g. a client cancelling a
                     // request mid-response) — stream-scoped; the connection keeps serving other streams.
+                } catch (_: QuicCloseException) {
+                    // The connection ended under this stream's handler — a read parked on a stream the
+                    // client never finished reports the close, not end-of-stream. That is the connection's
+                    // lifetime finishing: [serve] observes it through the streams flow completing. Escaping
+                    // [scope]'s supervisor would report it as an uncaught failure instead.
                 }
             }
         }
@@ -355,6 +361,10 @@ class Http3ServerConnection internal constructor(
                 }
             }
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: QuicCloseException) {
+            // The connection ended with the control stream still open — the connection's close, not a
+            // control-stream violation. [servePeerStreams] ends this reader.
             throw e
         } catch (e: Http3StreamException) {
             abortConnection(e)
