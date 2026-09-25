@@ -1849,7 +1849,7 @@ abstract class MigrationSimTestSuite {
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
                     // The Wi-Fi link is dead to every socket the default route opens on it.
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                     standby = SimStandby.Link(CELLULAR, MutableStateFlow(SimAttach.Attached)),
                 ) {
                     val echo = echoOver(this)
@@ -1858,7 +1858,7 @@ abstract class MigrationSimTestSuite {
                         awaitSpareDcids()
 
                         val wentDark = scheduler.currentTime
-                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         val after = runCatching { echo.round("after") }.getOrElse { "CONNECTION DIED: $it" }
                         val recoveredIn = (scheduler.currentTime - wentDark).milliseconds
 
@@ -1917,14 +1917,14 @@ abstract class MigrationSimTestSuite {
                             migration = MigrationPolicy.Automatic,
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                     standby = SimStandby.Link(CELLULAR, attach),
                 ) {
                     val echo = echoOver(this)
                     try {
                         assertEquals("before", echo.round("before"))
                         awaitSpareDcids()
-                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         // Data in flight on the dead path: what makes it go silent at all.
                         val after = client.async { runCatching { echo.round("after") }.getOrElse { "CONNECTION DIED: $it" } }
 
