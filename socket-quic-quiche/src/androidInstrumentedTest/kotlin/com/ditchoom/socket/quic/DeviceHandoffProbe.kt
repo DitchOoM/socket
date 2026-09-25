@@ -15,6 +15,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.installAndroidApplicationContext
 import com.ditchoom.socket.processDefault
@@ -208,12 +209,22 @@ class DeviceHandoffProbe {
                 else -> WalkKeyLog.Into(File(ctx.filesDir, "keys").also { it.mkdirs() })
             }
 
+        // Which standby link the connections ask for: -e probeStandbyLink OnDemand reproduces the walk
+        // before KeepCellularReady existed, for an A/B against the default.
+        val standbyLink =
+            when (val requested = arg("probeStandbyLink", "KeepCellularReady")) {
+                "KeepCellularReady" -> StandbyLink.KeepCellularReady
+                "OnDemand" -> StandbyLink.OnDemand
+                else -> error("-e probeStandbyLink must be KeepCellularReady or OnDemand, was '$requested'")
+            }
+
         log.writeText("")
         emit(kept.line)
         emit("KEYS ${keptKeys.line}")
         emit(
             "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
-                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog keys=$keyLog ${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
+                "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog keys=$keyLog standbyLink=$standbyLink " +
+                "${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
                 diskFreeAtStart.line,
         )
         emit(targets.lanesLine(echoIntervalMs.milliseconds))
@@ -324,6 +335,7 @@ class DeviceHandoffProbe {
                     idleTimeout = IDLE_TIMEOUT,
                     keepAliveInterval = 5.seconds,
                     migration = MigrationPolicy.Automatic,
+                    standbyLink = standbyLink,
                 )
             var retryDelayMs = RECONNECT_MIN_MS
             while (System.currentTimeMillis() < deadline) {
@@ -464,6 +476,9 @@ class DeviceHandoffProbe {
             // de-dupes away — a link flapping while the rung folds back to itself is exactly when the
             // OS has most to say.
             val osFollow = launch { osNet.follow(monitor) }
+            // The shared cellular standby request, as the connections hold it: requested, attached,
+            // withdrawn, or refused (a missing CHANGE_NETWORK_STATE is a line here, never silence).
+            val standbyFollow = launch { CellularStandby.processDefault().state.collect { emit("STANDBY state=$it") } }
             lanes
                 .map { probe ->
                     launch {
@@ -472,6 +487,7 @@ class DeviceHandoffProbe {
                     }
                 }.joinAll()
             osFollow.cancel()
+            standbyFollow.cancel()
             heartbeat.cancel()
         }
         osSource.unregister()

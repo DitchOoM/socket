@@ -246,12 +246,16 @@ sealed interface QuicheCmd {
 
     /**
      * Actively migrate the connection to a new local path at [target]. The driver opens the path
-     * socket, probes it, and on validation switches the active path (RFC 9000 §9).
+     * socket through [via], probes it, and on validation switches the active path (RFC 9000 §9).
      */
-    class Migrate(
+    class Migrate internal constructor(
         val target: MigrationTarget,
         val result: CompletableDeferred<MigrationResult>,
-    ) : QuicheCmd
+        internal val via: PathVia,
+    ) : QuicheCmd {
+        /** A migration through the connection's own factory, onto the platform's default route. */
+        constructor(target: MigrationTarget, result: CompletableDeferred<MigrationResult>) : this(target, result, PathVia.DefaultRoute)
+    }
 }
 
 /**

@@ -208,6 +208,15 @@ internal sealed interface MigrationTrigger {
  * re-entered on a path that is still dark after the ladder gave up. Both are closed in
  * [awaitRetrySlot], where the flow is one of the two things a data-plane backoff is abandoned on.
  *
+ * ## A standby link
+ *
+ * A data-plane trigger names no new link, so its attempt opens a socket wherever the platform's
+ * default route points — which, while the platform still names the link that died, is that same dead
+ * link. When [standby] has another link attached ([StandbyLink.KeepCellularReady] on Android), the
+ * attempt is pinned to it instead ([routeFor]), and a success attaches the reactor to it. When the
+ * platform later names that link as its default, the control-plane trigger finds the connection
+ * already there and does not move it again.
+ *
  * ## Why a failed attempt cannot wait for the next network event
  *
  * The event a "keep watching" answer would wait for is already in the past. The gate above the
@@ -259,6 +268,7 @@ internal fun wireAutoMigration(
     monitor: NetworkMonitor,
     pathLiveness: StateFlow<PathLiveness>,
     capture: TraceCapture,
+    standby: StandbyPaths = StandbyPaths.None,
 ) {
     when (quicOptions.migration) {
         MigrationPolicy.Forbidden, MigrationPolicy.Manual -> return
@@ -312,12 +322,24 @@ internal fun wireAutoMigration(
                 }
             var attempt = 1
             while (true) {
-                val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)
+                // Chosen per attempt: a standby link that attached during the backoff is taken now.
+                val route = routeFor(trigger, attachedTo, standby.current)
+                val result =
+                    when (route) {
+                        Route.DefaultRoute -> connection.migrate(MigrationTarget.FreshLocalEndpoint)
+                        is Route.Standby -> route.ready.migrate()
+                    }
                 // One site, so no outcome can be added that forgets to record itself.
                 capture.record { it.migrationAttempt(trigger, attempt, result) }
                 when (result) {
                     is MigrationResult.Succeeded -> {
-                        attachedTo = attachOnSuccess
+                        attachedTo =
+                            when (route) {
+                                Route.DefaultRoute -> attachOnSuccess
+                                // The connection is on the standby link now, whatever the monitor still
+                                // names; the monitor naming that link later is then no handoff.
+                                is Route.Standby -> Attachment.On(route.ready.id)
+                            }
                         return@collect
                     }
 
@@ -330,9 +352,10 @@ internal fun wireAutoMigration(
                     // this time" is worth saying again is the leaf's own answer, never a default.
                     is MigrationResult.Unmoved.Failed -> {
                         if (!result.retryableWithoutNewInformation()) return@collect
-                        val slot = awaitRetrySlot(trigger, monitor, pathLiveness, attachOnSuccess, backoffBeforeAttempt(attempt))
-                        if (!slot) return@collect
-                        attempt++
+                        when (awaitRetrySlot(trigger, monitor, pathLiveness, standby, attachOnSuccess, backoffBeforeAttempt(attempt))) {
+                            RetrySlot.Retry -> attempt++
+                            RetrySlot.Abandon -> return@collect
+                        }
                     }
                 }
             }
@@ -391,8 +414,11 @@ private const val BACKOFF_SHIFT_CAP = 20
  * control-plane handoff, or — for a data-plane one, which names no new link — the link the connection
  * was already told it is on.
  *
- * Returns `true` when the backoff elapsed with no better idea available — retry. Returns `false` when
- * something arrived first that makes this retry stale, and there are two such things, one per trigger.
+ * Returns [RetrySlot.Retry] when the backoff elapsed with no better idea available, or when a standby
+ * link attached during a data-plane backoff (see [routeFor]) — there is now somewhere to go, so waiting
+ * out the rest of the backoff would only keep the connection on the dead path. Returns
+ * [RetrySlot.Abandon] when something arrived first that makes this retry stale, and there are two such
+ * things, one per trigger.
  *
  * **A different routable, identified link (both triggers).** That link is new information, the
  * collector is about to be handed it, and it should be migrated onto instead of whatever we were
@@ -419,16 +445,20 @@ private suspend fun awaitRetrySlot(
     trigger: MigrationTrigger,
     monitor: NetworkMonitor,
     pathLiveness: StateFlow<PathLiveness>,
+    standby: StandbyPaths,
     attempting: Attachment,
     backoff: Duration,
-): Boolean =
-    withTimeoutOrNull(backoff) {
+): RetrySlot {
+    // What the attempt that just failed could already use. Only a standby link it could not is news;
+    // re-offering the same one would skip the backoff after every failure onto it.
+    val offeredToTheFailedAttempt = standby.current
+    return withTimeoutOrNull(backoff) {
         merge(
             monitor.state
                 .filter { it.canRouteOffLink }
                 .map { it.networkId }
                 .filter { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it) }
-                .map { },
+                .map { RetrySlot.Abandon },
             when (trigger) {
                 // A control-plane retry is trying to reach a link the platform says we have moved to,
                 // and the *old* path coming good says nothing about whether it can. Its contract —
@@ -436,10 +466,73 @@ private suspend fun awaitRetrySlot(
                 MigrationTrigger.LinkChanged -> emptyFlow()
                 // A data-plane retry exists only because the path had stopped answering. The moment it
                 // answers again the premise is gone.
-                MigrationTrigger.PathStoppedAnswering -> pathLiveness.filter { it !is PathLiveness.Silent }.map { }
+                MigrationTrigger.PathStoppedAnswering -> pathLiveness.filter { it !is PathLiveness.Silent }.map { RetrySlot.Abandon }
+            },
+            when (trigger) {
+                MigrationTrigger.LinkChanged -> emptyFlow()
+                // A standby link attaching is somewhere to go that the backoff was waiting without:
+                // retry now, onto it. The next attempt re-reads it through [routeFor].
+                MigrationTrigger.PathStoppedAnswering ->
+                    standby.changes
+                        .filter { it is StandbyPath.Ready && !attempting.isAlready(it.id) && !offeredToTheFailedAttempt.offers(it.id) }
+                        .map { RetrySlot.Retry }
             },
         ).first()
-    } == null
+    } ?: RetrySlot.Retry
+}
+
+/** Whether this is a standby link on [id]. */
+private fun StandbyPath.offers(id: NetworkId): Boolean =
+    when (this) {
+        StandbyPath.Unavailable -> false
+        is StandbyPath.Ready -> this.id == id
+    }
+
+/** What ends a retry backoff: the next attempt, or the end of this ladder. */
+private sealed interface RetrySlot {
+    /** Attempt again: the backoff elapsed, or a standby link attached. */
+    data object Retry : RetrySlot
+
+    /** Stop: something made the retry stale — see [awaitRetrySlot]. */
+    data object Abandon : RetrySlot
+}
+
+/** Where one migration attempt opens its socket. */
+private sealed interface Route {
+    /** A fresh endpoint wherever the platform's default route points. */
+    data object DefaultRoute : Route
+
+    /** A fresh endpoint pinned to the standby link [ready]. */
+    class Standby(
+        val ready: StandbyPath.Ready,
+    ) : Route
+}
+
+/**
+ * Where an attempt for [trigger] should open its socket, given the link the reactor believes it is on
+ * and the standby link as it is now.
+ *
+ * Only the data-plane trigger moves onto the standby link. A path that stopped answering while the
+ * platform still names the same default link is exactly the case where the default route leads back
+ * onto the dead link, and a standby link beside it does not. A control-plane trigger is the platform
+ * naming its new default, which is where the default route already points.
+ *
+ * A standby link the reactor believes the connection is already on is not a move, so a dead standby
+ * path falls back to the default route.
+ */
+private fun routeFor(
+    trigger: MigrationTrigger,
+    attachedTo: Attachment,
+    standby: StandbyPath,
+): Route =
+    when (trigger) {
+        MigrationTrigger.LinkChanged -> Route.DefaultRoute
+        MigrationTrigger.PathStoppedAnswering ->
+            when (standby) {
+                StandbyPath.Unavailable -> Route.DefaultRoute
+                is StandbyPath.Ready -> if (attachedTo.isAlready(standby.id)) Route.DefaultRoute else Route.Standby(standby)
+            }
+    }
 
 /**
  * Whether asking [QuicScope.migrate] the identical question again can plausibly answer differently

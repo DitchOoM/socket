@@ -263,6 +263,7 @@ internal suspend fun buildJvmQuicConnection(
                 bufferFactory = bufferFactory,
                 remoteAddress = peer,
                 scope = connScope,
+                pathOrigin = path.origin,
                 // Full lifecycle teardown, run once by JvmQuicConnection.close() after the block:
                 // close the connection (driver flush) first, then cancel children, close the UDP
                 // channel (unblocks the selector — closing only `channel` would leak the selector

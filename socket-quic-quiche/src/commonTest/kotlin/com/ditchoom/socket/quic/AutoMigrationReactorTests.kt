@@ -27,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -63,6 +64,11 @@ class AutoMigrationReactorTests {
     private val wifi = NetworkId.Link(NetworkKind.Wifi, 1L)
     private val cellular = NetworkId.Link(NetworkKind.Cellular, 2L)
     private val ethernet = NetworkId.Link(NetworkKind.Ethernet, 3L)
+
+    private companion object {
+        /** Far past any count a backing-off reactor reaches in these tests. */
+        const val SPIN_GUARD = 100
+    }
 
     /**
      * A [QuicConnection] that records `migrate` calls and answers a scripted [MigrationResult].
@@ -147,6 +153,7 @@ class AutoMigrationReactorTests {
         policy: MigrationPolicy = MigrationPolicy.Automatic,
         migrateResult: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", 51234)),
         pathLiveness: MutableStateFlow<PathLiveness> = livenessFlow(),
+        standby: StandbyPaths = StandbyPaths.None,
         // Receiver, not just a parameter, so a test can advance the virtual clock. Every assertion in
         // this file used to be driven by a fresh `setNetworkId`, which is exactly the blind spot #453
         // lived in: the one thing no test could express was *time passing with no further input*.
@@ -154,7 +161,7 @@ class AutoMigrationReactorTests {
     ) = runTest {
         val connection = RecordingQuicConnection(UnconfinedTestDispatcher(testScheduler), migrateResult)
         try {
-            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness, TraceCapture.Off)
+            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness, TraceCapture.Off, standby)
             body(connection)
         } finally {
             connection.stop()
@@ -885,6 +892,134 @@ class AutoMigrationReactorTests {
                     "is #453 re-opened — the connection stops asking for the link the platform says it " +
                     "is on, and sits on the one it has left",
             )
+        }
+    }
+
+    /** A standby link a test attaches by hand. [moves] counts the migrations made onto it. */
+    private class ScriptedStandby(
+        private val result: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("192.0.2.7", 40001)),
+    ) : StandbyPaths {
+        private val state = MutableStateFlow<StandbyPath>(StandbyPath.Unavailable)
+        var moves = 0
+            private set
+
+        fun attach(id: NetworkId) {
+            state.value =
+                StandbyPath.Ready(id) {
+                    moves++
+                    // A reactor that stopped backing off would spin here forever on the test's
+                    // unconfined dispatcher; end it instead, so the count can say so.
+                    if (moves > SPIN_GUARD) MigrationResult.Unmoved.Impossible.ConnectionClosed else result
+                }
+        }
+
+        override val current: StandbyPath get() = state.value
+        override val changes: Flow<StandbyPath> = state
+    }
+
+    /**
+     * A path that stops answering while the platform still names its link moves onto an attached
+     * standby link, not onto the default route — which leads back onto the dead link.
+     */
+    @Test
+    fun aSilentPathMovesOntoAnAttachedStandbyLink() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent
+            assertEquals(1, standby.moves, "the attached standby link was not used")
+            assertEquals(0, conn.migrateCount, "the default route leads back onto the dead link")
+        }
+    }
+
+    /**
+     * After a move onto the standby link, the platform naming that link as its default is no handoff:
+     * the connection is already there.
+     */
+    @Test
+    fun thePlatformNamingTheStandbyLinkAfterAMoveOntoItIsNoHandoff() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            monitor.setNetworkId(cellular)
+            assertEquals(1, standby.moves)
+            assertEquals(0, conn.migrateCount, "the connection was moved a second time onto the link it was already on")
+        }
+    }
+
+    /** A control-plane handoff goes where the platform points, never to the standby link. */
+    @Test
+    fun aLinkChangeUsesTheDefaultRouteEvenWithAStandbyLinkAttached() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, standby = standby) { conn ->
+            monitor.setNetworkId(ethernet)
+            assertEquals(1, conn.migrateCount)
+            assertEquals(0, standby.moves)
+        }
+    }
+
+    /** Once on the standby link, that link going silent falls back to the default route. */
+    @Test
+    fun aSilentStandbyPathFallsBackToTheDefaultRoute() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            liveness.value = PathLiveness.Silent
+            assertEquals(1, standby.moves)
+            assertEquals(1, conn.migrateCount, "a dead standby path has nowhere to go but the default route")
+        }
+    }
+
+    /**
+     * A standby link that attaches while a data-plane retry is backing off is taken at once, not when
+     * the backoff runs out.
+     */
+    @Test
+    fun aStandbyLinkThatAttachesDuringABackoffIsTakenAtOnce() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated,
+            pathLiveness = liveness,
+            standby = standby,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            // Attempts at 0, 250ms and 750ms; the next is not due until 1750ms.
+            advanceTimeBy(800.milliseconds)
+            assertEquals(3, conn.migrateCount, "precondition: the dead-link ladder is backing off")
+
+            standby.attach(cellular)
+            assertEquals(1, standby.moves, "the standby link waited out a backoff it should have cut short")
+            advanceTimeBy(observationWindow)
+            assertEquals(3, conn.migrateCount, "the ladder kept probing the dead link after moving off it")
+        }
+    }
+
+    /**
+     * A standby link that fails keeps the backoff. It was already on offer to the attempt that failed,
+     * so it is not news, and retrying onto it at once would spin on every immediate failure.
+     */
+    @Test
+    fun aFailingStandbyLinkIsRetriedOnTheBackoffNotInALoop() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby(MigrationResult.Unmoved.Failed.NoSpareConnectionId).apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent
+            // Attempts at 0, 250ms and 750ms, all onto the standby link.
+            advanceTimeBy(800.milliseconds)
+            assertEquals(3, standby.moves, "the standby link must be retried on the backoff's cadence")
+            assertEquals(0, conn.migrateCount)
         }
     }
 

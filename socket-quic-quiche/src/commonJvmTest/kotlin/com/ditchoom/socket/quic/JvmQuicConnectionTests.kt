@@ -33,7 +33,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope, ClientPathOrigin.SharedPort)
             conn.start()
 
             try {
@@ -56,7 +56,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope, ClientPathOrigin.SharedPort)
             conn.start()
 
             try {
@@ -86,7 +86,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope, ClientPathOrigin.SharedPort)
             conn.start()
 
             conn.close()
