@@ -50,8 +50,9 @@ sealed interface SendOutcome {
      * Its own member rather than a [Failed] carrying some stand-in [DatagramSendError], because it is
      * not the same claim. Every `DatagramSendError` is a verdict the platform *returned*; this is the
      * absence of a verdict, and the two want opposite handling. A `Failed` path may well be fine on
-     * the next attempt — `WouldBlock` explicitly is — whereas a channel that did not answer at all is
-     * one the driver can no longer reason about, and reusing it risks a second unbounded wait.
+     * the next attempt — `WouldBlock` explicitly is — whereas a channel that did not answer at all may
+     * not answer the next send either, so the driver loop does not send on it again until a retry made
+     * beside the loop returns. The socket stays open: only its send side is known to be stuck.
      *
      * Folding it into `Failed(WouldBlock)` would also be a lie in the direction that hides the defect:
      * `WouldBlock` means a backend waited and gave up *inside* its own budget, i.e. it returned.

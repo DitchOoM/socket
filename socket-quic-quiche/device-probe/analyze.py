@@ -414,11 +414,12 @@ def analyze(path, lines, lane=None):
 
     # --- #447 verdict, re-derived from the attempt sequence (see the module docstring) ---
     #
-    # Recovery means a probe armed AFTER an unanswered one was itself ANSWERED. Another probe merely
-    # being sent is the retry ladder of the same failure, and a migration that succeeded BEFORE the
-    # first unanswered probe says nothing about the pool afterwards. And a connection whose stream went
-    # SILENT cannot pass at all: a path that answers no echo has not been validated, whatever its probes
-    # said, so the path layer's verdict is printed as void.
+    # Recovery means a probe armed AFTER the connection's last run of unanswered probes was itself
+    # ANSWERED. The run is judged, not its first member: an answer that came before most of the
+    # failures recovered an earlier episode and says nothing about the pool the later ones found.
+    # Another probe merely being sent is the retry ladder of the same failure. And a connection whose
+    # stream went SILENT cannot pass at all: a path that answers no echo has not been validated,
+    # whatever its probes said, so the path layer's verdict is printed as void.
     print("\n#447 verdict (re-derived — the log's own line may predate #601/#620):")
     attempt_lines = [(t, b) for t, b in events if b.startswith("MIGRATION-ATTEMPT")]
     OUTCOME = re.compile(r"outcome=(\w+)")
@@ -433,17 +434,26 @@ def analyze(path, lines, lane=None):
         if not lost:
             verdict = f"INCONCLUSIVE — no probe went unanswered ({len(outcomes)} attempt(s), #445 only)"
         else:
-            after = outcomes[lost[0] + 1:]
-            answered_after = [o for o in after if o == "Succeeded"]
+            # The last run: from the first unanswered probe after the last answer that precedes the
+            # final unanswered one. What follows its first member is what the verdict judges.
+            answered_before_last = [j for j, o in enumerate(outcomes[:lost[-1]]) if o == "Succeeded"]
+            run_start = next(j for j in lost if j > (answered_before_last[-1] if answered_before_last else -1))
+            run_lost = [j for j in lost if j >= run_start]
+            after = outcomes[run_start + 1:]
+            answered_after = [o for o in outcomes[lost[-1] + 1:] if o == "Succeeded"]
             no_spare = [o for o in after if o == "NoSpareConnectionId"]
+            earlier = f" (an earlier run of {len(lost) - len(run_lost)} was answered)" if len(run_lost) < len(lost) else ""
             if answered_after:
-                verdict = f"PASS — {len(lost)} unanswered, then {len(answered_after)} later probe(s) ANSWERED: pool recovered"
+                verdict = (f"PASS — {len(run_lost)} unanswered{earlier}, then {len(answered_after)} later probe(s) ANSWERED:"
+                           f" pool recovered")
             elif no_spare:
-                verdict = f"REGRESSION — {len(lost)} unanswered, then {len(no_spare)} NoSpareConnectionId: pool did not come back"
+                verdict = (f"REGRESSION — {len(run_lost)} unanswered{earlier}, then {len(no_spare)} NoSpareConnectionId:"
+                           f" pool did not come back")
             elif after:
-                verdict = f"FAIL — {len(lost)} unanswered and {len(after)} later probe(s), none answered: never regained a path"
+                verdict = (f"FAIL — {len(run_lost)} unanswered{earlier} and {len(after)} later probe(s), none answered:"
+                           f" never regained a path")
             else:
-                verdict = f"INCONCLUSIVE — {len(lost)} unanswered, nothing attempted afterwards"
+                verdict = f"INCONCLUSIVE — {len(run_lost)} unanswered{earlier}, nothing attempted afterwards"
         if (i + 1) in silent_by_connection:
             gap, _ = silent_by_connection[i + 1]
             verdict = f"FAIL — no answered echo for {hours(gap)}, so the path layer's verdict is void; on its own it read: {verdict}"

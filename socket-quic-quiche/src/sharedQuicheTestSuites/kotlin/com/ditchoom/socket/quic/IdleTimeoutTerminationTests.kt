@@ -299,7 +299,7 @@ class IdleTimeoutTerminationTests {
                 )
                 assertEquals(
                     0,
-                    wedged.closeCount,
+                    wedged.abandonedCount,
                     "the stall bound fired the instant the send parked — it is not waiting at all",
                 )
 
@@ -307,7 +307,7 @@ class IdleTimeoutTerminationTests {
                 runCurrent()
                 assertEquals(
                     0,
-                    wedged.closeCount,
+                    wedged.abandonedCount,
                     "the stall bound fired 1ms EARLY: it is not honouring the duration it was given",
                 )
 
@@ -315,7 +315,7 @@ class IdleTimeoutTerminationTests {
                 runCurrent()
                 assertEquals(
                     1,
-                    wedged.closeCount,
+                    wedged.abandonedCount,
                     "the stall bound did not fire 1ms after its own duration of virtual time. Either it " +
                         "resolves against the wall clock — in which case no simulation can ever reach " +
                         "this branch, and the driver has two time sources instead of the one SimClock " +

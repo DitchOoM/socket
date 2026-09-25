@@ -6,9 +6,11 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.DatagramSendError
 import com.ditchoom.socket.udp.SocketAddressCodec
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.awaitCancellation
@@ -45,6 +47,9 @@ import kotlin.time.Duration
  * tunnel, a PPPoE hop or a v6 leg at the 1280-byte minimum all look like this, and none of them can be
  * expressed by loss (which is random, so a retry eventually gets through) or by [PathReach.Dark]
  * (which kills the path outright, so nothing proves the small datagrams still flow).
+ *
+ * [sendReturn] is the client platform's side of a held uplink: whether `send` answers at once or only
+ * once the link takes the datagram. [PathReach] delays the datagram on the wire; this delays the call.
  */
 internal data class PathImpairment(
     val latency: Duration = Duration.ZERO,
@@ -52,6 +57,7 @@ internal data class PathImpairment(
     val loss: Double = 0.0,
     val reach: LinkReach = LinkReach.Open,
     val mtu: LinkMtu = LinkMtu.Unbounded,
+    val sendReturn: SendReturn = SendReturn.Immediately,
 )
 
 /** Which way a datagram crosses a path, from the client's side: [Uplink] is client→server. */
@@ -86,6 +92,28 @@ internal data class LinkReach(
 }
 
 /**
+ * When the client endpoint's `send` returns to the driver.
+ *
+ * The 2026-09-25 iPhone walk is why this exists: the cellular uplink held packets for 12–47 s while the
+ * downlink kept delivering, and Network.framework withheld each send's completion for as long as the
+ * uplink held it. Every real backend answered at once before that, so the sim's endpoint did too, and
+ * the driver's send-stall bound had never been reached with the downlink still alive.
+ */
+internal sealed interface SendReturn {
+    /** The platform takes the datagram and answers at once. */
+    data object Immediately : SendReturn
+
+    /**
+     * The platform queues the datagram and answers only at [at] (virtual time from the run's t0), when
+     * the uplink releases it. The datagram is on the platform's queue from the call on, so a caller
+     * that stops waiting does not take it back: it leaves at [at] either way.
+     */
+    data class WithheldUntil(
+        val at: Duration,
+    ) : SendReturn
+}
+
+/**
  * Whether a path carries datagrams, and when: always, never, only once the sim's clock reaches an
  * instant, or late — everything offered before an instant held and released, in order, at it.
  */
@@ -106,6 +134,13 @@ internal sealed interface PathReach {
     data class HeldUntil(
         val at: Duration,
     ) : PathReach
+}
+
+/** Whether the client has closed a path's socket. The link outlives it: the peer can still send to it. */
+internal sealed interface SimSocket {
+    data object Open : SimSocket
+
+    data object Closed : SimSocket
 }
 
 /**
@@ -194,6 +229,15 @@ internal class MultiPathPipe(
         /** Datagrams the link swallowed for exceeding its [LinkMtu.Bounded.bytes] — #637's observable. */
         @Volatile var oversized = 0
 
+        /** Datagrams that reached this path's client socket after the client had closed it. */
+        @Volatile var arrivedAtClosedSocket = 0
+
+        /** Withheld sends ([SendReturn.WithheldUntil]) whose caller stopped waiting before the platform answered. */
+        @Volatile var abandonedSends = 0
+
+        /** Sends the client attempted on this path's socket after closing it — each one refused. */
+        @Volatile var sentOnClosedSocket = 0
+
         /**
          * The largest datagram either endpoint has handed this link, carried or not — how big the
          * *sender* decided to make one, which is the other half of #637: a fix that expanded everything
@@ -212,6 +256,9 @@ internal class MultiPathPipe(
 
         val stats = PathStats()
         val inbound = Channel<PipeDatagram>(Channel.UNLIMITED) { ledger.release(it) }
+
+        /** Whether the client has closed this path's socket; a closed socket takes and sends nothing. */
+        @Volatile var socket: SimSocket = SimSocket.Open
 
         val channel: UdpChannel = ClientEndpoint(this)
     }
@@ -308,6 +355,7 @@ internal class MultiPathPipe(
         source: PlatformBuffer,
         len: Int,
         origin: String,
+        withheld: Duration = Duration.ZERO,
         deliver: (PipeDatagram) -> Unit,
     ) {
         val impairment = path.impairment
@@ -349,7 +397,7 @@ internal class MultiPathPipe(
                     is PathReach.HeldUntil -> (reach.at - now()).coerceAtLeast(Duration.ZERO)
                     PathReach.Open, PathReach.Dark, is PathReach.DarkUntil -> Duration.ZERO
                 }
-            delay = held + impairment.latency + impairment.jitter * jitterFraction
+            delay = maxOf(held, withheld) + impairment.latency + impairment.jitter * jitterFraction
         }
         // Captured only now: a dropped or blackholed datagram allocates nothing, which keeps the ledger
         // counting real deliveries and the seeded sequence independent of allocation.
@@ -398,13 +446,36 @@ internal class MultiPathPipe(
             len: Int,
             target: SendTarget,
         ): SendOutcome {
+            when (path.socket) {
+                SimSocket.Open -> Unit
+                SimSocket.Closed -> {
+                    path.stats.sentOnClosedSocket++
+                    // What `:socket-udp` raises on every backend for a send on a closed sink, typed the way
+                    // `sendOutcomeOf` types it.
+                    return SendOutcome.Failed(DatagramSendError.Transport(IllegalStateException("sink is closed")))
+                }
+            }
+            val withheld =
+                when (val sendReturn = path.impairment.sendReturn) {
+                    SendReturn.Immediately -> Duration.ZERO
+                    is SendReturn.WithheldUntil -> (sendReturn.at - now()).coerceAtLeast(Duration.ZERO)
+                }
             path.stats.sentToServer++
-            schedule(path, LinkDirection.Uplink, buffer, len, "client->server@${path.local.port}") {
+            schedule(path, LinkDirection.Uplink, buffer, len, "client->server@${path.local.port}", withheld) {
                 // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
                 if (toServer.trySend(ServerDatagram(it, path.local)).isFailure) {
                     ledger.release(it)
                 } else {
                     path.stats.deliveredToServer++
+                }
+            }
+            // Queued before the wait, so a caller that stops waiting leaves it queued — the platform has it.
+            if (withheld > Duration.ZERO) {
+                try {
+                    delay(withheld)
+                } catch (ce: CancellationException) {
+                    path.stats.abandonedSends++
+                    throw ce
                 }
             }
             // A datagram lost on the wire still LEFT this endpoint. Same contract ImpairedPipe states:
@@ -414,7 +485,15 @@ internal class MultiPathPipe(
         }
 
         override fun close() {
-            // Path lifetime == pipe lifetime; MultiPathPipe.close() tears everything down.
+            // The socket closes; the path's link stays in the pipe, whose close() tears it down. What was
+            // already queued for this socket is discarded with it, as a real socket's receive queue is.
+            path.socket = SimSocket.Closed
+            path.inbound.close()
+            while (true) {
+                val queued = path.inbound.tryReceive().getOrNull() ?: break
+                path.stats.arrivedAtClosedSocket++
+                ledger.release(queued)
+            }
         }
     }
 
@@ -437,8 +516,13 @@ internal class MultiPathPipe(
             if (path == null) return SendOutcome.Sent // replied to an address the sim never opened
             path.stats.sentToClient++
             schedule(path, LinkDirection.Downlink, buffer, len, "server->client@${path.local.port}") {
-                // A closed pipe accepts nothing, so a refused datagram is freed rather than leaked.
+                // A closed pipe or a closed client socket accepts nothing, so a refused datagram is freed
+                // rather than leaked.
                 if (path.inbound.trySend(it).isFailure) {
+                    when (path.socket) {
+                        SimSocket.Open -> Unit
+                        SimSocket.Closed -> path.stats.arrivedAtClosedSocket++
+                    }
                     ledger.release(it)
                 } else {
                     path.stats.deliveredToClient++

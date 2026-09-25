@@ -60,8 +60,8 @@ internal class QuicheDriverTuning(
      */
     val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
     /**
-     * How long `QuicheDriver.flushOutgoing` waits for one `UdpChannel.send` before calling the path
-     * stalled and closing it. Default [DEFAULT_SEND_STALL_BOUND].
+     * How long `QuicheDriver.flushOutgoing` waits for one `UdpChannel.send` before calling the path's
+     * egress stalled. Default [DEFAULT_SEND_STALL_BOUND].
      *
      * It is a seam for the same reason the others are: a simulation that wants to *reach* the stall
      * branch should not have to burn five seconds of the scheduler's budget to do it. Production
@@ -88,7 +88,8 @@ internal class QuicheDriverTuning(
  * expressed in terms of it inherits the failure it exists to break; and a connection configured with
  * a short idle timeout would get a bound tight enough to reap healthy paths under load.
  *
- * The cost of a false stall is bounded and recoverable — one closed socket, one reconnect — which is
- * what lets the value be generous rather than tuned.
+ * The cost of a false stall is bounded and recoverable — the path skips sends until a retry made
+ * beside the loop returns, while its socket keeps receiving — which is what lets the value be generous
+ * rather than tuned.
  */
 internal val DEFAULT_SEND_STALL_BOUND = 5.seconds
