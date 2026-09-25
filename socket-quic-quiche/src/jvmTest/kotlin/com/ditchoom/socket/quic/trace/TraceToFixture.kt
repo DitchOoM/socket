@@ -10,6 +10,7 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
@@ -84,6 +85,46 @@ internal object TraceToFixture {
             }
         }
 
+    /**
+     * The lines of a pulled walk trace from [from] to [to] inclusive, every kind kept, as a window to
+     * commit next to its fixture: [osNet] brings each `OS_NET` onto the connection's clock, and
+     * [TraceAddressRedaction] rewrites every address to a documentation one. Timestamps stay on the
+     * connection's clock; [window] re-bases them when the fixture is generated.
+     *
+     * Fails if an `OS_NET`, once re-stamped, is not in step with the monitor: the last `NET` at or
+     * before it must name the same state. That is the check that the offset a [OsNetStamps.ProbeClock]
+     * was given is the right one. The trace's first line is exempt, being the seed written as the
+     * connection opened; and an `OS_NET` may land up to [OS_NET_LEAD] ahead of its `NET`, because the
+     * watch samples the monitor's observation, which arrives before the recorder sees the state.
+     */
+    fun extractWindow(
+        lines: Sequence<String>,
+        from: Duration,
+        to: Duration,
+        osNet: OsNetStamps,
+    ): List<TraceEvent> {
+        val nets = mutableListOf<TraceEvent.Net>()
+        val sampled = mutableListOf<TraceEvent.OsNet>()
+        val kept = mutableListOf<TraceEvent>()
+        for ((index, line) in lines.filter { it.isNotBlank() }.withIndex()) {
+            val event =
+                when (val parsed = TraceEvent.parse(line)) {
+                    is TraceEvent.OsNet -> parsed.copy(at = osNet.onConnectionClock(parsed.at)).also { if (index > 0) sampled += it }
+                    is TraceEvent.Net -> parsed.also { nets += it }
+                    else -> parsed
+                }
+            if (event.at in from..to) kept += event
+        }
+        val byTime = nets.sortedBy { it.at }
+        for (os in sampled) {
+            val net = byTime.lastOrNull { it.at <= os.at + OS_NET_LEAD }
+            check(net?.state == os.facts.state) {
+                "OS_NET at ${os.at} (${os.facts.state}) is not in step with the monitor, whose last NET is $net: wrong $osNet?"
+            }
+        }
+        return TraceAddressRedaction.redact(kept)
+    }
+
     /** Build an in-memory [SimFixture] from a recorded trace — the replay-smoke entry point. */
     fun toSimFixture(
         name: String,
@@ -107,7 +148,7 @@ internal object TraceToFixture {
         runFor: Duration = Duration.ZERO,
         packageName: String = "com.ditchoom.socket.quic.sim.fixtures",
     ): String {
-        val sim = toSimEvents(events)
+        val sim = toSimEvents(TraceAddressRedaction.redact(events))
         val imports = sortedSetOf<String>()
         imports += "com.ditchoom.socket.quic.sim.SimFixture"
         imports += "com.ditchoom.socket.quic.sim.simFixture"
@@ -238,4 +279,38 @@ internal object TraceToFixture {
             }
             append('"')
         }
+}
+
+/**
+ * How far an `OS_NET` may run ahead of the `NET` it was sampled with: its stamp is whole
+ * milliseconds, and the observation it samples reaches the watch before the state reaches the
+ * recorder.
+ */
+private val OS_NET_LEAD: Duration = 5.milliseconds
+
+/**
+ * Which clock a trace's `OS_NET` lines were stamped on.
+ *
+ * `OsNetWatch` is one device-wide watch that writes into every open connection's trace, and it stamps
+ * with the clock it was built with. The walk probes build it with the *run's* clock, while every other
+ * line of a connection trace is on that connection's own recorder clock, so on those traces an
+ * `OS_NET` sits as far after its `NET` as the connection started after the run did.
+ */
+internal sealed interface OsNetStamps {
+    fun onConnectionClock(at: Duration): Duration
+
+    /** Stamped on the connection's clock like every other line, or the trace has no `OS_NET` at all. */
+    data object ConnectionClock : OsNetStamps {
+        override fun onConnectionClock(at: Duration): Duration = at
+    }
+
+    /**
+     * Stamped on the walk run's clock. [connectionStart] is the connection's t0 on that clock, read off
+     * the trace by pairing an `OS_NET` with the `NET` it was sampled on.
+     */
+    data class ProbeClock(
+        val connectionStart: Duration,
+    ) : OsNetStamps {
+        override fun onConnectionClock(at: Duration): Duration = at - connectionStart
+    }
 }

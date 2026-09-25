@@ -226,7 +226,7 @@ abstract class MigrationSimTestSuite {
                 withMigrationSim(
                     simEnv(),
                     seed = 77_001L,
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                 ) {
                     awaitSpareDcids(count = SPARE_POOL)
                     assertTrue(clientAvailableDcids() > 1, "the pool must afford a fresh socket for the replacement to happen")
@@ -299,7 +299,7 @@ abstract class MigrationSimTestSuite {
                 withMigrationSim(
                     simEnv(),
                     seed = 88_202L,
-                    probeImpairment = { PathImpairment(reach = if (blackholeProbes) PathReach.Dark else PathReach.Open) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(if (blackholeProbes) PathReach.Dark else PathReach.Open)) },
                 ) {
                     val serverJob =
                         client.launch {
@@ -551,7 +551,7 @@ abstract class MigrationSimTestSuite {
                     // number is the trap `aRunOfUnansweredProbesLeavesTheConnectionAbleToMigrate`
                     // documents: the two counters drift apart the moment one attempt is refused early.)
                     probeImpairment = { index ->
-                        PathImpairment(reach = if (index <= LOST_PROBES) PathReach.Dark else PathReach.Open)
+                        PathImpairment(reach = LinkReach(if (index <= LOST_PROBES) PathReach.Dark else PathReach.Open))
                     },
                 ) {
                     val serverJob =
@@ -586,7 +586,7 @@ abstract class MigrationSimTestSuite {
                         assertEquals(0, client.attempts.size, "nothing may migrate before the handoff")
 
                         // --- the handoff, and the last input this test ever supplies ---
-                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         monitor.setNetworkId(CELLULAR)
 
                         val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
@@ -663,7 +663,7 @@ abstract class MigrationSimTestSuite {
                     simEnv(),
                     seed = 45_302L,
                     quicOptions = quietHandoffOptions(monitor),
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                 ) {
                     val serverJob =
                         client.launch {
@@ -766,10 +766,10 @@ abstract class MigrationSimTestSuite {
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
                     serverQuicOptions = walkPeerOptions(),
-                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark)) },
                 ) {
                     awaitWalkPeerPool()
-                    pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                    pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                     monitor.setNetworkId(CELLULAR)
 
                     // Datagrams the probe paths have carried, read as each attempt completes.
@@ -854,12 +854,12 @@ abstract class MigrationSimTestSuite {
                             migration = MigrationPolicy.Automatic,
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
-                    probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                    probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                 ) {
                     awaitSpareDcids()
                     // The old path dies with the handoff, as it does in the field — otherwise the
                     // connection survives, nothing ends the loop, and there is no deadline to measure.
-                    pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                    pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                     monitor.setNetworkId(CELLULAR)
                     // Wait for the connection to actually idle out rather than for a fixed window: the
                     // two arms have different deadlines, and that difference is the whole measurement.
@@ -932,7 +932,7 @@ abstract class MigrationSimTestSuite {
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         ),
                     serverQuicOptions = walkPeerOptions(),
-                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = cellular) },
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(cellular)) },
                 ) {
                     val serverJob = launchEchoServer()
                     try {
@@ -940,7 +940,7 @@ abstract class MigrationSimTestSuite {
                         assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
                         awaitWalkPeerPool()
 
-                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         cellular = PathReach.DarkUntil(virtual.currentTime.milliseconds + WALK_LINK_ATTACH)
                         monitor.setNetworkId(CELLULAR)
 
@@ -1002,7 +1002,7 @@ abstract class MigrationSimTestSuite {
                     probeImpairment = {
                         PathImpairment(
                             latency = DEFAULT_PATH_LATENCY,
-                            reach = if (route == SIM_OTHER_LINK_HOST) PathReach.Open else PathReach.Dark,
+                            reach = LinkReach(if (route == SIM_OTHER_LINK_HOST) PathReach.Open else PathReach.Dark),
                         )
                     },
                 ) {
@@ -1012,7 +1012,7 @@ abstract class MigrationSimTestSuite {
                         assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
                         awaitWalkPeerPool()
 
-                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         monitor.setNetworkId(CELLULAR)
                         withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
                             while (client.attempts.size <= WALK_PEER_SPARES) delay(10.milliseconds)
@@ -1085,7 +1085,7 @@ abstract class MigrationSimTestSuite {
                                 networkMonitor = NetworkMonitorSource.Supplied(monitor),
                             ),
                         serverQuicOptions = peer,
-                        probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = cellular) },
+                        probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(cellular)) },
                     ) {
                         val serverJob = launchEchoServer()
                         try {
@@ -1097,7 +1097,7 @@ abstract class MigrationSimTestSuite {
                             )
                             awaitSpareDcids(count = limit - 1)
 
-                            pipe.impair(pipe.paths().first().local, PathImpairment(reach = PathReach.Dark))
+                            pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                             cellular = PathReach.HeldUntil(virtual.currentTime.milliseconds + LINK_HOLD)
                             monitor.setNetworkId(CELLULAR)
 
@@ -1147,6 +1147,108 @@ abstract class MigrationSimTestSuite {
             }
         }
 
+    /**
+     * **A downlink blackout: the server answers every probe and the phone hears none of it** — the
+     * 2026-09-20 iPhone walk, leg 3, connection 1, replayed against real quiche.
+     *
+     * The phone's trace alone reads as a dead link: the platform reported cellular, six probe paths
+     * went unvalidated, and the connection closed on `local: IdleTimeout` 30 s after its last datagram
+     * in. The server's qlog shows the other half. All 17 PATH_CHALLENGE datagrams from those six ports
+     * reached the server, which answered each within 0.1 ms with a PATH_RESPONSE and an ACK and
+     * challenged each new path itself. Nothing it sent reached the phone, whatever its size.
+     *
+     * So every path's uplink is open and its downlink dark, the active one included (in the field the
+     * old Wi-Fi socket's sends were failing too; an open uplink there is the harder case, since the
+     * server keeps hearing the client). What this pins is what the phone did: its probes go out and
+     * are answered, nothing validates, and the connection ends on its own idle deadline with a typed
+     * local `IdleTimeout`.
+     */
+    @Test
+    fun aDownlinkBlackoutEndsOnTheIdleDeadlineThoughTheServerAnswersEveryProbe() =
+        runTest {
+            val virtual = this
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val downlinkDark =
+                PathImpairment(
+                    latency = DEFAULT_PATH_LATENCY,
+                    reach = LinkReach(uplink = PathReach.Open, downlink = PathReach.Dark),
+                )
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 921_003L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    serverQuicOptions = migrationSimOptions(idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD),
+                    probeImpairment = { downlinkDark },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the blackout")
+                        awaitSpareDcids()
+
+                        val primary = pipe.paths().first()
+                        pipe.impair(primary.local, downlinkDark)
+                        val blackoutAt = virtual.currentTime.milliseconds
+                        val heardBefore = primary.stats.deliveredToClient
+                        val carriedBefore = primary.stats.deliveredToServer
+                        stream.send("after")
+                        monitor.setNetworkId(CELLULAR)
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK) {
+                            while (clientDriver.state.value !is QuicConnectionState.Closed) delay(100.milliseconds)
+                        }
+                        val closedAfter = virtual.currentTime.milliseconds - blackoutAt
+
+                        val probes = pipe.paths().drop(1)
+                        assertTrue(probes.isNotEmpty(), "the handoff never put a probe on the wire: ${client.attempts}")
+                        for (probe in probes) {
+                            assertTrue(
+                                probe.stats.deliveredToServer > 0 && probe.stats.sentToClient > 0,
+                                "probe path ${probe.local.port}: the uplink is open, so the server must have received " +
+                                    "the probe and answered it. Traffic: ${pipeTraffic()}",
+                            )
+                            assertEquals(
+                                0,
+                                probe.stats.deliveredToClient,
+                                "probe path ${probe.local.port}: the downlink is dark, yet the client heard the server",
+                            )
+                        }
+                        assertTrue(
+                            primary.stats.deliveredToServer > carriedBefore,
+                            "the active path's uplink is open, so what the client sent after the blackout must have " +
+                                "reached the server. Traffic: ${pipeTraffic()}",
+                        )
+                        assertEquals(
+                            heardBefore,
+                            primary.stats.deliveredToClient,
+                            "the active path delivered to the client after its downlink went dark",
+                        )
+                        assertTrue(
+                            client.attempts.none { it is MigrationResult.Succeeded },
+                            "no answer reached the client, so no path can have validated: ${client.attempts}",
+                        )
+                        val closed = assertIs<QuicConnectionState.Closed>(clientDriver.state.value)
+                        assertEquals(
+                            QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                            closed.reason,
+                            "the walk recorded `local: IdleTimeout`",
+                        )
+                        assertTrue(
+                            closedAfter >= IDLE_TIMEOUT_IN_THE_FIELD,
+                            "the connection closed $closedAfter after the blackout, before its idle deadline",
+                        )
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     /** The walk's echo server: every chunk the client sends comes straight back, until the stream ends. */
     private fun MigrationSimScope.launchEchoServer() =
         client.launch {
@@ -1158,6 +1260,15 @@ abstract class MigrationSimTestSuite {
                 d.buffer.freeIfNeeded()
             }
         }
+
+    /** Write [payload] without waiting for anything back. */
+    private suspend fun QuicByteStream.send(payload: String) {
+        val out = BufferFactory.network().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+        out.freeNativeMemory()
+    }
 
     /**
      * One round trip, bounded past the connection's own deadline, so what ends a failed handoff is the
@@ -1218,7 +1329,7 @@ abstract class MigrationSimTestSuite {
                     serverQuicOptions = walkPeerOptions(),
                     // The first probe path is the handoff that succeeds; everything after it is the dead link.
                     probeImpairment = { index ->
-                        PathImpairment(reach = if (index > 1) PathReach.Dark else PathReach.Open)
+                        PathImpairment(reach = LinkReach(if (index > 1) PathReach.Dark else PathReach.Open))
                     },
                 ) {
                     awaitSpareDcids(count = WALK_PEER_SPARES)
@@ -1237,7 +1348,7 @@ abstract class MigrationSimTestSuite {
                     )
 
                     val lastDatagramIn = pipe.pathAt(clientPaths().last()).stats.sentToClient
-                    pipe.impair(clientPaths().last(), PathImpairment(reach = PathReach.Dark))
+                    pipe.impair(clientPaths().last(), PathImpairment(reach = LinkReach(PathReach.Dark)))
                     monitor.setNetworkId(WIFI)
                     withTimeout(IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK) {
                         while (clientDriver.state.value !is QuicConnectionState.Closed) delay(100.milliseconds)
@@ -1305,7 +1416,7 @@ abstract class MigrationSimTestSuite {
                         seed = 45_900L,
                         quicOptions = migrationSimOptions(idleTimeout = 10.minutes, keepAliveInterval = KEEPALIVE),
                         primaryImpairment = PathImpairment(latency = latency),
-                        probeImpairment = { PathImpairment(reach = PathReach.Dark) },
+                        probeImpairment = { PathImpairment(reach = LinkReach(PathReach.Dark)) },
                     ) {
                         awaitSpareDcids(count = SPARE_POOL)
                         val trajectory = mutableListOf<String>()
@@ -1471,7 +1582,7 @@ abstract class MigrationSimTestSuite {
                         // Kill whichever path is active NOW, not the original primary.
                         val primary = pipe.pathAt(clientPaths().last())
                         val wentDark = scheduler.currentTime
-                        pipe.impair(primary.local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
 
                         val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
                         val recoveredIn = (scheduler.currentTime - wentDark).milliseconds
@@ -1643,7 +1754,7 @@ abstract class MigrationSimTestSuite {
                         // --- the handoff the platform never reports. The monitor is not touched. ---
                         val primary = pipe.paths().first()
                         val wentDark = scheduler.currentTime
-                        pipe.impair(primary.local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
 
                         val after = runCatching { echo("after") }.getOrElse { "CONNECTION DIED: $it" }
                         val recoveredIn = (scheduler.currentTime - wentDark).milliseconds
@@ -1765,7 +1876,7 @@ abstract class MigrationSimTestSuite {
                         awaitSpareDcids()
 
                         val primary = pipe.paths().first()
-                        pipe.impair(primary.local, PathImpairment(reach = PathReach.Dark))
+                        pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                         assertEquals("after", echo("after"), "the connection never re-homed: ${client.attempts}")
 
                         assertEquals(
@@ -1900,7 +2011,7 @@ abstract class MigrationSimTestSuite {
                             write("blip")
                             val primary = pipe.paths().first()
                             val wentDark = scheduler.currentTime
-                            pipe.impair(primary.local, PathImpairment(reach = PathReach.Dark))
+                            pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                             delay(BLIP_385)
                             pipe.impair(primary.local, PathImpairment(latency = latency))
                             val echoed = read()
@@ -2109,7 +2220,7 @@ abstract class MigrationSimTestSuite {
                     val firesBefore = ptoFires()
                     val sched = currentCoroutineContext()[kotlinx.coroutines.test.TestCoroutineScheduler]!!
                     val darkFrom = sched.currentTime
-                    pipe.impair(primary.local, PathImpairment(reach = PathReach.Dark))
+                    pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
                     withTimeout(DARK_ROUND_LIMIT) {
                         while (ptoFires() - firesBefore < DARK_ROUND_PTOS &&
                             (sched.currentTime - darkFrom).milliseconds < BLIP_ROUND_LIMIT

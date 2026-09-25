@@ -242,7 +242,8 @@ internal class MigrationSimScope(
     /** Diagnostic: per-path datagram counts, so "was anything actually sent" is answerable. */
     fun pipeTraffic(): String =
         pipe.paths().joinToString(" ") {
-            "[${it.local.port} ->srv=${it.stats.sentToServer} ->cli=${it.stats.sentToClient} " +
+            "[${it.local.port} ->srv=${it.stats.deliveredToServer}/${it.stats.sentToServer} " +
+                "->cli=${it.stats.deliveredToClient}/${it.stats.sentToClient} " +
                 "bh=${it.stats.blackholed} mtu=${it.stats.oversized}]"
         }
 
