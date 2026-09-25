@@ -864,6 +864,33 @@ class QuicheDriver(
     private var activePathProgress: ActivePathProgress = ActivePathProgress.Unread
 
     /**
+     * Whether the active path owes an answer to something ack-eliciting handed to quiche since it last
+     * answered — the evidence an application that keeps writing leaves when it suppresses the expiries
+     * [SilentRun] counts.
+     *
+     * RFC 9002 §6.2.1 times the PTO from the most recent ack-eliciting send, so a sender writing more
+     * often than its backed-off PTO pushes each expiry out before it fires: the 2026-09-24 walk's 250ms
+     * echo cadence held one connection at a single expiry for 11.6s and another at none. An owed answer
+     * does not depend on that timer, so it bounds detection where the count cannot.
+     *
+     * Opened only by what is ack-eliciting by construction — stream or DATAGRAM bytes quiche accepted,
+     * and the keep-alive PING — never by counting datagrams: quiche also sends ACK-only packets long
+     * after the last arrival (measured: 1.24s after it, on a healed path), and a peer does not answer
+     * those.
+     */
+    private sealed interface AnswerOwed {
+        /** Nothing ack-eliciting has been handed to quiche since the active path last answered. */
+        data object None : AnswerOwed
+
+        /** Ack-eliciting data was handed to quiche at [since], and nothing has arrived since. */
+        class Since(
+            val since: TimeMark,
+        ) : AnswerOwed
+    }
+
+    private var activePathOwes: AnswerOwed = AnswerOwed.None
+
+    /**
      * What the network was doing — live while the connection runs, frozen at [transitionToClosed].
      * [NetworkAtClose.NotObserved] when no monitor was resolved for this driver (a server connection, a
      * test double), which the observation itself reports via
@@ -1033,6 +1060,7 @@ class QuicheDriver(
                 candidate(keepAlive, Wake::KeepAlive),
                 candidate(connTimeout, Wake::QuicheTimeout),
                 candidate(floorWake(), Wake::SilenceVerdict),
+                candidate(unansweredWake(), Wake::SilenceVerdict),
             ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
         return NextWake.Armed(soonest)
     }
@@ -1049,19 +1077,13 @@ class QuicheDriver(
      * the fourth expiry — where a verdict evaluated only at expiry wakes must wait — is at 3.675s. This
      * removes that gap without moving the floor.
      *
-     * ## ⚠️ Why [SilenceThreshold.patience] gets no arm of its own, measured
-     * The obvious symmetry — arm the ceiling too, so a count-short run is declared *at* it rather than at
-     * whichever expiry follows — is unsound, and the sim says so in one line. A run only grows while
-     * quiche keeps expiring loss timers, and it only does that while there is something outstanding for
-     * them to be armed about. A path that blips once and heals leaves a `Building(1, …)` run behind that
-     * nothing will ever advance or clear: no further expiry to grow it, no datagram to reset it, because
-     * the application had nothing more to say. A wall-clock ceiling then declares a **healthy idle path
-     * dead** purely because time passed.
-     *
-     * The floor is immune to that in a way the ceiling is not, which is why one is armed and the other is
-     * not: it is offered only once the count is already met, and four unanswered expiries is the evidence
-     * the ceiling exists precisely because it may never arrive. So the ceiling is evaluated where the
-     * evidence changes instead — see [publishActivePathLiveness].
+     * ## ⚠️ Why the run's own ceiling is not armed here
+     * A run is not proof that anything is still outstanding. A loss-timer expiry can leave a
+     * `Building(1, …)` run on a healthy path that nothing will advance or clear once the application goes
+     * quiet, and a wall-clock ceiling on that run would declare a **healthy idle path dead** purely
+     * because time passed. The floor is offered only once the count is met. The ceiling is armed by
+     * [unansweredWake] instead, off [AnswerOwed.Since], which exists only while ack-eliciting data is
+     * outstanding.
      */
     private fun floorWake(): Deadline {
         val progress = activePathProgress
@@ -1069,6 +1091,36 @@ class QuicheDriver(
         val run = progress.run
         if (run !is SilentRun.Building || run.expiries < silenceThreshold.expiries) return Deadline.NotArmed
         return Deadline.Due((silenceThreshold.silence - run.since.elapsedNow()).coerceAtLeast(Duration.ZERO))
+    }
+
+    /**
+     * How long until ack-eliciting data on the active path has gone unanswered for
+     * [SilenceThreshold.patience], as a [Deadline].
+     *
+     * This is the ceiling that holds when the expiry count stalls. An application that writes more often
+     * than the backed-off PTO re-arms quiche's timer on every write (RFC 9002 §6.2.1), so no expiry fires
+     * and a ceiling judged only on an expiry is never asked. Unanswered sends need no expiry: a working
+     * path answers ack-eliciting data within a PTO, and the arrival resets [activePathOwes].
+     *
+     * Offered only while someone collects [pathLiveness], after a baseline, and before the episode is
+     * [SilentRun.Declared].
+     */
+    private fun unansweredWake(): Deadline {
+        val owed = activePathOwes
+        if (owed !is AnswerOwed.Since) return Deadline.NotArmed
+        val progress = activePathProgress
+        if (progress !is ActivePathProgress.Read || progress.run is SilentRun.Declared) return Deadline.NotArmed
+        if (mutablePathLiveness.subscriptionCount.value == 0) return Deadline.NotArmed
+        return Deadline.Due((silenceThreshold.patience - owed.since.elapsedNow()).coerceAtLeast(Duration.ZERO))
+    }
+
+    /**
+     * Something ack-eliciting was just handed to quiche, so the active path owes an answer from now on
+     * if it did not already. Allocates at most once per answer the path gives. See [AnswerOwed].
+     */
+    private fun activePathOwesAnAnswer() {
+        if (!migrationEnabled || activePathProgress !is ActivePathProgress.Read) return
+        if (activePathOwes is AnswerOwed.None) activePathOwes = AnswerOwed.Since(clock.markNow())
     }
 
     /**
@@ -1097,8 +1149,8 @@ class QuicheDriver(
     }
 
     /**
-     * The floor deadline fired: the run has met both halves, so declare it here rather than leaving it to
-     * the next sampler read.
+     * A silence deadline fired — the run's floor ([floorWake]) or unanswered sends' ceiling
+     * ([unansweredWake]) — so declare it here rather than leaving it to the next sampler read.
      *
      * ⚠️ **This is what disarms the deadline, and it must not depend on a stats read.** Leaving the
      * promotion to [publishActivePathLiveness] would need [sampleActivePathLiveness] to find a path with
@@ -1111,11 +1163,25 @@ class QuicheDriver(
         val progress = activePathProgress
         if (progress !is ActivePathProgress.Read) return
         val run = progress.run
-        if (run !is SilentRun.Building) return
-        // The second way a run is declared; it bypasses the sampler, so it records its own verdict.
-        capture.record { it.silenceDeclared(run.expiries, run.since.elapsedNow()) }
+        val expiries =
+            when (run) {
+                is SilentRun.Declared -> return
+                is SilentRun.Building -> run.expiries
+                SilentRun.None -> 0L
+            }
+        val owed = activePathOwes
+        val declared =
+            when {
+                // The floor: the run met the count and the floor.
+                run is SilentRun.Building && silenceThreshold.isMetBy(run.expiries, run.since.elapsedNow()) -> run.since
+                // The ceiling: ack-eliciting data unanswered for the patience, whatever the count.
+                owed is AnswerOwed.Since && silenceThreshold.isMetByUnansweredSends(owed.since.elapsedNow()) -> owed.since
+                else -> return
+            }
+        // Declared outside the sampler, so it records its own verdict.
+        capture.record { it.silenceDeclared(expiries, declared.elapsedNow()) }
         activePathProgress =
-            ActivePathProgress.Read(progress.pathIndex, progress.totalPtoCount, SilentRun.Declared(run.since))
+            ActivePathProgress.Read(progress.pathIndex, progress.totalPtoCount, SilentRun.Declared(declared))
         mutablePathLiveness.value = PathLiveness.Silent
     }
 
@@ -1191,6 +1257,8 @@ class QuicheDriver(
         // Expiries this read carried. It is the whole of what the read contributes: it grows the run
         // below, and it is also what makes the run judgeable at all — see [settled].
         val expired = if (comparable) stats.totalPtoCount - previous.totalPtoCount else 0L
+        // A baseline starts the owed answer afresh too: nothing handed to quiche before it is comparable.
+        if (!comparable) activePathOwes = AnswerOwed.None
         val run =
             if (!comparable) {
                 SilentRun.None
@@ -1265,6 +1333,7 @@ class QuicheDriver(
      * migrating, which is the safe side.
      */
     private fun activePathAnswered() {
+        activePathOwes = AnswerOwed.None
         val previous = activePathProgress as? ActivePathProgress.Read ?: return
         if (previous.run == SilentRun.None) return
         activePathProgress = ActivePathProgress.Read(previous.pathIndex, previous.totalPtoCount, SilentRun.None)
@@ -1563,6 +1632,7 @@ class QuicheDriver(
                                     is Wake.KeepAlive ->
                                         if (!api.connIsClosed(conn)) {
                                             api.connSendAckEliciting(conn) // emitted by the afterCommand() flush below
+                                            activePathOwesAnAnswer()
                                             lastActivity = clock.markNow()
                                         }
                                     // Declares the run itself rather than waiting for the sampler below,
@@ -1784,6 +1854,7 @@ class QuicheDriver(
                     } finally {
                         cmd.buf.endBorrow()
                     }
+                if (sent.result > 0) activePathOwesAnAnswer()
                 cmd.result.complete(sent)
             }
 
@@ -1800,6 +1871,7 @@ class QuicheDriver(
                     } finally {
                         cmd.buf.endBorrow()
                     }
+                if (written > 0) activePathOwesAnAnswer()
                 cmd.result.complete(written)
             }
 

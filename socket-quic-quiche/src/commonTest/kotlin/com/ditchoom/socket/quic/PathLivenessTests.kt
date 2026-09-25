@@ -19,6 +19,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -489,6 +490,20 @@ class PathLivenessTests {
                 SilenceThreshold(SILENT_PATH_EXPIRY_THRESHOLD, 2.seconds, 1.seconds)
             }
         assertEquals(InvalidSilenceThreshold.Problem.PatienceUnderFloor, under.problem)
+    }
+
+    /**
+     * **Unanswered sends meet the ceiling with no expiry at all, and only at the ceiling.**
+     *
+     * An application writing faster than the backed-off PTO keeps quiche's expiry count still, so this
+     * clause takes no count. It must still wait out [SILENT_PATH_PATIENCE], which sits above every PTO
+     * of a working path.
+     */
+    @Test
+    fun unansweredSendsMeetTheCeilingOnlyAtThePatience() {
+        val threshold = SILENT_PATH_THRESHOLD
+        assertFalse(threshold.isMetByUnansweredSends(SILENT_PATH_PATIENCE - 1.milliseconds))
+        assertTrue(threshold.isMetByUnansweredSends(SILENT_PATH_PATIENCE))
     }
 
     /**

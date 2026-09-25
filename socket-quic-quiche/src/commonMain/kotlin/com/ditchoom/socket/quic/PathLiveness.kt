@@ -129,6 +129,10 @@ internal sealed interface PathLiveness {
  * round trip (count-bound) and in the same 3–4s band on a fast path (time-bound). Roughly
  * NWPathMonitor's job done three times slower, and Android's done three times faster.
  *
+ * An application writing faster than the backed-off PTO fires no further expiry (RFC 9002 §6.2.1 times
+ * the PTO from the latest ack-eliciting send), so there the count never completes and
+ * [isMetByUnansweredSends] decides instead: [patience] after the first write the path did not answer.
+ *
  * Public only because [QuicheDriver]'s constructor is, and a parameter has to name a type its caller
  * could see. Nothing outside this module constructs one — production passes [SILENT_PATH_THRESHOLD],
  * which stays internal.
@@ -187,6 +191,17 @@ class SilenceThreshold(
         if (silentFor >= patience) return true
         return unansweredExpiries >= expiries && silentFor >= silence
     }
+
+    /**
+     * Whether ack-eliciting data left unanswered for [unansweredFor] means the path has stopped
+     * answering: the [patience] ceiling, needing no expiry at all.
+     *
+     * The count cannot bound an application that keeps writing. RFC 9002 §6.2.1 times the PTO from the
+     * most recent ack-eliciting send, so writes more frequent than the backed-off PTO hold the count
+     * where it is. A working path answers ack-eliciting data within one PTO, and [patience] sits above
+     * every PTO of a working path.
+     */
+    fun isMetByUnansweredSends(unansweredFor: Duration): Boolean = unansweredFor >= patience
 }
 
 /**
@@ -236,9 +251,11 @@ internal val SILENT_PATH_MINIMUM_SILENCE: Duration = 2.seconds
  * ceiling from 2.5s to 6s, and 15.36s without one. The value is not tuning a boundary; it is picking
  * which side of a 1.5× gap to sit on.
  *
- * ⚠️ It is deliberately **not** armed as a timer of its own, unlike the floor — a run that has stopped
- * growing must never be declared on elapsed time alone. [QuicheDriver.floorWake] carries the
- * argument.
+ * ⚠️ It is never armed as a timer off a run: a run that has stopped growing must never be declared on
+ * elapsed time alone. It is armed off an answer the path owes for ack-eliciting data handed to quiche
+ * ([SilenceThreshold.isMetByUnansweredSends]), which is what bounds detection when an application
+ * writing faster than the backed-off PTO keeps the count still. `QuicheDriver.floorWake` and
+ * `QuicheDriver.unansweredWake` carry the argument.
  */
 internal val SILENT_PATH_PATIENCE: Duration = 4.seconds
 
