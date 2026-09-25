@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -34,6 +35,7 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
@@ -325,31 +327,40 @@ class Http3Connection private constructor(
         if (!peerSettings().webTransportSupported) {
             throw WebTransportException(WebTransportFailure.PeerDoesNotSupport)
         }
-        val stream = openExtendedConnectStream(WEBTRANSPORT_PROTOCOL, authority, path, headers)
-        // Table the session by its CONNECT stream id immediately, so a WebTransport stream/datagram the
-        // server sends the instant it accepts can't race ahead of registration. Abandoned if rejected.
-        val session = mux.preRegister(stream)
+        refuseIfAborted()
+        val stream = scope.openStream()
+        // Table the session under its CONNECT stream id BEFORE the HEADERS leave: the server cannot open a
+        // WebTransport stream or send a datagram for a session it has not seen, so nothing it sends can
+        // arrive for an id this side has not registered.
+        val pending = mux.register(stream)
         val reader = Http3StreamReader.create(stream, pool)
         val status =
             try {
+                writeHeadersFrame(stream, extendedConnectFields(WEBTRANSPORT_PROTOCOL, authority, path, headers))
                 readConnectStatus(stream, reader)
             } catch (t: Throwable) {
-                reader.release()
-                mux.abandon(session)
-                stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
+                withContext(NonCancellable) { abandonConnect(pending, stream, reader) }
                 throw t
             }
         if (status !in 200..299) {
-            reader.release()
-            mux.abandon(session)
-            stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
+            withContext(NonCancellable) { abandonConnect(pending, stream, reader) }
             throw WebTransportException(
                 WebTransportFailure.ConnectRejected(status = status, authority = authority, path = path),
             )
         }
         // Confirmed: hand the CONNECT-stream reader to the session's capsule loop.
-        mux.activate(session, reader)
-        return session
+        return pending.establish(reader)
+    }
+
+    /** Unwind a CONNECT that did not establish: untable its session and cancel the CONNECT stream. */
+    private suspend fun abandonConnect(
+        pending: PendingWebTransportSession,
+        stream: QuicByteStream,
+        reader: Http3StreamReader,
+    ) {
+        reader.release()
+        pending.abandon()
+        stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
     }
 
     /**
@@ -365,28 +376,21 @@ class Http3Connection private constructor(
         connectionErrorOrNull?.let { throw it }
     }
 
-    /** Open a client bidi stream and write an Extended CONNECT HEADERS frame (`:protocol` included). */
-    private suspend fun openExtendedConnectStream(
+    /** The Extended CONNECT field section (RFC 9220 §4): `:method=CONNECT`, `:protocol`, then the target. */
+    private fun extendedConnectFields(
         protocol: String,
         authority: String,
         path: String,
         headers: List<QpackHeaderField>,
-    ): QuicByteStream {
-        refuseIfAborted()
-        val stream = scope.openStream()
-        // Extended CONNECT (RFC 9220 §4): :method=CONNECT, :protocol, plus :scheme/:authority/:path.
-        val fields =
-            buildList {
-                add(QpackHeaderField(":method", "CONNECT"))
-                add(QpackHeaderField(":protocol", protocol))
-                add(QpackHeaderField(":scheme", "https"))
-                add(QpackHeaderField(":authority", authority))
-                add(QpackHeaderField(":path", path))
-                addAll(headers)
-            }
-        writeHeadersFrame(stream, fields)
-        return stream
-    }
+    ): List<QpackHeaderField> =
+        buildList {
+            add(QpackHeaderField(":method", "CONNECT"))
+            add(QpackHeaderField(":protocol", protocol))
+            add(QpackHeaderField(":scheme", "https"))
+            add(QpackHeaderField(":authority", authority))
+            add(QpackHeaderField(":path", path))
+            addAll(headers)
+        }
 
     /** Read frames off the CONNECT [reader] until the response HEADERS, returning its :status. */
     private suspend fun readConnectStatus(

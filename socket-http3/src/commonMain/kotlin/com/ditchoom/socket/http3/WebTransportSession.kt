@@ -179,16 +179,17 @@ class WebTransportSession internal constructor(
 
     // --- Internal: driven by the connection's router + the mux's capsule loop ---
 
-    internal fun deliverIncomingBidi(stream: WebTransportStream) {
-        incomingBidi.trySend(stream)
+    internal suspend fun deliverIncomingBidi(stream: WebTransportStream) {
+        if (incomingBidi.trySend(stream).isFailure) stream.abandon() // the session closed after lookup
     }
 
-    internal fun deliverIncomingUni(stream: WebTransportReceiveStream) {
-        incomingUni.trySend(stream)
+    internal suspend fun deliverIncomingUni(stream: WebTransportReceiveStream) {
+        if (incomingUni.trySend(stream).isFailure) stream.abandon() // the session closed after lookup
     }
 
     internal fun deliverDatagram(buffer: ReadBuffer) {
-        incomingDatagrams.trySend(buffer) // DROP_OLDEST: always accepted; the dropped buffer is freed
+        // DROP_OLDEST accepts every send while open (the dropped buffer is freed); a closed session refuses it.
+        if (incomingDatagrams.trySend(buffer).isFailure) buffer.freeIfNeeded()
     }
 
     /** Called by the mux's capsule loop when the peer sends WT_DRAIN_SESSION (draft §5). Idempotent. */
@@ -199,6 +200,20 @@ class WebTransportSession internal constructor(
 
     /** Called by the mux's capsule loop when the peer ends the CONNECT stream (FIN or close capsule). */
     internal suspend fun onPeerClosed(info: WebTransportCloseInfo) = finish(info)
+
+    /**
+     * End a session whose CONNECT never established: nobody will ever collect its incoming flows, so
+     * every peer stream already queued there is reset rather than left open until the connection ends,
+     * and every queued datagram is freed.
+     */
+    internal suspend fun abandon() {
+        finish(WebTransportCloseInfo())
+        incomingDatagrams.cancel() // hands each queued buffer to onUndeliveredElement
+        // The channels are closed first, so nothing can be queued behind this drain: a later trySend
+        // fails and the deliver* arm resets that stream itself.
+        while (true) incomingBidi.tryReceive().getOrNull()?.abandon() ?: break
+        while (true) incomingUni.tryReceive().getOrNull()?.abandon() ?: break
+    }
 
     private suspend fun finish(info: WebTransportCloseInfo) {
         if (!closedSignal.complete(info)) return // already closed
