@@ -20,8 +20,9 @@ import kotlin.time.Duration
  * frame — type + length varints + payload — is buffered before decoding it.
  *
  * One reader wraps one stream. [nextFrame] reassembles a frame split across reads and
- * returns null at clean end-of-stream; a partial frame at FIN, or a reset, throws
- * [Http3StreamException].
+ * returns null at clean end-of-stream (the peer's FIN); a partial frame at FIN, or a reset, throws
+ * [Http3StreamException]. A connection that ends without the peer's FIN propagates the transport's
+ * close exception (on QUIC, [com.ditchoom.socket.quic.QuicCloseException]) — never null.
  *
  * The returned frame for DATA/HEADERS borrows a buffer owned by this reader's processor;
  * read or copy its payload before the next [nextFrame] call — that call (or [release])

@@ -18,6 +18,10 @@ import kotlin.time.Duration
  * A nullable return would have been the cheaper shape and is deliberately not used: `null` would
  * have had to mean "end or reset, we are not saying which", which is a meaning a nullable must never
  * carry here.
+ *
+ * There is no arm for the connection ending: on a QUIC stream, a connection that ends without the
+ * peer's FIN or RESET_STREAM for this stream (an idle timeout, a CONNECTION_CLOSE, a local close)
+ * makes [read] throw [QuicCloseException] carrying the close reason. [End] is only ever the peer's FIN.
  */
 sealed interface ScopedRead<out R> {
     /** Bytes arrived; [value] is what the block returned. The buffer is already released. */
@@ -79,6 +83,7 @@ sealed interface ScopedRead<out R> {
  * @param deadline how long to wait for the chunk, exactly as for the transferring [ByteStream.read].
  * @return [ScopedRead.Data] carrying [block]'s result, or [ScopedRead.End] / [ScopedRead.Reset] with
  *   [block] never invoked.
+ * @throws QuicCloseException on a QUIC stream whose connection ended without the peer's FIN or reset.
  */
 suspend fun <R> ByteStream.read(
     deadline: Duration,

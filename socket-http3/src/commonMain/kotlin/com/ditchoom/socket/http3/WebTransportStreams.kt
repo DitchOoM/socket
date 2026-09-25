@@ -76,6 +76,7 @@ class WebTransportStream internal constructor(
 
     /**
      * Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset.
+     * A connection that ends without the peer's FIN throws [com.ditchoom.socket.quic.QuicCloseException].
      *
      * The [deadline] is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
      * keepalive are the liveness authority, and a deadline here neither closes the stream nor drops the
@@ -206,7 +207,8 @@ class WebTransportReceiveStream internal constructor(
     override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
 
     /**
-     * Read the next chunk; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset. The no-arg
+     * Read the next chunk; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset, and a thrown
+     * [com.ditchoom.socket.quic.QuicCloseException] when the connection ends without that FIN. The no-arg
      * [read] uses [readPolicy] ([ReadPolicy.UntilClosed]); pass an explicit bound to override.
      */
     override suspend fun read(deadline: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, deadline)

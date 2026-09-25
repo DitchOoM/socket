@@ -307,7 +307,10 @@ class CodecConnection<T>(
     }
 
     /**
-     * Returns a flow of decoded messages from the transport.
+     * Returns a flow of decoded messages from the transport. It completes at the peer's end-of-stream
+     * (FIN); a peer reset fails it with [SocketClosedException.ConnectionReset], and a connection that
+     * ends without the peer's FIN fails it with the transport's typed close (on QUIC, a
+     * `QuicCloseException` carrying the reason).
      *
      * Sequential collection is allowed (e.g., handshake then streaming),
      * but concurrent collection throws — two collectors would corrupt the stream processor.

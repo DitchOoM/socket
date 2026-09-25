@@ -74,6 +74,15 @@ class QuicByteStream(
      *
      * Note the asymmetry with [write], which is zero-copy and takes **no** ownership: the caller still
      * owns the buffer it wrote and still frees it. Read transfers, write does not.
+     *
+     * ### Terminal results
+     * [ReadResult.End] means the peer sent FIN; [ReadResult.Reset] means the peer sent RESET_STREAM.
+     * Bytes the transport accepted before either are delivered first.
+     *
+     * @throws QuicCloseException when the connection ends without the peer's FIN or reset for this
+     *   stream — an idle timeout, a CONNECTION_CLOSE from either side — after any bytes the transport
+     *   already accepted have been delivered. [QuicCloseException.closeReason] says why.
+     * @throws IllegalStateException after [close].
      */
     override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicByteStream($streamId) is closed" }

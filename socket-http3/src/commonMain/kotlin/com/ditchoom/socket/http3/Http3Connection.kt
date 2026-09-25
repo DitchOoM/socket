@@ -792,8 +792,12 @@ class Http3Connection private constructor(
             // already recorded any SETTINGS failure into peerSettingsDeferred.
         } catch (e: QuicStreamException) {
             // Peer STOP_SENDING / RESET_STREAM on this one stream (e.g. cancelling a server PUSH this
-            // router was reading) — stream-scoped, not connection loss. A genuine connection-close still
-            // surfaces as QuicCloseException and propagates to tear the connection down.
+            // router was reading) — stream-scoped, not connection loss.
+        } catch (e: QuicCloseException) {
+            // The connection ended under this stream's reader or writer — a read parked on a stream the
+            // peer never finished reports the close, not end-of-stream. It is the connection's lifetime
+            // finishing, not this stream's fault: the streams flow completes on its own and the router's
+            // finally records it. Escaping here would fail the router and every sibling route with it.
         } finally {
             if (!handlerOwnsStream) {
                 processor.release()
@@ -963,6 +967,10 @@ class Http3Connection private constructor(
                 }
             }
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: QuicCloseException) {
+            // The connection ended with the control stream still open — the connection's close, not a
+            // control-stream violation. [route] ends this reader.
             throw e
         } catch (e: Http3StreamException) {
             abortConnection(e)

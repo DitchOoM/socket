@@ -27,8 +27,9 @@ import kotlin.time.Duration.Companion.seconds
 interface QuicheStreamAdapter {
     /**
      * Read from the quiche stream into a buffer allocated from [bufferFactory].
-     * Returns [ReadResult.Data] with the buffer, [ReadResult.End] on FIN,
-     * or throws on error/timeout.
+     * Returns [ReadResult.Data] with the buffer, [ReadResult.End] on the peer's FIN,
+     * [ReadResult.Reset] on the peer's RESET_STREAM, or throws on error/timeout. A connection
+     * that ends without either throws [QuicCloseException] — never [ReadResult.End].
      *
      * ### Buffer ownership
      * On [ReadResult.Data], ownership of the returned buffer transfers to the
