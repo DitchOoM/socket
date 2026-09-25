@@ -63,8 +63,9 @@ class SendStallBoundTests {
      * the bound exists to prevent, and no amount of prose in the clock would stop it.
      *
      * So the bound is hand-fired instead of absent, and this test is what holds that line: it wedges a
-     * send, fires the bound with [ManualDriverClock.stall], and requires the driver to have closed the
-     * path. Delete `stall()` and this goes red rather than silently reintroducing the hang.
+     * send, fires the bound with [ManualDriverClock.stall], and requires the driver to have stopped
+     * waiting on it — and to have left the socket open, since quiche still routes the path through it.
+     * Delete `stall()` and this goes red rather than silently reintroducing the hang.
      */
     @Test
     fun theStallBackstopIsFirableUnderTheManualClock() =
@@ -105,8 +106,8 @@ class SendStallBoundTests {
                 )
                 assertEquals(
                     0,
-                    wedged.closeCount,
-                    "the path was closed before the bound was ever fired — the manual clock is not " +
+                    wedged.abandonedCount,
+                    "the send was abandoned before the bound was ever fired — the manual clock is not " +
                         "waiting, so this test could not tell a working backstop from an eager one",
                 )
 
@@ -115,16 +116,22 @@ class SendStallBoundTests {
                     "stage 2: firing the send bound never rendezvoused — the driver is not parked in withBound",
                 )
                 assertNotNull(
-                    withTimeoutOrNull(3.seconds) { while (wedged.closeCount == 0) yield() },
-                    "stage 3: the bound fired but the driver never closed the wedged path",
+                    withTimeoutOrNull(3.seconds) { while (wedged.abandonedCount == 0) yield() },
+                    "stage 3: the bound fired but the driver never stopped waiting on the wedged send",
                 )
                 firing.await()
                 assertEquals(
                     1,
+                    wedged.abandonedCount,
+                    "firing the send bound by hand did not make the driver stop waiting on the wedged " +
+                        "send. The backstop is missing under this clock, so any Tier-1 test that wedges a " +
+                        "send hangs the lane instead of failing it.",
+                )
+                assertEquals(
+                    0,
                     wedged.closeCount,
-                    "firing the send bound by hand did not make the driver close the wedged path. The " +
-                        "backstop is missing under this clock, so any Tier-1 test that wedges a send " +
-                        "hangs the lane instead of failing it.",
+                    "the stall closed the socket. quiche still routes the path through it, so every " +
+                        "datagram the peer sends there afterwards would be dropped.",
                 )
             } finally {
                 wedged.release()

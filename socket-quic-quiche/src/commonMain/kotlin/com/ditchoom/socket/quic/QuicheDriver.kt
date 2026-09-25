@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
@@ -478,8 +479,17 @@ class QuicheDriver(
     var lastMaxDatagramSize: MaxDatagramSize = MaxDatagramSize.Unavailable
         private set
 
-    private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
-    private val sendAddr = udpSendBuf.driverOwnedNativeAddress()
+    /**
+     * The buffer quiche writes each outbound datagram into, with its address. One value so the two
+     * cannot drift apart when a stalled send takes the buffer with it (see [PathEgress.Stalled]).
+     */
+    private class SendScratch(
+        val buffer: PlatformBuffer,
+    ) {
+        val address: Long = buffer.driverOwnedNativeAddress()
+    }
+
+    private var sendScratch = SendScratch(bufferFactory.allocate(MAX_DATAGRAM_SIZE))
     private var driverJob: Job? = null
 
     /**
@@ -550,6 +560,54 @@ class QuicheDriver(
             private set
 
         /**
+         * Whether this path's socket takes the next datagram. Set only by [stall], [sendSettled] and
+         * [shut], so the socket's receive side lives exactly as long as the entry does.
+         */
+        var egress: PathEgress = PathEgress.Open
+            private set
+
+        /**
+         * A send on this path outlived [sendStallBound]. [lent] holds that datagram and becomes the
+         * path's; [retry] is the same datagram sent again beside the loop, which tells the driver when
+         * the socket answers again.
+         */
+        fun stall(
+            lent: PlatformBuffer,
+            retry: Job,
+        ) {
+            egress = PathEgress.Stalled(lent, retry)
+        }
+
+        /**
+         * [retry] returned. If it is this path's outstanding retry, the socket answers again and the
+         * datagram is released: the stalled send ended when the bound cancelled it (each backend ends
+         * its operation on cancellation), and the retry, the only other reader, has returned.
+         */
+        fun sendSettled(retry: Job) {
+            val current = egress
+            if (current !is PathEgress.Stalled || current.retry !== retry) return
+            current.lent.freeNativeMemory()
+            egress = PathEgress.Open
+        }
+
+        /**
+         * The driver sends nothing more on this socket. Called after the socket is closed (or, for the
+         * primary at [cleanup], handed back to its owner), so a stalled datagram is freed only once no
+         * platform operation can still read it.
+         */
+        fun shut() {
+            val current = egress
+            egress = PathEgress.Shut
+            when (current) {
+                is PathEgress.Stalled -> {
+                    current.retry.cancel()
+                    current.lent.freeNativeMemory()
+                }
+                PathEgress.Open, PathEgress.Shut -> Unit
+            }
+        }
+
+        /**
          * Move this path to [next], **retiring the destination CID the previous state held** whenever
          * [next] does not carry that same id forward.
          *
@@ -609,6 +667,31 @@ class QuicheDriver(
         private fun retire(dcidSeq: Long) {
             api.connRetireDcid(conn, dcidSeq)
         }
+    }
+
+    /**
+     * Whether a path's socket takes the next datagram.
+     *
+     * A stalled send leaves the socket open. quiche keeps routing the path through its 4-tuple, so
+     * closing it would drop every datagram the peer sends there — the ACKs, the replies, the
+     * NEW_CONNECTION_IDs — while the uplink is the only direction that is stuck.
+     */
+    private sealed interface PathEgress {
+        /** Sends go to the socket, each bounded by [sendStallBound]. */
+        data object Open : PathEgress
+
+        /**
+         * A send outlived [sendStallBound]. The platform may still be reading [lent], so the path owns
+         * it until [retry] returns or the socket closes. Datagrams quiche schedules here meanwhile are
+         * skipped, which RFC 9002 loss recovery treats as lost; the receive side is untouched.
+         */
+        class Stalled(
+            val lent: PlatformBuffer,
+            val retry: Job,
+        ) : PathEgress
+
+        /** The driver sends nothing more here. Only an entry already out of [paths] is in this state. */
+        data object Shut : PathEgress
     }
 
     /** The kept probe path ([PathSlot.Kept]), if there is one — read off the slots, never stored beside them. */
@@ -1730,6 +1813,7 @@ class QuicheDriver(
             when (cmd) {
                 is QuicheCmd.Migrate -> handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
                 is PathOpened -> continueMigration(cmd)
+                is PathSendSettled -> paths[cmd.key]?.sendSettled(cmd.retry)
                 else -> execute(cmd)
             }
         } catch (t: Throwable) {
@@ -1806,7 +1890,7 @@ class QuicheDriver(
                 // the call that fails, with QUICHE_ERR_STREAM_LIMIT — swallowing it would return a slot
                 // quiche had refused to create, and the next read on it would answer
                 // INVALID_STREAM_STATE. The typed error is in hand here, so it is reported here.
-                val materialised = api.connStreamSend(conn, id, sendAddr, 0, false)
+                val materialised = api.connStreamSend(conn, id, sendScratch.address, 0, false)
                 // Only STREAM_LIMIT. That is the one code which means "this stream cannot be created",
                 // which is the only thing this call is here to find out. Every other negative code
                 // describes the state of an *existing* stream — STREAM_STOPPED, STREAM_RESET, DONE —
@@ -1935,6 +2019,7 @@ class QuicheDriver(
 
             is QuicheCmd.Migrate -> handleMigrateSync(cmd) // routed via dispatch() to handleMigrate; defensive only
             is PathOpened -> handlePathOpenedSync(cmd) // routed via dispatch() to continueMigration; defensive only
+            is PathSendSettled -> paths[cmd.key]?.sendSettled(cmd.retry) // routed via dispatch(); defensive only
         }
     }
 
@@ -2290,25 +2375,26 @@ class QuicheDriver(
         // time this drains. A send can start a validation but never finish one.
         val window = sendWindow()
         while (true) {
-            val written = api.connSend(conn, sendAddr, window.bytes, sendInfo)
+            val scratch = sendScratch
+            val written = api.connSend(conn, scratch.address, window.bytes, sendInfo)
             if (written <= 0) break
             // Route by the local egress address quiche chose. Until the first probe ever opens
             // ([routingLive]) this is dormant — send straight to primary, no decode — so the
             // never-migrating common case is byte-for-byte unchanged. Once a probe has existed,
             // "one path in the map" no longer bounds what quiche schedules on (see [routingLive]),
             // so every datagram is decoded from then on.
-            val channel =
+            val entry =
                 if (!routingLive) {
-                    primary.channel
+                    primary
                 } else {
                     val from = api.decodePathKey(api.sendInfoFromAddr(sendInfo))
                     if (from.family == 0) {
                         // A backend that exposes no egress address (test doubles decode nothing);
                         // quiche schedules non-probing data on the active path, so honour that.
-                        active.channel
+                        active
                     } else {
-                        val entry = paths[from]
-                        if (entry == null) {
+                        val routed = paths[from]
+                        if (routed == null) {
                             // quiche scheduled this datagram on a path the driver has torn down — a
                             // replaced probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
                             // just-retired path draining its last frames. There is no socket for that
@@ -2318,9 +2404,18 @@ class QuicheDriver(
                             // draining — RFC 9002 loss recovery owns it.
                             continue
                         }
-                        entry.channel
+                        routed
                     }
                 }
+            when (entry.egress) {
+                PathEgress.Open -> Unit
+                // The socket has not answered since a send outlived the bound; its retry is still out.
+                // Waiting here again would park the loop for another bound, so this datagram is lost
+                // instead — RFC 9002 loss recovery owns it. Shut is unreachable: shut entries leave
+                // [paths], and [primary] and [active] are never shut while the driver runs.
+                is PathEgress.Stalled, PathEgress.Shut -> continue
+            }
+            val channel = entry.channel
             // Server egress follows the peer and pins its own source: send to the destination quiche
             // chose (sendInfo.to) so a migrated client's new source receives replies, and leave from the
             // local address quiche recorded for that path (sendInfo.from) so a wildcard-bound server does
@@ -2361,7 +2456,7 @@ class QuicheDriver(
                     // every queued stream command. The connection then cannot die, so nothing
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
-                    clock.withBound(sendStallBound) { channel.send(udpSendBuf, written, sendTarget) }
+                    clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
@@ -2387,29 +2482,53 @@ class QuicheDriver(
                     return
                 }
                 is SendOutcome.Stalled -> {
-                    // Close this socket before anything else. The timeout above cancelled our *wait*,
-                    // not the platform operation, and that operation was handed the raw address of
-                    // [udpSendBuf] — the one buffer every datagram reuses. Leaving it outstanding
-                    // would let a late completion read memory the next flush has already overwritten
-                    // — a send-path use-after-free. Closing the socket is what ends the operation and
-                    // releases the reference; it is also the honest verdict, since a channel that did
-                    // not answer is
-                    // one this driver can no longer reason about.
-                    channel.close()
-                    // Record it. A stall is the one send outcome the recording UdpChannel decorator
-                    // cannot see — the bound wraps the call to it, so a stalled send never returns
-                    // through it — and a failure mode that appears in no trace is precisely how the
-                    // field hang stayed undiagnosable for 48 hours. Emitting it here is what makes a
-                    // future stall visible in the replayable record instead of as a gap in it.
+                    // The socket stays open. quiche keeps routing this path through its 4-tuple, and the
+                    // stuck direction is the uplink: closing the socket would drop every datagram the
+                    // peer sends here — ACKs, replies, NEW_CONNECTION_IDs — and fail every later send.
+                    //
+                    // The same datagram is sent again beside the loop, unbounded, and its return is how
+                    // the driver learns the socket answers again. That retry reads [scratch]'s bytes, so
+                    // the path takes the buffer and the driver writes the next datagram into a fresh one.
+                    // Until the retry returns the path is [PathEgress.Stalled] and flushes skip it, so
+                    // the loop never waits on this socket twice.
+                    sendScratch = SendScratch(bufferFactory.allocate(MAX_DATAGRAM_SIZE))
+                    entry.stall(scratch.buffer, retryStalledSend(entry, scratch.buffer, written, sendTarget))
+                    // A stall is the one send outcome the recording UdpChannel decorator cannot see: the
+                    // bound wraps the call to it, so a stalled send never returns through it.
                     capture.record { it.error(SendStalledException(sendStallBound)) }
-                    // Then behave exactly as SendOutcome.Failed: stop draining, do NOT end the
-                    // connection. A stall is not one of RFC 9000 SS10's three terminations either, and
-                    // pre-empting the idle timer here would report a cause we have not established.
-                    // With the loop live again the timer fires, the connection closes as
-                    // ByLocal(IdleTimeout), and the caller reconnects.
+                    // Stop draining, as for Failed: a stall is not one of RFC 9000 SS10's terminations.
+                    // If the platform never answers, the idle timer — armed by a loop that is live
+                    // again — ends the connection as ByLocal(IdleTimeout) and the caller reconnects.
                     return
                 }
             }
+        }
+    }
+
+    /**
+     * Send [lent] again on [entry]'s socket beside the loop, with no bound: this coroutine may wait as
+     * long as the platform does, because nothing else waits on it. Its return, whatever the outcome,
+     * posts [PathSendSettled], and the loop reopens the path's egress. Cancelled by [PathEntry.shut].
+     */
+    private fun retryStalledSend(
+        entry: PathEntry,
+        lent: PlatformBuffer,
+        len: Int,
+        target: SendTarget,
+    ): Job {
+        // Flushes run only inside run(), which start() launched.
+        val scope = checkNotNull(driverScope) { "a send stalled before start()" }
+        val key = entry.key
+        val channel = entry.channel
+        return scope.launch(driverContext) {
+            try {
+                channel.send(lent, len, target)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                // A throw is a returned verdict like any Failed outcome: the socket answered.
+            }
+            commands.trySend(PathSendSettled(key, this.coroutineContext.job))
         }
     }
 
@@ -3023,6 +3142,8 @@ class QuicheDriver(
      * exempting the primary wholesale would mean the original path could never be released.
      */
     private fun teardownPath(entry: PathEntry) {
+        // quiche routes the active path through this socket; closing it would strand the connection.
+        check(entry !== active) { "teardownPath on the active path ${entry.key}" }
         // First, and unconditionally: the path stops holding its destination CID, which retires it
         // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a kept
         // path replaced, a refused switch, a quiche path eviction — so this is the one place a CID
@@ -3035,6 +3156,7 @@ class QuicheDriver(
             entry.channel.close()
         } catch (_: Exception) {
         }
+        entry.shut()
         if (entry.isPrimary) return
         api.recvInfoFree(entry.recvInfo) // free recv_info before the sockaddr it references
         entry.release()
@@ -3217,19 +3339,24 @@ class QuicheDriver(
         // Tear down any non-primary migration paths: cancel reader, close socket, free
         // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
         for (entry in paths.values.toList()) {
-            if (entry.isPrimary) continue
+            if (entry.isPrimary) {
+                // Its socket is its owner's to close; the driver only stops sending on it.
+                entry.shut()
+                continue
+            }
             entry.readerJob?.cancel()
             try {
                 entry.channel.close()
             } catch (_: Exception) {
             }
+            entry.shut()
             api.recvInfoFree(entry.recvInfo)
             entry.release()
         }
         paths.clear()
         api.recvInfoFree(recvInfo)
         api.sendInfoFree(sendInfo)
-        udpSendBuf.freeNativeMemory()
+        sendScratch.buffer.freeNativeMemory()
         seqScratch.freeNativeMemory()
         peLocalOut?.freeNativeMemory()
         peLocalLenOut?.freeNativeMemory()
@@ -3286,6 +3413,8 @@ class QuicheDriver(
                 releaseIfOpened(cmd.outcome)
                 cmd.migrate.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
             }
+            // Nothing to complete: the stalled datagram belongs to its path, which cleanup shuts.
+            is PathSendSettled -> Unit
         }
     }
 
@@ -3330,6 +3459,7 @@ class QuicheDriver(
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
             is PathOpened -> cmd.migrate.result.completeExceptionally(cause)
+            is PathSendSettled -> Unit
         }
     }
 

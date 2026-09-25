@@ -1251,6 +1251,125 @@ abstract class MigrationSimTestSuite {
             }
         }
 
+    /**
+     * **A send stalled behind a held uplink must not cost the connection its downlink** — the 2026-09-25
+     * iPhone walk, both lanes.
+     *
+     * The cellular uplink held packets for 12–47 s while the downlink kept delivering; the server's qlog
+     * shows both directions. A send on the active path outlived the driver's stall bound, and the bound
+     * closed the active path's socket while quiche went on routing the connection through that 4-tuple.
+     * Every later send failed locally with "sink is closed", every server packet sent to it after the
+     * hold lifted (ACKs, echo replies, NEW_CONNECTION_ID) was dropped at the closed socket, and the
+     * connection died on its idle bound. A fresh connection on a fresh socket worked in 133 ms.
+     *
+     * Here the primary's sends are withheld past the stall bound with the downlink open. The server
+     * pushes on the stream mid-hold, and that push must reach the application during the hold; the echo
+     * written before the hold must come back once it lifts, and the connection must still be up.
+     */
+    @Test
+    fun aSendStalledBehindAHeldUplinkLeavesTheActivePathReceiving() =
+        runTest {
+            val virtual = this
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 925_025L,
+                    quicOptions = migrationSimOptions(idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD),
+                ) {
+                    val push = CompletableDeferred<Unit>()
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            val first = st.read(60.seconds)
+                            if (first !is ReadResult.Data) return@launch
+                            st.write(first.buffer, 30.seconds)
+                            first.buffer.freeIfNeeded()
+                            push.await()
+                            st.writeText(PUSHED)
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.write(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy before the hold")
+                        awaitSpareDcids()
+                        val sparesBefore = clientAvailableDcids()
+
+                        val primary = pipe.paths().first()
+                        val release = virtual.currentTime.milliseconds + UPLINK_HOLD
+                        pipe.impair(primary.local, primary.impairment.copy(sendReturn = SendReturn.WithheldUntil(release)))
+                        stream.writeText("after")
+                        // Past the stall bound: the driver has given up waiting on the wedged send.
+                        delay(DEFAULT_SEND_STALL_BOUND + 1.seconds)
+                        assertTrue(
+                            primary.stats.abandonedSends > 0,
+                            "the driver never stopped waiting on a withheld send, so the stall bound was never " +
+                                "reached and nothing below says anything about it: ${pipeTraffic()}",
+                        )
+                        push.complete(Unit)
+
+                        fun evidence() =
+                            "abandonedSends=${primary.stats.abandonedSends} " +
+                                "arrivedAtClosedSocket=${primary.stats.arrivedAtClosedSocket} " +
+                                "sentOnClosedSocket=${primary.stats.sentOnClosedSocket} " +
+                                "state=${clientDriver.state.value} traffic=${pipeTraffic()}"
+
+                        val pushed = stream.readText(release - virtual.currentTime.milliseconds - 1.seconds)
+                        assertEquals(
+                            PUSHED,
+                            pushed,
+                            "the server's push, sent on the active path while only the UPLINK was held, never " +
+                                "reached the application during the hold. A stalled send must not close the " +
+                                "socket quiche still routes the active path through: " +
+                                "${primary.stats.arrivedAtClosedSocket} server datagram(s) were dropped at the " +
+                                "closed socket and ${primary.stats.sentOnClosedSocket} send(s) refused by it. " +
+                                evidence(),
+                        )
+                        assertTrue(
+                            virtual.currentTime.milliseconds < release,
+                            "the push arrived only after the uplink released at $release: ${evidence()}",
+                        )
+
+                        val after = stream.readText(IDLE_TIMEOUT_IN_THE_FIELD)
+                        assertEquals(
+                            "after",
+                            after,
+                            "the echo written into the held uplink never came back once it released: ${evidence()}",
+                        )
+                        assertEquals("still-here", stream.echo("still-here"), "echoes did not resume: ${evidence()}")
+                        assertIs<QuicConnectionState.Established>(
+                            clientDriver.state.value,
+                            "the connection did not survive the hold: ${evidence()}",
+                        )
+                        assertEquals(0, primary.stats.arrivedAtClosedSocket, "the active path's socket was closed: ${evidence()}")
+                        // The spare pool the next handoff draws on: the peer's replacements rode the downlink.
+                        awaitSpareDcids(count = sparesBefore)
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    private suspend fun QuicByteStream.writeText(payload: String) {
+        val out = BufferFactory.network().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, IDLE_TIMEOUT_IN_THE_FIELD * DEADLINE_SLACK)
+        out.freeNativeMemory()
+    }
+
+    private suspend fun QuicByteStream.readText(deadline: Duration): String {
+        val r = runCatching { read(deadline) }.getOrElse { return "READ FAILED: $it" }
+        if (r !is ReadResult.Data) return "NO_DATA ($r)"
+        return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+    }
+
     /** The walk's echo server: every chunk the client sends comes straight back, until the stream ends. */
     private fun MigrationSimScope.launchEchoServer() =
         client.launch {
@@ -2985,6 +3104,12 @@ abstract class MigrationSimTestSuite {
          * probe was in flight for 16.1s.
          */
         val LINK_HOLD = 16.seconds
+
+        /** How long the 2026-09-25 walk's cellular uplink held packets, toward the short end of its 12–47 s. */
+        val UPLINK_HOLD = 20.seconds
+
+        /** What the server pushes mid-hold in [aSendStalledBehindAHeldUplinkLeavesTheActivePathReceiving]. */
+        const val PUSHED = "pushed"
 
         /** The walk's server side: same ALPN and idle window as the client, the old CID limit. */
         fun walkPeerOptions(): QuicOptions =

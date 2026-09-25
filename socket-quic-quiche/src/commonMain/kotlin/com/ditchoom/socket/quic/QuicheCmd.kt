@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
@@ -267,6 +268,16 @@ internal class PathOpened(
     val migrate: QuicheCmd.Migrate,
     val attempt: MigrateAttempt,
     val outcome: PathOpenOutcome,
+) : QuicheCmd
+
+/**
+ * The retry of a stalled send on the path at [key] returned: the socket answers again. Posted by the
+ * [retry] coroutine itself, which the loop matches against the path's outstanding one so a retry from
+ * a path since torn down (and a new path at the same 4-tuple) cannot reopen the wrong egress.
+ */
+internal class PathSendSettled(
+    val key: PathKey,
+    val retry: Job,
 ) : QuicheCmd
 
 /**

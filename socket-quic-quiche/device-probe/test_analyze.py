@@ -226,5 +226,46 @@ class StallPhaseTests(unittest.TestCase):
         )
 
 
+def one_connection_log(outcomes):
+    """One connection on documentation addresses, echoing every second for four minutes, with one
+    MIGRATION-ATTEMPT per outcome at 20 s intervals from t+20s."""
+    lines = [
+        "t=0ms START device=test targets=192.0.2.10:44433/v4 minutes=4 echoIntervalMs=1000 qlog=off",
+        "t=10ms CONNECT-ATTEMPT n=1 target=192.0.2.10:44433 family=v4",
+        "t=60ms CONNECTED session=aa wire=aa alpn=test",
+        "t=62ms LOOP-SCHEDULE read=held-until-answered intervalMs=1000",
+    ]
+    for k in range(1, 240):
+        lines.append(f"t={k * 1000 + 44}ms ECHO-OK seq={k} rtt=44ms pending=0B")
+    for n, outcome in enumerate(outcomes, start=1):
+        lines.append(f"t={n * 20_000 + 500}ms MIGRATION-ATTEMPT n={n} outcome={outcome} tookMs=100")
+    lines.sort(key=lambda l: int(re.match(r"t=(\d+)ms", l).group(1)))
+    return "".join(l + "\n" for l in lines)
+
+
+class Verdict447Test(unittest.TestCase):
+    def verdict(self, outcomes):
+        out = analyze(one_connection_log(outcomes))
+        return next(l for l in out.splitlines() if l.startswith("  connection 1") and "unanswered" in l)
+
+    def test_an_answer_before_the_last_unanswered_run_is_not_recovery(self):
+        """The 2026-09-25 walk: the one answered probe came BEFORE most of the unanswered ones, and the
+        connection never regained a path after them. Judged from its first failure, that read PASS."""
+        line = self.verdict(["PathNotValidated", "Succeeded"] + ["PathNotValidated"] * 4)
+
+        self.assertIn("FAIL — 4 unanswered (an earlier run of 1 was answered) and 3 later probe(s), none answered", line)
+        self.assertNotIn("PASS", line)
+
+    def test_an_answer_after_the_last_unanswered_run_is_recovery(self):
+        line = self.verdict(["PathNotValidated", "Succeeded", "PathNotValidated", "PathNotValidated", "Succeeded"])
+
+        self.assertIn("PASS — 2 unanswered (an earlier run of 1 was answered), then 1 later probe(s) ANSWERED", line)
+
+    def test_a_single_run_answered_afterwards_passes_as_it_always_did(self):
+        line = self.verdict(["PathNotValidated", "PathNotValidated", "Succeeded"])
+
+        self.assertIn("PASS — 2 unanswered, then 1 later probe(s) ANSWERED", line)
+
+
 if __name__ == "__main__":
     unittest.main()

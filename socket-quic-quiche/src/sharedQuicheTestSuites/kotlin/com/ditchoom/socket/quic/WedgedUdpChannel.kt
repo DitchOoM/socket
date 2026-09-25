@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 
@@ -36,9 +37,21 @@ class WedgedUdpChannel(
         target: SendTarget,
     ): SendOutcome {
         sendCount++
-        gate.await()
+        try {
+            gate.await()
+        } catch (ce: CancellationException) {
+            abandonedCount++
+            throw ce
+        }
         return SendOutcome.Sent
     }
+
+    /**
+     * How many sends the driver stopped waiting on. The stall bound cancels its wait on the parked send
+     * the moment it fires, so this is the most direct observation of the bound firing there is.
+     */
+    var abandonedCount: Int = 0
+        private set
 
     /** Let the parked send return, so a finished test can unwind the driver loop. */
     fun release() {
@@ -46,9 +59,8 @@ class WedgedUdpChannel(
     }
 
     /**
-     * How many times the driver closed this channel. The stall branch closes the socket the moment
-     * the bound fires — that is what ends the platform operation still holding the driver's reusable
-     * send buffer — so this is the most direct observation of the bound firing there is.
+     * How many times the driver closed this channel. A stall must not close it: quiche still routes the
+     * path through this socket, and its receive side is not what is stuck.
      */
     var closeCount: Int = 0
         private set
