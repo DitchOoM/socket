@@ -7,7 +7,6 @@ import com.ditchoom.socket.testkit.echo.EchoSession
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.ScriptedEchoStream
-import com.ditchoom.socket.testkit.echo.SilenceWatchdog
 import com.ditchoom.socket.testkit.echo.StreamReply
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
@@ -35,7 +34,8 @@ class LaneIsolationTests {
         runTest {
             val clock = { testScheduler.currentTime.milliseconds }
             val lines = ArrayList<String>()
-            val watches = lanes.map { LaneWatch(it, quietBeatsBeforeAlarm = 2, beatInterval = 60.seconds) }
+            val bounds = StallBounds.forConnect(echoSilence = 120.seconds, handshakeBound = 30.seconds, margin = 10.seconds)
+            val watches = lanes.map { LaneWatch(it, bounds, clock, startsAfter = it.stagger(interval, lanes.size)) }
             watches.forEach { watch ->
                 val lane = watch.lane
                 val echoes = ScriptedEchoStream(clock) { 40.milliseconds }
@@ -57,8 +57,8 @@ class LaneIsolationTests {
                 }
             }
 
-            val beats = watches.associate { it.lane.label to ArrayList<SilenceWatchdog.Beat>() }
-            repeat(3) {
+            val beats = watches.associate { it.lane.label to ArrayList<LaneWatch.Beat>() }
+            repeat(4) {
                 delay(60.seconds)
                 watches.forEach { beats.getValue(it.lane.label) += it.beat() }
             }
@@ -66,7 +66,7 @@ class LaneIsolationTests {
             val v4 = beats.getValue("v4")
             val v6 = beats.getValue("v6")
             assertTrue(
-                v4.all { it == SilenceWatchdog.Beat.Progressing } && v6.last() is SilenceWatchdog.Beat.Stalled,
+                v4.all { it == LaneWatch.Beat.OnTime } && v6.last() is LaneWatch.Beat.Stalled,
                 "the v6 lane stopped after 10 reads (loopTicks=${watches[1].loopTicks}) while v4 kept going " +
                     "(loopTicks=${watches[0].loopTicks}); each lane's watchdog must see only its own lane. beats: v4=$v4 v6=$v6",
             )

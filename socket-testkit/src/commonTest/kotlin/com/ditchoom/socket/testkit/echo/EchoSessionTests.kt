@@ -1,5 +1,9 @@
 package com.ditchoom.socket.testkit.echo
 
+import com.ditchoom.socket.testkit.walk.LaneWatch
+import com.ditchoom.socket.testkit.walk.StallBounds
+import com.ditchoom.socket.testkit.walk.WalkTarget
+import com.ditchoom.socket.testkit.walk.WalkTargets
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -103,40 +107,50 @@ class EchoSessionTests {
         assertEquals(20, session.exchanges, "the loop did not go round")
     }
 
-    /** 46 777 write timeouts, 5.28 s apart, and not one STALL-SUSPECTED in 68 h. */
+    /**
+     * 46 777 write timeouts, 5.28 s apart, and not one STALL-SUSPECTED in 68 h. Each run of them now
+     * leaves the connection and the lane reconnects at once; connections that connect and never
+     * complete a read are still an echo loop that is not running.
+     */
     @Test
     fun writesThatKeepTimingOutAreAStallTheWatchdogCalls() {
-        val watchdog = SilenceWatchdog(quietBeatsBeforeAlarm = 2, beatInterval = 60.seconds)
-        var session = EchoSession(connectedAt = Duration.ZERO)
-        var ticksBeforeThisConnection = 0
-        var ticks = 0
         var t = Duration.ZERO
+        val bounds = StallBounds.forConnect(echoSilence = 120.seconds, handshakeBound = 30.seconds, margin = 10.seconds)
+        val lane = WalkTargets(WalkTarget("192.0.2.1", 4433), emptyList()).lanes.single()
+        val watch = LaneWatch(lane, bounds, clock = { t }, startsAfter = Duration.ZERO)
+        watch.nextAttempt()
+        watch.connected()
+        var session = EchoSession(connectedAt = Duration.ZERO)
         var nextBeat = 60.seconds
         var seq = 0
-        val beats = ArrayList<SilenceWatchdog.Beat>()
-        while (t < 200.seconds) {
+        val beats = ArrayList<LaneWatch.Beat>()
+        while (t < 250.seconds) {
             seq++
             when (session.writeTimedOut(seq, waited = 5.seconds, at = t + 5.seconds)) {
                 is EchoStep.Exchanged, is EchoStep.WriteTimedOut -> Unit
                 is EchoStep.Reconnect -> {
-                    ticksBeforeThisConnection += session.exchanges
+                    watch.backingOff(3.seconds)
+                    watch.nextAttempt()
+                    watch.connected()
                     session = EchoSession(connectedAt = t)
                 }
             }
-            ticks = ticksBeforeThisConnection + session.exchanges
+            watch.progressed(session.exchanges)
             t += 5280.milliseconds
             if (t >= nextBeat) {
-                beats += watchdog.beat(ticks)
+                beats += watch.beat()
                 nextBeat += 60.seconds
             }
         }
 
-        assertEquals(0, ticks, "a write that never completed is not progress")
-        val stalled = assertIs<SilenceWatchdog.Beat.Stalled>(beats[2], "after two quiet heartbeats the watchdog calls it: $beats")
+        assertEquals(0, watch.loopTicks, "a write that never completed is not progress")
+        val stalled = assertIs<LaneWatch.Beat.Stalled>(beats[2], "overdue at the ~120 s beat, called at the next: $beats")
         assertEquals(
-            "STALL-SUSPECTED loopTicks=0 unchanged for 120s attempt=1 — the echo loop is not running. Dumping the last 256 trace events.",
-            stalled.line(attempt = 1, ringSize = 256),
+            "STALL-SUSPECTED phase=Echoing attempt=3 loopTicks=0 waited=184s bound=120s — expected loopTicks to advance; " +
+                "the echo loop is not running. Dumping the last 256 trace events.",
+            stalled.line(ringSize = 256),
         )
+        assertEquals(LaneWatch.Beat.StillStalled, beats[3], "a reconnect that reads nothing is the same stall, not a recovery")
     }
 
     @Test
@@ -151,17 +165,6 @@ class EchoSessionTests {
         val reconnect = assertIs<EchoStep.Reconnect>(step)
         assertEquals(SessionEnd.StreamGone.WritesStalled(EchoSession.WRITE_TIMEOUT_STREAK_LIMIT), reconnect.end)
         assertTrue(reconnect.line.startsWith("STREAM-WRITES-STALLED seq=21 consecutiveTimeouts=12"), reconnect.line)
-    }
-
-    @Test
-    fun theWatchdogReportsARecoveryOnce() {
-        val watchdog = SilenceWatchdog(quietBeatsBeforeAlarm = 2, beatInterval = 60.seconds)
-        assertEquals(SilenceWatchdog.Beat.Progressing, watchdog.beat(5))
-        assertEquals(SilenceWatchdog.Beat.Quiet(1), watchdog.beat(5))
-        assertIs<SilenceWatchdog.Beat.Stalled>(watchdog.beat(5))
-        assertEquals(SilenceWatchdog.Beat.Quiet(3), watchdog.beat(5), "a stall is dumped once, not every minute")
-        val recovered = assertIs<SilenceWatchdog.Beat.Recovered>(watchdog.beat(6))
-        assertEquals("STALL-RECOVERED loopTicks=6 after 3 quiet heartbeat(s)", recovered.line)
     }
 
     /** Samsung, connection 1: last answered echo at t+5627 s, walk over at t+270003 s. */

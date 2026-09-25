@@ -37,7 +37,6 @@ import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
-import com.ditchoom.socket.testkit.echo.SilenceWatchdog
 import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
@@ -50,6 +49,7 @@ import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.DiskFree
 import com.ditchoom.socket.testkit.walk.LaneWatch
+import com.ditchoom.socket.testkit.walk.StallBounds
 import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
@@ -75,6 +75,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * SCRATCH — a hand-driven on-device probe, not part of the automated suite.
@@ -259,7 +260,7 @@ class DeviceHandoffProbe {
         // attempts, sessions, migration ledgers, backoff, watchdog, stall ring — so one lane's trouble
         // cannot hide in the other's numbers, and nothing is shared between lanes but the log and the
         // trace budget.
-        val lanes = targets.lanes.map { ProbeLane(it, ::write) }
+        val lanes = targets.lanes.map { ProbeLane(it, ::write, startsAfter = it.stagger(echoIntervalMs.milliseconds, targets.lanes.size)) }
 
         // Live status in the shade, one line per lane, so the walk can be driven by what each
         // connection actually did rather than by a stopwatch. See [ProbeStatus].
@@ -319,9 +320,8 @@ class DeviceHandoffProbe {
                             // trigger fired, and whether the platform had even noticed the link yet.
                             recordNetworkObservations = true,
                         ),
-                    // Long enough that a dead path is not immediately reaped, short enough that the
-                    // walk shows a death rather than a hang. Keepalive keeps an idle connection honest.
-                    idleTimeout = 30.seconds,
+                    // Keepalive keeps an idle connection honest.
+                    idleTimeout = IDLE_TIMEOUT,
                     keepAliveInterval = 5.seconds,
                     migration = MigrationPolicy.Automatic,
                 )
@@ -419,9 +419,11 @@ class DeviceHandoffProbe {
                     val lived = System.currentTimeMillis() - attemptStarted
                     retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
                     laneEmit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
+                    probe.watch.backingOff(retryDelayMs.milliseconds)
                     delay(retryDelayMs)
                 }
             }
+            probe.watch.walkOver()
         }
 
         runBlocking(Dispatchers.IO) {
@@ -443,13 +445,17 @@ class DeviceHandoffProbe {
                         lanes.forEach { probe ->
                             probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
                             when (val beat = probe.watch.beat()) {
-                                SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
-                                is SilenceWatchdog.Beat.Stalled -> {
-                                    probe.emit(beat.line(probe.watch.attempt, probe.ring.size()))
+                                LaneWatch.Beat.OnTime,
+                                LaneWatch.Beat.Unwatched,
+                                LaneWatch.Beat.StillStalled,
+                                is LaneWatch.Beat.Overdue,
+                                -> Unit
+                                is LaneWatch.Beat.Stalled -> {
+                                    probe.emit(beat.line(probe.ring.size()))
                                     probe.ring.drain().forEach { probe.emit("STALL-TRACE $it") }
                                     probe.emit("STALL-TRACE-END")
                                 }
-                                is SilenceWatchdog.Beat.Recovered -> probe.emit(beat.line)
+                                is LaneWatch.Beat.Recovered -> probe.emit(beat.line)
                             }
                         }
                     }
@@ -461,7 +467,7 @@ class DeviceHandoffProbe {
             lanes
                 .map { probe ->
                     launch {
-                        delay(probe.lane.stagger(echoIntervalMs.milliseconds, lanes.size))
+                        delay(probe.startsAfter)
                         runLane(probe)
                     }
                 }.joinAll()
@@ -487,9 +493,10 @@ class DeviceHandoffProbe {
 private class ProbeLane(
     val lane: WalkLane,
     write: (String) -> Unit,
+    val startsAfter: Duration,
 ) {
     val emit: (String) -> Unit = lane.log(write)
-    val watch = LaneWatch(lane, QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
+    val watch = LaneWatch(lane, STALL_BOUNDS, clock = PROBE_CLOCK::elapsedNow, startsAfter = startsAfter)
 
     /**
      * Where a device-level record goes right now: this lane's live connection's trace, or [Discarded]
@@ -1120,13 +1127,19 @@ private class WalkTraceFiles(
     }
 }
 
+/** Long enough that a dead path is not immediately reaped, short enough that the walk shows a death rather than a hang. */
+private val IDLE_TIMEOUT = 30.seconds
+
 /**
- * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall. Two (~2
- * minutes): past any reconnect backoff (capped at 60s) or a dead radio in a lift, well short of a
- * multi-day run spent unaware. Not fatal — a false alarm costs one log line, a missed real one costs
- * another 72-hour walk.
+ * What each lane phase may take before its watchdog suspects a stall. An echo loop that completes no
+ * read for two minutes; a connect that takes longer than the QUIC idle timeout (which bounds the
+ * handshake) plus a margin; a backoff that runs past its own deadline by that margin. Not fatal: a
+ * false alarm costs one log line, a missed real one costs another multi-day walk.
  */
-private const val QUIET_HEARTBEATS_BEFORE_ALARM = 2
+private val STALL_BOUNDS = StallBounds.forConnect(echoSilence = 120.seconds, handshakeBound = IDLE_TIMEOUT, margin = 10.seconds)
+
+/** The watchdogs' clock: monotonic, so a wall-clock correction is not read as a phase overrunning. */
+private val PROBE_CLOCK = TimeSource.Monotonic.markNow()
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
 private const val RECONNECT_MIN_MS = 3_000L

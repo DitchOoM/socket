@@ -41,12 +41,12 @@ import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
-import com.ditchoom.socket.testkit.echo.SilenceWatchdog
 import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.testkit.walk.LaneWatch
+import com.ditchoom.socket.testkit.walk.StallBounds
 import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.DiskFree
@@ -83,6 +83,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -283,7 +284,7 @@ object IosHandoffProbe {
         // attempts, sessions, migration ledgers, backoff, watchdog, stall ring — so one lane's trouble
         // cannot hide in the other's numbers, and nothing is shared between lanes but the log and the
         // trace budget.
-        val lanes = targets.lanes.map { ProbeLane(it, log) }
+        val lanes = targets.lanes.map { ProbeLane(it, log, startsAfter = it.stagger(echoIntervalMs.milliseconds, targets.lanes.size)) }
         probeLanes = lanes
         statusLine = "walking · ${lanes.size} lane(s)"
 
@@ -312,14 +313,18 @@ object IosHandoffProbe {
                     lanes.forEach { probe ->
                         probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
                         when (val beat = probe.watch.beat()) {
-                            SilenceWatchdog.Beat.Progressing, is SilenceWatchdog.Beat.Quiet -> Unit
-                            is SilenceWatchdog.Beat.Stalled -> {
-                                probe.emit(beat.line(probe.watch.attempt, probe.ring.size()))
+                            LaneWatch.Beat.OnTime,
+                            LaneWatch.Beat.Unwatched,
+                            LaneWatch.Beat.StillStalled,
+                            is LaneWatch.Beat.Overdue,
+                            -> Unit
+                            is LaneWatch.Beat.Stalled -> {
+                                probe.emit(beat.line(probe.ring.size()))
                                 probe.ring.drain().forEach { probe.emit("STALL-TRACE $it") }
                                 probe.emit("STALL-TRACE-END")
-                                probe.status = "⚠ STALL SUSPECTED — echo loop has not run"
+                                probe.status = "⚠ STALL SUSPECTED — ${beat.phase.name} overdue"
                             }
-                            is SilenceWatchdog.Beat.Recovered -> probe.emit(beat.line)
+                            is LaneWatch.Beat.Recovered -> probe.emit(beat.line)
                         }
                     }
                 }
@@ -331,7 +336,7 @@ object IosHandoffProbe {
             lanes
                 .map { probe ->
                     launch {
-                        delay(probe.lane.stagger(echoIntervalMs.milliseconds, lanes.size))
+                        delay(probe.startsAfter)
                         runLane(probe, traceFiles, osNet, minutes, echoIntervalMs, deadline)
                     }
                 }.joinAll()
@@ -391,9 +396,8 @@ object IosHandoffProbe {
                         // fired, and whether the platform had even noticed the link yet.
                         recordNetworkObservations = true,
                     ),
-                // Long enough that a dead path is not immediately reaped, short enough that the walk
-                // shows a death rather than a hang. Keepalive keeps an idle connection honest.
-                idleTimeout = 30.seconds,
+                // Keepalive keeps an idle connection honest.
+                idleTimeout = IDLE_TIMEOUT,
                 keepAliveInterval = 5.seconds,
                 migration = MigrationPolicy.Automatic,
             )
@@ -488,9 +492,11 @@ object IosHandoffProbe {
                 val livedMs = ((NSDate().timeIntervalSince1970 - attemptStarted) * 1000).toLong()
                 retryDelayMs = if (livedMs < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
                 emit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${livedMs}ms)")
+                probe.watch.backingOff(retryDelayMs.milliseconds)
                 delay(retryDelayMs)
             }
         }
+        probe.watch.walkOver()
     }
 }
 
@@ -498,9 +504,10 @@ object IosHandoffProbe {
 private class ProbeLane(
     val lane: WalkLane,
     log: Logger,
+    val startsAfter: Duration,
 ) {
     val emit: (String) -> Unit = log.forLane(lane)
-    val watch = LaneWatch(lane, QUIET_HEARTBEATS_BEFORE_ALARM, HEARTBEAT_INTERVAL_MS.milliseconds)
+    val watch = LaneWatch(lane, STALL_BOUNDS, clock = PROBE_CLOCK::elapsedNow, startsAfter = startsAfter)
 
     /**
      * Where a device-level record goes right now: this lane's live connection's trace, or [Discarded]
@@ -932,15 +939,20 @@ private class WalkTraceFiles(
     }
 }
 
+/** Long enough that a dead path is not immediately reaped, short enough that the walk shows a death rather than a hang. */
+private val IDLE_TIMEOUT = 30.seconds
+
 /**
- * Consecutive heartbeats with no echo-loop progress before the watchdog calls it a stall.
- *
- * Two, i.e. ~2 minutes: long enough that a reconnect backoff (capped at 60s) or a dead radio in an
- * elevator cannot trip it, short enough that a multi-day run is not spent unaware. The alarm is not
- * fatal — the probe keeps recording either way, because a false alarm that costs one log line is a
- * far better trade than a real one that costs another 72-hour walk.
+ * What each lane phase may take before its watchdog suspects a stall. An echo loop that completes no
+ * read for two minutes; a connect that takes longer than the QUIC idle timeout (which bounds the
+ * handshake) plus a margin; a backoff that runs past its own deadline by that margin. Not fatal: a
+ * false alarm costs one log line, a missed real one costs another multi-day walk.
  */
-private const val QUIET_HEARTBEATS_BEFORE_ALARM = 2
+private val STALL_BOUNDS = StallBounds.forConnect(echoSilence = 120.seconds, handshakeBound = IDLE_TIMEOUT, margin = 10.seconds)
+
+/** The watchdogs' clock: monotonic, so a wall-clock correction is not read as a phase overrunning. */
+private val PROBE_CLOCK = TimeSource.Monotonic.markNow()
+
 private const val RECONNECT_MIN_MS = 3_000L
 private const val RECONNECT_MAX_MS = 60_000L
 

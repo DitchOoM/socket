@@ -1,4 +1,4 @@
-"""Tests for analyze.py's lane demultiplexing.
+"""Tests for analyze.py: lane demultiplexing, the OS timeline, stalls by phase.
 
     python3 -m unittest discover -s socket-quic-quiche/device-probe -p 'test_*.py'
 """
@@ -161,6 +161,69 @@ class LaneDemuxTests(unittest.TestCase):
 
         self.assertEqual(expected, out)
         self.assertNotIn("=== lane", out)
+
+
+def stall_section(out):
+    m = re.search(r"\nstalls by phase: (.*?)\n\n", out, re.S)
+    assert m, f"no stalls section in:\n{out}"
+    return m.group(1)
+
+
+class StallPhaseTests(unittest.TestCase):
+    TARGET = "CONNECT-ATTEMPT n={n} target=[2001:db8::1]:4433 family=v6"
+
+    def test_phased_stalls_are_reported_by_phase_with_their_bound(self):
+        out = analyze("".join(l + "\n" for l in [
+            "t=0ms START device=test minutes=60 echoIntervalMs=2000",
+            "t=10ms " + self.TARGET.format(n=1),
+            "t=120000ms STALL-SUSPECTED phase=Connecting attempt=1 waited=120s bound=40s — expected the connect to succeed "
+            "or fail; it has done neither. Dumping the last 256 trace events.",
+            "t=180000ms STALL-RECOVERED phase=Connecting attempt=1 now phase=Echoing attempt=1 loopTicks=0",
+            "t=180000ms CONNECTED session=aa wire=aa alpn=test",
+            "t=420000ms STALL-SUSPECTED phase=Echoing attempt=1 loopTicks=57 waited=180s bound=120s — expected loopTicks to "
+            "advance; the echo loop is not running. Dumping the last 256 trace events.",
+        ]))
+
+        self.assertEqual(
+            "2 suspected, 1 recovered — Connecting=1 Echoing=1\n"
+            "  t+120s phase=Connecting attempt=1 waited=120s bound=40s\n"
+            "  t+420s phase=Echoing attempt=1 waited=180s bound=120s",
+            stall_section(out),
+        )
+
+    def test_an_unphased_stall_in_a_reconnect_backoff_is_read_as_backoff(self):
+        """2026-09-24: every v6 connect failed fast for want of a route and the lane sat in its 60 s backoff;
+        the pre-phase watchdog called the echo loop stalled."""
+        out = analyze("".join(l + "\n" for l in [
+            "t=0ms START device=test minutes=60 echoIntervalMs=2000",
+            "t=1370000ms " + self.TARGET.format(n=7),
+            "t=1370100ms CONNECTION-ENDED err=UnresolvedRouteSourceException msg=no route",
+            "t=1377000ms RECONNECTING in 60s (last attempt lived 100ms)",
+            "t=1381000ms STALL-SUSPECTED loopTicks=4838 unchanged for 120s attempt=7 — the echo loop is not running. "
+            "Dumping the last 256 trace events.",
+        ]))
+
+        self.assertEqual(
+            "1 suspected, 0 recovered — Backoff=1\n"
+            "  t+1381s phase=Backoff attempt=7 waited=120s (pre-phase line: phase inferred from RECONNECTING at t+1377s, 4s earlier)\n"
+            "  1 pre-phase alarm(s) fired in a reconnect backoff: the lane had no connection and so no echo loop to stall — not a hang",
+            stall_section(out),
+        )
+
+    def test_an_unphased_stall_while_connected_is_read_as_echoing(self):
+        out = analyze("".join(l + "\n" for l in [
+            "t=0ms START device=test minutes=60 echoIntervalMs=2000",
+            "t=10ms " + self.TARGET.format(n=1),
+            "t=60ms CONNECTED session=aa wire=aa alpn=test",
+            "t=200000ms STALL-SUSPECTED loopTicks=12 unchanged for 120s attempt=1 — the echo loop is not running. "
+            "Dumping the last 256 trace events.",
+        ]))
+
+        self.assertEqual(
+            "1 suspected, 0 recovered — Echoing=1\n"
+            "  t+200s phase=Echoing attempt=1 waited=120s (pre-phase line: phase inferred from CONNECTED at t+0s, 200s earlier)",
+            stall_section(out),
+        )
 
 
 if __name__ == "__main__":
