@@ -27,7 +27,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 class LaneIsolationTests {
     private val interval = 250.milliseconds
-    private val lanes = WalkTargets(WalkTarget("178.156.248.95", 44433), listOf(WalkTarget("2a01:4ff:f4:eb1a::1", 44433))).lanes
+    private val lanes = WalkTargets(WalkTarget("192.0.2.1", 44433), listOf(WalkTarget("2001:db8::1", 44433))).lanes
 
     @Test
     fun oneLaneStallingTripsOnlyItsOwnWatchdogAndEveryLineCarriesItsLane() =

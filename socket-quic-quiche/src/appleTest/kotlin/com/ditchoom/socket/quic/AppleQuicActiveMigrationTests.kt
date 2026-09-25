@@ -13,12 +13,12 @@ package com.ditchoom.socket.quic
  * with the effective local endpoint polled throughout:
  *
  * ```
- * t= 4s  ready    path=satisfied/wifi     local=100.110.209.112:51038   5 sent / 5 received
+ * t= 4s  ready    path=satisfied/wifi     local=198.51.100.112:51038    5 sent / 5 received
  * t= 5s  -- Wi-Fi off --
- * t= 6s  ready    path=unsatisfied/none   local=100.110.209.112:51038   (unchanged)
- * t= 7s  failed   POSIX 57 (ENOTCONN)     local=100.110.209.112:51038   (unchanged)
+ * t= 6s  ready    path=unsatisfied/none   local=198.51.100.112:51038    (unchanged)
+ * t= 7s  failed   POSIX 57 (ENOTCONN)     local=198.51.100.112:51038    (unchanged)
  * t=20s  -- Wi-Fi on --
- * t=39s  failed   path=unsatisfied/none   local=100.110.209.112:51038   never recovered
+ * t=39s  failed   path=unsatisfied/none   local=198.51.100.112:51038    never recovered
  * ```
  *
  * NW does **not** re-home a UDP connection. It fails it in ~2s, the local endpoint never moves, and

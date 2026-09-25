@@ -49,9 +49,9 @@ def two_lane_log():
     def at(t, lane, body):
         lines.append((t, f"t={t}ms lane={lane} {body}"))
 
-    at(0, "run", "START device=SM-F956U1 sdk=36 targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 "
+    at(0, "run", "START device=SM-F956U1 sdk=36 targets=192.0.2.1:44433/v4,[2001:db8::1]:44433/v6 "
                  "minutes=2 echoIntervalMs=250 qlog=off")
-    at(1, "run", "LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125")
+    at(1, "run", "LANES v4=192.0.2.1:44433 v6=[2001:db8::1]:44433 staggerMs=125")
     at(2, "run", "TRACE-BUDGET mb=512 plannedExchanges=960 lanes=2")
     at(3, "run", "WAKELOCK acquired held=true timeoutMs=240000")
     at(4, "run", "OS-NET-SOURCE monitor=PlatformSignalled/RouteAndInternet cellular=Signalled")
@@ -59,7 +59,7 @@ def two_lane_log():
     at(59_500, "run", f"OS-NET {CELL_OS_NET}")
     at(120_450, "run", f"OS-NET {WIFI_OS_NET}")
     for lane, offset in (("v4", 0), ("v6", 125)):
-        at(offset + 10, lane, f"CONNECT-ATTEMPT n=1 target={'178.156.248.95:44433' if lane == 'v4' else '[2a01:4ff:f4:eb1a::1]:44433'} family={lane}")
+        at(offset + 10, lane, f"CONNECT-ATTEMPT n=1 target={'192.0.2.1:44433' if lane == 'v4' else '[2001:db8::1]:44433'} family={lane}")
         at(offset + 60, lane, "CONNECTED session=aa wire=aa alpn=test")
         at(offset + 61, lane, "PATH Original")
         at(offset + 62, lane, "LOOP-SCHEDULE read=held-until-answered intervalMs=250")

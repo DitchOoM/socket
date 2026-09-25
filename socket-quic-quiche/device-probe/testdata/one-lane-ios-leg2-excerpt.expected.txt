@@ -1,8 +1,8 @@
-START: START device=ios targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 echoIntervalMs=250 qlog=/var/mobile/Containers/Data/Application/F584FE2E-5D14-4C36-BD66-C6D10AC83167/Documents/qlog
+START: START device=ios targets=192.0.2.1:44433/v4,[2001:db8::1]:44433/v6 minutes=4500 echoIntervalMs=250 qlog=/var/mobile/Containers/Data/Application/F584FE2E-5D14-4C36-BD66-C6D10AC83167/Documents/qlog
 lines=291 duration=7.99h
 
 connections: attempts=1
-  #1 t+0s 178.156.248.95:44433 [v4] lived 28753s — (still up at end of log)
+  #1 t+0s 192.0.2.1:44433 [v4] lived 28753s — (still up at end of log)
 
 migrations: succeeded=1 failed=4 probes=5
   t+16141s PATH Migrated(endpoint=100.92.108.100:51522) took 765ms

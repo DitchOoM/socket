@@ -2,9 +2,10 @@
 # Start the probe DETACHED from adb (nohup on the device side), so unplugging does not end it.
 #   ./start.sh <minutes> [echoIntervalMs=250] [traceBudgetMb]
 #
-# The targets come from SERVER_HOST in common.sh: one host, or a COMMA-separated list, one lane per
-# host, all running at once, so one phone exercises both address families on every network it crosses.
-#   SERVER_HOST="178.156.248.95,2a01:4ff:f4:eb1a::1" ./start.sh 4500 250
+# The targets come from SERVER_HOST in walk-server.env (see common.sh): one host, or a COMMA-separated
+# list, one lane per host, all running at once, so one phone exercises both address families on every
+# network it crosses. SERVER_HOST in the environment overrides the file for one run:
+#   SERVER_HOST="192.0.2.1,2001:db8::1" ./start.sh 4500 250
 #
 # There is no read-deadline argument: the probe derives one per connection from the round trips it
 # measures (#599), so a reply that outlives it is reported LATE, never as a failure.
@@ -15,6 +16,7 @@
 # constant sized for the latter died at hour 65 of the 75-hour run this script documents.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
+walk_server_require SERVER_HOST SERVER_PORT
 MIN="${1:?minutes}"; EI="${2:-250}"; BUDGET="${3:-}"
 # qlog is always on: quiche's own frame-level record, ~1.8 GB per 75 h at 250 ms and the one record
 # that does not pass through this library's code. The probe derives its budget (QLOG-BUDGET) itself.

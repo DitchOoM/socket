@@ -95,7 +95,7 @@ import kotlin.time.TimeSource
  * ```
  * adb -s <serial> shell am instrument -w \
  *   -e class com.ditchoom.socket.quic.DeviceHandoffProbe \
- *   -e probeHost 178.156.248.95,2a01:4ff:f4:eb1a::1 -e probePort 44433 -e probeMinutes 12 \
+ *   -e probeHost 192.0.2.1,2001:db8::1 -e probePort 44433 -e probeMinutes 12 \
  *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
  * ```
  *
