@@ -125,6 +125,13 @@ class WebTransportStream internal constructor(
         pending = null
         stream.close()
     }
+
+    /** Drop a stream no session will take: release the prefix and reset it with `H3_REQUEST_CANCELLED`. */
+    internal suspend fun abandon() {
+        pending?.freeIfNeeded()
+        pending = null
+        stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
+    }
 }
 
 /**
@@ -222,6 +229,13 @@ class WebTransportReceiveStream internal constructor(
         pending?.freeIfNeeded()
         pending = null
         stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+    }
+
+    /** Drop a stream no session will take: release the prefix and reset it with `H3_REQUEST_CANCELLED`. */
+    internal suspend fun abandon() {
+        pending?.freeIfNeeded()
+        pending = null
+        stream.resetQuietly(Http3ErrorCode.REQUEST_CANCELLED)
     }
 }
 

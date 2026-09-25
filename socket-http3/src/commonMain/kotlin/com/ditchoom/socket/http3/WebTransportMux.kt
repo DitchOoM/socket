@@ -39,9 +39,9 @@ import kotlin.time.Duration
  *    DATA-framed capsules to surface a peer's graceful close, and [sendCloseCapsule] to send our own.
  *
  * Stream/datagram demux looks a session up by id; an unknown or already-closed session means the frame
- * is dropped (the stream reset). Sessions are registered the moment their CONNECT stream id is known
- * (before the 2xx is even read on the client), so a peer that opens a WebTransport stream immediately
- * after the handshake never races ahead of registration.
+ * is dropped (the stream reset). Each role [register]s a session before the peer can learn its id — the
+ * client before writing the CONNECT HEADERS, the server before writing the 2xx — so a stream or datagram
+ * the peer sends for that session always finds it tabled.
  */
 internal class WebTransportMux(
     private val scope: QuicScope,
@@ -60,27 +60,21 @@ internal class WebTransportMux(
     val bufferFactory: BufferFactory get() = scope.bufferFactory
 
     /**
-     * Create a session for a CONNECT stream and table it immediately by id, before the handshake
-     * completes. [abandon] removes it if the CONNECT is rejected; [activate] starts its capsule loop
-     * once it is confirmed.
+     * Table a session under [connectStream]'s id before the Extended CONNECT is answered. Peer streams
+     * and datagrams for it are delivered from this moment on; the returned handle settles the handshake.
      */
-    suspend fun preRegister(connectStream: QuicByteStream): WebTransportSession {
+    suspend fun register(connectStream: QuicByteStream): PendingWebTransportSession {
         val session = WebTransportSession(connectStream.streamId.id, connectStream, this)
         mutex.withLock { sessions[session.sessionId] = session }
-        return session
+        return PendingWebTransportSession(session, this)
     }
 
-    /** Start [session]'s CONNECT-stream capsule loop (call once the session is confirmed established). */
+    /** Start [session]'s CONNECT-stream capsule loop. */
     fun activate(
         session: WebTransportSession,
         reader: Http3StreamReader,
     ) {
         scope.launch { runCapsuleLoop(session, reader) }
-    }
-
-    /** Drop a session whose CONNECT was rejected/aborted before it was activated. */
-    suspend fun abandon(session: WebTransportSession) {
-        mutex.withLock { sessions.remove(session.sessionId) }
     }
 
     /** Connection-level deregistration, called from [WebTransportSession.close]/peer-close. */
@@ -436,4 +430,23 @@ internal class WebTransportMux(
             // Already gone.
         }
     }
+}
+
+/**
+ * A session [WebTransportMux.register]ed under its CONNECT stream id whose Extended CONNECT is still
+ * unanswered. It already receives the peer's streams and datagrams; exactly one of [establish] (a 2xx)
+ * or [abandon] (a rejection or failure) settles it.
+ */
+internal class PendingWebTransportSession(
+    private val session: WebTransportSession,
+    private val mux: WebTransportMux,
+) {
+    /** The CONNECT was answered 2xx: hand [reader] to the session's capsule loop and return the session. */
+    fun establish(reader: Http3StreamReader): WebTransportSession {
+        mux.activate(session, reader)
+        return session
+    }
+
+    /** The CONNECT did not establish: untable the session and reset every peer stream it was handed. */
+    suspend fun abandon() = session.abandon()
 }

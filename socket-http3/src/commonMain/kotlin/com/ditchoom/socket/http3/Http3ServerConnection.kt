@@ -18,12 +18,14 @@ import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
@@ -639,17 +641,17 @@ class Http3ServerConnection internal constructor(
         // WebTransport stream the instant it sees the 200 (draft-ietf-webtrans-http3 §4.2); if that
         // stream reaches our demux before the session is registered, the demux treats it as orphaned and
         // resets it. Registering first makes the session visible no later than the response itself.
-        val session = mux.preRegister(stream)
+        val pending = mux.register(stream)
         try {
             sendWebTransportResponse(stream, 200, fin = false)
         } catch (e: Throwable) {
-            mux.abandon(session) // CONNECT response never reached the peer — untable the half-open session.
+            // The CONNECT response never reached the peer — untable the half-open session.
+            withContext(NonCancellable) { pending.abandon() }
             throw e
         }
         // The CONNECT stream stays open; its capsule loop owns the reader and ends the session on FIN
         // or a WT_CLOSE_SESSION capsule.
-        mux.activate(session, reader)
-        return session
+        return pending.establish(reader)
     }
 
     /** Send a CONNECT response carrying just `:status`; [fin] half-closes the send side (reject path). */

@@ -27,6 +27,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
@@ -968,6 +970,194 @@ class Http3ConnectionTests {
                     "reset and the mux never disposed of the stream it owned",
             )
             assertNull(connection.connectionError, "one peer-reset WebTransport stream must not become a connection error")
+        }
+
+    // --- a server stream sent the moment the CONNECT lands must find its session ------------------
+
+    /** The server's SETTINGS advertising WebTransport, on a control stream that stays open (#530). */
+    private fun peerWebTransportControlStream(): QuicByteStream =
+        QuicByteStream(
+            QuicStreamId(3),
+            OpenCriticalStream(
+                listOf(Http3StreamType.CONTROL.toInt()) +
+                    frameBytes(Http3Frame.Settings(entries = clientSettings().entries + webTransportSettings(WebTransportOptions()))),
+            ),
+        )
+
+    private fun varIntBytes(value: Long): List<Int> {
+        val buf = BufferFactory.Default.allocate(8)
+        VarIntCodec.encode(buf, value, EncodeContext.Empty)
+        buf.resetForRead()
+        return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
+    }
+
+    /**
+     * The client's CONNECT stream as a server sees it: [onHeaders] runs inside the write carrying the
+     * CONNECT HEADERS — the first moment the server can know the session exists — and only after it
+     * does the server's response ([answer]) become readable. Later reads park until [peerFin].
+     */
+    private class ConnectStream(
+        answer: ReadResult,
+        private val onHeaders: suspend () -> Unit,
+    ) : ByteStream,
+        com.ditchoom.buffer.flow.Resettable {
+        private val script = ArrayDeque(listOf(answer))
+        private var headersWritten = false
+        val peerFin = CompletableDeferred<Unit>()
+        var disposition: Disposition = Disposition.Open
+            private set
+
+        override val isOpen: Boolean get() = disposition is Disposition.Open
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+        override suspend fun read(deadline: Duration): ReadResult {
+            check(headersWritten) { "the response was read before the CONNECT HEADERS were written" }
+            return script.removeFirstOrNull() ?: run {
+                peerFin.await()
+                ReadResult.End
+            }
+        }
+
+        override suspend fun write(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ): BytesWritten {
+            val n = buffer.remaining()
+            repeat(n) { buffer.readByte() }
+            if (!headersWritten) {
+                headersWritten = true
+                onHeaders()
+            }
+            return BytesWritten(n)
+        }
+
+        override suspend fun close() {
+            if (disposition is Disposition.Open) disposition = Disposition.Closed
+        }
+
+        override suspend fun reset(errorCode: Long) {
+            if (disposition is Disposition.Open) disposition = Disposition.Reset(errorCode)
+        }
+    }
+
+    /**
+     * Drives [Http3Connection.connectWebTransport] against a server that, the instant the CONNECT HEADERS
+     * reach it, opens [serverStream] for that session and lets the client route it — every coroutine
+     * ready at that moment runs ([kotlinx.coroutines.test.TestCoroutineScheduler.runCurrent]) — before it
+     * answers with [status]. The race the loopback suite hits by luck is here the only ordering.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.connectWhileServerOpens(
+        serverStream: QuicByteStream,
+        status: Int,
+        body: suspend (Http3Connection, Result<WebTransportSession>, Channel<QuicByteStream>) -> Unit,
+    ) {
+        val peerStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
+        peerStreams.send(peerWebTransportControlStream())
+        val connect =
+            ConnectStream(
+                answer = dataChunk(frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "$status")))))),
+                onHeaders = {
+                    peerStreams.send(serverStream)
+                    testScheduler.runCurrent()
+                },
+            )
+        val scope =
+            FakeQuicScope(
+                this,
+                ClientStreams().outgoing(),
+                peerStreams.receiveAsFlow(),
+                bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), connect))),
+            )
+        val connection = Http3Connection.bootstrap(scope, TransportConfig(), webTransport = WebTransportOptions())
+        val session = runCatching { connection.connectWebTransport("h.test", "/wt") }
+        try {
+            body(connection, session, peerStreams)
+        } finally {
+            connect.peerFin.complete(Unit)
+            peerStreams.close()
+        }
+    }
+
+    /**
+     * **A server unidirectional stream opened the moment the CONNECT arrives reaches the session.**
+     *
+     * The server may open WebTransport streams as soon as it has the CONNECT (draft-ietf-webtrans-http3
+     * §4); it has the session id from the HEADERS alone. A client that tables the session only after
+     * writing those HEADERS leaves a window in which the stream's Session ID names nothing, and the mux
+     * resets it as orphaned — the server's write then fails with STOP_SENDING and the client's
+     * `incomingUniStreams` waits forever.
+     */
+    @Test
+    fun aServerUniStreamOpenedAsTheConnectArrivesReachesTheSession() =
+        runTest {
+            val serverUni =
+                StalledStream(varIntBytes(WebTransportWire.WT_UNI_STREAM_TYPE) + varIntBytes(0) + "hi".map { it.code })
+            connectWhileServerOpens(QuicByteStream(QuicStreamId(7), serverUni), status = 200) { connection, result, _ ->
+                val session = result.getOrThrow()
+                assertEquals(
+                    Disposition.Open,
+                    serverUni.disposition,
+                    "the server opened uni stream 7 for session 0 as soon as the CONNECT HEADERS reached it, and the " +
+                        "client dropped it (${serverUni.disposition}): the stream arrived before session 0 was " +
+                        "registered, so the mux found no session for its Session ID. connectionError=" +
+                        "${connection.connectionError}",
+                )
+                val received = withTimeout(5.seconds) { session.incomingUniStreams.first() }
+                assertEquals(7, received.streamId)
+                val chunk = assertIs<ReadResult.Data>(received.read(1.seconds))
+                assertEquals("hi", chunk.buffer.readString(chunk.buffer.remaining(), Charset.UTF8))
+            }
+        }
+
+    /** **The same for a server bidirectional stream** — [WebTransportMux.acceptIncomingBidi] has the same lookup. */
+    @Test
+    fun aServerBidiStreamOpenedAsTheConnectArrivesReachesTheSession() =
+        runTest {
+            val serverBidi =
+                StalledStream(varIntBytes(WebTransportWire.WT_BIDI_STREAM_SIGNAL) + varIntBytes(0) + "hi".map { it.code })
+            connectWhileServerOpens(QuicByteStream(QuicStreamId(1), serverBidi), status = 200) { connection, result, _ ->
+                val session = result.getOrThrow()
+                assertEquals(
+                    Disposition.Open,
+                    serverBidi.disposition,
+                    "the server opened bidi stream 1 for session 0 as soon as the CONNECT HEADERS reached it, and the " +
+                        "client dropped it (${serverBidi.disposition}): the stream arrived before session 0 was " +
+                        "registered. connectionError=${connection.connectionError}",
+                )
+                val received = withTimeout(5.seconds) { session.incomingBidiStreams.first() }
+                assertEquals(1, received.streamId)
+                val chunk = assertIs<ReadResult.Data>(received.read(1.seconds))
+                assertEquals("hi", chunk.buffer.readString(chunk.buffer.remaining(), Charset.UTF8))
+            }
+        }
+
+    /**
+     * **A refused CONNECT unwinds its registration.** The session was tabled before the HEADERS left, so
+     * a stream the server opened before refusing was handed to it; nobody will ever collect that session,
+     * so the stream must be reset (`H3_REQUEST_CANCELLED`) rather than held open until the connection
+     * ends, the failure must be the typed [WebTransportFailure.ConnectRejected], and the session id must
+     * be free again — a later stream naming it is reset as orphaned.
+     */
+    @Test
+    fun aRefusedConnectResetsTheStreamsItsSessionWasHandedAndUntablesIt() =
+        runTest {
+            val early = StalledStream(varIntBytes(WebTransportWire.WT_UNI_STREAM_TYPE) + varIntBytes(0))
+            connectWhileServerOpens(QuicByteStream(QuicStreamId(7), early), status = 404) { connection, result, peerStreams ->
+                val failure = assertIs<WebTransportException>(result.exceptionOrNull()).failure
+                assertEquals(WebTransportFailure.ConnectRejected(status = 404, authority = "h.test", path = "/wt"), failure)
+                assertEquals(
+                    Disposition.Reset(Http3ErrorCode.REQUEST_CANCELLED),
+                    early.disposition,
+                    "uni stream 7 was handed to session 0 while its CONNECT was pending; the CONNECT was refused, " +
+                        "so the stream must be reset with H3_REQUEST_CANCELLED, not left open",
+                )
+                val late = StalledStream(varIntBytes(WebTransportWire.WT_UNI_STREAM_TYPE) + varIntBytes(0))
+                peerStreams.send(QuicByteStream(QuicStreamId(11), late))
+                testScheduler.runCurrent()
+                assertIs<Disposition.Reset>(late.disposition, "session 0 must be untabled after the refusal; uni stream 11 found it")
+                assertNull(connection.connectionError)
+            }
         }
 
     // --- tests --------------------------------------------------------------
