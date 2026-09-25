@@ -3,6 +3,7 @@
 # Run AFTER the phone is unlocked: the wifi/route services answer garbage while it is still locked.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
+walk_server_require SERVER_HOST
 fail=0
 say() { printf '%-28s %s\n' "$1" "$2"; }
 adbs get-state >/dev/null 2>&1 || { echo "FAIL device $SERIAL not attached"; exit 1; }

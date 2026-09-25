@@ -21,9 +21,9 @@
 # decision, not this script's.
 set -euo pipefail
 
-SERVER_USER="${SERVER_USER:-root}"
-SERVER_HOST="${SERVER_HOST:-178.156.248.95}"
-SERVER_SSH="${SERVER_SSH:-$SERVER_USER@$SERVER_HOST}"
+# SERVER_SSH comes from walk-server.env (see walk-server.env.example), or the environment.
+. "$(dirname "$0")/walk-server.sh"
+walk_server_require SERVER_SSH
 SERVER_QLOG_DIR="${SERVER_QLOG_DIR:-/root/quic-echo-qlog}"
 SERVER_APP_DIR="${SERVER_APP_DIR:-/root/quic-echo-test}"
 SERVER_CONTAINER="${SERVER_CONTAINER:-quic-echo-test}"

@@ -24,6 +24,36 @@ struct QuicProbeApp: App {
     }
 }
 
+/// Where the walk connects. There is no built-in server: `launch.sh` passes `-host` (and `-port`) from
+/// the local walk-server.env, and the app keeps them for later launches from the icon.
+enum ServerConfig {
+    case configured(hosts: String, port: Int32)
+    case missing
+
+    static let hostKey = "host"
+    static let portKey = "port"
+    static let defaultPort: Int32 = 44433
+
+    /// Reads `-host`/`-port` from the launch arguments (UserDefaults' argument domain) or, failing
+    /// that, what an earlier launch stored; a launch argument is persisted so an icon tap reuses it.
+    static func load(_ defaults: UserDefaults = .standard) -> ServerConfig {
+        let hosts = (defaults.string(forKey: hostKey) ?? "").trimmingCharacters(in: .whitespaces)
+        if hosts.isEmpty { return .missing }
+        let storedPort = Int32(defaults.integer(forKey: portKey))
+        let port = storedPort > 0 ? storedPort : defaultPort
+        defaults.set(hosts, forKey: hostKey)
+        defaults.set(Int(port), forKey: portKey)
+        return .configured(hosts: hosts, port: port)
+    }
+
+    var summary: String {
+        switch self {
+        case let .configured(hosts, port): return "targets: \(hosts) port \(String(port))"
+        case .missing: return "no server configured — run ios-probe/device/launch.sh (reads walk-server.env)"
+        }
+    }
+}
+
 @MainActor
 final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var status: String = "not started"
@@ -34,16 +64,15 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var ticker: Timer?
 
-    // Defaults match the Android probe so the two recordings can be read side by side. The hosts are
-    // overridable per launch without a rebuild: `devicectl device process launch … -- -host <addr>`
-    // lands in UserDefaults' argument domain, so an IPv6 literal (or any other server) is one launch
-    // away. A tap on the icon launches with no arguments and gets the default.
+    // The server is set per launch without a rebuild: `devicectl device process launch … -- -host
+    // <addr> -port <n>` lands in UserDefaults' argument domain (launch.sh does this from
+    // walk-server.env). A tap on the icon reuses what the last such launch stored; with neither, the
+    // app shows that no server is configured and does not start.
     //
     // COMMA-SEPARATED is one lane per target, all running at once, so one phone exercises both
-    // address families on every network it crosses: `-host "178.156.248.95,2a01:4ff:f4:eb1a::1"`.
+    // address families on every network it crosses: `-host "192.0.2.1,2001:db8::1"`.
     // A colon cannot be the separator — an IPv6 literal is made of them.
-    var hosts: String = UserDefaults.standard.string(forKey: "host") ?? "178.156.248.95,2a01:4ff:f4:eb1a::1"
-    var port: Int32 = 44433
+    let server: ServerConfig = ServerConfig.load()
     var minutes: Int32 = 4500
 
     override init() {
@@ -57,7 +86,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func begin() {
-        guard !started else { return }
+        guard !started, case let .configured(hosts, port) = server else { return }
         started = true
         manager.requestAlwaysAuthorization()
         applyAuthorization(manager.authorizationStatus)
@@ -135,14 +164,17 @@ struct ProbeView: View {
             Divider()
 
             Group {
-                Text("targets: \(runner.hosts) port \(String(runner.port))")
+                Text(runner.server.summary)
                 Text("location: \(runner.authorization)")
                 Text("location updates: \(runner.locUpdates)")
                     .foregroundStyle(runner.locUpdates > 0 ? .primary : .secondary)
             }
             .font(.system(.footnote, design: .monospaced))
 
-            if !runner.started {
+            if case .missing = runner.server {
+                Text("No server configured: nothing to connect to.")
+                    .font(.footnote).foregroundStyle(.red)
+            } else if !runner.started {
                 Button("Start walk (\(String(runner.minutes)) min)") { runner.begin() }
                     .buttonStyle(.borderedProminent)
             } else {

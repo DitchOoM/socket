@@ -12,13 +12,13 @@ import kotlin.time.Duration.Companion.milliseconds
  * puts every family on one device, one route and every network the device crosses.
  */
 class WalkTargetsTests {
-    private val v4 = WalkTarget("178.156.248.95", 44433)
-    private val v6 = WalkTarget("2a01:4ff:f4:eb1a::1", 44433)
+    private val v4 = WalkTarget("192.0.2.1", 44433)
+    private val v6 = WalkTarget("2001:db8::1", 44433)
 
     @Test
     fun theFamilyComesFromTheLiteral() {
-        assertEquals(AddressFamily.V4, AddressFamily.of("178.156.248.95"))
-        assertEquals(AddressFamily.V6, AddressFamily.of("2a01:4ff:f4:eb1a::1"))
+        assertEquals(AddressFamily.V4, AddressFamily.of("192.0.2.1"))
+        assertEquals(AddressFamily.V6, AddressFamily.of("2001:db8::1"))
         assertEquals(AddressFamily.V6, AddressFamily.of("::1"))
     }
 
@@ -27,8 +27,8 @@ class WalkTargetsTests {
     fun aNameHasNoFamilyTheProbeCanName() {
         assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("quic-echo.example.com"))
         assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("localhost"))
-        assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("178.156.248"), "three octets are not a literal")
-        assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("178.156.248.300"), "300 is not an octet")
+        assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("192.0.2"), "three octets are not a literal")
+        assertEquals(AddressFamily.ResolverChoice, AddressFamily.of("192.0.2.300"), "300 is not an octet")
     }
 
     @Test
@@ -42,7 +42,7 @@ class WalkTargetsTests {
     /** Two targets of one family are two lanes, and their lines must not merge. */
     @Test
     fun aRepeatedFamilyGetsANumberedLane() {
-        val other = WalkTarget("2a01:4ff:f4:eb1a::2", 44433)
+        val other = WalkTarget("2001:db8::2", 44433)
         assertEquals(listOf("v4", "v6", "v6-2"), WalkTargets(v4, listOf(v6, other)).lanes.map { it.label })
     }
 
@@ -51,7 +51,7 @@ class WalkTargetsTests {
         val lanes = WalkTargets(v4, listOf(v6)).lanes
         assertEquals(listOf(0.milliseconds, 125.milliseconds), lanes.map { it.stagger(250.milliseconds, lanes.size) })
         assertEquals(
-            "LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125",
+            "LANES v4=192.0.2.1:44433 v6=[2001:db8::1]:44433 staggerMs=125",
             WalkTargets(v4, listOf(v6)).lanesLine(250.milliseconds),
         )
     }
@@ -75,15 +75,15 @@ class WalkTargetsTests {
         val targets = WalkTargets(v4)
         assertEquals(listOf("v4"), targets.lanes.map { it.label })
         assertEquals(0.milliseconds, targets.lanes.single().stagger(250.milliseconds, 1))
-        assertEquals("targets=178.156.248.95:44433/v4", targets.line)
+        assertEquals("targets=192.0.2.1:44433/v4", targets.line)
     }
 
     @Test
     fun anIpv6LiteralIsBracketedSoItsColonsAreNotReadAsThePort() {
-        assertEquals("[2a01:4ff:f4:eb1a::1]:44433", v6.authority)
-        assertEquals("178.156.248.95:44433", v4.authority)
-        assertEquals("target=[2a01:4ff:f4:eb1a::1]:44433 family=v6", v6.line)
-        assertEquals("target=178.156.248.95:44433 family=v4", v4.line)
+        assertEquals("[2001:db8::1]:44433", v6.authority)
+        assertEquals("192.0.2.1:44433", v4.authority)
+        assertEquals("target=[2001:db8::1]:44433 family=v6", v6.line)
+        assertEquals("target=192.0.2.1:44433 family=v4", v4.line)
     }
 
     /** Every migration, verdict and liveness line has to say which family it happened on. */
@@ -96,15 +96,15 @@ class WalkTargetsTests {
 
     @Test
     fun aCommaSeparatedArgumentKeepsTheOrderItWasGivenAndTheColonsInALiteral() {
-        val parsed = WalkTargets.parse("178.156.248.95,2a01:4ff:f4:eb1a::1", 44433)
+        val parsed = WalkTargets.parse("192.0.2.1,2001:db8::1", 44433)
         val targets = assertIs<WalkTargetsParse.Parsed>(parsed).targets
         assertEquals(listOf(v4, v6), targets.all)
-        assertEquals("targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6", targets.line)
+        assertEquals("targets=192.0.2.1:44433/v4,[2001:db8::1]:44433/v6", targets.line)
     }
 
     @Test
     fun oneHostParsesToOneTarget() {
-        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse("178.156.248.95", 44433)).targets
+        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse("192.0.2.1", 44433)).targets
         assertEquals(listOf(v4), targets.all)
         assertEquals(v4, targets.first)
     }
@@ -112,7 +112,7 @@ class WalkTargetsTests {
     /** Whitespace around a host survives a shell that quoted the list as one word. */
     @Test
     fun surroundingSpaceIsNotPartOfAHost() {
-        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse(" 178.156.248.95 , 2a01:4ff:f4:eb1a::1 ", 44433)).targets
+        val targets = assertIs<WalkTargetsParse.Parsed>(WalkTargets.parse(" 192.0.2.1 , 2001:db8::1 ", 44433)).targets
         assertEquals(listOf(v4, v6), targets.all)
     }
 

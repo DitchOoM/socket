@@ -3,6 +3,28 @@
 Hand-driven, multi-day runs of `DeviceHandoffProbe` on a real phone against the public echo server.
 Everything here talks to the phone through `adb`; the probe itself runs detached and survives unplugging.
 
+## The server: local config, never committed
+
+The echo server's address lives in `device-probe/walk-server.env`, which is gitignored. Create it once
+per checkout from the committed example and put your server in it:
+
+```bash
+cp device-probe/walk-server.env.example device-probe/walk-server.env
+```
+
+| variable | meaning | read by |
+|---|---|---|
+| `SERVER_HOST` | one host, or a comma-separated list, one lane per host (see [Lanes](#address-families-one-lane-per-target)) | `start.sh`, `preflight.sh`, `ios-probe/device/launch.sh` |
+| `SERVER_PORT` | the echo server's UDP port | `start.sh`, `ios-probe/device/launch.sh` |
+| `SERVER_SSH` | the ssh target for the server's qlog | `server-pull.sh` |
+
+`walk-server.sh` loads it; every script that talks to the server sources that. A variable set in the
+environment overrides the file for one invocation, and `WALK_SERVER_ENV=<path>` reads another file.
+There is no built-in server: with neither the file nor the variable a script stops before doing
+anything, printing the `cp` above. The iOS app gets the server only from `launch.sh` (`-host`/`-port`)
+and keeps it for later launches from the icon; never launched that way, it shows "no server
+configured" and does not connect.
+
 ## Before a run (phone plugged in and UNLOCKED)
 
 ```bash
@@ -100,8 +122,8 @@ crosses and one lane's trouble cannot hide in the other's numbers. The second la
 interval after the first, so their sends interleave.
 
 ```bash
-SERVER_HOST="178.156.248.95,2a01:4ff:f4:eb1a::1" device-probe/start.sh 4500 250    # Android
-ios-probe/device/launch.sh "178.156.248.95,2a01:4ff:f4:eb1a::1"                   # iOS
+device-probe/start.sh 4500 250    # Android, SERVER_HOST="192.0.2.1,2001:db8::1" in walk-server.env
+ios-probe/device/launch.sh        # iOS, the same file
 ```
 
 **The separator is a comma**, never a colon — an IPv6 literal is made of colons. Quote the list: it
@@ -121,9 +143,9 @@ Every line starts with its lane — the target's family, `v6-2` for a second v6 
 the run's own lines:
 
 ```
-lane=run START … targets=178.156.248.95:44433/v4,[2a01:4ff:f4:eb1a::1]:44433/v6 minutes=4500 …
-lane=run LANES v4=178.156.248.95:44433 v6=[2a01:4ff:f4:eb1a::1]:44433 staggerMs=125
-lane=v6 CONNECT-ATTEMPT n=7 target=[2a01:4ff:f4:eb1a::1]:44433 family=v6
+lane=run START … targets=192.0.2.1:44433/v4,[2001:db8::1]:44433/v6 minutes=4500 …
+lane=run LANES v4=192.0.2.1:44433 v6=[2001:db8::1]:44433 staggerMs=125
+lane=v6 CONNECT-ATTEMPT n=7 target=[2001:db8::1]:44433 family=v6
 lane=v6 ECHO-OK seq=1234 rtt=44ms pending=0B
 lane=v6 447-VERDICT connection=7 family=v6 PASS — …
 lane=run MIGRATION-TOTALS connections=9 …        (the lanes' sum; each lane logs its own first)
@@ -256,8 +278,7 @@ directory is budgeted like a probe's — `QlogBudget.forWalk` for the walk it se
 records — and the qlog an earlier server process left there counts against it. Everything it drops is
 a line in `qlog-budget.log`.
 
-`SERVER_SSH` (default `root@178.156.248.95`, or set `SERVER_USER`/`SERVER_HOST` separately) points it
-at a different box. Unlike `pull.sh`, it never deletes anything on the server: what is kept there is
+It reaches the server as `SERVER_SSH` from `walk-server.env` (see above). Unlike `pull.sh`, it never deletes anything on the server: what is kept there is
 the server's budget's decision.
 
 ### A failing window as a committed fixture
