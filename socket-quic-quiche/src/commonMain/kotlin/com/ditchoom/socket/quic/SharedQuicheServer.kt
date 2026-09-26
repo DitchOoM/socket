@@ -62,6 +62,8 @@ internal class SharedQuicheServer(
     private val api: QuicheApi,
     private val config: QuicheConfig,
     private val channel: AddressedDatagramChannel,
+    /** How [channel] pins each reply's source; decides whether a reply names one. */
+    internal val replySourcePinning: ReplySourcePinning,
     private val localAddress: SocketAddress,
     private val codec: SocketAddressCodec,
     private val bufferFactory: BufferFactory,
@@ -582,6 +584,7 @@ internal class SharedQuicheServer(
                 fixedPeerKey = peerKey,
                 peerFor = peers::get,
                 localFor = locals::get,
+                pinning = replySourcePinning,
             )
         // Self-reference for onSourceIds: the driver doesn't exist when we build the callback, so
         // capture it via this holder, set right after construction.

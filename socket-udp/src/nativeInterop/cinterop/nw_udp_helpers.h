@@ -1,6 +1,12 @@
 #ifndef NW_UDP_HELPERS_H
 #define NW_UDP_HELPERS_H
 
+// Before any system header: without it Darwin's <netinet6/in6.h> takes the RFC 2292 branch, where
+// IPV6_PKTINFO is option 19 rather than RFC 3542's 46 and IPV6_RECVPKTINFO does not exist.
+#ifndef __APPLE_USE_RFC_3542
+#define __APPLE_USE_RFC_3542 1
+#endif
+
 #include <Network/Network.h>
 #include <Foundation/Foundation.h>
 #include <stdint.h>
@@ -97,5 +103,28 @@ int socket_mc_set_if(int fd, int ipv6, uint32_t iface_v4_be, unsigned int ifinde
 unsigned int socket_if_index(const char * _Nonnull name);
 // First AF_INET address (network-order s_addr) of the interface at [ifindex]; 0 if none / not found.
 uint32_t socket_if_ipv4_be(unsigned int ifindex);
+
+// ============================================================
+// Destination address on receive, source address on send (IP_PKTINFO / IPV6_PKTINFO) for the
+// bind()/POSIX datapath. Lengths and results are int32_t so the Kotlin side is width-independent.
+// ============================================================
+
+// Ask the kernel to report each datagram's destination address: IPV6_RECVPKTINFO on an AF_INET6 socket
+// (a dual-stack socket reports IPv4 traffic as an IPv4-mapped IPV6_PKTINFO; IP_RECVPKTINFO is EINVAL
+// there), IP_RECVPKTINFO on AF_INET. 0, or -1 with errno set.
+int udp_report_destination(int fd, int ipv6);
+
+// recvmsg one datagram with MSG_DONTWAIT. [peer] receives the source; [destination] the address the
+// datagram was sent to, as a sockaddr with port 0 — or ss_family 0 when the kernel attached none.
+// Returns the byte count, or -1 with errno set.
+int32_t udp_recv_with_destination(int fd, void * _Nonnull buf, int32_t cap,
+    struct sockaddr_storage * _Nonnull peer, struct sockaddr_storage * _Nonnull destination);
+
+// sendmsg one datagram to [dest], leaving from [source]: [source_family] AF_INET puts the 4 bytes at
+// [source] in an IP_PKTINFO ipi_spec_dst, AF_INET6 puts the 16 bytes in an IPV6_PKTINFO ipi6_addr
+// (interface 0: the route's). Returns the byte count, or -1 with errno set.
+int32_t udp_send_from(int fd, const void * _Nonnull buf, int32_t len,
+    const struct sockaddr * _Nonnull dest, uint32_t dest_len,
+    int source_family, const uint8_t * _Nonnull source);
 
 #endif /* NW_UDP_HELPERS_H */

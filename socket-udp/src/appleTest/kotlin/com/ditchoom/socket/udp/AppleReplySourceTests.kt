@@ -81,7 +81,9 @@ class AppleReplySourceTests {
 
     private fun replyLeavesFromTheDialledAddress(family: AddressFamily) =
         runBlocking<Unit> {
-            val (client, dialled) = pairs().firstOrNull { it.family == family && it.client != it.dialled } ?: return@runBlocking skip("$family")
+            val (client, dialled) =
+                pairs().firstOrNull { it.family == family && it.client != it.dialled }
+                    ?: return@runBlocking skip("$family")
             val server = bind(null)
             val port = server.localAddress.port
             val sender = bind(client)

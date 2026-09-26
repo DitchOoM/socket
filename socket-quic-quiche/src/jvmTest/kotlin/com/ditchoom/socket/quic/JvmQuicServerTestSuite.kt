@@ -40,7 +40,10 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
             runCatching {
                 java.net.DatagramSocket().use { socket ->
                     socket.connect(java.net.InetSocketAddress(java.net.InetAddress.getByName(target), 9))
-                    socket.localAddress.takeUnless { it.isAnyLocalAddress }?.hostAddress?.substringBefore('%')
+                    socket.localAddress
+                        .takeUnless { it.isAnyLocalAddress }
+                        ?.hostAddress
+                        ?.substringBefore('%')
                 }
             }.getOrNull()
         }

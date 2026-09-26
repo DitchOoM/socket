@@ -74,7 +74,8 @@ internal suspend fun buildLinuxQuicServer(
         // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
-        val channel = binding.openServerChannel(recvBufPool)
+        val served = binding.openServerChannel(recvBufPool, UnpinnedWildcard.Keep)
+        val channel = served.channel
         val localAddress = channel.localAddress
 
         val server =
@@ -82,6 +83,7 @@ internal suspend fun buildLinuxQuicServer(
                 api = api,
                 config = config,
                 channel = channel,
+                replySourcePinning = served.pinning,
                 localAddress = localAddress,
                 codec = SocketAddressCodec(linuxSockAddrLayout),
                 bufferFactory = bufferFactory,

@@ -52,12 +52,13 @@ package com.ditchoom.socket.udp
  *   `strerror` text, which is all the JDK leaves of them.
  * - [PortUnreachable] — `ECONNREFUSED` everywhere; `PortUnreachableException` on JVM/Android.
  * - [NotPermitted] — `EACCES`; `"Permission denied"` on JVM/Android.
- * - [SourceAddressUnavailable] — **the Linux io_uring backend only**, the one that reads
- *   `DatagramSendOptions.fromLocal`. Two of its reasons are decided before the syscall (a source in
- *   the wrong address family, an unscoped IPv6 link-local) and two after one failed (an address no
- *   interface holds, or a failure this backend could not attribute). Unconstructible on the other
- *   four *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect = false` never
- *   reads `fromLocal` at all, so it has nothing to refuse.
+ * - [SourceAddressUnavailable] — the backends that read `DatagramSendOptions.fromLocal`: **Linux
+ *   io_uring** and **Apple POSIX**, and in `:socket-quic-quiche` the JVM server's one-socket-per-address
+ *   composite ([SourceAddressRejection.NotBound]). Some reasons are decided before any syscall (a source
+ *   in the wrong address family, an unscoped IPv6 link-local on Linux, an IPv4 source Darwin's kernel
+ *   would not check) and the rest after one failed. Unconstructible on JVM/Android NIO, Node and
+ *   Network.framework *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect =
+ *   false` never reads `fromLocal` at all, so it has nothing to refuse.
  * - [WouldBlock] — `EAGAIN`, `EWOULDBLOCK`, `ENOBUFS`; on JVM/Android the send budget running out, and
  *   `"No buffer space available"`.
  * - [OsError] — every other errno on the three POSIX backends. **Never on JVM/Android or Node**: NIO
@@ -217,8 +218,9 @@ sealed interface SourceAddressRejection {
 
     /**
      * No interface on this host holds the named address, so the kernel could not build a route out of
-     * it. [errno] is what `sendmsg` reported — `ENETUNREACH` for IPv4, `EINVAL` for IPv6 on Linux —
-     * and is a diagnostic only: the member is the contract, the number is not.
+     * it. [errno] is what the kernel reported — `sendmsg`'s `ENETUNREACH` for IPv4 and `EINVAL` for
+     * IPv6 on Linux, `EADDRNOTAVAIL` on Darwin — and is a diagnostic only: the member is the contract,
+     * the number is not.
      *
      * Only stated when the backend positively established it. When it could not, the answer is
      * [Undetermined] rather than this one on the balance of probability.

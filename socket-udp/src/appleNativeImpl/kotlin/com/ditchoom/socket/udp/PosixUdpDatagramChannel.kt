@@ -10,6 +10,7 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -22,11 +23,13 @@ import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.udp.nw.udp_recv_with_destination
+import com.ditchoom.socket.udp.nw.udp_report_destination
+import com.ditchoom.socket.udp.nw.udp_send_from
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
@@ -44,7 +47,6 @@ import kotlinx.coroutines.withContext
 import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
-import platform.posix.MSG_DONTWAIT
 import platform.posix.POLLIN
 import platform.posix.close
 import platform.posix.errno
@@ -52,16 +54,14 @@ import platform.posix.memset
 import platform.posix.pipe
 import platform.posix.poll
 import platform.posix.pollfd
-import platform.posix.recvfrom
 import platform.posix.sendto
-import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
 import platform.posix.write
 
 /**
- * Apple (K/N) [AddressedDatagramChannel] backed by blocking POSIX `recvfrom`/`sendto` — the lift
- * of the quiche `AppleUdpServerChannel`, reshaped to the public datagram trichotomy. Per-packet source
- * is recovered from `recvfrom` and surfaced as [Datagram.peer]; every send names its destination (the
+ * Apple (K/N) [AddressedDatagramChannel] backed by blocking POSIX `recvmsg`/`sendto`/`sendmsg` — the
+ * lift of the quiche `AppleUdpServerChannel`, reshaped to the public datagram trichotomy. Per-packet
+ * source is recovered from `recvmsg` and surfaced as [Datagram.peer]; every send names its destination (the
  * addressed refinement requires `to`, so a destination-less send is unrepresentable); the quiche
  * `lastDest` cache is dropped (the send target materializes from [SocketAddress] primitives into a
  * `memScoped` scratch, RFC §4). [localAddress] is plainly non-null: `UdpSocket.bind` fails fast on a
@@ -83,9 +83,9 @@ import platform.posix.write
  *    [withDescriptor] rather than holding the number itself.
  *  - [close] therefore never closes the socket. Waking a parked receiver is the [WakePipe]'s job: the
  *    receive loop `poll`s both
- *    descriptors and calls `recvfrom` only when the *socket* is readable, and [close] writes one byte
+ *    descriptors and calls `recvmsg` only when the *socket* is readable, and [close] writes one byte
  *    to the pipe. A receiver woken by that byte returns [DatagramReadResult.Closed] —
- *    never a datagram, and never a `recvfrom` on a number some later `socket()`/`open()` has recycled
+ *    never a datagram, and never a `recvmsg` on a number some later `socket()`/`open()` has recycled
  *    (which reads another socket's datagram and delivers it as a valid-looking `Received`).
  *  - Darwin leaves no cheaper wake: `shutdown()` on an *unconnected* UDP socket is `ENOTCONN`, so the
  *    usual "shutdown to wake, close later" ordering does not apply here.
@@ -98,10 +98,12 @@ import platform.posix.write
  * The recv sockaddr scratch is per-call (`memScoped`), so a concurrent [close] never races a shared
  * write buffer. Not thread-safe: confine [receive]/[send] each to one coroutine (buffer-flow contract).
  *
- * Control plane: the rich Darwin POSIX ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`/`IP_PKTINFO`) is a
- * not wired; the channel advertises [DatagramCapabilities.None] (honest — the datapath
- * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is its typed absent
- * state and every advisory send field a no-op.
+ * Control plane: the two address halves. Each datagram reports the address it was sent to
+ * ([Datagram.localAddress], from `IP_PKTINFO` / `IPV6_PKTINFO`), and a send naming
+ * [DatagramSendOptions.fromLocal] leaves from it or fails typed ([DarwinSourcePinning]) — which is what
+ * lets one wildcard socket answer each client from the address it dialled. The rest of the Darwin
+ * ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`) is not wired: those read fields are their typed absent
+ * states and those send fields no-ops.
  *
  * @param beforeDispatch Test seam for the close-under-receive window: runs on every receive iteration after this
  *   receiver has been admitted and before it hops onto [recvDispatcher]. Production leaves the no-op
@@ -130,10 +132,20 @@ internal class PosixUdpDatagramChannel(
 
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
-    // Not DatagramCapabilities.None: `None` asserts requiresNativeMemoryBuffers = false, and `sendto`
-    // takes a raw base pointer (send errors outright if payload.nativeMemoryAccess is absent). No
-    // control plane otherwise — this path uses plain recvfrom/sendto with no ancillary data.
-    override val capabilities: DatagramCapabilities = DatagramCapabilities(requiresNativeMemoryBuffers = true)
+    /** Decides and checks the source a send names; see [DarwinSourcePinning]. */
+    private val sourcePinning = DarwinSourcePinning()
+
+    /**
+     * `requiresNativeMemoryBuffers`, because `sendto`/`sendmsg` take a raw base pointer. The two
+     * address halves: each datagram reports the address it was sent to when the kernel accepted the
+     * request to say so, and a send leaves from a named source through `IP_PKTINFO`/`IPV6_PKTINFO`.
+     */
+    override val capabilities: DatagramCapabilities =
+        DatagramCapabilities(
+            localAddressReceive = udp_report_destination(fd, if (localAddress.family == AddressFamily.IPv6) 1 else 0) == 0,
+            sourceAddressSelect = true,
+            requiresNativeMemoryBuffers = true,
+        )
 
     override suspend fun receive(): DatagramReadResult {
         val payload = bufferFactory.allocate(receiveBufferSize)
@@ -155,17 +167,16 @@ internal class PosixUdpDatagramChannel(
                         beforeDispatch()
                         memScoped {
                             val addr = alloc<sockaddr_storage>()
-                            val addrLen = alloc<UIntVar>() // socklen_t is uint32 on Darwin (no socklen_tVar alias)
+                            val destination = alloc<sockaddr_storage>()
                             val watched = allocArray<pollfd>(WATCHED_DESCRIPTORS)
                             watched[SOCKET_SLOT].fd = fd
                             watched[SOCKET_SLOT].events = POLLIN.convert()
                             watched[WAKE_SLOT].fd = wake.readEnd
                             watched[WAKE_SLOT].events = POLLIN.convert()
                             memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
-                            addrLen.value = sizeOf<sockaddr_storage>().convert()
                             val step =
                                 withContext(recvDispatcher) {
-                                    pollThenReceive(watched, ptr, payload.capacity, addr.ptr.reinterpret(), addrLen)
+                                    pollThenReceive(watched, ptr, payload.capacity, addr.ptr, destination.ptr)
                                 }
                             when (step) {
                                 is Step.Woken -> DatagramReadResult.Closed()
@@ -174,21 +185,20 @@ internal class PosixUdpDatagramChannel(
                                 // returns a bare -1, which names nothing, so the errno is read instead.
                                 is Step.Failed -> DatagramReadResult.Closed(DatagramCloseReason.OsError(-step.errno))
                                 is Step.Delivered -> {
-                                    val peer = sockaddrToAppleSocketAddress(addr.ptr.reinterpret<sockaddr>())
+                                    val peer = sockaddrToAppleSocketAddress(addr.ptr.reinterpret())
                                     if (peer == null) {
                                         null // unroutable family — skip, keep waiting
                                     } else {
                                         payload.position(0)
                                         payload.setLimit(step.bytes)
                                         // All five args explicit: a defaulted localAddress rides the
-                                        // default-args bridge and boxes the value class (LocalAddress KDoc);
-                                        // no ancillary data on this datapath, so all typed absent states.
+                                        // default-args bridge and boxes the value class (LocalAddress KDoc).
                                         DatagramReadResult.Received(
                                             Datagram(
                                                 payload = payload,
                                                 peer = peer,
                                                 ecn = Ecn.Unknown,
-                                                localAddress = LocalAddress.Unknown,
+                                                localAddress = arrivalAddressOf(destination),
                                                 hopLimit = HopLimit.Unknown,
                                             ),
                                         )
@@ -213,7 +223,17 @@ internal class PosixUdpDatagramChannel(
     }
 
     /**
-     * What one trip through `poll` + `recvfrom` produced. A sealed answer rather than a signed count:
+     * The address a datagram was sent to, from the `IP_PKTINFO` / `IPV6_PKTINFO` the kernel attached,
+     * with this socket's port; [LocalAddress.Unknown] when it attached none. A dual-stack socket reports
+     * IPv4 traffic as IPv4-mapped IPv6, the same spelling as the datagram's peer.
+     */
+    private fun arrivalAddressOf(destination: sockaddr_storage): LocalAddress {
+        val address = sockaddrToAppleSocketAddress(destination.ptr.reinterpret()) ?: return LocalAddress.Unknown
+        return LocalAddress.of(AppleSocketAddress(address.host, localAddress.port, address.family, address.hi, address.lo))
+    }
+
+    /**
+     * What one trip through `poll` + `recvmsg` produced. A sealed answer rather than a signed count:
      * "woken by the close" and "the syscall failed" are different ends, and neither is a byte count.
      */
     private sealed interface Step {
@@ -245,8 +265,8 @@ internal class PosixUdpDatagramChannel(
         watched: CArrayPointer<pollfd>,
         payload: CPointer<ByteVar>,
         capacity: Int,
-        addr: CPointer<sockaddr>,
-        addrLen: UIntVar,
+        addr: CPointer<sockaddr_storage>,
+        destination: CPointer<sockaddr_storage>,
     ): Step {
         while (true) {
             watched[SOCKET_SLOT].revents = 0
@@ -260,8 +280,7 @@ internal class PosixUdpDatagramChannel(
             // Any event on the socket — readable, or an error condition poll reports unasked — is a
             // question only the syscall can answer, and its errno is the honest reason.
             if (watched[SOCKET_SLOT].revents.toInt() == 0) continue
-            addrLen.value = sizeOf<sockaddr_storage>().convert()
-            val n = recvfrom(fd, payload, capacity.convert(), MSG_DONTWAIT, addr, addrLen.ptr).toInt()
+            val n = udp_recv_with_destination(fd, payload, capacity, addr, destination)
             if (n >= 0) return Step.Delivered(n)
             val code = errno
             // EAGAIN here means the readability poll reported is already gone: wait for it again.
@@ -347,14 +366,31 @@ internal class PosixUdpDatagramChannel(
                 val len = payload.remaining()
                 // Parity guard: the same condition reports the same typed reason on every backend.
                 if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
+                // Decided before anything is sent: a source this socket cannot leave from is refused,
+                // typed, rather than handed to a kernel that may send from it anyway.
+                val pin = sourcePinning.pinFor(options.fromLocal, to)
                 memScoped {
                     val addr = alloc<sockaddr_storage>()
                     val addrLen = to.writeSockaddr(addr)
-                    // Check the result. A discarded `sendto` return is a datagram that vanishes between a
+                    // Check the result. A discarded send return is a datagram that vanishes between a
                     // clean return and the wire — for quiche, a packet its congestion controller counts as
                     // in flight but which never left the host.
-                    val sent = sendto(socketFd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
-                    if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
+                    when (pin) {
+                        SourcePin.OsRouting -> {
+                            val sent = sendto(socketFd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
+                            if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
+                        }
+                        is SourcePin.Pinned -> {
+                            sourcePinning.verify(pin)
+                            val source = sourceScratch()
+                            val family = pin.writeSource(source)
+                            val sent = udp_send_from(socketFd, ptr, len, addr.ptr.reinterpret(), addrLen, family, source)
+                            if (sent < 0) {
+                                val code = errno // before anything else can overwrite it
+                                throw DatagramSendException(sourcePinning.sendFailure(code, pin, attempted = len, limit = maxWritableSize))
+                            }
+                        }
+                    }
                 }
             }
         when (use) {

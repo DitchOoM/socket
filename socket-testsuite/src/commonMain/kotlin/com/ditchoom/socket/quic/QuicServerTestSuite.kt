@@ -687,7 +687,11 @@ abstract class QuicServerTestSuite {
                                         if (response is ScopedRead.Data) response.value else "no_data:${response::class.simpleName}"
                                     }
                                 } catch (e: Throwable) {
-                                    if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+                                    if (e is kotlinx.coroutines.CancellationException &&
+                                        e !is kotlinx.coroutines.TimeoutCancellationException
+                                    ) {
+                                        throw e
+                                    }
                                     throw AssertionError(
                                         "$client dialled $dialled and got no connection; the server's datagrams arrived from " +
                                             "${socket.sources()} ($e)",
