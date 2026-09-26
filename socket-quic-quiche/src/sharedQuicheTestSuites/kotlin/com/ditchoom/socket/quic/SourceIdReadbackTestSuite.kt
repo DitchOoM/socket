@@ -35,7 +35,7 @@ import kotlin.time.Duration.Companion.seconds
  * ## What each assertion catches
  * - **non-empty** — the unbound-backend case above, which is the whole reason for a per-platform member.
  * - **contains the connection's own wire CID** — the reading is of *this* connection's real table and
- *   not some other buffer that happens to hold plausible bytes. [QuicheDriver.wireConnectionId] comes
+ *   not some other buffer that happens to hold plausible bytes. [QuicheDriver.identity] comes
  *   from a different quiche call (`quiche_conn_source_id`), so agreement between the two is genuine
  *   corroboration rather than one value restated.
  * - **a second read still contains the first** — `quiche_conn_source_ids` is a *read*, unlike
@@ -89,7 +89,7 @@ abstract class SourceIdReadbackTestSuite {
                             // the QuicheApi default would.
                             val wire =
                                 assertIs<QuicWireConnectionId.Known>(
-                                    driver.wireConnectionId,
+                                    driver.identity.wire,
                                     "this backend does not report quiche's current source CID, so the readback " +
                                         "cannot be corroborated against an independent call",
                                 )

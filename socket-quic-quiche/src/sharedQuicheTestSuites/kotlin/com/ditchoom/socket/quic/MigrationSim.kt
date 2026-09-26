@@ -174,16 +174,17 @@ internal class MigrationSimScope(
      * property that matters and it is not timing-dependent, which is the same reason
      * [FailedProbeConnectionIdTestSuite] asserts on a migration rather than on a count.
      */
-    fun clientAvailableDcids(): Long = api.connAvailableDcids(clientConn)
+    suspend fun clientAvailableDcids(): Long = clientDriver.read("clientAvailableDcids") { api, conn -> api.connAvailableDcids(conn) }
 
     /** Diagnostic: quiche's own client-side path table — index, validation state, active flag. */
-    fun clientPathTable(): String {
-        val n = api.connStats(clientConn)?.pathsCount ?: 0L
-        return (0 until n).joinToString(" ") { idx ->
-            val st = api.connPathStats(clientConn, idx)
-            "[$idx state=${st?.validationState} active=${st?.active} rtt=${st?.rtt} var=${st?.rttvar} pto=${st?.totalPtoCount}]"
+    suspend fun clientPathTable(): String =
+        clientDriver.read("clientPathTable") { api, conn ->
+            val n = api.connStats(conn)?.pathsCount ?: 0L
+            (0 until n).joinToString(" ") { idx ->
+                val st = api.connPathStats(conn, idx)
+                "[$idx state=${st?.validationState} active=${st?.active} rtt=${st?.rtt} var=${st?.rttvar} pto=${st?.totalPtoCount}]"
+            }
         }
-    }
 
     /**
      * One read of the client's **active** path — the counters the shipped silence trigger actually
@@ -199,49 +200,66 @@ internal class MigrationSimScope(
      *
      * ⚠️ Only valid while the driver is **quiescent**, for the reason [clientAvailableDcids] gives.
      */
-    fun clientActivePath(): ActivePathReading {
-        val n = api.connStats(clientConn)?.pathsCount ?: return ActivePathReading.NoActivePath
-        for (idx in 0 until n) {
-            val st = api.connPathStats(clientConn, idx) ?: continue
-            if (st.active) return ActivePathReading.Read(idx, st.totalPtoCount, st.rtt, st.rttvar)
+    suspend fun clientActivePath(): ActivePathReading =
+        clientDriver.read("clientActivePath") { api, conn ->
+            val n = api.connStats(conn)?.pathsCount ?: 0L
+            (0 until n).firstNotNullOfOrNull { idx ->
+                api
+                    .connPathStats(conn, idx)
+                    ?.takeIf { it.active }
+                    ?.let { st -> ActivePathReading.Read(idx, st.totalPtoCount, st.rtt, st.rttvar) }
+            } ?: ActivePathReading.NoActivePath
         }
-        return ActivePathReading.NoActivePath
-    }
 
     /** Diagnostic: how many more source CIDs the server is still allowed to issue. */
-    fun serverScidsLeft(): Long = api.connScidsLeft(serverConn)
+    suspend fun serverScidsLeft(): Long = serverDriver.read("serverScidsLeft") { api, conn -> api.connScidsLeft(conn) }
 
     /** Diagnostic: how many source CIDs the server currently has outstanding. */
-    fun serverActiveScids(): Int = api.connActiveScids(serverConn)
+    suspend fun serverActiveScids(): Int = serverDriver.read("serverActiveScids") { api, conn -> api.connActiveScids(conn) }
 
     /**
      * Diagnostic: the server's LIVE source connection IDs, hex. The reconciliation oracle #446 bound —
      * a plain read, never a drain — so "is this DCID still one the server recognises?" is answerable
      * as fact rather than inferred from a lagging retirement tally.
      */
-    fun serverSourceIdsHex(): List<String> {
-        val n = api.connActiveScids(serverConn)
-        if (n <= 0) return emptyList()
-        val slot = 1 + QUIC_MAX_CONN_ID_LEN
-        val buf =
-            com.ditchoom.buffer.BufferFactory
-                .network()
-                .allocate(n * slot)
-        return try {
-            val yielded = api.connReadSourceIds(serverConn, buf.nativeMemoryAccess!!.nativeAddress.toLong(), n)
-            (0 until minOf(yielded, n)).mapNotNull { i ->
-                buf.position(i * slot)
-                val len = buf.readByte().toInt() and 0xff
-                if (len <= 0 || len > QUIC_MAX_CONN_ID_LEN) {
-                    null
-                } else {
-                    buf.readByteArray(len).joinToString("") { b -> hexByte(b) }
+    suspend fun serverSourceIdsHex(): List<String> =
+        serverDriver.read("serverSourceIdsHex") { api, conn ->
+            val n = api.connActiveScids(conn)
+            if (n <= 0) return@read emptyList()
+            val slot = 1 + QUIC_MAX_CONN_ID_LEN
+            val buf =
+                com.ditchoom.buffer.BufferFactory
+                    .network()
+                    .allocate(n * slot)
+            try {
+                val yielded = api.connReadSourceIds(conn, buf.nativeMemoryAccess!!.nativeAddress.toLong(), n)
+                (0 until minOf(yielded, n)).mapNotNull { i ->
+                    buf.position(i * slot)
+                    val len = buf.readByte().toInt() and 0xff
+                    if (len <= 0 || len > QUIC_MAX_CONN_ID_LEN) {
+                        null
+                    } else {
+                        buf.readByteArray(len).joinToString("") { b -> hexByte(b) }
+                    }
                 }
+            } finally {
+                buf.freeNativeMemory()
             }
-        } finally {
-            buf.freeNativeMemory()
         }
-    }
+
+    /**
+     * [read] on [this] driver's loop, the only place that may touch its `quiche_conn`. A diagnostic of a
+     * connection that is already torn down has nothing to report, which is a broken scenario, not an
+     * answer.
+     */
+    private suspend fun <T> QuicheDriver.read(
+        what: String,
+        read: (QuicheApi, QuicheConn) -> T,
+    ): T =
+        when (val answer = inspect(read)) {
+            is Inspected.Read -> answer.value
+            Inspected.ConnectionGone -> throw AssertionError("$what: the connection is already torn down")
+        }
 
     /** Diagnostic: per-path datagram counts, so "was anything actually sent" is answerable. */
     fun pipeTraffic(): String =
