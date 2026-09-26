@@ -58,6 +58,15 @@ sealed interface WebTransportFailure {
     }
 
     /**
+     * A WebTransport **stream** was aborted by the peer and the platform did not report the peer's code
+     * (Chrome, when a send stream's data pipe closes before its STOP_SENDING notification). This is the
+     * failure behind [WebTransportStreamAbortedWithoutCodeException].
+     */
+    data object StreamAbortedWithoutCode : WebTransportFailure {
+        override fun describe(): String = "WebTransport stream aborted by peer (code not reported by the platform)"
+    }
+
+    /**
      * The TLS/QUIC handshake failed while establishing the session. [badCertificate] distinguishes a
      * certificate-trust rejection (untrusted chain, hostname mismatch, expiry, pin mismatch) from a
      * generic handshake failure — it maps to the [SocketException] TLS reason without any string-match.

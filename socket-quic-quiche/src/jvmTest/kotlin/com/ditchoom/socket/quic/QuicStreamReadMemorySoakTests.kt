@@ -6,7 +6,6 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -111,7 +110,7 @@ class QuicStreamReadMemorySoakTests {
 
     @Test
     fun theNativeFootprintIsFlatAcrossThousandsOfScopedStreamReads() =
-        runBlocking(Dispatchers.IO) {
+        failIfWedged(SOAK_WATCHDOG, "the memory soak", Dispatchers.IO) {
             skipOnMissingNativeLib(QuicStreamReadMemorySoakTests::class) {
                 val reads = System.getenv("QUIC_MEMORY_SOAK_READS")?.toIntOrNull() ?: MEASURED_READS
                 val meter = NativeFootprintMeter.forThisProcess()
@@ -273,5 +272,11 @@ class QuicStreamReadMemorySoakTests {
 
         /** Whole-test budget, sized for the default [MEASURED_READS] on a loaded CI runner. */
         val SOAK_BUDGET: Duration = 4.minutes
+
+        /**
+         * The bound that holds when [SOAK_BUDGET] cannot: a JVM-thread wait, so a soak whose coroutine
+         * deadlines all stopped firing fails as a wedge instead of hanging until the lane is killed.
+         */
+        val SOAK_WATCHDOG: Duration = SOAK_BUDGET + 1.minutes
     }
 }

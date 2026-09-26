@@ -9,15 +9,20 @@ liburingSha256 = "8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb63612
 # ADVISORY (downloadQuicheSource suppresses it) — it pins the SHA256 of
 # https://github.com/cloudflare/quiche/archive/refs/tags/<quiche>.tar.gz as documentation.
 # liburingSha256 IS enforced (liburing uses a tarball download).
-quiche = "0.29.3"
-quicheSha256 = "c840a0d04e2406d0989a5238f6d6054aa0139872ed49a6c48395fca0cfcad75c"
+quiche = "0.30.0"
+quicheSha256 = "5ef0e72c2c4047d2bfe9a6ba2b5b5f1ff11d22d77b6c0be3e931c755c7b329dd"
+# The `boring` / `boring-sys` crate every self-contained libquiche (Apple, Android, Windows, the Linux
+# fallback) builds its BoringSSL from. quiche accepts 4.19 through 5.x and ships no lockfile, so the build
+# pins it (patchQuicheBoringCratePin) to the boring-sys whose BoringSSL is the canonical Linux bundle
+# below. Moving to boring 5 moves that bundle too: it changes the default TLS groups (post-quantum).
+quicheBoringCrate = "4.22.0"
 # BoringSSL is no longer built here. The base :socket Linux K/N TLS (LinuxSockets.def) and the Linux
 # quiche `ffi,qlog` external path now consume the CANONICAL boringssl-kmp bundle via the
 # `com.ditchoom.boringssl.provision` plugin (owner: :boringssl-canonical klib). The canonical commit
 # (44b3df6f — boring-sys 4.22.0 ABI) is pinned in boringssl-kmp, NOT here; socket no longer clones
-# google/boringssl. quiche was bumped 0.29.2 -> 0.29.3 (#258) after the canonical pin was set against
-# 0.29.2; the linuxX64 one-copy/co-link validation is the tripwire that 44b3df6f still satisfies
-# quiche 0.29.3's `ffi,qlog` external BoringSSL refs at K/N final link.
+# google/boringssl. The canonical pin was set against quiche 0.29.2; the linuxX64 one-copy/co-link
+# validation is the tripwire that 44b3df6f still satisfies the pinned quiche's `ffi,qlog` external
+# BoringSSL refs at K/N final link.
 # The old socket-owned pin was boringssl = "f1c75347..." (removed — mis-pinned vs quiche's ABI).
 # Windows/Android/Apple/fuzz still build a self-contained libquiche via `boringssl-boring-crate`.
 androidGradlePlugin = "9.2.1"

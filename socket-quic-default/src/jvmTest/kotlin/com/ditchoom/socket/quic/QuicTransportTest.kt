@@ -174,6 +174,7 @@ class QuicTransportTest {
         override val bufferFactory: BufferFactory = BufferFactory.Default
         override val capabilities: QuicCapabilities = QuicCapabilities.None
         override val state: StateFlow<QuicConnectionState> = MutableStateFlow(QuicConnectionState.Established("test"))
+        override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
 
         /** No quiche connection behind this double, so both ids are stand-ins. */
         override val identity: QuicConnectionIdentity =

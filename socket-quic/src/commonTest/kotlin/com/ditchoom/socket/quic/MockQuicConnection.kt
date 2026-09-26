@@ -34,6 +34,10 @@ class MockQuicConnection(
     private val _state = MutableStateFlow<QuicConnectionState>(initialState)
     override val state: StateFlow<QuicConnectionState> = _state
 
+    /** A mock holds no received stream data, so it has nothing unread once it closes. */
+    private val _unreadAtClose = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
+    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
+
     /**
      * A mock has no quiche connection, so both ids are fixed stand-ins. Stated explicitly rather than
      * defaulted on the interface: a real backend that cannot report identity should fail to compile,
@@ -75,6 +79,7 @@ class MockQuicConnection(
         if (closed) return
         closed = true
         // A caller-initiated close is a local one; NO_ERROR is the graceful case by definition.
+        _unreadAtClose.value = QuicUnreadAtClose.AllRead
         _state.value =
             QuicConnectionState.Closed(
                 if (error is QuicError.NoError) QuicCloseReason.Graceful else QuicCloseReason.ByLocal(error),
@@ -94,6 +99,7 @@ class MockQuicConnection(
 
     /** Transition state (for testing state machine assertions). */
     fun transitionTo(newState: QuicConnectionState) {
+        if (newState is QuicConnectionState.Closed) _unreadAtClose.value = QuicUnreadAtClose.AllRead
         _state.value = newState
     }
 }

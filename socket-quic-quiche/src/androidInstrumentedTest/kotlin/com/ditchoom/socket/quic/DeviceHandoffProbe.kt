@@ -413,6 +413,9 @@ class DeviceHandoffProbe {
                     session.ended(SessionEnd.WalkOver, now())
                 } catch (e: Throwable) {
                     laneEmit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                    // A connection that ends cancels its scope and surfaces here, typed: the connection
+                    // died under the session, which is not the scope failing.
+                    if (e is QuicCloseException) session.ended(SessionEnd.ConnectionDead, now())
                 }
                 probe.trace.value = Discarded
                 val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
