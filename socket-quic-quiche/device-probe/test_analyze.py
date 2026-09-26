@@ -267,5 +267,97 @@ class Verdict447Test(unittest.TestCase):
         self.assertIn("PASS — 2 unanswered, then 1 later probe(s) ANSWERED", line)
 
 
+def v6_lane_without_a_route(grammar):
+    """A v6 lane on a phone with no IPv6 route for a while: attempt 1 connects and dies, attempts 2–6
+    fail before any handshake (four at the route probe, one closed by the peer), attempt 7 connects and
+    runs to the end. `grammar` is "old" — every failed attempt reported as a connection with its own
+    liveness and #447 verdict, the build that walked 2026-09-26 — or "new", where it is an attempt."""
+    lines = []
+
+    def at(t, lane, body):
+        lines.append((t, f"t={t}ms lane={lane} {body}"))
+
+    at(0, "run", "START device=test targets=[2001:db8::1]:44433/v6 minutes=10 echoIntervalMs=1000 qlog=off")
+    at(1, "run", "LANES v6=[2001:db8::1]:44433 staggerMs=0")
+    connected = {1: (10, 60_000, "CONNECTION-DEAD seq=50 reason=local: IdleTimeout (0x-1) — leaving scope to reconnect",
+                     "ConnectionDead"),
+                 7: (400_000, 600_000, "SCOPE-EXITED cleanly", "WalkOver")}
+    failures = {2: "UnresolvedRouteSourceException", 3: "UnresolvedRouteSourceException",
+                4: "UnresolvedRouteSourceException", 5: "QuicCloseException", 6: "UnresolvedRouteSourceException"}
+    for n in range(1, 8):
+        start = connected[n][0] if n in connected else 60_000 + (n - 1) * 60_000
+        at(start, "v6", f"CONNECT-ATTEMPT n={n} target=[2001:db8::1]:44433 family=v6")
+        tag = f"connection={n} family=v6"
+        if n in connected:
+            _, end, why, ended = connected[n]
+            at(start + 50, "v6", "CONNECTED session=aa wire=aa alpn=test")
+            at(start + 51, "v6", "LOOP-SCHEDULE read=held-until-answered intervalMs=1000")
+            for k in range(1, (end - start) // 1000):
+                at(start + k * 1000 + 44, "v6", f"ECHO-OK seq={k} rtt=44ms pending=0B")
+            at(end, "v6", why)
+            at(end + 1, "v6", f"ECHO-LIVENESS {tag} LIVE — answered=1 longestQuietMs=1000 limitMs=600000 ended={ended}")
+            at(end + 2, "v6", f"MIGRATION-LEDGER {tag} attempts=0 succeeded=0 outcomes=[none]")
+            at(end + 3, "v6", f"447-VERDICT {tag} INCONCLUSIVE — no probe went unanswered on this connection (attempts=0)")
+            continue
+        err = failures[n]
+        at(start + 15, "v6", f"CONNECTION-ENDED err={err} msg=the route probe could not be opened: no route to the peer")
+        if grammar == "old":
+            # A #689 build ends the session ConnectionDead on any QuicCloseException, a handshake's included.
+            ended = "ConnectionDead" if err == "QuicCloseException" else "ScopeFailed"
+            at(start + 16, "v6", f"ECHO-LIVENESS {tag} LIVE — answered=0 longestQuietMs=15 limitMs=600000 ended={ended}")
+            at(start + 17, "v6", f"MIGRATION-LEDGER {tag} attempts=0 succeeded=0 outcomes=[none]")
+            at(start + 18, "v6", f"447-VERDICT {tag} INCONCLUSIVE — no probe went unanswered on this connection (attempts=0)")
+        else:
+            reason = "UnresolvedRoute" if err == "UnresolvedRouteSourceException" else err
+            at(start + 16, "v6", f"CONNECT-NEVER-ESTABLISHED n={n} family=v6 reason={reason}")
+        at(start + 20, "v6", "RECONNECTING in 60s (last attempt lived 20ms)")
+    if grammar == "old":
+        at(600_010, "v6", "MIGRATION-TOTALS connections=7 attempts=0 succeeded=0 unansweredProbes=0 probedAfterUnanswered=0 "
+                          "answeredAfterUnanswered=0 noSpareAfterUnanswered=0 outcomes=[none]")
+        at(600_011, "v6", "ECHO-LIVENESS run LIVE — connections=7 answered=2 longestQuietMs=1000 onConnection=1 "
+                          "limitMs=600000 ended=[ConnectionDead=2,ScopeFailed=4,WalkOver=1]")
+    else:
+        at(600_009, "v6", "CONNECT-TOTALS attempts=7 established=2 neverEstablished=[UnresolvedRoute=4,QuicCloseException=1]")
+        at(600_010, "v6", "MIGRATION-TOTALS connections=2 attempts=0 succeeded=0 unansweredProbes=0 probedAfterUnanswered=0 "
+                          "answeredAfterUnanswered=0 noSpareAfterUnanswered=0 outcomes=[none]")
+        at(600_011, "v6", "ECHO-LIVENESS run LIVE — connections=2 answered=2 longestQuietMs=1000 onConnection=1 "
+                          "limitMs=600000 ended=[ConnectionDead=1,WalkOver=1]")
+        at(600_020, "run", "CONNECT-TOTALS attempts=7 established=2 neverEstablished=[UnresolvedRoute=4,QuicCloseException=1]")
+    at(600_021, "run", "DONE attempts=7 lanes=1 log=/sdcard/quic-handoff-probe.log")
+    return "".join(l + "\n" for _, l in sorted(lines, key=lambda e: e[0]))
+
+
+class NeverEstablishedTests(unittest.TestCase):
+    """2026-09-26, Samsung v6 lane: 215 of 219 attempts failed at the route probe, and the probe reported
+    each as a LIVE connection. An attempt that never established is counted as one, and only as one."""
+
+    def check_counts_established_connections_only(self, grammar):
+        v6 = section(analyze(v6_lane_without_a_route(grammar)), "v6")
+
+        self.assertIn("connections: attempts=7 established=2 neverEstablished=[UnresolvedRoute=4,QuicCloseException=1]", v6)
+        self.assertIn("#2–#6 t+120s [v6] 5 attempt(s) never established — UnresolvedRoute=4,QuicCloseException=1", v6)
+        self.assertIn("v6: attempts=7 connected=2 neverEstablished=[UnresolvedRoute=4,QuicCloseException=1]", v6)
+        liveness = v6[v6.index("ECHO-LIVENESS (re-derived"):v6.index("\n#447 verdict (re-derived")]
+        self.assertEqual(2, len(re.findall(r"^  connection \d+ ", liveness, re.M)), liveness)
+        self.assertIn("[attempt 7, v6]", liveness)
+        for n in range(2, 7):
+            self.assertNotIn(f"connection={n} family=v6", v6, "a hollow per-connection line was shown")
+        return v6
+
+    def test_an_old_log_is_read_as_attempts_and_its_own_totals_are_flagged(self):
+        v6 = self.check_counts_established_connections_only("old")
+
+        self.assertIn("ECHO-LIVENESS: 3 (+5 for attempts that never established, not shown)", v6)
+        self.assertIn("⚠ the probe's own run lines claim connections=7", v6)
+
+    def test_a_new_log_reads_the_same_and_raises_no_flag(self):
+        out = analyze(v6_lane_without_a_route("new"))
+        v6 = self.check_counts_established_connections_only("new")
+
+        self.assertIn("ECHO-LIVENESS: 3\n", v6)
+        self.assertNotIn("⚠ the probe's own run lines", v6)
+        self.assertIn("run: CONNECT-TOTALS attempts=7 established=2", out)
+
+
 if __name__ == "__main__":
     unittest.main()

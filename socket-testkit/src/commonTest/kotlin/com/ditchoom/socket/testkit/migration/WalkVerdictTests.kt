@@ -71,11 +71,12 @@ class WalkVerdictTests {
     }
 
     @Test
-    fun aRunThatNeverConnectedKeepsThePathLayersVerdict() {
+    fun aRunThatNeverConnectedHasNothingToJudge() {
         val pool = PoolProbeHistory().verdict()
 
         val run = pool.forRun(connections = 0, liveness = EchoLivenessTotals().verdict())
 
-        assertEquals(RunVerdict.Standing(pool, 0), run)
+        assertEquals(RunVerdict.NoConnection(pool), run)
+        assertTrue(run.line.startsWith("INCONCLUSIVE — no connection was established"), run.line)
     }
 }
