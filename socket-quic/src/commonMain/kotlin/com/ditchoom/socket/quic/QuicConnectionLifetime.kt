@@ -15,7 +15,8 @@ import kotlin.time.Duration
 
 /**
  * What a connection still holds for its application once it has closed: bytes it received on a stream,
- * or a stream's FIN or RESET, that no read has handed out yet.
+ * or a stream's FIN or RESET, that no read has returned to its caller yet — including bytes already handed
+ * to a read that has not returned.
  */
 sealed interface QuicUnreadAtClose {
     /** The connection has not closed; what it receives is still arriving. */
@@ -24,7 +25,10 @@ sealed interface QuicUnreadAtClose {
     /** Closed, and every stream's received bytes and terminal FIN or RESET have been read or released. */
     data object AllRead : QuicUnreadAtClose
 
-    /** Closed, and each of [streams] still holds received bytes, a FIN or a RESET not yet read. */
+    /**
+     * Closed, and each of [streams] still holds received bytes (queued, or handed to a read that has not
+     * returned), a FIN or a RESET not yet read.
+     */
     data class Unread(
         val streams: Set<QuicStreamId>,
     ) : QuicUnreadAtClose {

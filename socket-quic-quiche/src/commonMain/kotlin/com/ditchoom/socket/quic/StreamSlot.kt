@@ -1,8 +1,11 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicReference
 
 /**
  * Per-stream state managed by the [QuicheDriver].
@@ -64,21 +67,37 @@ class StreamSlot(
      */
     val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
 
-    /** Whether the application is done with this stream's read side. See [StreamReadSide]. */
-    @Volatile
-    var readSide: StreamReadSide = StreamReadSide.Reading
+    /** Where the application's reads of this stream stand. See [StreamReadState]; advanced by CAS only. */
+    val readState = AtomicReference<StreamReadState>(StreamReadState.Idle)
+
+    /**
+     * Whether this stream still holds something for the application: bytes handed to a read that has not
+     * returned them, bytes queued in [pendingData], or a FIN/RESET no read has reported yet.
+     */
+    fun holdsUnread(): Boolean =
+        when (readState.load()) {
+            StreamReadState.Finished -> false
+            StreamReadState.HandedOff -> true
+            StreamReadState.Idle -> !pendingData.isEmpty || end != StreamEnd.Open
+        }
 }
 
 /**
- * The application's side of a stream's reads: [Reading] until a read hands out the stream's terminal
- * verdict (End, Reset, the connection's close, a stream read error) or the application releases the read
- * side — then [Finished], for good. A closed connection is waiting on exactly the [Reading] streams that
- * still hold something (see [com.ditchoom.socket.quic.QuicUnreadAtClose]).
+ * The application's reads of one stream.
+ *
+ * [Idle] between reads. [HandedOff] from the moment bytes or a terminal verdict are handed to a read —
+ * the driver answering its `StreamRecv`, or the read taking a chunk off [StreamSlot.pendingData] — until
+ * that read returns them to its caller, when it goes back to [Idle]. [Finished], for good, once a read
+ * returns the stream's terminal verdict (End, Reset, the connection's close, a stream read error) or the
+ * application releases the read side. A closed connection is waiting on every stream that
+ * [holds unread][StreamSlot.holdsUnread] data (see [com.ditchoom.socket.quic.QuicUnreadAtClose]).
  */
-sealed interface StreamReadSide {
-    data object Reading : StreamReadSide
+sealed interface StreamReadState {
+    data object Idle : StreamReadState
 
-    data object Finished : StreamReadSide
+    data object HandedOff : StreamReadState
+
+    data object Finished : StreamReadState
 }
 
 /**

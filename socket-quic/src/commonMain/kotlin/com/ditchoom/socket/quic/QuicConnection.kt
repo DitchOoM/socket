@@ -37,6 +37,9 @@ interface QuicConnection : QuicScope {
      *
      * Required, with no default, for the reason Phase 3 made the migration capability required: a
      * backend that cannot answer should fail to compile rather than silently report nothing.
+     *
+     * Readable after [state] reaches [QuicConnectionState.Closed], from any thread: it then answers the
+     * identity the connection had when it closed ([runUntilClosed] attributes its close with it).
      */
     override val identity: QuicConnectionIdentity
 

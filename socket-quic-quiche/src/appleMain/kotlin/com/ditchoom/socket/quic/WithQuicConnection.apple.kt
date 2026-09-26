@@ -368,10 +368,11 @@ internal class AppleQuicConnection(
 
     /**
      * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
-     * because it rotates — so this is rebuilt per read rather than stored.
+     * because it rotates — so this is rebuilt per read rather than stored. Once the connection has
+     * closed it is the identity the driver latched at close, never a read of the freed connection.
      */
     override val identity: QuicConnectionIdentity
-        get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
+        get() = driver.identity
 
     /** quiche reads raw addresses through cinterop — the one answer every driver-backed connection gives. */
     override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
