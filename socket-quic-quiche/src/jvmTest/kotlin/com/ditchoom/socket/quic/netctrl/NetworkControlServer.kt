@@ -260,8 +260,8 @@ class NetworkControlServer(
             val applied =
                 applying(
                     "$family -w -N $UDP_BLOCK_CHAIN",
-                    "$family -w -A $UDP_BLOCK_CHAIN -p udp -m owner --uid-owner $uid -j DROP",
-                    "$family -w -A OUTPUT -j $UDP_BLOCK_CHAIN",
+                    "$family -w -A $UDP_BLOCK_CHAIN -p udp -m owner --uid-owner ${uid + 1} -j DROP",
+                    "$family -w -I OUTPUT 1 -j $UDP_BLOCK_CHAIN",
                 )
             if (applied !is NetCtrlResponse.Ok) return applied
             // Tracked reversed so cleanup, which runs newest first, unhooks, then flushes, then deletes.
