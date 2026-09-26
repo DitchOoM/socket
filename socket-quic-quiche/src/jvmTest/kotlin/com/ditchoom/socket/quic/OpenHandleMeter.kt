@@ -4,8 +4,8 @@ import com.sun.management.UnixOperatingSystemMXBean
 import java.lang.management.ManagementFactory
 
 /**
- * How this test JVM counts the OS handles it holds, which is where a leaked socket shows up: open file
- * descriptors on POSIX, the process handle count on Windows (a Windows socket is a handle).
+ * How this test JVM counts what a leaked socket holds: open file descriptors on POSIX, the UDP endpoints
+ * the process owns on Windows.
  */
 internal sealed interface OpenHandleMeter {
     /** A human-readable name for the failure message, so a red run says how it was measured. */
@@ -22,22 +22,26 @@ internal sealed interface OpenHandleMeter {
     }
 
     /**
-     * `Get-Process`'s `HandleCount`. Reading it starts a child process, whose pipe handles are closed
-     * again before the count is returned, so every reading costs the same and a before/after delta
-     * nets it out.
+     * The UDP endpoints the process owns, from `Get-NetUDPEndpoint`. Narrower than the process handle
+     * count, which also moves with every thread and event the JVM creates lazily; a leaked QUIC path is
+     * exactly one of these.
      */
-    data object WindowsHandles : OpenHandleMeter {
-        override val description = "Get-Process HandleCount"
+    data object WindowsUdpEndpoints : OpenHandleMeter {
+        override val description = "Get-NetUDPEndpoint -OwningProcess"
 
         override fun openHandles(): Long {
             val pid = ProcessHandle.current().pid()
             val process =
-                ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $pid).HandleCount")
-                    .redirectErrorStream(true)
-                    .start()
+                ProcessBuilder(
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "@(Get-NetUDPEndpoint -OwningProcess $pid -ErrorAction SilentlyContinue).Count",
+                ).redirectErrorStream(true).start()
             val out = process.inputStream.use { it.bufferedReader().readText().trim() }
             process.outputStream.close()
-            check(process.waitFor() == 0 && out.isNotEmpty()) { "Get-Process gave no handle count for pid $pid: $out" }
+            check(process.waitFor() == 0 && out.isNotEmpty()) { "Get-NetUDPEndpoint gave no count for pid $pid: $out" }
             return out.toLong()
         }
     }
@@ -47,7 +51,7 @@ internal sealed interface OpenHandleMeter {
         fun forThisProcess(): OpenHandleMeter =
             when (val bean = ManagementFactory.getOperatingSystemMXBean()) {
                 is UnixOperatingSystemMXBean -> PosixDescriptors(bean)
-                else -> WindowsHandles
+                else -> WindowsUdpEndpoints
             }
     }
 }
