@@ -1528,6 +1528,10 @@ jobs:
       - name: Setup Chrome
         id: chrome
         uses: browser-actions/setup-chrome@v2
+      # Ubuntu 24.04's AppArmor forbids unprivileged user namespaces, which Chrome's sandbox needs, so
+      # headless Chrome aborts with "No usable sandbox!". Lifting the restriction keeps the sandbox on.
+      - name: Allow Chrome's sandbox (unprivileged user namespaces)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run the browser WebTransport interop lane
         timeout-minutes: 20
         env:
