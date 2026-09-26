@@ -1,4 +1,4 @@
-@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -28,7 +28,6 @@ import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -39,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -102,13 +102,12 @@ class QuicheDriver(
      */
     private val clock: DriverClock = RealDriverClock,
     /**
-     * Context the driver's control loop and per-path UDP reader loops are launched in. Defaults to
-     * [Dispatchers.Default] — the pre-seam hardwired dispatcher, so production behaviour is
-     * byte-identical. A test passes [kotlin.coroutines.EmptyCoroutineContext] so both loops inherit
+     * Context the driver's control loop and per-path UDP reader loops are launched in, and the one
+     * [awaitEstablished] arms its bound in. Defaults to [productionDriverContext]. A test passes [kotlin.coroutines.EmptyCoroutineContext] so both loops inherit
      * the caller's (virtual-time) dispatcher and [clock] wakes run on the kotlinx-coroutines-test
      * scheduler. See RFC_DETERMINISTIC_SIMULATION.md §3.1.
      */
-    private val driverContext: CoroutineContext = Dispatchers.Default,
+    private val driverContext: CoroutineContext = productionDriverContext,
     /**
      * Liveness backstop on one `UdpChannel.send` — see [flushOutgoing] for what it prevents and
      * [DEFAULT_SEND_STALL_BOUND] for why it is this size and not derived from another timeout.
@@ -255,6 +254,45 @@ class QuicheDriver(
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
 
+    private val _unreadAtClose = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
+
+    /** [QuicConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
+    val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
+
+    /**
+     * The application is done reading [slot] for good: [StreamReadState.Finished], and a closed connection
+     * stops waiting on it.
+     */
+    internal fun readSideFinished(slot: StreamSlot) {
+        slot.readState.store(StreamReadState.Finished)
+        reconsiderUnread(slot)
+    }
+
+    /**
+     * A read of [slot] returned bytes to its caller: [StreamReadState.HandedOff] back to
+     * [StreamReadState.Idle] — never over a [StreamReadState.Finished] the application latched meanwhile.
+     */
+    internal fun readReturned(slot: StreamSlot) {
+        slot.readState.compareAndSet(StreamReadState.HandedOff, StreamReadState.Idle)
+        reconsiderUnread(slot)
+    }
+
+    /**
+     * Drop [slot] from a closed connection's [QuicUnreadAtClose.Unread] once it no longer
+     * [holds unread][StreamSlot.holdsUnread] data. Every transition that can end a stream's claim calls
+     * this after making the transition, and [settleUnreadAtClose] calls it for every stream after
+     * publishing, so a transition that raced the snapshot is re-read rather than lost.
+     */
+    private fun reconsiderUnread(slot: StreamSlot) {
+        _unreadAtClose.update { unread ->
+            if (unread is QuicUnreadAtClose.Unread && slot.id in unread.streams && !slot.holdsUnread()) {
+                unread.without(slot.id)
+            } else {
+                unread
+            }
+        }
+    }
+
     private val _sessionTicket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
 
     /** The newest session ticket the server issued a client connection; latched at close. See [QuicScope.sessionTicket]. */
@@ -302,17 +340,115 @@ class QuicheDriver(
     private var localCloseVerdict: LocalCloseVerdict = LocalCloseVerdict.None
 
     /**
-     * Identity latched on the driver loop just before [cleanup] frees the quiche handles.
+     * This connection's [QuicSessionId] — quiche's stable trace id, read once, at construction, before the
+     * loop exists: the one moment a thread other than the loop may touch the connection.
      *
-     * [closeAttribution] is evaluated on CALLER threads — inside every QuicCloseException a
-     * teardown hands out — and both identity reads dereference the live conn: [sessionId] is
-     * initialized lazily and [wireConnectionId] reads fresh by design. Without the latch, a caller
-     * building its close exception after cleanup() has run reads connTraceId/connSourceId off a
-     * freed (and possibly reallocated) quiche_conn — a use-after-free. Once non-null, the conn may
-     * be gone; identity must come from here.
+     * Read once because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
+     * representing the connection", and unlike the source CID it survives rotation and migration. That
+     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
+     *
+     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
+     * connection handle, which is still unique within this process and still tells concurrent
+     * connections apart — the question the session id exists to answer.
      */
+    internal val sessionId: QuicSessionId = readSessionId(api, conn, bufferFactory)
+
+    /**
+     * The identity callers read, as a value the loop publishes: quiche is single-threaded and the loop
+     * owns the connection, so no caller thread ever reads it — not while it is live (a data race with
+     * the loop), and not once [cleanup] may have freed it (a use-after-free).
+     */
+    private sealed interface IdentitySource {
+        val identity: QuicConnectionIdentity
+
+        /** The connection is open; [refreshIdentity] republishes this whenever the wire CID moves. */
+        data class Live(
+            override val identity: QuicConnectionIdentity,
+        ) : IdentitySource
+
+        /** The connection has closed; this is its identity at the close, for good. */
+        data class Latched(
+            override val identity: QuicConnectionIdentity,
+        ) : IdentitySource
+    }
+
+    /** The loop's scratch for [refreshIdentity]: one allocation per connection, freed in [cleanup]. */
+    private val wireIdScratch = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
+
+    /** Published by the loop only; read by anyone. See [IdentitySource]. */
     @kotlin.concurrent.Volatile
-    private var latchedIdentity: QuicConnectionIdentity? = null
+    private var identitySource: IdentitySource =
+        IdentitySource.Live(QuicConnectionIdentity(session = sessionId, wire = readWireConnectionId()))
+
+    /**
+     * This connection's identity — the session id plus the CID currently on the wire — as the loop last
+     * published it. The wire CID rotates (RFC 9000 §9.5), so it is republished on every wake it moves
+     * rather than cached at connect; once the connection has closed it is the identity at the close.
+     */
+    internal val identity: QuicConnectionIdentity get() = identitySource.identity
+
+    /**
+     * Republish the wire CID if it moved. Runs on every wake, in [updateState], in the same loop step that
+     * issues and retires source CIDs and projects them into the server's routing map — so an identity a
+     * caller reads and the routing it was published beside come from one reading of quiche's CID state.
+     * Reads into [wireIdScratch] and allocates only when the CID has actually changed.
+     */
+    private fun refreshIdentity() {
+        val live =
+            when (val source = identitySource) {
+                is IdentitySource.Live -> source
+                is IdentitySource.Latched -> return
+            }
+        val len = api.connSourceId(conn, wireIdScratch.driverOwnedNativeAddress(), CONN_ID_TEXT_CAPACITY)
+        if (wireMatches(live.identity.wire, len)) return
+        identitySource = IdentitySource.Live(live.identity.copy(wire = wireFromScratch(len)))
+    }
+
+    /** Whether the [len] bytes quiche just wrote into [wireIdScratch] are [wire], compared without allocating. */
+    private fun wireMatches(
+        wire: QuicWireConnectionId,
+        len: Int,
+    ): Boolean =
+        when (wire) {
+            QuicWireConnectionId.Unavailable -> len <= 0 || len > CONN_ID_TEXT_CAPACITY
+            is QuicWireConnectionId.Known ->
+                len > 0 &&
+                    len <= CONN_ID_TEXT_CAPACITY &&
+                    wire.hex.length == len * 2 &&
+                    (0 until len).all { i ->
+                        val v = wireIdScratch[i].toInt() and 0xFF
+                        wire.hex[2 * i] == HEX[v ushr 4] && wire.hex[2 * i + 1] == HEX[v and 0xF]
+                    }
+        }
+
+    private fun wireFromScratch(len: Int): QuicWireConnectionId {
+        if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return QuicWireConnectionId.Unavailable
+        val hex = StringBuilder(len * 2)
+        repeat(len) { i ->
+            val v = wireIdScratch[i].toInt() and 0xFF
+            hex.append(HEX[v ushr 4]).append(HEX[v and 0xF])
+        }
+        return QuicWireConnectionId.Known(hex.toString())
+    }
+
+    /** The wire CID, read at construction for the first published identity. Loop or constructor only. */
+    private fun readWireConnectionId(): QuicWireConnectionId =
+        readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
+            ?.let { QuicWireConnectionId.Known(it) }
+            ?: QuicWireConnectionId.Unavailable
+
+    /**
+     * Latch the identity on the loop, with the connection still alive: before [state] reads Closed
+     * ([transitionToClosed]) and before [cleanup] frees the quiche handles, whichever comes first.
+     * Idempotent: the first latch stands.
+     */
+    private fun latchIdentity() {
+        refreshIdentity()
+        when (val source = identitySource) {
+            is IdentitySource.Live -> identitySource = IdentitySource.Latched(source.identity)
+            is IdentitySource.Latched -> Unit
+        }
+    }
 
     /**
      * This connection's identity and network correlation, as a value snapshot for a
@@ -324,35 +460,9 @@ class QuicheDriver(
      */
     internal fun closeAttribution(): QuicCloseAttribution =
         QuicCloseAttribution.Attributed(
-            identity = latchedIdentity ?: QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
+            identity = identity,
             network = NetworkAtClose.NotObserved,
         )
-
-    /**
-     * This connection's [QuicSessionId] — quiche's stable trace id, read once and cached.
-     *
-     * Cached because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
-     * representing the connection", and unlike the source CID it survives rotation and migration. That
-     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
-     *
-     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
-     * connection handle, which is still unique within this process and still tells concurrent
-     * connections apart — the question the session id exists to answer.
-     */
-    internal val sessionId: QuicSessionId by lazy { readSessionId(api, conn, bufferFactory) }
-
-    /**
-     * The CID currently on the wire, read fresh on every access.
-     *
-     * Deliberately **not** cached: CIDs rotate, and migration issues a new one by design (RFC 9000
-     * §9.5). A cached value would be right until the first handoff and quietly wrong afterwards —
-     * which is the moment someone is most likely to be reading it.
-     */
-    internal val wireConnectionId: QuicWireConnectionId
-        get() =
-            readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
-                ?.let { QuicWireConnectionId.Known(it) }
-                ?: QuicWireConnectionId.Unavailable
 
     /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
@@ -406,9 +516,13 @@ class QuicheDriver(
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
     suspend fun awaitEstablished(timeout: Duration) {
+        // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
+        // rather than on whatever the caller's dispatcher resolves timeouts against.
         val settled =
-            withTimeoutOrNull(timeout) {
-                state.first { it !is QuicConnectionState.Handshaking }
+            withContext(driverContext) {
+                withTimeoutOrNull(timeout) {
+                    state.first { it !is QuicConnectionState.Handshaking }
+                }
             }
         if (settled == null) {
             val bound = QuicError.HandshakeTimeout(timeout)
@@ -1925,6 +2039,14 @@ class QuicheDriver(
                     } finally {
                         cmd.buf.endBorrow()
                     }
+                // Bytes or a verdict handed to the read that asked: the stream holds them until that read
+                // returns them to its caller (DriverStreamAdapter.streamRead), so a close landing in between
+                // cannot count them as read. Marked before the hand-off, on the loop that decides it.
+                when (result) {
+                    is StreamRecvResult.Data, is StreamRecvResult.Reset ->
+                        streams[cmd.streamId]?.readState?.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+                    StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> Unit
+                }
                 cmd.result.complete(result)
             }
 
@@ -1996,6 +2118,8 @@ class QuicheDriver(
             is QuicheCmd.SourceIdsRead -> {
                 cmd.result.complete(readSourceIds())
             }
+
+            is InspectConnection<*> -> cmd.run(api, conn)
 
             is QuicheCmd.Close -> {
                 val onTheWire = cmd.error.wireCloseError()
@@ -2152,6 +2276,7 @@ class QuicheDriver(
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
         }
+        refreshIdentity()
         if (api.connIsClosed(conn)) {
             transitionToClosed()
         }
@@ -2224,10 +2349,31 @@ class QuicheDriver(
         // the log line is written. This is the whole point of freezing here rather than in a collector:
         // the connection's scope children are cancelled at close, so a state collector may never run.
         networkObservation.freeze()
+        // Before Closed is published: an observer of Closed reads identity from here, never from a
+        // conn that cleanup() is about to free.
+        latchIdentity()
         refreshSessionTicket()
         drainReadableStreamsIntoSlots()
+        settleUnreadAtClose()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())
+    }
+
+    /**
+     * Publish which streams the closing connection still holds something for — after the teardown drain,
+     * so every byte quiche held is already in a slot, and before [state] reads Closed. A stream counts
+     * while it [holds unread][StreamSlot.holdsUnread] data: bytes a read was handed and has not returned,
+     * queued bytes, or a latched FIN/RESET; an open stream with none of those has nothing left to deliver
+     * but the close itself.
+     */
+    private fun settleUnreadAtClose() {
+        val unread =
+            streams.values
+                .filter { it.holdsUnread() }
+                .map { it.id }
+                .toSet()
+        _unreadAtClose.value = if (unread.isEmpty()) QuicUnreadAtClose.AllRead else QuicUnreadAtClose.Unread(unread)
+        streams.values.forEach(::reconsiderUnread)
     }
 
     /**
@@ -3041,8 +3187,10 @@ class QuicheDriver(
                 QuichePathEventType.New,
                 QuichePathEventType.PeerMigrated,
                 QuichePathEventType.ReusedSourceConnectionId,
+                QuichePathEventType.PmtuUpdated,
                 -> {
                     // Server-side / informational events — no client action for active migration.
+                    // quiche sizes its own packets by the PMTU it reports.
                 }
             }
         }
@@ -3295,10 +3443,10 @@ class QuicheDriver(
     }
 
     private fun cleanup() {
-        // Latch identity while the conn is alive and we are on its loop: after the api.*Free calls
-        // below, closeAttribution() from a caller thread must use this snapshot instead of
-        // dereferencing freed quiche memory (see latchedIdentity).
-        latchedIdentity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId)
+        // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
+        // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
+        latchIdentity()
+        wireIdScratch.freeNativeMemory()
         commands.close()
 
         while (true) {
@@ -3407,6 +3555,7 @@ class QuicheDriver(
             // Nothing negotiated can be read from a freed handle, which is exactly what this case means.
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
             is QuicheCmd.SourceIdsRead -> cmd.result.complete(emptyList())
+            is InspectConnection<*> -> cmd.connectionGone()
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
             is PathOpened -> {
@@ -3456,6 +3605,7 @@ class QuicheDriver(
             is QuicheCmd.Stats -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.SourceIdsRead -> cmd.result.completeExceptionally(cause)
+            is InspectConnection<*> -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
             is PathOpened -> cmd.migrate.result.completeExceptionally(cause)
@@ -3478,6 +3628,20 @@ class QuicheDriver(
         }
 
     /**
+     * Run [read] against this connection on the driver loop and hand back its answer — the way for code
+     * off the loop to read anything quiche has no dedicated command for, without touching a
+     * single-threaded library from a second thread.
+     */
+    internal suspend fun <T> inspect(read: (QuicheApi, QuicheConn) -> T): Inspected<T> =
+        try {
+            val deferred = CompletableDeferred<Inspected<T>>()
+            commands.send(InspectConnection(read, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            Inspected.ConnectionGone
+        }
+
+    /**
      * The source connection IDs quiche currently considers active, newest-first as the iterator
      * yields them. Empty once the connection is gone — the same honest answer
      * [peerTransportParams] gives for a freed handle.
@@ -3486,6 +3650,7 @@ class QuicheDriver(
      * routing table is reconciled against. Without it a divergence could only be discovered
      * downstream — as a dropped packet or a path slot pinned forever.
      */
+
     suspend fun sourceIds(): List<ByteArray> =
         try {
             val deferred = CompletableDeferred<List<ByteArray>>()
@@ -3763,11 +3928,14 @@ class DriverStreamAdapter(
      * connection's death (§10.2). Returning End while this queue is non-empty is silent data loss.
      * Ownership of the buffer transfers to the caller, like the [streamRead] data path.
      */
-    private fun pendingData(): ReadResult.Data? =
-        slot.pendingData
-            .tryReceive()
-            .getOrNull()
-            ?.let { ReadResult.Data(it) }
+    private fun pendingData(): ReadResult.Data? {
+        // HandedOff before the take, so the chunk is never out of the queue without the stream still
+        // claiming it; a take that found nothing gives back only the hand-off it made itself.
+        val marked = slot.readState.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+        val chunk = slot.pendingData.tryReceive().getOrNull()
+        if (chunk == null && marked) driver.readReturned(slot)
+        return chunk?.let { ReadResult.Data(it) }
+    }
 
     /**
      * The read verdict once the connection is gone and [pendingData] is dry, taken from the slot's
@@ -3789,6 +3957,7 @@ class DriverStreamAdapter(
      * `read()` can hand them out, so holding them would leak a pooled/native buffer per undelivered chunk.
      */
     override fun releaseUndeliveredReads() {
+        driver.readSideFinished(slot)
         while (true) {
             val buffer = slot.pendingData.tryReceive().getOrNull() ?: return
             // Recorded before freeing: releasing here is CORRECT (no read() can hand these out any
@@ -3855,7 +4024,55 @@ class DriverStreamAdapter(
         return queued
     }
 
+    /**
+     * [readNext], settling the stream's [StreamReadState] as the read returns to its caller: back to
+     * [StreamReadState.Idle] with bytes, [StreamReadState.Finished] with the terminal verdict — End, Reset,
+     * the connection's close or a stream read error. A deadline is not a verdict: the stream is still
+     * being read.
+     *
+     * A read cancelled on a closed connection has no caller left to hand anything to, and nothing that
+     * cancels a reader of a dead connection reads it again: it releases the stream's read side, freeing
+     * whatever was handed to it (salvaged into [StreamSlot.pendingData] on the way out) instead of
+     * stranding pooled buffers in a queue no one drains.
+     */
     override suspend fun streamRead(
+        streamId: QuicStreamId,
+        bufferFactory: BufferFactory,
+        bufferSize: Int,
+        timeout: Duration,
+    ): ReadResult {
+        val result =
+            try {
+                readNext(streamId, bufferFactory, bufferSize, timeout)
+            } catch (e: QuicCloseException) {
+                driver.readSideFinished(slot)
+                throw e
+            } catch (e: QuicStreamReadException) {
+                driver.readSideFinished(slot)
+                throw e
+            } catch (e: TimeoutCancellationException) {
+                driver.readReturned(slot)
+                throw e
+            } catch (e: CancellationException) {
+                when (driver.state.value) {
+                    is QuicConnectionState.Closed -> releaseUndeliveredReads()
+                    QuicConnectionState.Idle, QuicConnectionState.Handshaking, is QuicConnectionState.Established,
+                    QuicConnectionState.Draining,
+                    -> driver.readReturned(slot)
+                }
+                throw e
+            } catch (e: Throwable) {
+                driver.readReturned(slot)
+                throw e
+            }
+        when (result) {
+            is ReadResult.Data -> driver.readReturned(slot)
+            ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
+        }
+        return result
+    }
+
+    private suspend fun readNext(
         streamId: QuicStreamId,
         bufferFactory: BufferFactory,
         bufferSize: Int,

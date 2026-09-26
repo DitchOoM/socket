@@ -123,7 +123,7 @@ sealed interface RouteProbeFailure {
  * failed, bind the wildcard anyway" is a silent return to a known-broken configuration. It is also not
  * a trade of certainty for a chance: every way this probe fails is a way the real connect fails too —
  * a refused socket, a sandbox, no route — with the single exception of a lost ephemeral draw, which is
- * kept disjoint from the peer's paths. What the fallback would buy is therefore not a path but a
+ * kept disjoint from the peer's paths and redrawn. What the fallback would buy is therefore not a path but a
  * *mislabelled* failure: an `EADDRINUSE` from `connect0` one syscall later, reported as
  * `LocalPathUnavailable` with a cause that names neither the probe nor the reason.
  *

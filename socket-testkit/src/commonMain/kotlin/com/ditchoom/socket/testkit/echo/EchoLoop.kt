@@ -1,6 +1,7 @@
 package com.ditchoom.socket.testkit.echo
 
 import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -147,6 +148,10 @@ public class EchoLoop(
                     Next.KeepGoing -> Unit
                     is Next.Leave -> return next.end
                 }
+            } catch (e: CancellationException) {
+                // The loop's scope ending — a connection's close cancelling its block included — is not
+                // a failed exchange; the caller reads why from what the scope throws.
+                throw e
             } catch (e: Throwable) {
                 emit("ECHO-FAIL seq=$seq after=${(clock() - sentAt).inWholeMilliseconds}ms err=${e::class.simpleName} msg=${e.message}")
                 observe(EchoLoopEvent.Failed(session.owedBytes))

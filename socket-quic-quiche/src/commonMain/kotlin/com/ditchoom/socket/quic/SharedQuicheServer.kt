@@ -76,6 +76,11 @@ internal class SharedQuicheServer(
      * ([QuicOptions.closeLinger], threaded here by every build function). See [lingerBeforeClose].
      */
     private val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
+    /**
+     * How long a handler on a dead connection keeps running while the connection still holds data it
+     * has not read — the [QuicOptions.idleTimeout] every build function passes. See [runUntilClosed].
+     */
+    private val unreadLinger: Duration,
     // Per-call lifecycle teardown wired by the build function (cancel the parent scope). Invoked last by
     // close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
@@ -184,14 +189,14 @@ internal class SharedQuicheServer(
                     try {
                         conn.state.first { it !is QuicConnectionState.Handshaking }
                         if (conn.state.value is QuicConnectionState.Established) {
-                            conn.handler()
+                            conn.runUntilClosed(unreadLinger) { handler() }
                         }
                     } catch (_: QuicCloseException) {
-                        // The handler was still working when this connection ended — parked in
-                        // acceptStream(), mid-read, opening a stream. That is one connection's lifetime
-                        // finishing, not a server fault, and it must not take down an accept loop that is
-                        // still serving everyone else. Only this handler stops; why it ended stays
-                        // readable on conn.state, and a handler that cares can catch this itself.
+                        // The connection ended while the handler was still running — cancelled by
+                        // runUntilClosed, or failing on its own in acceptStream(), a read, a stream open.
+                        // That is one connection's lifetime finishing, not a server fault, and it must not
+                        // take down an accept loop that is still serving everyone else. Only this handler
+                        // stops; why it ended stays readable on conn.state.
                     } finally {
                         try {
                             // Graceful close. Skipped for a connection that never came up or is

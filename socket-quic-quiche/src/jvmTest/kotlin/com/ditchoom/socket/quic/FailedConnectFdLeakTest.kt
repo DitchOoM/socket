@@ -3,11 +3,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.TransportConfig
-import com.sun.management.UnixOperatingSystemMXBean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
-import java.lang.management.ManagementFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -63,6 +61,7 @@ class FailedConnectFdLeakTest {
     @Test
     fun aConnectThatFailsToEstablishReturnsItsFileDescriptors() =
         runTest(timeout = 120.seconds) {
+            val meter = OpenHandleMeter.forThisProcess()
             withContext(Dispatchers.Default) {
                 val options =
                     QuicOptions(
@@ -74,10 +73,10 @@ class FailedConnectFdLeakTest {
 
                 repeat(WARMUP_ATTEMPTS) { attemptConnect(options, transport) }
 
-                val before = openFileDescriptors()
+                val before = meter.openHandles()
                 var failures = 0
                 repeat(ATTEMPTS) { if (!attemptConnect(options, transport)) failures++ }
-                val after = openFileDescriptors()
+                val after = meter.openHandles()
 
                 assertEquals(
                     ATTEMPTS,
@@ -92,8 +91,8 @@ class FailedConnectFdLeakTest {
                 assertTrue(
                     leaked <= MAX_TOLERATED_DESCRIPTORS,
                     "a failed connect leaks its UDP socket (#465): $ATTEMPTS attempts that all failed " +
-                        "to establish left $leaked file descriptors behind " +
-                        "(before=$before after=$after), which is " +
+                        "to establish left $leaked handles behind " +
+                        "(${meter.description}: before=$before after=$after), which is " +
                         "${"%.1f".format(leaked.toDouble() / ATTEMPTS)} per attempt; at most " +
                         "$MAX_TOLERATED_DESCRIPTORS in total is expected. withQuicConnection opens a " +
                         "connected UDP channel before it can know the handshake will fail, and only " +
@@ -112,9 +111,6 @@ class FailedConnectFdLeakTest {
         runCatching {
             withQuicConnection(RECEIVER_HOST, RECEIVER_PORT, options, transport, CONNECT_TIMEOUT) { }
         }.isSuccess
-
-    private fun openFileDescriptors(): Long =
-        (ManagementFactory.getOperatingSystemMXBean() as UnixOperatingSystemMXBean).openFileDescriptorCount
 
     private companion object {
         const val RECEIVER_HOST = "127.0.0.1"

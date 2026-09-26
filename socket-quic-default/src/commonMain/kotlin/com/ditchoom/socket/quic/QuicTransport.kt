@@ -102,7 +102,7 @@ class QuicSessionTransport(
  * ALPN); [engine] defaults to [defaultQuicEngine].
  */
 class QuicTransport(
-    quicOptions: QuicOptions,
+    private val quicOptions: QuicOptions,
     engine: QuicEngine = defaultQuicEngine,
 ) : Transport,
     MultiplexingTransport {
@@ -142,19 +142,23 @@ class QuicTransport(
     ): R =
         // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
         session.use(hostname, port, config) { connection ->
-            // The writers of every stream this mux mints live here and are cancelled with the session,
-            // which is what makes withMux's ownership of the mux lifetime complete. Its own Job
-            // rather than a plain coroutineScope: a stream the caller never closed must not make this
-            // function hang waiting for that stream's writer.
-            val muxScope = CoroutineScope(currentCoroutineContext() + Job())
-            val mux = QuicStreamMux(connection, codec, config, muxScope, outboundCapacity, overflowPolicy)
-            try {
-                mux.block()
-            } finally {
-                // Drain before cancelling. send() is a hand-off, so a caller that queued a frame and
-                // let this block return would otherwise lose it silently — and that is a correct program.
-                mux.closeMintedConnections()
-                muxScope.cancel()
+            // The connection lives for the block, as withQuicMux's does: a connection that dies cancels
+            // the block once it has read what arrived (see runUntilClosed).
+            connection.runUntilClosed(quicOptions.idleTimeout) {
+                // The writers of every stream this mux mints live here and are cancelled with the session,
+                // which is what makes withMux's ownership of the mux lifetime complete. Its own Job
+                // rather than a plain coroutineScope: a stream the caller never closed must not make this
+                // function hang waiting for that stream's writer.
+                val muxScope = CoroutineScope(currentCoroutineContext() + Job())
+                val mux = QuicStreamMux(connection, codec, config, muxScope, outboundCapacity, overflowPolicy)
+                try {
+                    mux.block()
+                } finally {
+                    // Drain before cancelling. send() is a hand-off, so a caller that queued a frame and
+                    // let this block return would otherwise lose it silently — and that is a correct program.
+                    mux.closeMintedConnections()
+                    muxScope.cancel()
+                }
             }
         }
 

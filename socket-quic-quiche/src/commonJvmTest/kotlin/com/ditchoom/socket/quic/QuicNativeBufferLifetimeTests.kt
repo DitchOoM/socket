@@ -221,9 +221,12 @@ class QuicNativeBufferLifetimeTests {
             byteOrder: ByteOrder,
         ): PlatformBuffer = delegate.wrap(array, byteOrder)
 
-        /** The buffer living at [address], or null if this factory never handed one out there. */
+        /**
+         * The buffer living at [address] — the most recent one handed out there, since a freed buffer's
+         * address is reused by the next allocation — or null if this factory never handed one out there.
+         */
         fun ownerOf(address: Long): WeakReference<PlatformBuffer>? =
-            synchronized(handedOut) { handedOut.toList() }.firstOrNull { it.second == address }?.first
+            synchronized(handedOut) { handedOut.toList() }.lastOrNull { it.second == address }?.first
     }
 
     /** `streamRead` allocates its own buffer; nobody outside the driver holds it. */

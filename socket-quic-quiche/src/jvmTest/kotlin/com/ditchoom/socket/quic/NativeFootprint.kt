@@ -14,8 +14,8 @@ import java.lang.management.ManagementFactory
  *
  * The **resident set** is the primary instrument, because it is the one that does not depend on any
  * particular allocator's bookkeeping: it counts pages, so it sees every tier, and it is the number the
- * device walk behind #538 died on. `/proc/self/status`'s `VmRSS` where procfs exists, `ps -o rss=`
- * otherwise.
+ * device walk behind #538 died on. `/proc/self/status`'s `VmRSS` where procfs exists, the process
+ * working set on Windows, `ps -o rss=` otherwise.
  *
  * [java.lang.management.BufferPoolMXBean]'s `direct` pool is carried alongside as a second, sharper
  * reading, and its coverage was **measured rather than assumed** — the assumption would have been
@@ -72,9 +72,37 @@ internal sealed interface NativeFootprintMeter {
         }
     }
 
+    /**
+     * Windows: the process working set — the pages resident in physical memory, Windows' name for the
+     * resident set — through `Get-Process`, in bytes, converted to KiB.
+     */
+    data object WindowsWorkingSet : NativeFootprintMeter {
+        override val description = "Get-Process WorkingSet64"
+
+        override fun residentKb(): Long {
+            val pid = ProcessHandle.current().pid()
+            val process =
+                ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $pid).WorkingSet64")
+                    .redirectErrorStream(true)
+                    .start()
+            val out =
+                process.inputStream
+                    .bufferedReader()
+                    .readText()
+                    .trim()
+            check(process.waitFor() == 0 && out.isNotEmpty()) { "Get-Process gave no working set for pid $pid: $out" }
+            return out.toLong() / 1024
+        }
+    }
+
     companion object {
         /** The meter for this host. */
-        fun forThisProcess(): NativeFootprintMeter = if (File("/proc/self/status").exists()) ProcSelfStatus else PsRss
+        fun forThisProcess(): NativeFootprintMeter =
+            when {
+                File("/proc/self/status").exists() -> ProcSelfStatus
+                System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> WindowsWorkingSet
+                else -> PsRss
+            }
     }
 }
 

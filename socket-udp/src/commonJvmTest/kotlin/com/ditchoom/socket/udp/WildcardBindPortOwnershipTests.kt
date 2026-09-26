@@ -60,7 +60,7 @@ class WildcardBindPortOwnershipTests {
 
     /**
      * **The contract.** Binding the wildcard on a port whose IPv4 half another socket already owns must
-     * fail — the same [BindException] Linux raises for exactly this bind — instead of returning a
+     * fail — `EADDRINUSE`, as Linux raises for exactly this bind — instead of returning a
      * channel that will never receive an IPv4 datagram.
      *
      * RED before the fix on macOS: the bind succeeded and `UdpSocket.bind` handed back a deaf socket.
@@ -72,12 +72,14 @@ class WildcardBindPortOwnershipTests {
         runBlocking {
             val (_, port) = ipv4OnlyWildcardSocket()
 
-            assertFailsWith<BindException>(
-                "binding the wildcard on udp/$port must fail while an AF_INET socket holds 0.0.0.0:$port. " +
-                    "Succeeding here returns a socket that is open and permanently deaf over IPv4 — #450.",
-            ) {
-                UdpSocket.bind(localHost = null, localPort = port).also { opened += it }
-            }
+            val refusal =
+                assertFailsWith<UdpBindException>(
+                    "binding the wildcard on udp/$port must fail while an AF_INET socket holds 0.0.0.0:$port. " +
+                        "Succeeding here returns a socket that is open and permanently deaf over IPv4 — #450.",
+                ) {
+                    UdpSocket.bind(localHost = null, localPort = port).also { opened += it }
+                }
+            assertIs<UdpBindError.AddressInUse>(refusal.error)
             Unit
         }
 

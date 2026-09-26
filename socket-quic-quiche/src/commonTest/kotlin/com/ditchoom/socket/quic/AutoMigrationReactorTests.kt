@@ -115,6 +115,7 @@ class AutoMigrationReactorTests {
         override val bufferFactory: BufferFactory get() = BufferFactory.Default
         override val capabilities: QuicCapabilities get() = QuicCapabilities.None
         override val state: StateFlow<QuicConnectionState> = MutableStateFlow(QuicConnectionState.Idle)
+        override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
 
         override suspend fun openStream(): QuicByteStream = error("unused")
 

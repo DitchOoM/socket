@@ -42,7 +42,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     withTimeout(timeout) {
         val connection = buildJvmQuicConnection(endpoint, serverName, quicOptions, connectionOptions, timeout, api, tuning)
         try {
-            connection.block()
+            connection.runUntilClosed(quicOptions.idleTimeout) { block() }
         } finally {
             connection.close()
         }
@@ -74,9 +74,14 @@ internal suspend fun buildJvmQuicConnection(
     // The options this connection actually runs with. On a shared port GREASE is forced off before
     // anything reads them, because applyQuicOptions below writes it into the quiche config and RFC
     // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
+    // Before anything is opened: a connection whose timers cannot fire must be refused, not started.
+    tuning.driverContext.startDeadlineTimer()
     val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-client/$serverName@$endpoint"))
+    val parentScope =
+        CoroutineScope(
+            parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-client/$serverName@$endpoint"),
+        )
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
     // acquired and hands over entirely once the connection owns its own release.
     var progress: ConnectProgress = ConnectProgress.BeforeChannel

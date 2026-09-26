@@ -156,6 +156,16 @@ jobs:
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
 
+      # sdkmanager reports a corrupt download as a Warning and exits 0 with the package missing, so
+      # the emulator-runner action's own install cannot be trusted to fail. This step installs the
+      # emulator + system image with retries, fails on sdkmanager's error output, and requires
+      # `emulator -no-window -version` to work. The action's installs below are then no-ops; each
+      # action step re-checks with `verify` as its pre-emulator-launch-script, which fails that
+      # step with the real cause ahead of any boot error.
+      - name: Install + verify Android Emulator and system image
+        timeout-minutes: 6
+        run: bash scripts/android-sdk-emulator.sh install ${{ matrix.api-level }}
+
       # ⚠️ THERE IS DELIBERATELY NO AVD CACHE HERE — do not "restore" one without re-reading this.
       #
       # This is NOT a revert of #333 (72e24e21). #333's substantive fix was moving
@@ -200,6 +210,7 @@ jobs:
           disk-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify ${{ matrix.api-level }}
           script: echo "Generated the AVD + boot snapshot this job's test step will reuse."
 
       - name: run tests
@@ -226,11 +237,14 @@ jobs:
           disk-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -writable-system -noaudio -no-boot-anim -camera-back none
           disable-animations: true
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify ${{ matrix.api-level }}
           # ONE line, deliberately. This action splits `script:` on newlines and runs each line as
           # its own `/usr/bin/sh -c` — multi-line constructs are a syntax error and shell variables
           # do not survive to the next line (run 31057524722 died on exactly that, after the tests
           # had passed). The body therefore lives in a file that runs in a single shell; see the
-          # header of scripts/android-emulator-tests.sh.
+          # header of scripts/android-emulator-tests.sh. The script also shuts the emulator down
+          # itself, bounded (see its EMULATOR SHUTDOWN section), so the action's own trailing
+          # `adb emu kill` normally finds no device.
           script: bash scripts/android-emulator-tests.sh ${{ matrix.api-level }}
 
       # Inventory whatever this lane skipped, the same way build-linux and build-apple do. Android
@@ -314,6 +328,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # A shutdown wedge after green tests leaves the job green (it is a host-side fault, reported
+      # as a ::warning::), so the failure upload above never carries its capture; this one does.
+      - name: Upload emulator shutdown-wedge capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-shutdown-wedge-${{ matrix.api-level }}
+          path: emulator-diagnostics/emulator-shutdown-wedge-*.txt
+          if-no-files-found: error
+          retention-days: 7
+
       # Surface the quiche cargo build transcript when anything failed, so a build failure
       # (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact instead
       # of hunting through interleaved BoringSSL/cargo output in the job log.
@@ -334,7 +360,8 @@ jobs:
       - name: Kill emulator processes
         if: always()
         run: |
-          pkill -SIGTERM crashpad_handler || true
+          # -f: plain pkill matches the 15-char comm, which "crashpad_handler" (16) never equals.
+          pkill -SIGTERM -f crashpad_handler || true
           sleep 2
-          pkill -SIGKILL crashpad_handler || true
+          pkill -SIGKILL -f crashpad_handler || true
           adb emu kill || true
