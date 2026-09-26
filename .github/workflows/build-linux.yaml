@@ -1506,6 +1506,46 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
+  # ── Stage 2b': real Chrome judges our WebTransport server ─────────────────────────────────────
+  # The only test in which a browser, not our own client, decides whether the quiche server, its
+  # runtime-minted serverCertificateHashes certificate and its WebTransport session handling are
+  # acceptable. Chrome refuses anything outside the W3C certificate rules with nothing more specific
+  # than "Opening handshake failed", so our own client passing proves nothing here. The script fails
+  # unless each browser phase opened a server session on every path its tests dial.
+  browser-interop:
+    name: "WebTransport interop (headless Chrome)"
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # JVM + JS/Wasm only: no module declares the Linux K/N targets (see quiche-jvm's test step).
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          konan: "false"
+      - name: Setup Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+      - name: Run the browser WebTransport interop lane
+        timeout-minutes: 20
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: bash socket-webtransport/scripts/browser-interop.sh
+      - name: Upload interop logs (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-interop-linux
+          path: |
+            socket-webtransport/build/wt-interop/
+            socket-webtransport/build/reports/tests/
+            socket-webtransport/build/test-results/
+          retention-days: 30
+          if-no-files-found: ignore
+
   # ── Stage 2c: link the native test binaries + package quic-echo for the integration jobs ─────
   # Everything integration-linux-{x64,arm64} download comes from here, which is why both of them
   # need only this job. No Docker harness in this job: it builds inputs, it runs no tests.

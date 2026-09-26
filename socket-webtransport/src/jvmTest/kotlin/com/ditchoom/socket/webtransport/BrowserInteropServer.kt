@@ -160,7 +160,11 @@ class BrowserInteropServer {
         // aborts each incoming bidi stream with BROWSER_RESET_CODE so the browser client observes the
         // neutral WebTransportStreamException carrying that 32-bit code (matching the native suite).
         val resetMode = path.endsWith("reset")
-        println("WT_SESSION_ACCEPTED id=${session.sessionId} authority=$authority path=$path resetMode=$resetMode")
+        val accepted = "WT_SESSION_ACCEPTED id=${session.sessionId} authority=$authority path=$path resetMode=$resetMode"
+        println(accepted)
+        // The orchestrator counts sessions per browser phase while this test is still running, when its
+        // stdout has not reached any file yet.
+        System.getProperty("wt.interop.sessionLog")?.let { File(it).appendText("$accepted\n") }
         coroutineScope {
             launch {
                 session.incomingBidiStreams.collect { stream ->
