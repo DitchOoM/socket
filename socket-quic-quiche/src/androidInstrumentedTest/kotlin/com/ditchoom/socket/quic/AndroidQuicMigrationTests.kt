@@ -130,6 +130,7 @@ class AndroidQuicMigrationTests {
                     delay(1.seconds)
                 }
             }
+            Unit // JUnit requires a void test method
         }
 
     @Test
