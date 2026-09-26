@@ -1255,7 +1255,11 @@ fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
     // `probe_path` fails with OutOfIdentifiers even though everything client-side was released.
     // Retiring the old path's DCID here sends RETIRE_CONNECTION_ID, which frees the peer's SCID (it
     // issues a replacement) and — with edits 2+3 — leaves the old server-side path evictable.
-    // Skipped when the old DCID was just reused for the new path (the no-spare + dcid-reuse branch).
+    // Skipped when the old DCID was just reused for the new path (the no-spare + dcid-reuse branch), and
+    // when the new path is not validated yet: RFC 9000 §9.3.2/§9.3.3 fall back to the old path if that
+    // validation fails, and quiche can only fall back to a path that still has a DCID. Retiring it there
+    // leaves `find_candidate_path` nothing, and the server closes the connection — one packet from a
+    // spoofed source address was enough (upstream's `resilience_against_migration_attack`).
     if (!libText.contains("socket-retire-dcid-no-relink: RFC 9000 Section 9.5 applies to both endpoints")) {
         val anchor =
             """
@@ -1285,10 +1289,13 @@ fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
             |        // reused for the new path. This is what frees the peer's SCID (it issues a
             |        // replacement) and, with the retire/refill edits, lets the old path be evicted
             |        // instead of pinning the table. Best-effort: a refusal leaves one pinned slot, it
-            |        // must not fail the migration that already happened.
+            |        // must not fail the migration that already happened. Only onto a VALIDATED path: an
+            |        // unvalidated one may still fail validation, and the fallback (RFC 9000 Section 9.3.3)
+            |        // needs the old path's DCID — without it the connection is closed.
             |        let old_seq = self.paths.get(active_path_id)?.active_dcid_seq;
-            |        let new_seq = self.paths.get(new_pid)?.active_dcid_seq;
-            |        if let Some(old_seq) = old_seq {
+            |        let new_path = self.paths.get(new_pid)?;
+            |        let new_seq = new_path.active_dcid_seq;
+            |        if let (Some(old_seq), true) = (old_seq, new_path.validated()) {
             |            if Some(old_seq) != new_seq {
             |                let _ = self.retire_dcid(old_seq);
             |            }
@@ -1303,7 +1310,7 @@ fun patchQuicheRetireDcidNoRelink(sourceDir: File) {
     logger.lifecycle(
         "Patched quiche source: retire_dcid no longer re-links a spare DCID to a non-active path, recv() " +
             "no longer refills DCIDs into validated non-active paths, and a server retires the DCID of the " +
-            "path its peer migrated away from (#395)",
+            "path its peer migrated away from onto a validated path (#395)",
     )
 }
 
