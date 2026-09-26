@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
@@ -77,10 +76,11 @@ internal class SharedQuicheServer(
      */
     private val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     /**
-     * How long a handler on a dead connection keeps running while the connection still holds data it
-     * has not read — the [QuicOptions.idleTimeout] every build function passes. See [runUntilClosed].
+     * [QuicOptions.idleTimeout], which bounds both waits a connection's end involves: a handler on a dead
+     * connection kept running while data it has not read remains ([runUntilClosed]), and a close held
+     * until the peer has acknowledged the handler's writes ([lingerBeforeClose]).
      */
-    private val unreadLinger: Duration,
+    private val idleTimeout: Duration,
     // Per-call lifecycle teardown wired by the build function (cancel the parent scope). Invoked last by
     // close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
@@ -189,7 +189,7 @@ internal class SharedQuicheServer(
                     try {
                         conn.state.first { it !is QuicConnectionState.Handshaking }
                         if (conn.state.value is QuicConnectionState.Established) {
-                            conn.runUntilClosed(unreadLinger) { handler() }
+                            conn.runUntilClosed(idleTimeout) { handler() }
                         }
                     } catch (_: QuicCloseException) {
                         // The connection ended while the handler was still running — cancelled by
@@ -201,7 +201,7 @@ internal class SharedQuicheServer(
                         try {
                             // Graceful close. Skipped for a connection that never came up or is
                             // already gone — there is nothing left to deliver on either.
-                            if (conn.state.value is QuicConnectionState.Established) lingerBeforeClose(driver)
+                            if (conn.state.value is QuicConnectionState.Established) driver.lingerBeforeClose(closeLinger, idleTimeout)
                         } finally {
                             // The linger is a cancellable suspension point, so the teardown that follows
                             // it must not be: a cancelled handler (server shutting down) still has to
@@ -217,35 +217,6 @@ internal class SharedQuicheServer(
                 }
             }
         }
-
-    /**
-     * Hold this connection's CONNECTION_CLOSE until the peer is done with it, or at most the
-     * [QuicCloseLinger.UntilPeerDone.bound] — the graceful-close half of a server's lifetime.
-     *
-     * A handler's last write is only *handed to quiche*; whether it reached the peer is decided on the
-     * wire afterwards. Closing the moment the handler returns ends that story early: RFC 9000 §10.2
-     * puts the connection into the closing state, where quiche emits nothing but the CONNECTION_CLOSE,
-     * so a reply datagram dropped in flight has no connection left to retransmit it and the peer's read
-     * reports a clean end over bytes it never received. Lingering keeps the connection running instead
-     * — the driver loop is still arming quiche's loss timers, still processing the peer's ACKs, still
-     * retransmitting — until the connection ends by itself.
-     *
-     * The wait is on [QuicheDriver.state] reaching [QuicConnectionState.Closed], which the driver
-     * publishes when quiche reports the connection closed: the peer's own CONNECTION_CLOSE (after its
-     * draining period), or an idle timeout. The peer closing is the strongest signal available here —
-     * it is *end-to-end* evidence the peer has what it was waiting for, whereas quiche's C API exposes
-     * no per-stream ack state and no bytes-in-flight gauge to ask locally (`quiche_stats` carries
-     * `acked_bytes`, but ACK-only packets are never themselves acked, so it never converges on
-     * `sent_bytes`). The bound is what makes a vanished peer harmless, and cancellation (the server
-     * closing, which destroys the driver) ends the wait immediately rather than after it.
-     */
-    private suspend fun lingerBeforeClose(driver: QuicheDriver) {
-        when (val linger = closeLinger) {
-            QuicCloseLinger.Immediate -> Unit
-            is QuicCloseLinger.UntilPeerDone ->
-                withTimeoutOrNull(linger.bound) { driver.state.first { it is QuicConnectionState.Closed } }
-        }
-    }
 
     /**
      * TEST SEAM (do not call in production): delegates to [ServerConnectionRegistry.deRouteAllDriversForTest]

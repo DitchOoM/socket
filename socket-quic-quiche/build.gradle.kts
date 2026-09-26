@@ -239,9 +239,16 @@ fun downloadQuicheSource(
     // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
     // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheRetiredCidRecvIsDrop(sourceDir)
+    // Send a CONNECTION_CLOSE made before the handshake is confirmed in a 1-RTT packet as well as the
+    // Handshake one, so a peer that has already confirmed and discarded its Handshake keys can read it.
+    // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir)
     // Export `Connection::early_data_reason` through the C FFI, the one 0-RTT fact the C API lacks:
     // whether the server accepted early data. Idempotent, fails loudly if upstream exports it itself.
     patchQuicheEarlyDataReasonFfi(sourceDir)
+    // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
+    // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
+    patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
 
     return sourceDir
 }
@@ -289,6 +296,97 @@ fun patchQuicheEarlyDataReasonFfi(sourceDir: File) {
         """.trimMargin()
     ffiRs.appendText("\n" + export + "\n")
     logger.lifecycle("Patched quiche source: quiche_conn_early_data_reason FFI export")
+}
+
+/**
+ * Export `quiche_conn_stream_data_unacknowledged`: whether any stream on the connection still has data,
+ * or a FIN, that this endpoint wrote and the peer has not acknowledged. A send side the peer stopped, or
+ * this endpoint shut down, owes nothing.
+ *
+ * It is the fact a graceful close waits for. RFC 9000 §10.2 lets an endpoint that has sent
+ * CONNECTION_CLOSE send nothing else, so bytes still unacknowledged when it closes are never
+ * retransmitted; a server that closes a fixed time after its handler returns truncates its own reply on
+ * any path slower or lossier than that time allows. quiche tracks the answer per stream (`SendBuf`'s
+ * `acked` ranges) and its C API exposes nothing that reaches it: `stream_capacity`/`stream_writable`
+ * are about flow control, `stream_finished` is the receive side, and connection `acked_bytes` never
+ * converges on `sent_bytes` because ACK-only packets are never acknowledged themselves.
+ *
+ * Three edits: `SendBuf::socket_unacknowledged`, `StreamMap::socket_any_unacknowledged`, and the export.
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports an equivalent throws, telling you to delete this patch.
+ */
+fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
+    val marker = "socket-stream-data-unacknowledged"
+    val sendBufRs = sourceDir.resolve("quiche/src/stream/send_buf.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!sendBufRs.exists() || !streamRs.exists() || !ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_stream_data_unacknowledged")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_stream_data_unacknowledged — DELETE " +
+                "patchQuicheStreamDataUnacknowledgedFfi and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertAfter(
+        file: File,
+        anchor: String,
+        addition: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `$anchor` not found exactly once in ${file.name} — a quiche bump moved it. Re-fit " +
+                    "patchQuicheStreamDataUnacknowledgedFfi, or delete it if quiche now exports the send-side ack state.",
+            )
+        }
+        file.writeText(text.replace(anchor, anchor + addition))
+    }
+
+    insertAfter(
+        sendBufRs,
+        "impl<F: BufFactory> SendBuf<F> {\n",
+        """
+        |    // $marker: whether the peer still owes an acknowledgement for data, or the FIN, this endpoint
+        |    // wrote. A send side the peer stopped, or this endpoint shut down, owes nothing.
+        |    pub fn socket_unacknowledged(&self) -> bool {
+        |        if self.error.is_some() || self.shutdown {
+        |            return false;
+        |        }
+        |        match self.fin_off {
+        |            Some(_) => !self.is_complete(),
+        |            None => self.ack_off() < self.off,
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertAfter(
+        streamRs,
+        "impl<F: BufFactory> StreamMap<F> {\n",
+        """
+        |    // $marker: whether any stream still has written data the peer has not acknowledged.
+        |    pub fn socket_any_unacknowledged(&self) -> bool {
+        |        self.streams.values().any(|s| s.send.socket_unacknowledged())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: whether any stream still has data, or a FIN, this endpoint wrote and the peer has not
+            |// acknowledged — what a graceful close waits for.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_stream_data_unacknowledged(conn: &Connection) -> bool {
+            |    conn.streams.socket_any_unacknowledged()
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_stream_data_unacknowledged FFI export")
 }
 
 /**
@@ -487,6 +585,194 @@ fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
         """.trimMargin()
 
     libRs.writeText(text.replaceFirst(anchor, replacement))
+}
+
+/**
+ * Patch quiche so a transport CONNECTION_CLOSE sent **before the handshake is confirmed** also goes out
+ * in a 1-RTT packet, beside the Handshake packet quiche already sends.
+ *
+ * **Why.** quiche's `write_pkt_type` downgrades a close to the Handshake level while its own handshake is
+ * unconfirmed, and sends exactly one CONNECTION_CLOSE (the frame arms the draining timer, after which
+ * `send_single` writes nothing). A client is unconfirmed from the moment its handshake completes until
+ * the server's HANDSHAKE_DONE arrives — one round trip later — while the server confirmed when the
+ * client's Finished arrived and discarded its Handshake keys then (RFC 9001 §4.9.2). A client that closes
+ * inside that round trip therefore sends its only CONNECTION_CLOSE in a packet the server can no longer
+ * decrypt: the server never learns the connection ended and keeps it — and every handler on it — until
+ * its idle timeout. Measured on JVM loopback under load (`quiche_conn_peer_error` still null 5 s after
+ * the client closed, the server retransmitting into the void) and reproduced deterministically by
+ * `MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer`.
+ *
+ * RFC 9000 §10.2.3 allows exactly this: prior to confirmation "another CONNECTION_CLOSE frame MAY be sent
+ * in a packet that uses a lower packet protection level". Sending both covers both peers: one that has
+ * confirmed reads the 1-RTT copy, one still waiting on our Finished reads the Handshake copy.
+ *
+ * The edit: after the Handshake copy is written, `send` ends that datagram, the next `send` lets one
+ * more through the draining gates, `write_pkt_type` answers 1-RTT for it, and writing it retires the
+ * allowance. The copy must not be coalesced behind the Handshake packet: quiche's `recv` drops the rest of
+ * a datagram once a packet in it fails to decrypt, which is exactly what the Handshake one does at a
+ * confirmed peer. Only transport closes with 1-RTT keys in hand are affected; an application close
+ * already rides 1-RTT.
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline): the marker
+ * returns early, and a moved or upstream-fixed anchor throws rather than silently no-opping.
+ */
+fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+
+    var text = libRs.readText()
+    if (text.contains("socket-close-before-confirmation")) return // already patched
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "socket-close-before-confirmation: an anchor was not found exactly once in quiche's lib.rs. A " +
+                    "quiche bump moved or reshaped the close path — possibly sending a pre-confirmation " +
+                    "CONNECTION_CLOSE at 1-RTT upstream, which is the outcome we want. If so, DELETE this patch " +
+                    "and KEEP MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer; " +
+                    "otherwise re-fit the anchor and re-verify with that test. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        "\n    handshake_confirmed: bool,\n",
+        "\n    handshake_confirmed: bool,\n\n" +
+            "    // socket-close-before-confirmation: the 1-RTT copy of a pre-confirmation close is written.\n" +
+            "    socket_close_short_sent: bool,\n",
+    )
+    edit(
+        "\n            handshake_confirmed: false,\n",
+        "\n            handshake_confirmed: false,\n\n            socket_close_short_sent: false,\n",
+    )
+    edit(
+        """
+        |                    packet::Epoch::Application => return Ok(Type::Handshake),
+        """.trimMargin(),
+        """
+        |                    // socket-close-before-confirmation: the Handshake copy first; once it is
+        |                    // written (draining armed), one 1-RTT copy for a peer that has confirmed.
+        |                    packet::Epoch::Application =>
+        |                        return Ok(if self.socket_close_short_due() {
+        |                            Type::Short
+        |                        } else {
+        |                            Type::Handshake
+        |                        }),
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |    fn write_pkt_type(&self, send_pid: usize) -> Result<Type> {
+        """.trimMargin(),
+        """
+        |    // socket-close-before-confirmation: a transport close sent in a Handshake packet before the
+        |    // handshake is confirmed, with 1-RTT keys in hand, still owes its one 1-RTT copy.
+        |    fn socket_close_short_due(&self) -> bool {
+        |        self.draining_timer.is_some() &&
+        |            !self.socket_close_short_sent &&
+        |            !self.handshake_confirmed &&
+        |            self.local_error.as_ref().is_some_and(|e| !e.is_app) &&
+        |            self.handshake.write_level() == crypto::Level::OneRTT
+        |    }
+        |
+        |    fn write_pkt_type(&self, send_pid: usize) -> Result<Type> {
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |        now: Instant,
+        |    ) -> Result<(Type, usize)> {
+        |        if out.is_empty() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |
+        |        if self.is_draining() {
+        |            return Err(Error::Done);
+        |        }
+        """.trimMargin(),
+        """
+        |        now: Instant,
+        |    ) -> Result<(Type, usize)> {
+        |        if out.is_empty() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |
+        |        // socket-close-before-confirmation: the one packet a pre-confirmation close still owes.
+        |        if self.is_draining() && !self.socket_close_short_due() {
+        |            return Err(Error::Done);
+        |        }
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |                    if push_frame_to_pkt!(b, frames, frame, left) {
+        |                        let pto = path.recovery.pto();
+        |                        self.draining_timer = Some(now + (pto * 3));
+        |
+        |                        ack_eliciting = true;
+        """.trimMargin(),
+        """
+        |                    if push_frame_to_pkt!(b, frames, frame, left) {
+        |                        let pto = path.recovery.pto();
+        |                        self.draining_timer = Some(now + (pto * 3));
+        |
+        |                        // socket-close-before-confirmation: the 1-RTT copy is the last one.
+        |                        if pkt_type == Type::Short {
+        |                            self.socket_close_short_sent = true;
+        |                        }
+        |
+        |                        ack_eliciting = true;
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |        to: Option<SocketAddr>,
+        |    ) -> Result<(usize, SendInfo)> {
+        |        if out.is_empty() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |
+        |        if self.is_closed() || self.is_draining() {
+        |            return Err(Error::Done);
+        |        }
+        """.trimMargin(),
+        """
+        |        to: Option<SocketAddr>,
+        |    ) -> Result<(usize, SendInfo)> {
+        |        if out.is_empty() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |
+        |        // socket-close-before-confirmation: the datagram carrying the 1-RTT copy.
+        |        if self.is_closed() || (self.is_draining() && !self.socket_close_short_due()) {
+        |            return Err(Error::Done);
+        |        }
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |            done += written;
+        |            left -= written;
+        |
+        """.trimMargin(),
+        """
+        |            done += written;
+        |            left -= written;
+        |
+        |            // socket-close-before-confirmation: the 1-RTT copy leaves in a datagram of its own. A
+        |            // receiver drops the rest of a datagram once one packet in it fails to decrypt, so
+        |            // coalesced behind a Handshake packet the peer can no longer read it would be lost too.
+        |            if self.socket_close_short_due() {
+        |                break;
+        |            }
+        |
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
 }
 
 /**

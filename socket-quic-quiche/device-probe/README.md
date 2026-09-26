@@ -148,8 +148,18 @@ lane=run LANES v4=192.0.2.1:44433 v6=[2001:db8::1]:44433 staggerMs=125
 lane=v6 CONNECT-ATTEMPT n=7 target=[2001:db8::1]:44433 family=v6
 lane=v6 ECHO-OK seq=1234 rtt=44ms pending=0B
 lane=v6 447-VERDICT connection=7 family=v6 PASS — …
+lane=v6 CONNECT-ATTEMPT n=8 target=[2001:db8::1]:44433 family=v6
+lane=v6 CONNECT-NEVER-ESTABLISHED n=8 family=v6 reason=UnresolvedRoute
+lane=run CONNECT-TOTALS attempts=12 established=9 neverEstablished=[UnresolvedRoute=3]
 lane=run MIGRATION-TOTALS connections=9 …        (the lanes' sum; each lane logs its own first)
 ```
+
+An attempt is a connection only once its handshake completes. One that never got there gets one
+`CONNECT-NEVER-ESTABLISHED` line and nothing else — no `ECHO-LIVENESS`, `MIGRATION-LEDGER` or
+`447-VERDICT`, since it had no stream and no path to judge — and `CONNECT-TOTALS` counts attempts and
+established connections apart. Every `connections=` figure and both run verdicts count established
+connections only. A build before this line reported every such attempt as a connection;
+`analyze.py` reads those logs the same way and flags the probe's own inflated totals.
 
 An IPv6 literal is bracketed in `target=` so its own colons cannot be read as the port separator.
 `family=` is `v4` or `v6` for a literal and `resolver` for a name — a name's family is whichever the

@@ -111,7 +111,7 @@ public sealed interface RunLiveness {
 
 private fun Map<String, Int>.render(): String = entries.joinToString(",") { "${it.key}=${it.value}" }.ifEmpty { "none" }
 
-/** Run-wide roll-up of every connection's [EchoSessionReport]. */
+/** Run-wide roll-up of every established connection's [EchoSessionReport]; an attempt that never established has none. */
 public class EchoLivenessTotals(
     private val limit: Duration = EchoLivenessVerdict.QUIET_LIMIT,
 ) {
