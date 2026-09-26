@@ -713,6 +713,13 @@ ktlint {
     }
 }
 
+// The shared io_uring sources are no source set of their own (each module compiles a generated copy,
+// which the filter above excludes), so commonMain's lint, which every host runs, lints them in place.
+tasks
+    .withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintCheckTask>()
+    .matching { it.name == "runKtlintCheckOverCommonMainSourceSet" }
+    .configureEach { source(file("src/linuxIoUringShared"), file("src/linuxIoUringSharedTest")) }
+
 // Lincheck model checking runs in its own task, isolated from the rest of the JVM suite.
 //
 // Lincheck fails *open*: when its bytecode instrumentation cannot hook a class it logs
