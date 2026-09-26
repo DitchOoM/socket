@@ -39,8 +39,10 @@ internal suspend fun buildJvmQuicServer(
     // spy (e.g. to gate connRecv) exactly as the client's commonJvmWithQuicConnection already allows.
     api: QuicheApi = loadQuicheApi(),
 ): SharedQuicheServer {
+    // Before anything is bound: a server whose timers cannot fire must be refused, not started.
+    tuning.driverContext.startDeadlineTimer()
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO + CoroutineName("quic-server"))
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-server"))
     var bound = false
 
     // A shared port constrains the transport (RFC 9443 §3) — resolve that before configuring.
