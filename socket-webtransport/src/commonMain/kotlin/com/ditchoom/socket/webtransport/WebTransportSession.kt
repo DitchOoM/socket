@@ -32,6 +32,28 @@ open class WebTransportException(
 }
 
 /**
+ * A WebTransport **stream** was aborted by the peer (RESET_STREAM / STOP_SENDING) — the one type to catch
+ * for "the peer aborted this stream", whether or not the platform reported the peer's code:
+ *  - [WebTransportStreamException] — the abort with its WebTransport application code, and
+ *  - [WebTransportStreamAbortedWithoutCodeException] — the abort the platform reported without one.
+ */
+sealed class WebTransportStreamAbortException(
+    failure: WebTransportFailure,
+    cause: Throwable?,
+) : WebTransportException(failure, cause)
+
+/**
+ * The peer aborted a WebTransport stream and the platform did not report the peer's code
+ * ([WebTransportFailure.StreamAbortedWithoutCode]). Only the browser raises it: Chrome errors a send
+ * stream with a `NetworkError` `DOMException` when the stream's data pipe closes before its STOP_SENDING
+ * notification is dispatched, and then drops that notification, so the code no longer exists anywhere the
+ * page can read it. Native backends always report the code ([WebTransportStreamException]).
+ */
+class WebTransportStreamAbortedWithoutCodeException(
+    cause: Throwable? = null,
+) : WebTransportStreamAbortException(WebTransportFailure.StreamAbortedWithoutCode, cause)
+
+/**
  * A WebTransport **stream** was aborted by the peer (RESET_STREAM / STOP_SENDING,
  * draft-ietf-webtrans-http3 §4.3) — the **platform-neutral** stream-abort signal, thrown by [write]
  * (and [ByteSink.write]) on both backings so cross-platform code catches ONE type:
@@ -42,15 +64,15 @@ open class WebTransportException(
  * The READ side surfaces a peer reset as [com.ditchoom.buffer.flow.ReadResult.Reset] (the shared
  * buffer-flow signal) on both backings; this exception is the WRITE-side counterpart, carrying the
  * [errorCode] — the WebTransport application error code, a **32-bit unsigned** value (draft §4.3; the
- * same `unsigned long` the browser's `WebTransportError.streamErrorCode` uses), hence [UInt]. Every
- * backend resolves it on a real abort (quiche surfaces its `out_error_code` on every native binding —
- * FFM, JNI and cinterop, Apple included — and the browser surfaces `streamErrorCode`), so it is
- * non-null — no "unknown code" sentinel.
+ * same `unsigned long` the browser's `WebTransportError.streamErrorCode` uses), hence [UInt]. Native
+ * backends always resolve it (quiche surfaces its `out_error_code` on every binding — FFM, JNI and
+ * cinterop, Apple included); a browser abort that arrives without `streamErrorCode` is the sibling
+ * [WebTransportStreamAbortedWithoutCodeException] instead — no "unknown code" sentinel.
  */
 class WebTransportStreamException(
     val errorCode: UInt,
     cause: Throwable? = null,
-) : WebTransportException(WebTransportFailure.StreamAborted(errorCode), cause)
+) : WebTransportStreamAbortException(WebTransportFailure.StreamAborted(errorCode), cause)
 
 /**
  * An established WebTransport session (RFC 9220 + draft-ietf-webtrans-http3) — **platform-neutral**.

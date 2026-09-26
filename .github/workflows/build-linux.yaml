@@ -958,7 +958,10 @@ jobs:
           # stayed uncompilable on main for weeks (#500), and how :socket-quic, :socket-testkit
           # and :socket-testsuite never had a JVM / Android-unit / Linux-x64 test run. When a
           # module gains a test source set, add its tasks here.
-          ./gradlew :jvmTest :lincheckTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
+          #
+          # Through gradle-retry.sh: a transient repository answer (Central 429/5xx/403) re-runs the
+          # build instead of failing it; anything else fails on the first attempt.
+          .github/scripts/gradle-retry.sh :jvmTest :lincheckTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
             :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:wasmJsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
             :network-monitor:netnsJvmProbeClasspath \
             :socket-quic:jvmTest :socket-quic:testDebugUnitTest :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest :socket-quic:linuxX64Test \

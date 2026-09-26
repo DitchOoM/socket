@@ -19,7 +19,9 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationResult
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.InternalQuicApi
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.UnresolvedRouteSourceException
 import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
@@ -36,7 +38,6 @@ import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
 import com.ditchoom.socket.testkit.echo.EchoLoop
 import com.ditchoom.socket.testkit.echo.EchoLoopEnd
 import com.ditchoom.socket.testkit.echo.EchoLoopEvent
-import com.ditchoom.socket.testkit.echo.EchoSession
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
@@ -45,6 +46,10 @@ import com.ditchoom.socket.testkit.echo.StreamReply
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.AttemptOutcome
+import com.ditchoom.socket.testkit.walk.AttemptTotals
+import com.ditchoom.socket.testkit.walk.ConnectAttempt
+import com.ditchoom.socket.testkit.walk.ConnectFailure
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.StallBounds
 import com.ditchoom.socket.testkit.walk.WalkLane
@@ -347,10 +352,14 @@ object IosHandoffProbe {
 
         // Each lane's totals and verdicts are its own; the run's line is their sum.
         val run = MigrationTotals()
+        val runAttempts = AttemptTotals()
         lanes.forEach { probe ->
+            probe.emit(probe.attempts.line)
             probe.totals.report(probe.emit, probe.liveness.verdict())
             run.add(probe.totals)
+            runAttempts.add(probe.attempts)
         }
+        log.emit(runAttempts.line)
         log.emit(run.line)
         log.emit("DONE attempts=${lanes.sumOf { it.watch.attempt }} lanes=${lanes.size} log=${logPath()}")
         statusLine = "done — ${run.attempts} migration attempt(s), ${run.succeeded} succeeded"
@@ -409,81 +418,96 @@ object IosHandoffProbe {
             // Per CONNECTION, not per walk: a reconnect negotiates a brand-new CID pool, so a pool
             // exhausted on the previous connection says nothing about this one.
             val ledger = MigrationLedger(emit)
-            // Per connection too: what is still owed when a connection ends is what failed on it,
-            // and how long it went without an answered echo is its own verdict.
-            val session = EchoSession(connectedAt = now())
-            try {
-                withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
-                    emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
+            // A connection only once its handshake completes: an attempt that never got there has
+            // no stream, no path and no verdict, only a reason.
+            val connect = ConnectAttempt()
+            val outcome: AttemptOutcome =
+                try {
+                    val established =
+                        withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                            emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
+                            // What is still owed when it ends is what failed on it, and how long it went
+                            // without an answered echo is its own verdict.
+                            val session = connect.established(at = now())
 
-                    val stream = openStream()
-                    var lastWire = identity.wire
-                    probe.watch.connected()
+                            val stream = openStream()
+                            var lastWire = identity.wire
+                            probe.watch.connected()
 
-                    // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
-                    // (RFC 9000 §8.2.4), so a whole Probing -> Failed sequence can fall between two
-                    // samples of a slow poll and go uncounted.
-                    launch {
-                        pathState.collect {
-                            emit("PATH $it")
-                            ledger.onPath(it)
-                            probe.status = ledger.oneLine(it.toString())
-                        }
-                    }
-
-                    val loop =
-                        EchoLoop(
-                            stream = QuicEchoStream(stream),
-                            session = session,
-                            interval = echoIntervalMs.milliseconds,
-                            clock = ::now,
-                            emit = emit,
-                            closedBy = ::connectionClosedBy,
-                        ) { event ->
-                            when (event) {
-                                is EchoLoopEvent.Round -> {
-                                    if (identity.wire != lastWire) {
-                                        emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
-                                        lastWire = identity.wire
-                                    }
-                                    // Periodic residency heartbeat: locUpdates==0 after the screen locks
-                                    // means the walk is being recorded by a process iOS has stopped
-                                    // scheduling, and every gap in the log below is an artefact rather
-                                    // than a network event.
-                                    if (event.seq % 600 == 0) {
-                                        emit("KEEPALIVE-STATUS echoes=${event.seq} locUpdates=$locUpdates migrations=${ledger.succeeded}")
-                                    }
+                            // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
+                            // (RFC 9000 §8.2.4), so a whole Probing -> Failed sequence can fall between two
+                            // samples of a slow poll and go uncounted.
+                            launch {
+                                pathState.collect {
+                                    emit("PATH $it")
+                                    ledger.onPath(it)
+                                    probe.status = ledger.oneLine(it.toString())
                                 }
-                                is EchoLoopEvent.IntegrityBroken -> {
-                                    probe.status = "⚠ STREAM INTEGRITY BROKEN at byte ${event.atByte}"
-                                }
-                                is EchoLoopEvent.Progress -> probe.watch.progressed(event.exchanges)
-                                is EchoLoopEvent.Read, is EchoLoopEvent.WriteTimedOut, is EchoLoopEvent.Overdue, is EchoLoopEvent.Failed -> Unit
                             }
+
+                            val loop =
+                                EchoLoop(
+                                    stream = QuicEchoStream(stream),
+                                    session = session,
+                                    interval = echoIntervalMs.milliseconds,
+                                    clock = ::now,
+                                    emit = emit,
+                                    closedBy = ::connectionClosedBy,
+                                ) { event ->
+                                    when (event) {
+                                        is EchoLoopEvent.Round -> {
+                                            if (identity.wire != lastWire) {
+                                                emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
+                                                lastWire = identity.wire
+                                            }
+                                            // Periodic residency heartbeat: locUpdates==0 after the screen locks
+                                            // means the walk is being recorded by a process iOS has stopped
+                                            // scheduling, and every gap in the log below is an artefact rather
+                                            // than a network event.
+                                            if (event.seq % 600 == 0) {
+                                                emit("KEEPALIVE-STATUS echoes=${event.seq} locUpdates=$locUpdates migrations=${ledger.succeeded}")
+                                            }
+                                        }
+                                        is EchoLoopEvent.IntegrityBroken -> {
+                                            probe.status = "⚠ STREAM INTEGRITY BROKEN at byte ${event.atByte}"
+                                        }
+                                        is EchoLoopEvent.Progress -> probe.watch.progressed(event.exchanges)
+                                        is EchoLoopEvent.Read, is EchoLoopEvent.WriteTimedOut, is EchoLoopEvent.Overdue, is EchoLoopEvent.Failed -> Unit
+                                    }
+                                }
+                            when (val end = loop.run(until = deadline.seconds)) {
+                                EchoLoopEnd.WalkOver -> Unit
+                                is EchoLoopEnd.Left -> {
+                                    probe.status = "${end.step.end.label} — reconnecting"
+                                }
+                                is EchoLoopEnd.ConnectionClosed -> {
+                                    probe.status = "connection dead (${end.reason}) — reconnecting"
+                                }
+                            }
+                            session
                         }
-                    when (val end = loop.run(until = deadline.seconds)) {
-                        EchoLoopEnd.WalkOver -> Unit
-                        is EchoLoopEnd.Left -> {
-                            probe.status = "${end.step.end.label} — reconnecting"
-                        }
-                        is EchoLoopEnd.ConnectionClosed -> {
-                            probe.status = "connection dead (${end.reason}) — reconnecting"
-                        }
-                    }
+                    emit("SCOPE-EXITED cleanly")
+                    AttemptOutcome.Established(established.close(fallback = SessionEnd.WalkOver, at = now()))
+                } catch (e: Throwable) {
+                    emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                    // A connection that ends cancels its scope and surfaces here, typed: the connection died
+                    // under the session, which is not the scope failing.
+                    val sessionEnd = if (e is QuicCloseException) SessionEnd.ConnectionDead else SessionEnd.ScopeFailed
+                    connect.failed(connectFailure(e), sessionEnd, at = now())
                 }
-                emit("SCOPE-EXITED cleanly")
-                session.ended(SessionEnd.WalkOver, now())
-            } catch (e: Throwable) {
-                emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
-            }
             probe.trace.value = Discarded
-            val report = session.close(fallback = SessionEnd.ScopeFailed, at = now())
-            // Tagged with the family it happened on, so every verdict is attributable to one.
-            val tag = target.connectionTag(attempt)
-            report.lines(tag).forEach(emit)
-            ledger.report(tag, report.liveness)
-            probe.totals.absorb(ledger)
-            probe.liveness.absorb(attempt, report)
+            probe.attempts.absorb(outcome)
+            when (outcome) {
+                is AttemptOutcome.Established -> {
+                    // Tagged with the family it happened on, so every verdict is attributable to one.
+                    val tag = target.connectionTag(attempt)
+                    outcome.report.lines(tag).forEach(emit)
+                    ledger.report(tag, outcome.report.liveness)
+                    probe.totals.absorb(ledger)
+                    probe.liveness.absorb(attempt, outcome.report)
+                }
+                is AttemptOutcome.NeverEstablished -> emit(outcome.line(attempt, target))
+            }
             if (NSDate().timeIntervalSince1970 < deadline) {
                 // Back off while attempts die young — a flight in airplane mode is hours of "no
                 // route", and a family the network does not carry is a whole walk of it; a fixed 3 s
@@ -528,6 +552,9 @@ private class ProbeLane(
     // ...and whether the stream those migrations carried was actually being echoed (#620): a path
     // layer that keeps validating while every echo goes unanswered must not read as a pass.
     val liveness = EchoLivenessTotals()
+
+    // Every connect attempt, established or not: only the established ones feed the two above.
+    val attempts = AttemptTotals()
 
     /** The lane's line in the app: what its connection is doing right now. */
     @Volatile
@@ -818,6 +845,15 @@ private fun diskFree(): DiskFree {
     val free = NSFileManager.defaultManager.attributesOfFileSystemForPath(documents, null)?.get(NSFileSystemFreeSize) as? NSNumber
     return if (free == null) DiskFree.Unknown else DiskFree.ofReading(free.longLongValue)
 }
+
+/** Why a connect that never completed its handshake failed; the route probe's refusal is named, anything else by its type. */
+@OptIn(InternalQuicApi::class)
+private fun connectFailure(e: Throwable): ConnectFailure =
+    if (generateSequence(e) { it.cause }.any { it is UnresolvedRouteSourceException }) {
+        ConnectFailure.UnresolvedRoute
+    } else {
+        ConnectFailure.Threw(e::class.simpleName ?: "Throwable")
+    }
 
 /** A [QuicCloseException] is the connection closing under the stream; anything else fails one exchange. */
 private fun connectionClosedBy(e: Throwable): EchoFailure =

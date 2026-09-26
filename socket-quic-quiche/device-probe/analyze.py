@@ -32,6 +32,9 @@ The family comes from each connection's own `MIGRATION-LEDGER`/`ECHO-LIVENESS`/`
 keys only where a connection has none of those. A log written before the rotation carries none of
 it: its connections group under `unknown` and everything else still analyses.
 
+A CONNECT-ATTEMPT is a connection only once a CONNECTED line follows it; one that never gets there is
+counted as an attempt with a reason and is in no verdict (see attempt_outcomes).
+
 The re-derived verdicts exist because a probe build before #601 printed its own `447-VERDICT` line
 using logic that counted the retries of a failing episode as recovery — it reported PASS for a
 connection whose every probe went unanswered and which then died — and a build before #620 printed
@@ -40,6 +43,7 @@ kept validating while the peer had long since FIN'd the stream. Any log written 
 still carries the *evidence* (the MIGRATION-ATTEMPT sequence, the ECHO-OK/LATE timestamps), so both
 verdicts can be recomputed here without reinstalling the probe and restarting a walk.
 """
+import bisect
 import re
 import sys
 from collections import Counter, namedtuple
@@ -154,6 +158,46 @@ def print_stalls(events):
               f" echo loop to stall — not a hang")
 
 
+# --- connect attempts ---
+#
+# An attempt is a connection only once its handshake completes: a `CONNECTED` line before the next
+# attempt. One that never got there has no stream, no path and no verdict, only a reason — the probe's
+# own `CONNECT-NEVER-ESTABLISHED n=N family=F reason=R`, or, in a log from a build before that line,
+# the type on the attempt's `CONNECTION-ENDED err=`, mapped the way the probe now maps it. A build
+# before the line also printed ECHO-LIVENESS / MIGRATION-LEDGER / 447-VERDICT for every such attempt
+# and counted it in its run totals; those lines are dropped here, not believed.
+ESTABLISHED = "ESTABLISHED"
+NEVER_ESTABLISHED = re.compile(r"CONNECT-NEVER-ESTABLISHED n=\d+ .*?\breason=(\S+)")
+ENDED_ERR = re.compile(r"CONNECTION-ENDED err=(\S+)")
+LEGACY_REASON = {"UnresolvedRouteSourceException": "UnresolvedRoute"}
+# The log ended before the attempt either connected or said why it did not.
+UNRECORDED = "Unrecorded"
+
+
+def attempt_outcomes(events, attempts):
+    """Per CONNECT-ATTEMPT, in order: ESTABLISHED, or the reason it never was."""
+    starts = [t for t, _ in attempts]
+    connected, said, ended = set(), {}, {}
+    for t, b in events:
+        if t is None or not b.startswith(("CONNECTED ", "CONNECT-NEVER-ESTABLISHED", "CONNECTION-ENDED")):
+            continue
+        k = bisect.bisect_right(starts, t) - 1
+        if k < 0:
+            continue
+        if b.startswith("CONNECTED "):
+            connected.add(k)
+        for m in [NEVER_ESTABLISHED.match(b)] if b.startswith("CONNECT-NEVER") else []:
+            said.setdefault(k, m.group(1)) if m else None
+        m = ENDED_ERR.match(b)
+        if m:
+            ended.setdefault(k, LEGACY_REASON.get(m.group(1), m.group(1)))
+    return [ESTABLISHED if k in connected else said.get(k, ended.get(k, UNRECORDED)) for k in range(len(attempts))]
+
+
+def render_counts(counter):
+    return ",".join(f"{k}={v}" for k, v in counter.items()) or "none"
+
+
 def analyze(path, lines, lane=None):
     """Everything below, for one lane's lines — or for a whole log that predates lanes (lane=None)."""
     events = [parse(l) for l in lines]
@@ -201,8 +245,37 @@ def analyze(path, lines, lane=None):
         return m.group(1) if m else "?"
     ends = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
                                                         "CONNECTION-ENDED", "CONNECTION-DEAD", "SCOPE-EXITED"))]
-    print(f"\nconnections: attempts={len(attempts)}")
+    attempt_results = attempt_outcomes(events, attempts)
+    never = Counter(o for o in attempt_results if o != ESTABLISHED)
+    # The probe's own attempt numbers (`n=`) of the attempts that never established: every line a
+    # pre-fix build tagged `connection=N` for one of them describes a connection that did not exist.
+    hollow = {attempt_number(b) for (_, b), o in zip(attempts, attempt_results) if o != ESTABLISHED}
+    print(f"\nconnections: attempts={len(attempts)} established={len(attempts) - sum(never.values())}"
+          f" neverEstablished=[{render_counts(never)}]")
+    # The probe's own run lines, from a build that counted every attempt as a connection.
+    claimed = [int(m.group(1)) for _, b in events if b.startswith(("MIGRATION-TOTALS", "ECHO-LIVENESS run"))
+               for m in [re.search(r"\bconnections=(\d+)", b)] if m]
+    if never and any(c > len(attempts) - sum(never.values()) for c in claimed):
+        print(f"  ⚠ the probe's own run lines claim connections={max(claimed)}: a build before CONNECT-NEVER-ESTABLISHED"
+              f" counted the {sum(never.values())} attempt(s) that never established as connections, each with a"
+              f" liveness and #447 verdict of its own — every figure below counts established connections only")
+    pending = []  # a run of consecutive never-established attempts, printed as one line
+
+    def flush():
+        if not pending:
+            return
+        first, last = pending[0], pending[-1]
+        span = f"#{first[0]}" if len(pending) == 1 else f"#{first[0]}–#{last[0]}"
+        where = f" [{family_of(first[1])}]" if FAMILY.search(first[1]) else ""
+        print(f"  {span} t+{first[2] / 1000:.0f}s{where} {len(pending)} attempt(s) never established —"
+              f" {render_counts(Counter(r for *_, r in pending))}")
+        pending.clear()
+
     for i, (t, b) in enumerate(attempts):
+        if attempt_results[i] != ESTABLISHED:
+            pending.append((i + 1, b, t, attempt_results[i]))
+            continue
+        flush()
         nxt = attempts[i + 1][0] if i + 1 < len(attempts) else max(last_t, t)
         end = next(((et, eb) for et, eb in ends if t < et <= nxt), None)
         lived = ((end[0] if end else nxt) - t) / 1000
@@ -210,6 +283,13 @@ def analyze(path, lines, lane=None):
         # Silent on a pre-rotation log rather than printing "(unrecorded)" on every one of its connections.
         where = f"{target_of(b)} [{family_of(b)}] " if FAMILY.search(b) else ""
         print(f"  #{i + 1} t+{t / 1000:.0f}s {where}lived {lived:.0f}s — {why}")
+    flush()
+    # A connect that failed is not a connection ending; the OS-NET check below judges only the real ones.
+    def ended_a_connection(et):
+        covering = bisect.bisect_right([at for at, _ in attempts], et) - 1
+        return covering < 0 or attempt_results[covering] == ESTABLISHED
+
+    connection_ends = [(et, eb) for et, eb in ends if ended_a_connection(et)]
 
     # migrations
     mig_ok = [(t, b) for t, b in events if b.startswith("PATH Migrated")]
@@ -315,22 +395,25 @@ def analyze(path, lines, lane=None):
     # OS-NET line, which is every log written before the probe recorded one.
     os_changes = [t for t, b in events if b.startswith(OS_NET)]
     if os_changes:
-        unexplained = [et for et, _ in ends if not any(abs(x - et) <= OS_NET_NEAR_MS for x in os_changes)]
-        explained = len(ends) - len(unexplained)
+        unexplained = [et for et, _ in connection_ends if not any(abs(x - et) <= OS_NET_NEAR_MS for x in os_changes)]
+        explained = len(connection_ends) - len(unexplained)
         detail = "" if not unexplained else (
             " — no OS event near " + ", ".join(f"t+{t / 1000:.0f}s" for t in unexplained[:6])
             + (f" (+{len(unexplained) - 6} more)" if len(unexplained) > 6 else ""))
-        print(f"  OS-NET within ±{OS_NET_NEAR_MS // 1000}s of a connection ending: {explained}/{len(ends)}{detail}")
+        print(f"  OS-NET within ±{OS_NET_NEAR_MS // 1000}s of a connection ending: {explained}/{len(connection_ends)}{detail}")
 
     print_stalls(events)
 
     # verbatim: the lines that matter
+    tagged_connection = re.compile(r"\bconnection=(\d+) family=")
     for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
                 "STALL-SUSPECTED", "CONNECTION-DEAD", "WAKELOCK", "DONE", "MIGRATION-", "ECHO-LIVENESS"):
         hits = [(t, b) for t, b in events if b.startswith(tag)]
-        if hits:
-            print(f"\n{tag}: {len(hits)}")
-            for t, b in hits[:8]:
+        real = [(t, b) for t, b in hits for m in [tagged_connection.search(b)] if not (m and m.group(1) in hollow)]
+        if real:
+            dropped = len(hits) - len(real)
+            print(f"\n{tag}: {len(real)}" + (f" (+{dropped} for attempts that never established, not shown)" if dropped else ""))
+            for t, b in real[:8]:
                 print(f"  t+{t / 1000:.0f}s {b[:160]}")
 
     # --- #447 verdict, re-derived from the attempt sequence (see the module docstring) ---
@@ -478,7 +561,7 @@ def analyze(path, lines, lane=None):
 
 
     def blank():
-        return {"attempts": 0, "connected": 0, "migrated": 0, "mig_failed": 0, "probes": 0,
+        return {"attempts": 0, "connected": 0, "never": Counter(), "migrated": 0, "mig_failed": 0, "probes": 0,
                 "ok": 0, "late": 0, "overdue": 0, "unanswered": 0, "fail": 0,
                 "verdicts": Counter(), "liveness": Counter()}
 
@@ -490,8 +573,10 @@ def analyze(path, lines, lane=None):
         return by_family.setdefault(fam, blank())
 
 
-    for t, b in attempts:
+    for (t, b), o in zip(attempts, attempt_results):
         row(family_of(b))["attempts"] += 1
+        if o != ESTABLISHED:
+            row(family_of(b))["never"][o] += 1
 
 
     def count_in(stamps, start, end):
@@ -517,7 +602,7 @@ def analyze(path, lines, lane=None):
         print("  (no CONNECT-ATTEMPT lines)")
     for fam in sorted(by_family, key=lambda f: (FAMILY_ORDER.get(f, len(FAMILY_ORDER)), f)):
         r = by_family[fam]
-        print(f"  {fam}: attempts={r['attempts']} connected={r['connected']}"
+        print(f"  {fam}: attempts={r['attempts']} connected={r['connected']} neverEstablished=[{render_counts(r['never'])}]"
               f" | migrations ok={r['migrated']} failed={r['mig_failed']} probes={r['probes']}"
               f" | echoes ok={r['ok']} late={r['late']} overdue={r['overdue']} unanswered={r['unanswered']} fail={r['fail']}")
         print(f"      #447={dict(r['verdicts']) or '(no connection reached a verdict)'} liveness={dict(r['liveness'])}")
@@ -623,7 +708,7 @@ def main():
     declared = next((b for _, b in run if b.startswith("LANES ")), "")
     print(f"lanes: {', '.join(names)}" + (f"  ({declared})" if declared else ""))
     for _, b in run:
-        if b.startswith(("MIGRATION-TOTALS", "DONE")):
+        if b.startswith(("CONNECT-TOTALS", "MIGRATION-TOTALS", "DONE")):
             print(f"  run: {b[:200]}")
     # The device's own timeline, once: it is the run's, not any lane's.
     print_os_network(run)
