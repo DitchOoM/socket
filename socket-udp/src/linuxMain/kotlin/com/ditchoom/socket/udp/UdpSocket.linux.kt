@@ -219,8 +219,9 @@ actual object UdpSocket {
             val addr = alloc<sockaddr_storage>()
             val len = local.writeSockaddr(addr)
             if (socket_bind(fd, addr.ptr.reinterpret(), len) != 0) {
+                val error = bindErrnoToError() // before close(), which may overwrite errno
                 close(fd)
-                error("bind to ${local.host}:${local.port} failed")
+                throw UdpBindException(local.host, local.port, error)
             }
         }
     }

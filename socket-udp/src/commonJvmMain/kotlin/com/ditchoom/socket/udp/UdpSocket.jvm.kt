@@ -9,7 +9,6 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import java.io.IOException
-import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.net.StandardSocketOptions
@@ -42,18 +41,16 @@ actual object UdpSocket {
     ): AddressedDatagramChannel {
         if (localHost != null) return boundTo(localHost, localPort, receiveBufferSize, bufferFactory)
         // Wildcard: take the port from the IPv4 table first — see [wildcardPortOwnedForIpv4]. Only the
-        // ephemeral case retries, and only because the port IPv4 offered can, rarely, be held by an
-        // IPv6-only socket, which nothing but the real bind discovers.
-        var lastFailure: BindException? = null
-        repeat(if (localPort == 0) MAX_WILDCARD_BIND_ATTEMPTS else 1) {
-            val port = wildcardPortOwnedForIpv4(localPort)
+        // ephemeral case redraws, and only on a collision: the port IPv4 offered can be held in the IPv6
+        // table, which nothing but the real bind discovers.
+        repeat(if (localPort == 0) MAX_WILDCARD_BIND_ATTEMPTS - 1 else 0) {
             try {
-                return boundTo(WILDCARD, port, receiveBufferSize, bufferFactory)
-            } catch (e: BindException) {
-                lastFailure = e
+                return boundTo(WILDCARD, wildcardPortOwnedForIpv4(localPort), receiveBufferSize, bufferFactory)
+            } catch (e: UdpBindException) {
+                if (e.error !is UdpBindError.AddressInUse) throw e
             }
         }
-        throw lastFailure ?: BindException("Failed to bind a wildcard UDP port")
+        return boundTo(WILDCARD, wildcardPortOwnedForIpv4(localPort), receiveBufferSize, bufferFactory)
     }
 
     private fun boundTo(
@@ -62,15 +59,34 @@ actual object UdpSocket {
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
     ): AddressedDatagramChannel =
-        NioChannel.open().closedIfSetupFails {
-            configureBlocking(false)
-            bind(InetSocketAddress(host, port))
-            // An addressed channel's localAddress is non-null by construction (buffer-flow contract):
-            // if getsockname cannot report the bound address, fail fast HERE, before any channel exists.
-            val local =
-                (localAddress as? InetSocketAddress)?.let { InternedJvmSocketAddress(it) }
-                    ?: error("bound UDP socket reports no local address (getsockname)")
-            AddressedNioDatagramChannel(this, local, receiveBufferSize, bufferFactory)
+        typedBindFailure(host, port) {
+            NioChannel.open().closedIfSetupFails {
+                configureBlocking(false)
+                bind(InetSocketAddress(host, port))
+                // An addressed channel's localAddress is non-null by construction (buffer-flow contract):
+                // if getsockname cannot report the bound address, fail fast HERE, before any channel exists.
+                AddressedNioDatagramChannel(this, boundAddress(host, port), receiveBufferSize, bufferFactory)
+            }
+        }
+
+    /** The address this bound channel reports, or a typed refusal when `getsockname` reports none. */
+    private fun NioChannel.boundAddress(
+        host: String,
+        port: Int,
+    ): InternedJvmSocketAddress =
+        (localAddress as? InetSocketAddress)?.let { InternedJvmSocketAddress(it) }
+            ?: throw UdpBindException(host, port, UdpBindError.SocketUnavailable(ERRNO_NOT_SURFACED))
+
+    /** Runs a bind, reporting a refusal as [UdpBindException] — the JDK's own exception kept as its cause. */
+    private inline fun <T> typedBindFailure(
+        host: String,
+        port: Int,
+        bind: () -> T,
+    ): T =
+        try {
+            bind()
+        } catch (e: IOException) {
+            throw UdpBindException(host, port, jvmBindErrorOf(e), e)
         }
 
     actual suspend fun connect(
@@ -140,17 +156,16 @@ actual object UdpSocket {
         // Multicast needs a protocol-family-typed channel: DatagramChannel.join() throws on a channel
         // opened with the no-arg open(). SO_REUSEADDR before bind lets multiple listeners share the port.
         val v6 = family == AddressFamily.IPv6
-        val channel = NioChannel.open(if (v6) StandardProtocolFamily.INET6 else StandardProtocolFamily.INET)
-        return channel.closedIfSetupFails {
-            setOption(StandardSocketOptions.SO_REUSEADDR, true)
-            configureBlocking(false)
-            bind(InetSocketAddress(if (v6) WILDCARD_V6 else WILDCARD, port))
-            // Same fail-fast-before-construction contract as bind(): multicast is an addressed channel.
-            val local =
-                (localAddress as? InetSocketAddress)?.let { InternedJvmSocketAddress(it) }
-                    ?: error("bound UDP socket reports no local address (getsockname)")
-            val base = AddressedNioDatagramChannel(this, local, receiveBufferSize, bufferFactory)
-            MulticastNioDatagramChannel(this, base)
+        val host = if (v6) WILDCARD_V6 else WILDCARD
+        return typedBindFailure(host, port) {
+            NioChannel.open(if (v6) StandardProtocolFamily.INET6 else StandardProtocolFamily.INET).closedIfSetupFails {
+                setOption(StandardSocketOptions.SO_REUSEADDR, true)
+                configureBlocking(false)
+                bind(InetSocketAddress(host, port))
+                // Same fail-fast-before-construction contract as bind(): multicast is an addressed channel.
+                val base = AddressedNioDatagramChannel(this, boundAddress(host, port), receiveBufferSize, bufferFactory)
+                MulticastNioDatagramChannel(this, base)
+            }
         }
     }
 
@@ -211,21 +226,23 @@ actual object UdpSocket {
      * So the port comes from the IPv4 table before the real socket exists. `bind(0)` on an `AF_INET`
      * probe is handed a port that is free for IPv4 by definition; the probe is closed — UDP has no
      * `TIME_WAIT`, so the port is immediately rebindable — and the dual-stack socket takes it. An
-     * explicitly requested port whose IPv4 half is taken fails here with the same [BindException]
-     * Linux already raises for the real bind, rather than succeeding into a deaf socket.
+     * explicitly requested port whose IPv4 half is taken fails here with the same
+     * [UdpBindError.AddressInUse] Linux raises for the real bind, rather than succeeding into a deaf socket.
      *
      * The probe must come **first**: an `AF_INET` bind *after* a dual-stack bind on the same port is
      * refused, so probing afterwards would report a conflict with ourselves.
      */
     private fun wildcardPortOwnedForIpv4(requestedPort: Int): Int =
-        NioChannel.open(StandardProtocolFamily.INET).closedIfSetupFails {
-            bind(InetSocketAddress(WILDCARD, requestedPort))
-            val port = (localAddress as InetSocketAddress).port
-            close()
-            port
+        typedBindFailure(WILDCARD, requestedPort) {
+            NioChannel.open(StandardProtocolFamily.INET).closedIfSetupFails {
+                bind(InetSocketAddress(WILDCARD, requestedPort))
+                val port = (localAddress as InetSocketAddress).port
+                close()
+                port
+            }
         }
 
-    /** Bounded retry for [bind]'s ephemeral wildcard case — see [wildcardPortOwnedForIpv4]. */
+    /** Bounded redraw for [bind]'s ephemeral wildcard case — see [wildcardPortOwnedForIpv4]. */
     private const val MAX_WILDCARD_BIND_ATTEMPTS = 8
 
     private const val WILDCARD = "0.0.0.0"
