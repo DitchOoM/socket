@@ -1,8 +1,13 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.AddressOwner
+import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NumericAddress
+import com.ditchoom.socket.ParsedAddress
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
+import com.ditchoom.socket.ownerOf
 import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
@@ -95,28 +100,54 @@ private sealed interface Attachment {
      * No routable, identified link has been reported yet, so the first one is the connect-time
      * baseline rather than a handoff.
      *
-     * A default-route migration taken while the monitor still names nothing leaves it standing, which
-     * means the link the monitor eventually names is still read as the baseline. That is deliberate
-     * and it is correct: [MigrationTarget.FreshLocalEndpoint] binds on whatever the platform's current
-     * default interface is, so the first link the monitor manages to name *is* the one the connection
-     * is now on. If it is not — the device handed off in between — the path we just moved to dies too,
-     * and the data-plane trigger fires again; that backstop is exactly what makes leaving this alone
-     * safe.
+     * A default-route migration taken while the monitor still names nothing, on a monitor that does not
+     * report addresses, leaves it standing, so the link the monitor eventually names is read as the
+     * baseline: [MigrationTarget.FreshLocalEndpoint] binds on the platform's current default interface,
+     * which is the one the monitor goes on to name. If it is not, the path just moved to dies too and the
+     * data-plane trigger fires again.
      */
     data object AwaitingBaseline : Attachment
 
-    /** The connection is on the link the monitor named. */
+    /** The connection is on the link [id]. */
     data class On(
         val id: NetworkId,
     ) : Attachment
+
+    /**
+     * The connection moved onto the local [address], and no link the monitor reports carries it yet:
+     * the platform's default route moved before the monitor named the link it moved to. The connection
+     * is on whichever link the monitor reports carrying [address] ([resolvedBy]); a link that does not
+     * carry it is somewhere else.
+     */
+    data class OnUnclaimedAddress(
+        val address: NumericAddress,
+    ) : Attachment
 }
 
-/** Whether [id] is the link this reactor already believes it is on. */
-private fun Attachment.isAlready(id: NetworkId): Boolean = this is Attachment.On && this.id == id
+/** This attachment, with an unclaimed address resolved to the link that [addresses] says carries it. */
+private fun Attachment.resolvedBy(addresses: LinkAddresses): Attachment =
+    when (this) {
+        Attachment.AwaitingBaseline, is Attachment.On -> this
+        is Attachment.OnUnclaimedAddress ->
+            when (val owner = addresses.ownerOf(address)) {
+                is AddressOwner.Link -> Attachment.On(owner.id)
+                AddressOwner.Unclaimed, AddressOwner.NotReported -> this
+            }
+    }
+
+/** Whether [id] is the link this reactor already believes it is on, reading addresses as [addresses] reports them. */
+private fun Attachment.isAlready(
+    id: NetworkId,
+    addresses: LinkAddresses,
+): Boolean =
+    when (val resolved = resolvedBy(addresses)) {
+        Attachment.AwaitingBaseline, is Attachment.OnUnclaimedAddress -> false
+        is Attachment.On -> resolved.id == id
+    }
 
 /**
  * Whether [id] is news to a retry predicated on this attachment — one of the two things
- * [awaitRetrySlot] abandons a backoff on.
+ * [awaitRetrySlot] abandons a backoff on. A link is news unless the connection is already on it.
  *
  * [Attachment.AwaitingBaseline] answers `false` for everything, and only a **data-plane** retry can ask
  * from there (a control-plane one is predicated on the link it is moving onto, which by construction is
@@ -125,7 +156,14 @@ private fun Attachment.isAlready(id: NetworkId): Boolean = this is Attachment.On
  * current default interface is. What ends *that* retry is the path answering again, which is the other
  * clause.
  */
-private fun Attachment.isNewsComparedTo(id: NetworkId): Boolean = this is Attachment.On && this.id != id
+private fun Attachment.isNewsComparedTo(
+    id: NetworkId,
+    addresses: LinkAddresses,
+): Boolean =
+    when (this) {
+        Attachment.AwaitingBaseline -> false
+        is Attachment.On, is Attachment.OnUnclaimedAddress -> !isAlready(id, addresses)
+    }
 
 /**
  * Why the reactor woke. Two sources, one sequential collector — see [wireAutoMigration]'s "two
@@ -220,12 +258,18 @@ internal sealed interface MigrationTrigger {
  *
  * ## Where a success lands
  *
- * The attachment a success records is decided by the [Route] the attempt took and nothing else
- * ([Route.landedOn]): a standby attempt lands on the standby link, and a default-route attempt on the
- * link the monitor was naming as its socket opened — whichever trigger woke it. So a data-plane move
- * made while the platform already names a new link attaches to that link, and a link change queued
- * behind it naming the same link is no handoff; and a move back off a standby link attaches to the
- * default link again, which leaves the standby link somewhere to go the next time.
+ * The attachment a success records is decided by the [Route] the attempt took and where its socket
+ * was bound ([Route.landedOn]), whichever trigger woke it. A standby attempt lands on the standby link.
+ * A default-route attempt lands on the link that carries its bound local address
+ * ([NetworkMonitor.linkAddresses]), because the platform's default route can move before the monitor
+ * names the link it moved to: a phone that keeps cellular up beside Wi-Fi opens the new socket on
+ * cellular while the monitor still names Wi-Fi. When no link carries the address yet, the connection is
+ * on an unclaimed address until the monitor reports the link that does.
+ *
+ * So a link change naming the link a move already landed on is no handoff, and a link change naming
+ * any other link is one, including a link named while the move was still validating. A move back off a
+ * standby link attaches to the default link again, which leaves the standby link somewhere to go the
+ * next time.
  *
  * ## Why a failed attempt cannot wait for the next network event
  *
@@ -300,6 +344,8 @@ internal fun wireAutoMigration(
                 .filter { it is PathLiveness.Silent }
                 .map { MigrationTrigger.PathStoppedAnswering },
         ).collect { trigger ->
+            // A move that landed on an address no link claimed is on whichever link claims it now.
+            attachedTo = attachedTo.resolvedBy(monitor.linkAddresses.value)
             // The link this attempt is predicated on, which is what makes a backoff stale: the link being
             // moved onto, or for a data-plane trigger the link we were already told we are on. Where a
             // success lands is the route's to say ([Route.landedOn]), never this.
@@ -317,7 +363,7 @@ internal fun wireAutoMigration(
                                     attachedTo = Attachment.On(now.id)
                                     return@collect
                                 }
-                                if (attachedTo.isAlready(now.id)) return@collect // a flap that came home
+                                if (attachedTo.isAlready(now.id, monitor.linkAddresses.value)) return@collect // already there
                                 Attachment.On(now.id)
                             }
                         }
@@ -333,7 +379,7 @@ internal fun wireAutoMigration(
             var attempt = 1
             while (true) {
                 // Chosen per attempt: a standby link that attached during the backoff is taken now.
-                val route = routeFor(trigger, attachedTo, standby.current, monitor.observedLink)
+                val route = routeFor(trigger, attachedTo, standby.current, monitor.observedLink, monitor.linkAddresses.value)
                 val result =
                     when (route) {
                         is Route.DefaultRoute -> connection.migrate(MigrationTarget.FreshLocalEndpoint)
@@ -343,7 +389,7 @@ internal fun wireAutoMigration(
                 capture.record { it.migrationAttempt(trigger, attempt, result) }
                 when (result) {
                     is MigrationResult.Succeeded -> {
-                        attachedTo = route.landedOn(attachedTo)
+                        attachedTo = route.landedOn(attachedTo, result.localEndpoint, monitor.linkAddresses.value)
                         return@collect
                     }
 
@@ -461,7 +507,7 @@ private suspend fun awaitRetrySlot(
             monitor.state
                 .filter { it.canRouteOffLink }
                 .map { it.networkId }
-                .filter { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it) }
+                .filter { it != NetworkId.Unidentified && attempting.isNewsComparedTo(it, monitor.linkAddresses.value) }
                 .map { RetrySlot.Abandon },
             when (trigger) {
                 // A control-plane retry is trying to reach a link the platform says we have moved to,
@@ -478,8 +524,11 @@ private suspend fun awaitRetrySlot(
                 // retry now, onto it. The next attempt re-reads it through [routeFor].
                 MigrationTrigger.PathStoppedAnswering ->
                     standby.changes
-                        .filter { it is StandbyPath.Ready && !attempting.isAlready(it.id) && !offeredToTheFailedAttempt.offers(it.id) }
-                        .map { RetrySlot.Retry }
+                        .filter {
+                            it is StandbyPath.Ready &&
+                                !attempting.isAlready(it.id, monitor.linkAddresses.value) &&
+                                !offeredToTheFailedAttempt.offers(it.id)
+                        }.map { RetrySlot.Retry }
             },
         ).first()
     } ?: RetrySlot.Retry
@@ -505,8 +554,8 @@ private sealed interface RetrySlot {
 private sealed interface Route {
     /**
      * A fresh endpoint wherever the platform's default route points. [named] is what the monitor was
-     * naming as the attempt began, which is when its socket opens: the monitor's name for the default
-     * link.
+     * naming as the attempt began, which is when its socket opens; the default route can already have
+     * moved to a link the monitor has not named yet.
      */
     class DefaultRoute(
         val named: ObservedLink,
@@ -519,22 +568,45 @@ private sealed interface Route {
 }
 
 /**
- * The attachment after a successful attempt along this route, given the attachment before it.
+ * The attachment after a successful attempt along this route that bound [moved], given the attachment
+ * before it and the addresses each link carries now.
  *
- * A standby attempt is on the standby link, whatever the monitor names. A default-route attempt is on
- * the default link, which is the link the monitor named as the socket opened; when it named none,
- * nothing contradicts [before], which stands. Read as the attempt begins rather than at the success,
- * because that is when the socket is bound: a link the monitor names while the new path validates is a handoff
- * *after* the move, and the trigger it queued has to find the connection still on the link it left.
+ * A standby attempt is on the standby link: its socket is pinned there. A default-route attempt is on
+ * the link that carries the address its socket was bound on, which is where the platform's default
+ * route pointed as it opened, whatever the monitor was naming. When no link carries that address yet,
+ * the connection is [Attachment.OnUnclaimedAddress] until one does.
+ *
+ * Only a monitor that reports no addresses leaves the link to be inferred, from what it named as the
+ * socket opened ([byName]).
  */
-private fun Route.landedOn(before: Attachment): Attachment =
+private fun Route.landedOn(
+    before: Attachment,
+    moved: QuicLocalEndpoint,
+    addresses: LinkAddresses,
+): Attachment =
     when (this) {
-        is Route.DefaultRoute ->
-            when (named) {
-                ObservedLink.None -> before
-                is ObservedLink.Link -> Attachment.On(named.id)
-            }
         is Route.Standby -> Attachment.On(ready.id)
+        is Route.DefaultRoute ->
+            when (val parsed = NumericAddress.parse(moved.host)) {
+                is ParsedAddress.NotNumeric -> byName(before)
+                is ParsedAddress.Address ->
+                    when (val owner = addresses.ownerOf(parsed.address)) {
+                        is AddressOwner.Link -> Attachment.On(owner.id)
+                        AddressOwner.Unclaimed -> Attachment.OnUnclaimedAddress(parsed.address)
+                        AddressOwner.NotReported -> byName(before)
+                    }
+            }
+    }
+
+/**
+ * The link a default-route attempt landed on, inferred from the link the monitor named as its socket
+ * opened; when it named none, [before] stands. The inference is wrong when the default route moved
+ * before the monitor named the new link, which is why an address the monitor reports overrules it.
+ */
+private fun Route.DefaultRoute.byName(before: Attachment): Attachment =
+    when (named) {
+        ObservedLink.None -> before
+        is ObservedLink.Link -> Attachment.On(named.id)
     }
 
 /**
@@ -554,13 +626,15 @@ private fun routeFor(
     attachedTo: Attachment,
     standby: StandbyPath,
     named: ObservedLink,
+    addresses: LinkAddresses,
 ): Route =
     when (trigger) {
         MigrationTrigger.LinkChanged -> Route.DefaultRoute(named)
         MigrationTrigger.PathStoppedAnswering ->
             when (standby) {
                 StandbyPath.Unavailable -> Route.DefaultRoute(named)
-                is StandbyPath.Ready -> if (attachedTo.isAlready(standby.id)) Route.DefaultRoute(named) else Route.Standby(standby)
+                is StandbyPath.Ready ->
+                    if (attachedTo.isAlready(standby.id, addresses)) Route.DefaultRoute(named) else Route.Standby(standby)
             }
     }
 

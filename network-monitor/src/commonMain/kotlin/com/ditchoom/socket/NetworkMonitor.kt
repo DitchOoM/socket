@@ -26,10 +26,10 @@ import kotlin.concurrent.Volatile
  * - **Node.js**: `os.networkInterfaces()` polling; **browser JS**: `online`/`offline` (event-driven)
  * - **Linux native**: netlink sockets (event-driven)
  *
- * Scope: this answers *"what network am I on, and how far does it reach"* ([state]) and deliberately
- * never *"which local addresses exist"* — no interface enumeration, no `InetAddress`. Address
- * enumeration is a separate concern with a different lifetime and cost (`../webrtc`'s ICE owns its own
- * enumerator); the name is narrower than it reads.
+ * Scope: this answers *"what network am I on, and how far does it reach"* ([state]), and *"which link
+ * carries this local address"* ([linkAddresses]), so a socket's bound address can be tied to the link
+ * [state] names. It is not an interface enumerator for choosing addresses to bind or advertise; that is
+ * [enumerateNetworkInterfaces] (`../webrtc`'s ICE owns its own).
  *
  * The platform's best default is `NetworkMonitor.default()`, and the process-shared instance is
  * `NetworkMonitor.processDefault()` — both `expect`/extension functions provided by the owning
@@ -148,6 +148,18 @@ interface NetworkMonitor {
      */
     val linkQuality: StateFlow<LinkQuality> get() = NoLinkQuality
 
+    /**
+     * Which local addresses each link carries, keyed by the [NetworkId] [state] names that link with.
+     *
+     * A link's addresses are in this view **no later than** the [state] that names it: a monitor
+     * publishes a link's addresses before, or with, the state naming that link. So a consumer that sees
+     * [state] name a link finds that link's addresses here.
+     *
+     * Defaults to a constant [LinkAddresses.NotReported], meaning this monitor cannot say which link
+     * carries an address.
+     */
+    val linkAddresses: StateFlow<LinkAddresses> get() = NoLinkAddresses
+
     /** Releases platform resources (unregisters callbacks, closes sockets, cancels polling). */
     fun close()
 
@@ -242,6 +254,9 @@ private val NoObservations: StateFlow<Long> = MutableStateFlow(0L)
  * [LinkQuality.Unavailable], matching the [LinkQualityResolution.None] its capability declares.
  */
 private val NoLinkQuality: StateFlow<LinkQuality> = MutableStateFlow(LinkQuality.Unavailable)
+
+/** The [NetworkMonitor.linkAddresses] default for a monitor that does not report addresses. */
+private val NoLinkAddresses: StateFlow<LinkAddresses> = MutableStateFlow(LinkAddresses.NotReported)
 
 /**
  * Changes of the **network path itself** — the identity-keyed projection of [NetworkMonitor.state], with

@@ -71,6 +71,12 @@ class AppleNetworkMonitorLiveTests {
                             state.id as? NetworkId.Link
                                 ?: fail("a path with a link must resolve to a NetworkId.Link, was ${state.id}")
                         assertTrue(link.handle > 0, "Link handle must be a real OS interface index, was ${link.handle}")
+                        // A link's addresses are published no later than the state naming it.
+                        val addresses = monitor.linkAddresses.value
+                        assertTrue(
+                            addresses is LinkAddresses.Reported && link in addresses.byLink,
+                            "the state names $link, but the address view does not hold it: $addresses",
+                        )
                         assertTrue(
                             link.kind is NetworkKind.Wifi ||
                                 link.kind is NetworkKind.Cellular ||

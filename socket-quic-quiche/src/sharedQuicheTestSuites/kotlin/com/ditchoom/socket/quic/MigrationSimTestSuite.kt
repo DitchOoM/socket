@@ -1141,6 +1141,79 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * **A data-plane move lands on the link that carries its address, not the one the monitor names** —
+     * the 2026-09-26 iPhone walk. Cellular stays up beside Wi-Fi and the monitor reports both links'
+     * addresses while it names Wi-Fi. The Wi-Fi path goes dark with the platform's default route
+     * already on cellular, so the data-plane move's fresh socket binds cellular's address; the monitor
+     * names cellular only while that move validates. The connection is already on cellular, so the link
+     * change is no handoff. Moving again spent a spare connection id and a path validation on the walk,
+     * to land on a new port of the same link.
+     */
+    @Test
+    fun aDataPlaneMoveOntoALinkTheMonitorNamesOnlyAfterwardsIsTheOnlyMove() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            monitor.setLinkAddresses(mapOf(WIFI to listOf(SIM_LINK_HOST), CELLULAR to listOf(SIM_OTHER_LINK_HOST)))
+            val recorded = mutableListOf<TraceEvent>()
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 926_2010L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            trace = QuicTraceCapture({ event -> recorded += event }),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    // The default route is already on cellular: every fresh socket binds its address.
+                    probeHost = { SIM_OTHER_LINK_HOST },
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitWalkPeerPool()
+
+                        val primary = pipe.paths().first()
+                        pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
+                        // Data in flight on the dark path is what lets the connection notice it is dark.
+                        val after = client.async { stream.echo("after") }
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (pipe.paths().size < 2) delay(1.milliseconds)
+                        }
+                        assertTrue(client.attempts.isEmpty(), "precondition: the move must still be validating: ${client.attempts}")
+                        monitor.setNetworkId(CELLULAR) // named while the move validates, as on the walk
+
+                        assertEquals("after", after.await(), "the connection never re-homed: ${client.attempts}")
+                        // Long enough for the queued link change, its backoff and a second path validation.
+                        delay(QUEUED_TRIGGER_SETTLE)
+
+                        val migrations = recorded.filterIsInstance<TraceEvent.Migration>()
+                        assertEquals(
+                            listOf(TraceMigrationTrigger.PathStoppedAnswering to TraceMigrationOutcome.Succeeded),
+                            migrations.map { it.trigger to it.outcome },
+                            "the data-plane move bound $SIM_OTHER_LINK_HOST, which the monitor reports on $CELLULAR, " +
+                                "and the monitor naming $CELLULAR must find the connection already there. " +
+                                "attempts=${client.attempts}, spares=${clientAvailableDcids()}",
+                        )
+                        assertEquals(
+                            SIM_OTHER_LINK_HOST,
+                            (client.attempts.single() as MigrationResult.Succeeded).localEndpoint.host,
+                            "precondition: the move must have landed on cellular's address",
+                        )
+                        assertEquals("still", stream.echo("still"), "the connection must still carry data on cellular")
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
      * **A link that holds every probe through its attach and then releases them in order** — the
      * 2026-09-21 iPhone burst: four probes from four fresh ports went unanswered for 4.7–16.1s, then
      * the server received all of them within half a second, in order, and answered each; only the

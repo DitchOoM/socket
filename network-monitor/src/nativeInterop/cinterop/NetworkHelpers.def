@@ -22,18 +22,28 @@ nw_path_monitor_t _Nonnull nm_create_path_monitor(void)
 
 void nm_path_monitor_set_update_handler(
     nw_path_monitor_t _Nonnull monitor,
+    nm_path_interface_handler_t _Nonnull interface_handler,
     nm_path_update_handler_t _Nonnull handler)
 {
     nw_path_monitor_set_update_handler(monitor, ^(nw_path_t _Nonnull path) {
         __block int32_t ifType = -1;
         __block uint32_t ifIndex = 0;
         __block NSString *ifName = nil;
+        __block bool primary = true;
         nw_path_enumerate_interfaces(path, ^bool(nw_interface_t _Nonnull interface) {
-            ifType = (int32_t)nw_interface_get_type(interface);
-            ifIndex = nw_interface_get_index(interface);
+            int32_t type = (int32_t)nw_interface_get_type(interface);
+            uint32_t index = nw_interface_get_index(interface);
             const char *name = nw_interface_get_name(interface);
-            ifName = name ? [NSString stringWithUTF8String:name] : nil;
-            return false; // primary (first-enumerated) interface only
+            NSString *nsName = name ? [NSString stringWithUTF8String:name] : nil;
+            if (primary) {
+                // The first-enumerated interface is the path's primary one.
+                ifType = type;
+                ifIndex = index;
+                ifName = nsName;
+                primary = false;
+            }
+            interface_handler(type, index, nsName);
+            return true;
         });
         int32_t uses = 0;
         if (nw_path_uses_interface_type(path, nw_interface_type_wifi))     uses |= 1;

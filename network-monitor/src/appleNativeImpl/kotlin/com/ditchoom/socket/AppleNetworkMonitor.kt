@@ -61,10 +61,29 @@ class AppleNetworkMonitor : NetworkMonitor {
     override val capability: MonitorCapability =
         MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly, appleLinkQualityResolution)
 
+    /**
+     * Every link the path enumerates and the addresses `getifaddrs` finds on it, published before the
+     * state of the same path update, so a link's addresses are here no later than the state naming it.
+     */
+    private val _linkAddresses = MutableStateFlow<LinkAddresses>(LinkAddresses.Reported(emptyMap()))
+    override val linkAddresses: StateFlow<LinkAddresses> = _linkAddresses.asStateFlow()
+
+    /**
+     * The interfaces of the path update being delivered. Touched only on the monitor's serial queue: the
+     * C bridge fills it through the interface handler, then the update handler drains it.
+     */
+    private val pathInterfaces = ArrayList<PathInterface>()
+
     private val monitor = nm_create_path_monitor()
 
     init {
-        nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
+        nm_path_monitor_set_update_handler(
+            monitor,
+            { type, index, name -> pathInterfaces += PathInterface(type, index, name) },
+        ) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
+            val onThePath = pathInterfaces.toList()
+            pathInterfaces.clear()
+            _linkAddresses.value = appleLinkAddresses(onThePath, usesTypes, enumerateNetworkInterfaces())
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             val state = appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
             // One call publishes and counts, so the observation is stamped with the state it folded to —
@@ -240,6 +259,32 @@ internal fun appleNetworkId(
 }
 
 private val VPN_NAME_PREFIXES = listOf("utun", "ipsec", "ppp", "tun", "tap")
+
+/** One interface an `nw_path` enumerates, as the C bridge reports it. */
+internal class PathInterface(
+    val type: Int,
+    val index: UInt,
+    val name: String?,
+)
+
+/**
+ * The links of one path update and the addresses each carries: every interface the path enumerates,
+ * named exactly as [appleNetworkId] names it in [NetworkState], holding the addresses [interfaces]
+ * (a `getifaddrs` scan) finds at its interface index.
+ */
+internal fun appleLinkAddresses(
+    onThePath: List<PathInterface>,
+    usesTypes: Int,
+    interfaces: List<NetworkInterfaceInfo>,
+): LinkAddresses =
+    LinkAddresses.Reported(
+        onThePath
+            .filter { it.index != 0u }
+            .associate { link ->
+                appleNetworkId(link.type, link.index, link.name, usesTypes) to
+                    numericAddressesOf(interfaces.filter { it.index.value == link.index.toLong() }.flatMap { it.addresses })
+            },
+    )
 
 /** Creates an Apple [NetworkMonitor] backed by `NWPathMonitor`. */
 fun NetworkMonitor.Companion.apple(): NetworkMonitor = AppleNetworkMonitor()
