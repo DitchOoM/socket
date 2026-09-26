@@ -61,22 +61,23 @@ import kotlin.time.Duration.Companion.seconds
  */
 class DeadlinesSurviveALostTimerThreadTests {
     @Test
-    fun losingTheSharedTimerThreadStopsAKotlinxDeadlineOnADispatcherWithoutItsOwnTimer() {
-        val outcome = CompletableFuture<Any?>()
-        SharedTimerLost().use {
-            CoroutineScope(Dispatchers.Default).launch {
-                outcome.complete(withTimeoutOrNull(SHORT) { awaitCancellation() })
+    fun losingTheSharedTimerThreadStopsAKotlinxDeadlineOnADispatcherWithoutItsOwnTimer() =
+        failIfStuck(WATCHDOG * 2, "the adversary check") {
+            val outcome = CompletableFuture<Any?>()
+            SharedTimerLost().use {
+                CoroutineScope(Dispatchers.Default).launch {
+                    outcome.complete(withTimeoutOrNull(SHORT) { awaitCancellation() })
+                }
+                assertFailsWith<TimeoutException>(
+                    "a $SHORT withTimeoutOrNull on Dispatchers.Default ended while kotlinx's shared timer thread was " +
+                        "parked, so this suite's adversary does not take the timer away and proves nothing",
+                ) { outcome.get(ADVERSARY_PROBE.inWholeMilliseconds, TimeUnit.MILLISECONDS) }
             }
-            assertFailsWith<TimeoutException>(
-                "a $SHORT withTimeoutOrNull on Dispatchers.Default ended while kotlinx's shared timer thread was " +
-                    "parked, so this suite's adversary does not take the timer away and proves nothing",
-            ) { outcome.get(ADVERSARY_PROBE.inWholeMilliseconds, TimeUnit.MILLISECONDS) }
+            assertNull(
+                outcome.get(WATCHDOG.inWholeMilliseconds, TimeUnit.MILLISECONDS),
+                "the parked deadline must fire once the shared timer thread is given back",
+            )
         }
-        assertNull(
-            outcome.get(WATCHDOG.inWholeMilliseconds, TimeUnit.MILLISECONDS),
-            "the parked deadline must fire once the shared timer thread is given back",
-        )
-    }
 
     @Test
     fun theIdleTimerEndsAHandshakeThePeerNeverAnswers() =
@@ -236,6 +237,10 @@ class DeadlinesSurviveALostTimerThreadTests {
     /**
      * Holds kotlinx's shared timer thread inside a timer callback until [close], so no timer queued on it
      * fires meanwhile. Fails construction unless the thread it holds is that thread.
+     *
+     * The hold can never outlive the test or land on another thread: only a thread named as kotlinx's
+     * shared timer parks, and its park is a JVM wait bounded by [HOLD_BOUND] as well as released by
+     * [close]. Any construction failure releases it before throwing.
      */
     private class SharedTimerLost : AutoCloseable {
         private val giveBack = CountDownLatch(1)
@@ -245,13 +250,20 @@ class DeadlinesSurviveALostTimerThreadTests {
             // Unconfined: the delay resumes on the thread that fired it, which then blocks in giveBack.
             CoroutineScope(Dispatchers.Unconfined).launch {
                 delay(1)
-                held.complete(Thread.currentThread())
-                giveBack.await()
+                val thread = Thread.currentThread()
+                held.complete(thread)
+                if (thread.name.startsWith(KOTLINX_SHARED_TIMER_THREAD)) {
+                    giveBack.await(HOLD_BOUND.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+                }
             }
-            val thread = held.get(WATCHDOG.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-            if (!thread.name.startsWith(KOTLINX_SHARED_TIMER_THREAD)) {
+            try {
+                val thread = held.get(WATCHDOG.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+                if (!thread.name.startsWith(KOTLINX_SHARED_TIMER_THREAD)) {
+                    throw AssertionError("expected to hold $KOTLINX_SHARED_TIMER_THREAD, held ${thread.name}")
+                }
+            } catch (failure: Throwable) {
                 giveBack.countDown()
-                throw AssertionError("expected to hold $KOTLINX_SHARED_TIMER_THREAD, held ${thread.name}")
+                throw failure
             }
         }
 
@@ -311,5 +323,8 @@ class DeadlinesSurviveALostTimerThreadTests {
 
         /** The JVM-thread bound on each case: a working deadline ends it ~50x sooner. */
         val WATCHDOG = 15.seconds
+
+        /** The longest [SharedTimerLost] holds kotlinx's shared timer thread if nobody closes it. */
+        val HOLD_BOUND = WATCHDOG * 2
     }
 }

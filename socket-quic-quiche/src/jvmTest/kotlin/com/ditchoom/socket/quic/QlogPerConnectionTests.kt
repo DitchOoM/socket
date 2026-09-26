@@ -137,7 +137,11 @@ class QlogPerConnectionTests {
                 assertEquals(2, sessions.toSet().size, "two connections carry two session ids: $sessions")
 
                 val qlogs = clientQlogs(dir)
-                assertEquals(listOf("conn-0001.sqlog", "conn-0002.sqlog"), qlogs.keys.sorted(), "one qlog per connection, paired by name; races $races")
+                assertEquals(
+                    listOf("conn-0001.sqlog", "conn-0002.sqlog"),
+                    qlogs.keys.sorted(),
+                    "one qlog per connection, paired by name; races $races",
+                )
                 sessions.forEachIndexed { index, session ->
                     val name = "conn-000${index + 1}"
                     assertEquals("$name.sqlog", qlogOf(qlogs, session), "connection ${index + 1}'s qlog carries its own Initial")
