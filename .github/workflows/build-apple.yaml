@@ -418,7 +418,7 @@ jobs:
         env:
           SOCKET_REQUIRE_ALL_TESTS: ${{ matrix.shard.requireAllTests }}
         run: >-
-          ./gradlew
+          .github/scripts/gradle-retry.sh
           ${{ matrix.shard.tasks }}
           --no-configuration-cache ${{ inputs.gradle-args }}
 
@@ -571,7 +571,7 @@ jobs:
           # and its first inventory confirmed zero. A skip now means the artifact plumbing broke.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: >-
-          ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} -PappleTargets=false --continue
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} -PappleTargets=false --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # This lane builds its own natives, so a `native-library-unavailable` skip here means the
@@ -621,9 +621,12 @@ jobs:
       # and the Apple CA-/hash-pinning tests die on AppleTestCerts.MissingGeneratedFixture.
       # The verify task depends on both generators, so it both MINTS the fixtures and fails here,
       # in the producing job, if any is missing.
+      # Through gradle-retry.sh, like the Linux lanes: a transient repository answer (Central
+      # 429/5xx/403, a repository host's name not resolving) re-runs the build; anything else
+      # fails on the first attempt.
       - name: Link macosArm64 test binaries (+ mint and verify the generated TLS fixtures)
         run: >-
-          ./gradlew linkDebugTestMacosArm64
+          .github/scripts/gradle-retry.sh linkDebugTestMacosArm64
           :socket-quic-quiche:verifyGeneratedTestCerts
           --no-configuration-cache ${{ inputs.gradle-args }}
 
@@ -704,7 +707,7 @@ jobs:
 
       - name: Publish Apple targets to Maven Local
         run: >-
-          ./gradlew --no-configuration-cache ${{ inputs.gradle-args }}
+          .github/scripts/gradle-retry.sh --no-configuration-cache ${{ inputs.gradle-args }}
           publishKotlinMultiplatformPublicationToMavenLocal
           publishIosArm64PublicationToMavenLocal
           publishIosSimulatorArm64PublicationToMavenLocal
