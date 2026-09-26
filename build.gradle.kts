@@ -359,6 +359,15 @@ linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
     // linkerOpts.linux, so both still propagate to the final link.
 }
 
+// io_uring ring setup: one source, src/linuxIoUringShared, also compiled by :socket-udp. Each module
+// takes its own copy in its own package, because two klibs declaring the same internal name cannot
+// link into one binary.
+val generateIoUringSetup by tasks.registering(Sync::class) {
+    from(file("src/linuxIoUringShared"))
+    into(layout.buildDirectory.dir("generated/ioUringSetup/kotlin"))
+    filter { line -> if (line.startsWith("package ")) "package com.ditchoom.socket" else line }
+}
+
 kotlin {
     // Ensure consistent JDK version across all developer machines and CI
     jvmToolchain(21)
@@ -566,8 +575,7 @@ kotlin {
         if (linuxTargets) {
             val linuxMain by getting {
                 kotlin.srcDir(posixNativeImplDir)
-                // io_uring ring setup, shared with :socket-udp's ring so the two cannot drift.
-                kotlin.srcDir(file("src/linuxIoUringShared/kotlin"))
+                kotlin.srcDir(generateIoUringSetup)
                 dependencies {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }

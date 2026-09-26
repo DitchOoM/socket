@@ -1,7 +1,5 @@
 package com.ditchoom.socket.udp
 
-import com.ditchoom.socket.iouring.RingSetup
-import com.ditchoom.socket.iouring.setUpIoUring
 import com.ditchoom.socket.udp.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*

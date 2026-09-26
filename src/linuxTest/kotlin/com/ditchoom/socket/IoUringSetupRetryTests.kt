@@ -1,10 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.iouring.ENOMEM_SETUP_PASSES
-import com.ditchoom.socket.iouring.IO_URING_SETUP_LADDER
-import com.ditchoom.socket.iouring.RefusedSetup
-import com.ditchoom.socket.iouring.RingSetup
-import com.ditchoom.socket.iouring.setUpIoUring
 import com.ditchoom.socket.linux.io_uring_prep_nop
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
