@@ -20,6 +20,7 @@ class WebTransportFailureTests {
             is WebTransportFailure.ConnectRejected -> "connect-rejected"
             WebTransportFailure.DatagramsNotEnabled -> "datagrams-not-enabled"
             is WebTransportFailure.StreamAborted -> "stream-aborted"
+            WebTransportFailure.StreamAbortedWithoutCode -> "stream-aborted-without-code"
             is WebTransportFailure.TlsHandshake -> "tls-handshake"
             is WebTransportFailure.SessionError -> "session-error"
         }
@@ -30,7 +31,8 @@ class WebTransportFailureTests {
             WebTransportFailure.PeerDoesNotSupport,
             WebTransportFailure.ConnectRejected(status = 401),
             WebTransportFailure.DatagramsNotEnabled,
-            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)),
+            WebTransportFailure.StreamAborted(errorCode = 7u),
+            WebTransportFailure.StreamAbortedWithoutCode,
             WebTransportFailure.TlsHandshake(badCertificate = true, detail = "untrusted"),
             WebTransportFailure.SessionError(detail = "dropped"),
         )
@@ -44,13 +46,10 @@ class WebTransportFailureTests {
     @Test
     fun describe_isStableAndRenderedFromTypedFields() {
         assertEquals("WebTransport session was rejected with status 401", WebTransportFailure.ConnectRejected(401).describe())
-        assertEquals(
-            "WebTransport stream aborted by peer (code 7)",
-            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)).describe(),
-        )
+        assertEquals("WebTransport stream aborted by peer (code 7)", WebTransportFailure.StreamAborted(7u).describe())
         assertEquals(
             "WebTransport stream aborted by peer (code not reported by the platform)",
-            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Unreported).describe(),
+            WebTransportFailure.StreamAbortedWithoutCode.describe(),
         )
         assertTrue(WebTransportFailure.TlsHandshake(badCertificate = true, detail = "untrusted").describe().contains("certificate"))
         assertTrue(WebTransportFailure.TlsHandshake(badCertificate = false, detail = "alert").describe().contains("handshake"))
@@ -60,11 +59,19 @@ class WebTransportFailureTests {
     fun dataVariants_areStructurallyDeterministic() {
         assertEquals(WebTransportFailure.ConnectRejected(401), WebTransportFailure.ConnectRejected(401))
         assertNotEquals(WebTransportFailure.ConnectRejected(401), WebTransportFailure.ConnectRejected(404))
-        val seven = WebTransportStreamAbortCode.Reported(7u)
-        assertEquals(WebTransportFailure.StreamAborted(seven), WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)))
-        assertNotEquals(WebTransportFailure.StreamAborted(seven), WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Unreported))
+        assertEquals(WebTransportFailure.StreamAborted(7u), WebTransportFailure.StreamAborted(7u))
         // typed fields are first-class
-        assertEquals(seven, WebTransportFailure.StreamAborted(seven).code)
+        assertEquals(7u, WebTransportFailure.StreamAborted(7u).errorCode)
         assertEquals(true, WebTransportFailure.TlsHandshake(badCertificate = true, detail = "x").badCertificate)
+    }
+
+    @Test
+    fun bothStreamAbortExceptions_areCaughtAsOneType_andCarryTheirFailure() {
+        val aborts: List<WebTransportStreamAbortException> =
+            listOf(WebTransportStreamException(7u), WebTransportStreamAbortedWithoutCodeException())
+        assertEquals(
+            listOf(WebTransportFailure.StreamAborted(7u), WebTransportFailure.StreamAbortedWithoutCode),
+            aborts.map { it.failure },
+        )
     }
 }

@@ -177,6 +177,7 @@ private fun mapEstablishmentError(
         is WebTransportFailure.ConnectRejected,
         WebTransportFailure.DatagramsNotEnabled,
         is WebTransportFailure.StreamAborted,
+        WebTransportFailure.StreamAbortedWithoutCode,
         is WebTransportFailure.SessionError,
         ->
             SocketConnectionException.Other(
@@ -192,7 +193,12 @@ private fun mapStreamError(t: Throwable): Throwable =
         is SocketException -> t // already unified
         is WebTransportStreamException ->
             SocketClosedException.ConnectionReset(
-                t.failure.describe(),
+                "WebTransport stream reset by peer (code ${t.errorCode})",
+                cause = t,
+            )
+        is WebTransportStreamAbortedWithoutCodeException ->
+            SocketClosedException.ConnectionReset(
+                "WebTransport stream reset by peer (code not reported by the platform)",
                 cause = t,
             )
         is WebTransportException ->

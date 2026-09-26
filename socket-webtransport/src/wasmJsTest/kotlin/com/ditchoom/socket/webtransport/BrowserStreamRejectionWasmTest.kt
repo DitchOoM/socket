@@ -27,28 +27,28 @@ class BrowserStreamRejectionWasmTest {
     fun write_stopSendingWithCode_isReportedStreamAbort() =
         onEventLoop {
             val e = assertFailsWith<WebTransportStreamException> { writeRejectedWith(stopSendingError(487)) }
-            assertEquals(WebTransportStreamAbortCode.Reported(487u), e.code)
+            assertEquals(487u, e.errorCode)
         }
 
     @Test
-    fun write_chromeCodelessRemoteAbort_isUnreportedStreamAbort() =
+    fun write_chromeCodelessRemoteAbort_isStreamAbortWithoutCode() =
         onEventLoop {
-            val e = assertFailsWith<WebTransportStreamException> { writeRejectedWith(chromeRemoteAbort()) }
-            assertEquals(WebTransportStreamAbortCode.Unreported, e.code)
+            val e = assertFailsWith<WebTransportStreamAbortedWithoutCodeException> { writeRejectedWith(chromeRemoteAbort()) }
+            assertEquals(WebTransportFailure.StreamAbortedWithoutCode, e.failure)
         }
 
     @Test
     fun write_sessionClosed_isNotAStreamAbort() =
         onEventLoop {
             val thrown = runCatching { writeRejectedWith(sessionClosedError()) }.exceptionOrNull()
-            assertFalse(thrown is WebTransportStreamException, "a session close is not a stream abort: $thrown")
+            assertFalse(thrown is WebTransportStreamAbortException, "a session close is not a stream abort: $thrown")
         }
 
     @Test
     fun write_localAbort_isNotAStreamAbort() =
         onEventLoop {
             val thrown = runCatching { writeRejectedWith(localAbort()) }.exceptionOrNull()
-            assertFalse(thrown is WebTransportStreamException, "a local abort is not a peer abort: $thrown")
+            assertFalse(thrown is WebTransportStreamAbortException, "a local abort is not a peer abort: $thrown")
         }
 
     @Test

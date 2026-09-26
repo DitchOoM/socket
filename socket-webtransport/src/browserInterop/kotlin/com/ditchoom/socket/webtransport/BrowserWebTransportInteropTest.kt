@@ -76,30 +76,30 @@ class BrowserWebTransportInteropTest {
             if (base.isEmpty()) return@browserTest // no interop server configured → skip
             // The `/reset` route makes the server abort both directions of the stream with 0x1e7 (kept in
             // sync with BrowserInteropServer.BROWSER_RESET_CODE). The browser must surface it as the SAME
-            // neutral WebTransportStreamException the native backends raise (cross-backend parity).
+            // neutral stream-abort exception the native backends raise (cross-backend parity).
             //
             // W3C WebTransport §7.4 errors the writable with a WebTransportError whose streamErrorCode is
-            // the STOP_SENDING code, so a conforming browser reports Reported(0x1e7). Chrome does not
-            // always: when the stream's data pipe closes before the STOP_SENDING notification is
-            // dispatched (blink OutgoingStream::HandlePipeClosed), it errors the writable with a
-            // code-less NetworkError and drops the notification — Unreported. Any other outcome fails.
+            // the STOP_SENDING code, so a conforming browser raises WebTransportStreamException(0x1e7).
+            // Chrome does not always: when the stream's data pipe closes before the STOP_SENDING
+            // notification is dispatched (blink OutgoingStream::HandlePipeClosed), it errors the writable
+            // with a code-less NetworkError and drops the notification — the WithoutCode variant.
             val session = webTransportSupport().connect("${base}reset", pinnedOptions())
             try {
                 withTimeout(5.seconds) {
                     val stream = session.openBidiStream()
                     stream.write("hello".toReadBuffer(Charset.UTF8))
-                    var code: WebTransportStreamAbortCode? = null
-                    while (code == null) {
+                    var abort: WebTransportStreamAbortException? = null
+                    while (abort == null) {
                         try {
                             stream.write("x".toReadBuffer(Charset.UTF8))
                             delay(25)
-                        } catch (e: WebTransportStreamException) {
-                            code = e.code
+                        } catch (e: WebTransportStreamAbortException) {
+                            abort = e
                         }
                     }
-                    when (code) {
-                        is WebTransportStreamAbortCode.Reported -> assertEquals(0x1e7u, code.value)
-                        WebTransportStreamAbortCode.Unreported -> Unit
+                    when (abort) {
+                        is WebTransportStreamException -> assertEquals(0x1e7u, abort.errorCode)
+                        is WebTransportStreamAbortedWithoutCodeException -> Unit
                     }
                     // The peer's RESET_STREAM ends the read side as a reset, never as a clean end.
                     assertEquals(ReadResult.Reset, stream.read())

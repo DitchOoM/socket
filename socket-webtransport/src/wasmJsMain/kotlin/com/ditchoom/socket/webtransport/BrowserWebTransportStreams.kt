@@ -82,8 +82,8 @@ private fun classifyStreamRejection(e: Throwable): BrowserStreamRejection {
     val reason = (e as? WebTransportJsRejection)?.value ?: return BrowserStreamRejection.NotPeerAbort
     return when {
         jsHasStreamErrorCode(reason) ->
-            BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Reported(jsStreamErrorCode(reason).toLong().toUInt()))
-        jsIsNetworkErrorDomException(reason) -> BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Unreported)
+            BrowserStreamRejection.PeerAborted(jsStreamErrorCode(reason).toLong().toUInt())
+        jsIsNetworkErrorDomException(reason) -> BrowserStreamRejection.PeerAbortedWithoutCode
         else -> BrowserStreamRejection.NotPeerAbort
     }
 }
@@ -99,7 +99,7 @@ private suspend fun readChunk(
             throw t
         } catch (e: Throwable) {
             return when (classifyStreamRejection(e)) {
-                is BrowserStreamRejection.PeerAborted -> ReadResult.Reset
+                is BrowserStreamRejection.PeerAborted, BrowserStreamRejection.PeerAbortedWithoutCode -> ReadResult.Reset
                 BrowserStreamRejection.NotPeerAbort -> ReadResult.End
             }
         }
@@ -121,7 +121,8 @@ private suspend fun writeChunk(
         throw t
     } catch (e: Throwable) {
         when (val rejection = classifyStreamRejection(e)) {
-            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.code, e)
+            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.errorCode, e)
+            BrowserStreamRejection.PeerAbortedWithoutCode -> throw WebTransportStreamAbortedWithoutCodeException(e)
             BrowserStreamRejection.NotPeerAbort -> throw e
         }
     }

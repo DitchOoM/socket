@@ -26,10 +26,10 @@ private fun classifyStreamRejection(e: Throwable): BrowserStreamRejection {
     if (reason == null) return BrowserStreamRejection.NotPeerAbort
     val code = reason.streamErrorCode
     if (reason.source == "stream" && jsTypeOf(code) == "number") {
-        return BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Reported(code.unsafeCast<Double>().toLong().toUInt()))
+        return BrowserStreamRejection.PeerAborted(code.unsafeCast<Double>().toLong().toUInt())
     }
     if (isNetworkErrorDomException(reason)) {
-        return BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Unreported)
+        return BrowserStreamRejection.PeerAbortedWithoutCode
     }
     return BrowserStreamRejection.NotPeerAbort
 }
@@ -62,7 +62,7 @@ private suspend fun readChunk(
             // A peer RESET_STREAM → the neutral ReadResult.Reset (matching the native backend); any other
             // rejection means the stream is done → End.
             return when (classifyStreamRejection(e)) {
-                is BrowserStreamRejection.PeerAborted -> ReadResult.Reset
+                is BrowserStreamRejection.PeerAborted, BrowserStreamRejection.PeerAbortedWithoutCode -> ReadResult.Reset
                 BrowserStreamRejection.NotPeerAbort -> ReadResult.End
             }
         }
@@ -86,7 +86,8 @@ private suspend fun writeChunk(
         // A peer STOP_SENDING → the neutral stream-scoped exception (the native backend's
         // QuicStreamException analog).
         when (val rejection = classifyStreamRejection(e)) {
-            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.code, e)
+            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.errorCode, e)
+            BrowserStreamRejection.PeerAbortedWithoutCode -> throw WebTransportStreamAbortedWithoutCodeException(e)
             BrowserStreamRejection.NotPeerAbort -> throw e
         }
     }
