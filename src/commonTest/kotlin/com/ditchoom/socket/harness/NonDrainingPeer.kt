@@ -109,10 +109,16 @@ class NonDrainingPeer private constructor(
  *    [CompletedWithoutBackpressure].
  */
 sealed interface WriteOutcome {
-    /** A `write` terminated by throwing [error] after [elapsed] (an enforced `Bounded` deadline). */
+    /**
+     * A `write` terminated by throwing [error] after [elapsed] (an enforced `Bounded` deadline), having
+     * written [bytesBefore] bytes; the write that threw had been blocked for [blockedFor], the time since
+     * the last write that returned.
+     */
     data class Threw(
         val error: Throwable,
         val elapsed: Duration,
+        val bytesBefore: Long,
+        val blockedFor: Duration,
     ) : WriteOutcome
 
     /**
@@ -158,9 +164,11 @@ suspend fun ClientSocket.writeOutcome(
     // Detached scope: on a suspending platform the write stays parked past the watchdog; we abandon it
     // here and it unwinds when the socket closes in the test's finally / NonDrainingPeer.close().
     val writeScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    // Written only by the write coroutine and read after it completes (join orders the two).
+    var total = 0L
+    var lastReturn = mark
     val write =
         writeScope.async {
-            var total = 0L
             var zeroProgress = 0
             while (total < maxBytes) {
                 // Rewind to re-present the full chunk. Use position(0) — NOT resetForRead(), which
@@ -168,6 +176,7 @@ suspend fun ClientSocket.writeOutcome(
                 chunk.position(0)
                 val n = write(chunk, deadline).count
                 total += n
+                lastReturn = TimeSource.Monotonic.markNow()
                 // Guard against a spin if a platform's write reports 0 bytes without blocking or
                 // throwing — treat a run of no-progress writes as "not back-pressuring" and stop.
                 if (n <= 0) {
@@ -185,7 +194,7 @@ suspend fun ClientSocket.writeOutcome(
         } else {
             when (val error = write.getCompletionExceptionOrNull()) {
                 null -> WriteOutcome.CompletedWithoutBackpressure(write.getCompleted(), mark.elapsedNow())
-                else -> WriteOutcome.Threw(error, mark.elapsedNow())
+                else -> WriteOutcome.Threw(error, mark.elapsedNow(), total, lastReturn.elapsedNow())
             }
         }
     writeScope.cancel()

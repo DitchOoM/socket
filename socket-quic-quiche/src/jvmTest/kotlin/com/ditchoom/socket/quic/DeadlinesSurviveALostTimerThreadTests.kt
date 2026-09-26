@@ -4,12 +4,16 @@ import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.junit.Assume.assumeTrue
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
@@ -44,9 +48,13 @@ import kotlin.time.Duration.Companion.seconds
  * so the others cannot pass by the adversary doing nothing. Those drive a real quiche connect at a UDP
  * socket that never answers, which only a deadline can end, and require that deadline to end it, typed.
  *
- * The library's own timer thread is made unstartable for real: [UnstartableThreads] asks for a stack no
- * platform reserves, so `Thread.start` throws the same `OutOfMemoryError` exhaustion does, and a connect
- * or bind must refuse with [DeadlineTimerUnavailableException] instead of opening anything.
+ * The library's own timer thread is made unstartable through [DeadlineTimer]'s thread factory
+ * ([UnstartableThreads]): it throws the `OutOfMemoryError` the JVM throws when it cannot create a native
+ * thread, inside the executor's worker start, so [DeadlineTimer.start] catches exactly what exhaustion
+ * throws and a connect or bind must refuse with [DeadlineTimerUnavailableException] instead of opening
+ * anything. That works on every OS. [ThreadStartFailure.StackNoPlatformReserves] makes the JVM's own
+ * thread creation fail instead, which proves the injected failure is the real one's shape; Windows
+ * starts that thread anyway, so there it is a recorded skip.
  *
  * Each body runs under [failIfWedged], a JVM-thread bound, because a coroutine bound would be one of the
  * timers that stopped.
@@ -131,10 +139,30 @@ class DeadlinesSurviveALostTimerThreadTests {
         }
 
     @Test
-    fun aTimerWhoseThreadFailedToStartStartsOnTheNextAttempt() {
-        val threads = UnstartableThreads(failures = 1)
+    fun aTimerWhoseThreadFailedToStartStartsOnTheNextAttempt() = failToStartThenStart(ThreadStartFailure.NativeThreadRefused)
+
+    @Test
+    fun aTimerWhoseThreadTheJvmCouldNotCreateStartsOnTheNextAttempt() {
+        if (isWindows()) {
+            recordSkip(
+                DeadlinesSurviveALostTimerThreadTests::class,
+                SkipReason.HostBehaviourDiffers(
+                    "Windows starts a thread whose requested stack no platform can reserve, so Thread.start " +
+                        "does not fail; the injected-failure tests cover DeadlineTimer's handling here",
+                ),
+                SkipGate.HostCannotProvideIt("a JVM thread start that fails on an unreservable stack"),
+            )
+            assumeTrue("Windows starts a thread with an unreservable stack", false)
+        }
+        failToStartThenStart(ThreadStartFailure.StackNoPlatformReserves)
+    }
+
+    /** One start of a [DeadlineTimer]'s thread fails with [failure]; the next [DeadlineTimer.start] must start it. */
+    private fun failToStartThenStart(failure: ThreadStartFailure) {
+        val threads = UnstartableThreads(failure, failures = 1)
         val timer = DeadlineTimer(threads)
-        assertFailsWith<DeadlineTimerUnavailableException> { timer.start() }
+        val refused = assertFailsWith<DeadlineTimerUnavailableException> { timer.start() }
+        assertIs<OutOfMemoryError>(refused.cause, "the refusal must carry what the thread start threw")
         timer.start()
         val fired = CountDownLatch(1)
         timer.schedule(SHORT.inWholeMilliseconds) { fired.countDown() }
@@ -143,7 +171,7 @@ class DeadlinesSurviveALostTimerThreadTests {
             fired.await(WATCHDOG.inWholeMilliseconds, TimeUnit.MILLISECONDS),
             "a timer whose first thread start failed must not be left without a thread for good",
         )
-        assertEquals(2, threads.made.get(), "the second start must be a new thread, and the only other one")
+        assertEquals(2, threads.attempts.get(), "the second start must be a new thread, and the only other one")
     }
 
     @Test
@@ -194,6 +222,8 @@ class DeadlinesSurviveALostTimerThreadTests {
             networkMonitor = NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable),
         )
 
+    private fun isWindows(): Boolean = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+
     private fun DatagramChannel.localPort(): Int = (localAddress as InetSocketAddress).port
 
     private fun certPath(name: String): String {
@@ -228,28 +258,49 @@ class DeadlinesSurviveALostTimerThreadTests {
         override fun close() = giveBack.countDown()
     }
 
-    /**
-     * Threads the JVM cannot start, [failures] times: each asks for a stack no platform can reserve, so
-     * the native thread creation fails exactly as it does in an exhausted process — `OutOfMemoryError:
-     * unable to create native thread` out of `Thread.start`.
-     */
+    /** How an [UnstartableThreads] thread fails to start. */
+    private sealed interface ThreadStartFailure {
+        /**
+         * The factory throws what the JVM throws when the OS refuses a native thread. It is thrown inside
+         * the executor's worker start, which backs the worker out as it does for a failed `Thread.start`.
+         * Works on every OS.
+         */
+        data object NativeThreadRefused : ThreadStartFailure
+
+        /**
+         * The thread asks for a stack no platform reserves, so the JVM's own native thread creation fails
+         * in `Thread.start`. POSIX refuses it; Windows clamps the size and starts the thread.
+         */
+        data object StackNoPlatformReserves : ThreadStartFailure
+    }
+
+    /** Threads that fail to start as [failure] says for the first [failures] attempts, then start. */
     private class UnstartableThreads(
+        private val failure: ThreadStartFailure = ThreadStartFailure.NativeThreadRefused,
         private val failures: Int = Int.MAX_VALUE,
     ) : ThreadFactory {
-        val made = AtomicInteger()
+        val attempts = AtomicInteger()
 
         override fun newThread(task: Runnable): Thread =
-            if (made.incrementAndGet() <= failures) {
-                Thread(null, task, "quic-deadline-timer (unstartable)", UNRESERVABLE_STACK_BYTES).apply { isDaemon = true }
-            } else {
+            if (attempts.incrementAndGet() > failures) {
                 Thread(task, "quic-deadline-timer (test)").apply { isDaemon = true }
+            } else {
+                when (failure) {
+                    ThreadStartFailure.NativeThreadRefused -> throw OutOfMemoryError(NATIVE_THREAD_REFUSED)
+                    ThreadStartFailure.StackNoPlatformReserves ->
+                        Thread(null, task, "quic-deadline-timer (unstartable)", UNRESERVABLE_STACK_BYTES).apply { isDaemon = true }
+                }
             }
     }
 
     private companion object {
         const val LOOPBACK = "127.0.0.1"
 
-        /** An exbibyte: more address space than any platform will reserve for one thread's stack. */
+        /** HotSpot's message when the OS refuses a native thread. */
+        const val NATIVE_THREAD_REFUSED =
+            "unable to create native thread: possibly out of memory or process/resource limits reached"
+
+        /** An exbibyte: more address space than any POSIX platform will reserve for one thread's stack. */
         const val UNRESERVABLE_STACK_BYTES = 1L shl 60
 
         /** The deadline under test: short, so a working one ends each case in well under a second. */
