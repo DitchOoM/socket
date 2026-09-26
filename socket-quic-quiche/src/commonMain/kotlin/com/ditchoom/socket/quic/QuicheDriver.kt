@@ -3041,8 +3041,10 @@ class QuicheDriver(
                 QuichePathEventType.New,
                 QuichePathEventType.PeerMigrated,
                 QuichePathEventType.ReusedSourceConnectionId,
+                QuichePathEventType.PmtuUpdated,
                 -> {
                     // Server-side / informational events — no client action for active migration.
+                    // quiche sizes its own packets by the PMTU it reports.
                 }
             }
         }

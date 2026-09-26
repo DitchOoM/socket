@@ -788,6 +788,15 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPathEventNext)(
             *(socklen_t *)(uintptr_t)local_len_out = 0;
             *(socklen_t *)(uintptr_t)peer_len_out = 0;
             break;
+        case 6: {
+            /* PmtuUpdated: the new PMTU is not surfaced; quiche already sizes its own sends by it. */
+            size_t pmtu;
+            quiche_path_event_pmtu_updated(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out,
+                &pmtu);
+            break;
+        }
     }
     quiche_path_event_free(ev);
     return (jint)t;

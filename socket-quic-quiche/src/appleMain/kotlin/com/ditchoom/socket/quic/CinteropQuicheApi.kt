@@ -93,6 +93,7 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_failed_validation
 import com.ditchoom.socket.quic.quiche.quiche_path_event_free
 import com.ditchoom.socket.quic.quiche.quiche_path_event_new
 import com.ditchoom.socket.quic.quiche.quiche_path_event_peer_migrated
+import com.ditchoom.socket.quic.quiche.quiche_path_event_pmtu_updated
 import com.ditchoom.socket.quic.quiche.quiche_path_event_type
 import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_path_stats
@@ -900,6 +901,18 @@ internal object CinteropQuicheApi : QuicheApi {
                     peerOut.toCPointer()!!,
                     peerLenOut.toCPointer()!!,
                 )
+            6 ->
+                memScoped {
+                    // PmtuUpdated: the new PMTU is not surfaced; quiche already sizes its own sends by it.
+                    quiche_path_event_pmtu_updated(
+                        ev,
+                        localOut.toCPointer()!!,
+                        localLenOut.toCPointer()!!,
+                        peerOut.toCPointer()!!,
+                        peerLenOut.toCPointer()!!,
+                        alloc<ULongVar>().ptr, // size_t *pmtu
+                    )
+                }
         }
         quiche_path_event_free(ev)
         return QuichePathEventType.entries[t]

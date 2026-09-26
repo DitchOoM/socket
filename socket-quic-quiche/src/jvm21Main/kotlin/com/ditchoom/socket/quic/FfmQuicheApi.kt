@@ -364,6 +364,9 @@ class FfmQuicheApi private constructor(
     private val hPathEventPeerMigrated by lazy {
         downcall("quiche_path_event_peer_migrated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
     }
+    private val hPathEventPmtuUpdated by lazy {
+        downcall("quiche_path_event_pmtu_updated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
     private val hPathEventFree by lazy {
         downcall("quiche_path_event_free", FunctionDescriptor.ofVoid(ADDRESS))
     }
@@ -1094,6 +1097,14 @@ class FfmQuicheApi private constructor(
                 seg(peerLenOut).reinterpret(JAVA_INT.byteSize()).set(JAVA_INT, 0, 0)
             }
             5 -> hPathEventPeerMigrated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            6 ->
+                Arena.ofConfined().use { arena ->
+                    // PmtuUpdated: the new PMTU is not surfaced; quiche already sizes its own sends by it.
+                    val pmtuOut = arena.allocate(JAVA_LONG) // size_t *pmtu
+                    // A statement, not the lambda's value: a void downcall must not be invoked as returning Object.
+                    hPathEventPmtuUpdated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut), pmtuOut)
+                    Unit
+                }
         }
         hPathEventFree.invokeExact(ev)
         return QuichePathEventType.entries[type]
