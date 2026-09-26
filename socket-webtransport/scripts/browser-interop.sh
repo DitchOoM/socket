@@ -19,8 +19,10 @@ WORK="$ROOT/socket-webtransport/build/wt-interop"
 CFG="$WORK/config.properties"
 STOP="$WORK/stop"
 SERVER_LOG="$WORK/server.log"
+SESSIONS="$WORK/sessions.log"
 mkdir -p "$WORK"
-rm -f "$CFG" "$STOP"
+rm -f "$CFG" "$STOP" "$SESSIONS"
+touch "$SESSIONS"
 
 echo "[interop] starting external WebTransport server (--no-daemon)..."
 ./gradlew --no-daemon :socket-webtransport:jvmTest \
@@ -28,6 +30,7 @@ echo "[interop] starting external WebTransport server (--no-daemon)..."
   -Dwt.interop.server=true \
   -Dwt.interop.configFile="$CFG" \
   -Dwt.interop.stopFile="$STOP" \
+  -Dwt.interop.sessionLog="$SESSIONS" \
   --rerun-tasks --console=plain >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -49,10 +52,24 @@ done
 [ -f "$CFG" ] || { echo "[interop] server never wrote $CFG; log tail:"; tail -30 "$SERVER_LOG"; exit 1; }
 echo "[interop] server ready: $(tr '\n' ' ' <"$CFG")"
 
-echo "[interop] running jsBrowserTest (headless Chrome via Karma)..."
-./gradlew -PwtBrowserInterop :socket-webtransport:jsBrowserTest --rerun-tasks --console=plain
-echo "[interop] jsBrowserTest PASSED"
+# A Karma run whose tests skipped (no Chrome, a config the test could not read) reports green, so each
+# browser phase must also have opened, on the server, one session on every path the interop tests dial.
+# The server appends one WT_SESSION_ACCEPTED line per session to $SESSIONS.
+EXPECTED_PATHS="/a /b /reset /wt"
 
-echo "[interop] running wasmJsBrowserTest (headless Chrome via Karma)..."
-./gradlew -PwtBrowserInterop :socket-webtransport:wasmJsBrowserTest --rerun-tasks --console=plain
-echo "[interop] wasmJsBrowserTest PASSED"
+run_browser_phase() {
+  local task="$1" seen=0 paths
+  seen=$(wc -l <"$SESSIONS" | tr -d ' ')
+  echo "[interop] running $task (headless Chrome via Karma)..."
+  ./gradlew -PwtBrowserInterop ":socket-webtransport:$task" --rerun-tasks --console=plain
+  paths=$(tail -n "+$((seen + 1))" "$SESSIONS" | sed -n 's/.* path=\([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')
+  if [ "$paths" != "$EXPECTED_PATHS" ]; then
+    echo "[interop] $task passed, but the server accepted sessions on [$paths], not [$EXPECTED_PATHS]; server log tail:"
+    tail -30 "$SERVER_LOG"
+    exit 1
+  fi
+  echo "[interop] $task PASSED (sessions on $paths)"
+}
+
+run_browser_phase jsBrowserTest
+run_browser_phase wasmJsBrowserTest
