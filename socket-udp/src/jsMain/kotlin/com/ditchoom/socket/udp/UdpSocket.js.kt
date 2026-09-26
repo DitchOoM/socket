@@ -41,8 +41,9 @@ actual object UdpSocket {
         // own Node Buffer (copied out in NodeDatagramChannelCore), so there is no staging buffer to size
         // or allocate from an injected factory.
         ensureNode()
+        val host = localHost ?: WILDCARD_V4
         return createDgramSocket(if (isIpv6(localHost)) UDP6 else UDP4).closedIfSetupFails {
-            awaitBind(this, localPort, localHost)
+            awaitBind(this, localPort, localHost) { UdpBindException(host, localPort, nodeBindError(it)) }
             // Addressed by construction: the wrapper reads socket.address() (non-null once bound) eagerly.
             AddressedNodeDatagramChannel(this)
         }
@@ -79,7 +80,7 @@ actual object UdpSocket {
         // reuseAddr:true is the multicast-listener arrangement (several receivers share the group port).
         // Bind the wildcard of the family so joined groups on any interface are received.
         return createDgramMulticastSocket(if (v6) UDP6 else UDP4).closedIfSetupFails {
-            awaitBind(this, port, null)
+            awaitBind(this, port, null) { UdpBindException(if (v6) WILDCARD_V6 else WILDCARD_V4, port, nodeBindError(it)) }
             val base = AddressedNodeDatagramChannel(this)
             MulticastNodeDatagramChannel(this, base, ipv6 = v6)
         }
@@ -95,6 +96,10 @@ actual object UdpSocket {
 
     private const val UDP4 = "udp4"
     private const val UDP6 = "udp6"
+
+    // What `dgram` binds when it is given no address.
+    private const val WILDCARD_V4 = "0.0.0.0"
+    private const val WILDCARD_V6 = "::"
 
     private fun isIpv6(host: String?): Boolean = host != null && host.contains(':')
 
@@ -163,9 +168,9 @@ private suspend fun awaitBind(
     socket: DgramSocket,
     port: Int,
     address: String?,
-    // The bind is the first step of `connect` as well as the whole of `bind`, and the two report a
-    // refusal differently: `connect` types it, `bind` keeps its own exception.
-    refusal: (error: Any?) -> Throwable = { UdpBindException(it.toString()) },
+    // The bind is the first step of `connect` as well as the whole of `bind`, and each reports a
+    // refusal in its own sealed type.
+    refusal: (error: Any?) -> Throwable,
 ) = suspendCancellableCoroutine { cont ->
     socket.on("error") { error ->
         if (!cont.isCompleted) cont.resumeWithException(refusal(error))
@@ -217,7 +222,20 @@ internal class NodeConnectFailure(
     message: String,
 ) : RuntimeException(message)
 
-/** A `dgram` bind fault surfaced on the socket's `error` event. */
-internal class UdpBindException(
+/**
+ * Classify a `dgram` bind fault onto [UdpBindError] by the errno *name* Node reports — the same table
+ * as [bindErrnoToError] on the POSIX backends, by name rather than number.
+ */
+private fun nodeBindError(error: Any?): UdpBindError =
+    when (error.asDynamic().code as? String) {
+        "EADDRINUSE" -> UdpBindError.AddressInUse(ERRNO_NOT_SURFACED)
+        "EADDRNOTAVAIL" -> UdpBindError.LocalAddressUnavailable(ERRNO_NOT_SURFACED)
+        "EACCES", "EPERM" -> UdpBindError.NotPermitted(ERRNO_NOT_SURFACED)
+        "EMFILE", "ENFILE", "ENOBUFS", "ENOMEM" -> UdpBindError.SocketUnavailable(ERRNO_NOT_SURFACED)
+        else -> UdpBindError.Transport(NodeBindFailure(error.toString()))
+    }
+
+/** Carrier for a `dgram` bind error that is not one of the recognised POSIX conditions. */
+internal class NodeBindFailure(
     message: String,
 ) : RuntimeException(message)

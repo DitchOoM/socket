@@ -38,6 +38,7 @@ import platform.posix.SO_REUSEPORT
 import platform.posix.SO_SNDBUF
 import platform.posix.bind
 import platform.posix.close
+import platform.posix.errno
 import platform.posix.getsockname
 import platform.posix.setsockopt
 import platform.posix.sockaddr
@@ -77,26 +78,53 @@ actual object UdpSocket {
         // resolves a name like "localhost" to ::1 by preference on Darwin, so an IPv4-only server would
         // silently never receive its packets (the handshake idle-times-out) — this is what makes a quiche
         // server reachable from the NW client either way. A specific host keeps its address family.
-        val wildcard = localHost == null
-        // A dual-stack wildcard does NOT own the IPv4 half of its port on Darwin — see
-        // [wildcardPortOwnedForIpv4]. Take the port from the IPv4 table before this socket exists.
-        val port = if (wildcard) wildcardPortOwnedForIpv4(localPort) else localPort
-        val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V6, port) as AppleSocketAddress
-        val af = if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET
-        val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
-        check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
+        if (localHost == null) {
+            return bindDualStackWildcard(localPort, receiveBufferSize, bufferFactory) { wildcardPortOwnedForIpv4(it) }
+        }
+        return bindSocket(localHost, localPort, dualStack = false, receiveBufferSize, bufferFactory)
+    }
+
+    /**
+     * The dual-stack wildcard bind, with [ipv4Port] choosing the port through the IPv4 table first —
+     * see [wildcardPortOwnedForIpv4]. A parameter so a test can hand it a port it knows is taken.
+     *
+     * The probe proves its port free for IPv4 only. `[::]:P` is still refused when `P` is held in the
+     * IPv6 table — a `::1`-bound socket, an `IPV6_V6ONLY` one — or taken between the probe's close and
+     * this bind. For an ephemeral request any port both families agree on is correct, so a collision
+     * draws again with a fresh probe, a bounded number of times; a port the caller named is refused.
+     */
+    internal suspend fun bindDualStackWildcard(
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+        ipv4Port: suspend (requestedPort: Int) -> Int,
+    ): AddressedDatagramChannel {
+        repeat(if (localPort == 0) MAX_WILDCARD_BIND_ATTEMPTS - 1 else 0) {
+            try {
+                return bindSocket(WILDCARD_V6, ipv4Port(localPort), dualStack = true, receiveBufferSize, bufferFactory)
+            } catch (e: UdpBindException) {
+                if (e.error !is UdpBindError.AddressInUse) throw e
+            }
+        }
+        return bindSocket(WILDCARD_V6, ipv4Port(localPort), dualStack = true, receiveBufferSize, bufferFactory)
+    }
+
+    private suspend fun bindSocket(
+        host: String,
+        port: Int,
+        dualStack: Boolean,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): AddressedDatagramChannel {
+        val local = AppleSocketAddressResolver.resolve(host, port) as AppleSocketAddress
+        val fd = openSocket(local)
         // No SO_REUSEADDR here: it is multicast-only (see [setReuseAddr]).
         widenSendBuffer(fd)
-        if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
+        if (dualStack) setV6Only(fd, false)
         bindTo(fd, local)
         // Fail fast BEFORE constructing the addressed channel: an AddressedDatagramChannel's
         // localAddress is non-null by construction (getsockname failure is a construct-time error).
-        val boundLocal =
-            localAddressOf(fd) ?: run {
-                close(fd)
-                error("getsockname failed for bound UDP socket")
-            }
-        return PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
+        return PosixUdpDatagramChannel(fd, boundAddressOf(fd, local), receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun connect(
@@ -166,24 +194,18 @@ actual object UdpSocket {
         bufferFactory: BufferFactory,
     ): MulticastDatagramChannel {
         val v6 = family == AddressFamily.IPv6
-        val af = if (v6) AF_INET6 else AF_INET
-        val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
-        check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
+        val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
+        val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
+        val fd = openSocket(local)
         // SO_REUSEADDR + SO_REUSEPORT: the normal arrangement so several multicast listeners can share the
         // group's well-known port on one host. A v6 multicast socket is kept v6-only for a clean join family.
         setReuseAddr(fd)
         setReusePort(fd)
         widenSendBuffer(fd)
         if (v6) setV6Only(fd, true)
-        val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
-        val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
         bindTo(fd, local)
         // Same fail-fast as bind(): the addressed base channel requires a non-null localAddress.
-        val boundLocal =
-            localAddressOf(fd) ?: run {
-                close(fd)
-                error("getsockname failed for bound UDP socket")
-            }
+        val boundLocal = boundAddressOf(fd, local)
         // The multicast channel is handed the base channel, not the descriptor: `fd` now has exactly one
         // owner, and the control plane borrows it back through the same admission the data plane passes.
         val base = PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
@@ -294,20 +316,23 @@ actual object UdpSocket {
      * The probe must come first: an `AF_INET` bind *after* a dual-stack bind on the same port is
      * refused, so probing afterwards would only report a conflict with ourselves.
      */
-    private suspend fun wildcardPortOwnedForIpv4(requestedPort: Int): Int {
+    internal suspend fun wildcardPortOwnedForIpv4(requestedPort: Int): Int {
         val probeLocal = AppleSocketAddressResolver.resolve(WILDCARD_V4, requestedPort) as AppleSocketAddress
-        val probeFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        check(probeFd >= 0) { "socket(AF_INET, SOCK_DGRAM) failed" }
-        bindTo(probeFd, probeLocal) // closes probeFd and fails loudly if the IPv4 half is taken
-        val bound =
-            localAddressOf(probeFd) ?: run {
-                close(probeFd)
-                error("getsockname failed for the IPv4 port probe")
-            }
+        val probeFd = openSocket(probeLocal)
+        bindTo(probeFd, probeLocal) // closes probeFd and fails typed if the IPv4 half is taken
+        val bound = boundAddressOf(probeFd, probeLocal)
         close(probeFd)
         return bound.port
     }
 
+    /** A datagram socket of [local]'s family, or a typed refusal carrying `socket(2)`'s errno. */
+    private fun openSocket(local: AppleSocketAddress): Int {
+        val fd = socket(if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        if (fd < 0) throw UdpBindException(local.host, local.port, bindErrnoToError())
+        return fd
+    }
+
+    /** Binds [fd] to [local]; a refusal closes [fd] and throws, typed, with the errno `bind(2)` set. */
     private fun bindTo(
         fd: Int,
         local: AppleSocketAddress,
@@ -316,11 +341,23 @@ actual object UdpSocket {
             val addr = alloc<sockaddr_storage>()
             val len = local.writeSockaddr(addr)
             if (bind(fd, addr.ptr.reinterpret(), len) != 0) {
+                val error = bindErrnoToError() // before close(), which may overwrite errno
                 close(fd)
-                error("bind to ${local.host}:${local.port} failed")
+                throw UdpBindException(local.host, local.port, error)
             }
         }
     }
+
+    /** The address [fd] is bound to; a `getsockname` failure closes [fd] and throws, typed. */
+    private fun boundAddressOf(
+        fd: Int,
+        local: AppleSocketAddress,
+    ): SocketAddress =
+        localAddressOf(fd) ?: run {
+            val error = UdpBindError.SocketUnavailable(errno)
+            close(fd)
+            throw UdpBindException(local.host, local.port, error)
+        }
 
     private fun localAddressOf(fd: Int): SocketAddress? =
         memScoped {
@@ -350,6 +387,9 @@ actual object UdpSocket {
 
     private const val WILDCARD_V4 = "0.0.0.0"
     private const val WILDCARD_V6 = "::"
+
+    /** Bounded redraw for an ephemeral wildcard bind — see [bindDualStackWildcard]. */
+    private const val MAX_WILDCARD_BIND_ATTEMPTS = 8
 
     // nw_connection_state_t values (nw_udp_helpers.h): 3=ready, 4=failed, 5=cancelled.
     private const val STATE_READY = 3

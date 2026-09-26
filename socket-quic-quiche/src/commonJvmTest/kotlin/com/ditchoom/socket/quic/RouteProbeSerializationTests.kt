@@ -12,8 +12,11 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.ERRNO_NOT_SURFACED
 import com.ditchoom.socket.udp.MAX_UDP_DATAGRAM_SIZE
 import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpConnectError
+import com.ditchoom.socket.udp.UdpConnectException
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -45,7 +49,8 @@ import kotlin.time.Duration.Companion.milliseconds
  * A probe holds its socket for microseconds and sends nothing, so the fix is not to retry the draw
  * (a second draw can collide too, at p²) but to make the collision impossible: probes run one at a
  * time, process-wide. Socket 1 is closed before socket 2 binds, so the kernel is free to hand the
- * same ephemeral port out again and nothing is in the way.
+ * same ephemeral port out again and nothing is in the way. What serialising cannot reach — another
+ * process's socket on the same `peer.host:9` — is a microsecond holder, and that collision is redrawn.
  *
  * ## Why this is measured as overlap and not as refusals
  *
@@ -179,6 +184,67 @@ class RouteProbeSerializationTests {
                 "${lost.size} of ${outcomes.size} route probes lost their draw (#547): " +
                     lost.take(3).joinToString { it.reason.describe() },
             )
+        }
+
+    /** Refuses the first [refusals] probes with [refusal], then serves. */
+    private class RefusingOpener(
+        private val refusals: Int,
+        private val refusal: () -> Exception,
+    ) : ConnectedUdpOpener {
+        var calls = 0
+
+        override suspend fun open(
+            remoteHost: String,
+            remotePort: Int,
+            localHost: String?,
+            localPort: Int,
+            receiveBufferSize: Int,
+            bufferFactory: BufferFactory,
+        ): ConnectedDatagramChannel {
+            calls++
+            if (calls <= refusals) throw refusal()
+            return CountedProbeChannel(SocketAddress.ofLiteral(remoteHost, remotePort)) {}
+        }
+    }
+
+    private fun collision() = UdpConnectException(UdpConnectError.AddressInUse(ERRNO_NOT_SURFACED))
+
+    /**
+     * A probe's 4-tuple collides only with another process's socket on `peer.host:9`, a holder that
+     * lives for microseconds, so a collided probe draws again rather than failing the open.
+     */
+    @Test
+    fun aProbeThatCollidesIsRedrawn() =
+        runBlocking {
+            val opener = RefusingOpener(refusals = 2, refusal = ::collision)
+            val source = factoryFor(UdpSocket.resolve("127.0.0.1", PEER_PORT), opener).routeSourceAddress()
+
+            assertIs<RouteSource.Resolved>(source, "two collided draws then a free one must resolve; got $source")
+            assertEquals(3, opener.calls)
+        }
+
+    /** The redraw is bounded, and the refusal it ends in carries every collision. */
+    @Test
+    fun aProbeThatCollidesOnEveryDrawIsRefusedCarryingEveryCollision() =
+        runBlocking {
+            val opener = RefusingOpener(refusals = Int.MAX_VALUE, refusal = ::collision)
+            val source = factoryFor(UdpSocket.resolve("127.0.0.1", PEER_PORT), opener).routeSourceAddress()
+
+            val refused = assertIs<RouteProbeFailure.ProbeRefused>(assertIs<RouteSource.Unresolved>(source).reason)
+            val last = assertIs<UdpConnectException>(refused.cause)
+            assertEquals(opener.calls, 1 + last.suppressed.size, "every collision must ride along")
+            assertTrue(opener.calls in 2..8, "a collision must be redrawn, a bounded number of times; made ${opener.calls} draws")
+        }
+
+    /** Every other refusal is the environment — no descriptor, a sandbox, no route — and is not redrawn. */
+    @Test
+    fun aRefusalThatIsNotACollisionIsNotRedrawn() =
+        runBlocking {
+            val opener = RefusingOpener(refusals = 1) { UdpConnectException(UdpConnectError.Unreachable(ERRNO_NOT_SURFACED)) }
+            val source = factoryFor(UdpSocket.resolve("127.0.0.1", PEER_PORT), opener).routeSourceAddress()
+
+            assertIs<RouteProbeFailure.ProbeRefused>(assertIs<RouteSource.Unresolved>(source).reason)
+            assertEquals(1, opener.calls)
         }
 
     private fun realProbesEach(): Int = (System.getenv("HUNT547_PROBES")?.toIntOrNull() ?: DEFAULT_REAL_PROBES) / PROBERS

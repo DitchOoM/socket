@@ -7,6 +7,8 @@ import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpConnectError
+import com.ditchoom.socket.udp.UdpConnectException
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -60,7 +62,8 @@ internal class UdpSocketChannelFactory(
      * the connection's life, so every later draw in the process — this connection's own migrations
      * included — contends with it.
      *
-     * **Why there is no `BindException` retry.** The collision is neither concurrent nor a race.
+     * **Why a path socket is not redrawn on `EADDRINUSE`.** The collision is neither concurrent nor a
+     * race. (The route probe is redrawn, for reasons that do not hold here — see [probeRouteSource].)
      * `udp6_bind([::]:0)` picks the port through `in6_pcblookup_local`, which skips every pcb without
      * `INP_IPV6`, and `udp6_connect` to a v4-mapped peer clears `INP_IPV6` on success — so every socket
      * already connected to that peer is invisible to the next wildcard bind, and `in_pcbconnect` then
@@ -160,8 +163,8 @@ internal class UdpSocketChannelFactory(
      * Binding the specific source address lets the kernel exclude exactly the ports already used
      * against it; with thousands of sockets connected to one peer an unnamed bind fails hundreds of
      * connects per 2000 draws and the resolved source address fails none. Skipping the bind entirely
-     * does not help — the JVM binds the unnamed address implicitly first. No retry loop is needed, and
-     * none is wanted: a retry would paper over the collision instead of not causing it.
+     * does not help — the JVM binds the unnamed address implicitly first. A path needs no retry loop,
+     * and none is wanted: a retry would paper over the collision instead of not causing it.
      *
      * **Why the bind is never the one refusing, and why the exception says otherwise.** A bind with
      * `port = 0` asks the kernel to pick, and it picks from what it can see; it answers `EADDRNOTAVAIL`
@@ -210,17 +213,41 @@ internal class UdpSocketChannelFactory(
         return routeProbeGate.withLock { probeRouteSource() }
     }
 
+    /**
+     * One probe, redrawn only when its connect collides on the 4-tuple ([UdpConnectError.AddressInUse]).
+     *
+     * The no-retry argument in [openPrimaryChannel] is about **path** sockets, whose draw is blind to
+     * the sockets this process already holds connected to [peer], so a redraw only squares the odds. A
+     * probe is different: probes are serialised process-wide and aim at [routeProbePort], disjoint from
+     * every path, so a probe's 4-tuple can only be held by *another process's* socket on the same
+     * `peer.host:routeProbePort` — a holder that lives for microseconds — and each draw is independent.
+     * A lost draw would otherwise fail the whole open. Every other refusal is the environment and is
+     * reported at once. When every draw collides, [RouteProbeFailure.ProbeRefused] carries the last
+     * collision with the earlier ones suppressed.
+     */
     private suspend fun probeRouteSource(): RouteSource {
-        val probe =
+        val collisions = mutableListOf<UdpConnectException>()
+        var probe: ConnectedDatagramChannel? = null
+        while (probe == null) {
             try {
-                openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
+                probe = openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
             } catch (cancellation: CancellationException) {
                 // Cancellation is not a route answer: swallowed into a refusal it would make a
                 // cancelled migration report a resolved-enough route and bind the wildcard.
                 throw cancellation
             } catch (refusal: Exception) {
-                return RouteSource.Unresolved(RouteProbeFailure.ProbeRefused(refusal))
+                if (refusal !is UdpConnectException || refusal.error !is UdpConnectError.AddressInUse) {
+                    collisions.forEach { refusal.addSuppressed(it) }
+                    return RouteSource.Unresolved(RouteProbeFailure.ProbeRefused(refusal))
+                }
+                collisions += refusal
+                if (collisions.size == ROUTE_PROBE_DRAWS) {
+                    val last = collisions.last()
+                    collisions.dropLast(1).forEach { last.addSuppressed(it) }
+                    return RouteSource.Unresolved(RouteProbeFailure.ProbeRefused(last))
+                }
             }
+        }
         // Read before closing, close before the real bind: the probe must never be one of the sockets
         // the path draws against.
         val local =
@@ -250,6 +277,9 @@ internal class UdpSocketChannelFactory(
 
         /** RFC 862 echo — used only when [peer] is itself on [ROUTE_PROBE_PORT]. */
         const val ROUTE_PROBE_PORT_ALT = 7
+
+        /** Bounded draws for one route probe — see [probeRouteSource]. */
+        const val ROUTE_PROBE_DRAWS = 4
 
         /**
          * Serialises every route probe in the process — see [routeSourceAddress]. Held only across
