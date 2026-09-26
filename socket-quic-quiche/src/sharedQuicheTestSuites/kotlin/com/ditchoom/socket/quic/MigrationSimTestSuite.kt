@@ -56,6 +56,36 @@ abstract class MigrationSimTestSuite {
      */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
+    /**
+     * A client that closes the moment its handshake completes — before the server's HANDSHAKE_DONE has
+     * reached it, so its handshake is not yet confirmed — still ends the server's connection.
+     *
+     * The server confirmed the handshake when the client's Finished arrived, and discarded its Handshake
+     * keys then (RFC 9001 §4.9.2), so a CONNECTION_CLOSE carried only in a Handshake packet is one it can
+     * no longer read. Without a copy the server can read, the server's side of a connection its peer has
+     * closed lives on until its idle timeout — here 120 s — and so does everything running on it.
+     */
+    @Test
+    fun aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 671_002L) {
+                    val sent = currentTime
+                    client.close()
+                    val closed =
+                        withTimeout(CLOSE_REACHES_SERVER_WITHIN) {
+                            serverDriver.state.first { it is QuicConnectionState.Closed }
+                        }
+                    assertEquals(
+                        QuicConnectionState.Closed(QuicCloseReason.Graceful),
+                        closed,
+                        "the server must end on the client's own NO_ERROR close, received " +
+                            "${currentTime - sent}ms after it was sent — not on its idle timer",
+                    )
+                }
+            }
+        }
+
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
         runTest {
@@ -2921,6 +2951,12 @@ abstract class MigrationSimTestSuite {
     }
 
     private companion object {
+        /**
+         * How long a client's close may take to end the server's connection: the 60 ms one-way path plus
+         * the server's draining period (3 × PTO), with room — and far below the sim's 120 s idle timeout.
+         */
+        val CLOSE_REACHES_SERVER_WITHIN = 5.seconds
+
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
 

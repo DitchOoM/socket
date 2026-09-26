@@ -5,12 +5,14 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
@@ -224,16 +226,29 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                                 stream.close()
                             }
                         }
+                    // Where the client block was, and what it had, if it ended without the reply.
+                    var step = "connecting"
+                    val got = StringBuilder()
+                    var unread: () -> QuicUnreadAtClose = { QuicUnreadAtClose.ConnectionOpen }
                     try {
                         val reply =
-                            withQuicConnection("127.0.0.1", port, options) {
-                                val state = (this as QuicConnection).state
-                                val stream = openStream()
-                                writeText(stream, REQUEST)
-                                stream.shutdownSend()
-                                withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
-                                delay(SLOW_READER)
-                                stream.readToEnd()
+                            try {
+                                withQuicConnection("127.0.0.1", port, options) {
+                                    val connection = this as QuicConnection
+                                    unread = { connection.unreadAtClose.value }
+                                    val stream = openStream()
+                                    step = "writing the request"
+                                    writeText(stream, REQUEST)
+                                    stream.shutdownSend()
+                                    step = "waiting for the server's close"
+                                    withTimeout(closeBound) { connection.state.first { it is QuicConnectionState.Closed } }
+                                    step = "waiting before reading"
+                                    delay(SLOW_READER)
+                                    step = "reading"
+                                    stream.readToEnd(got)
+                                }
+                            } catch (e: QuicCloseException) {
+                                fail("the client block ended $step with ${got.length} chars read, unread-at-close ${unread()}: $e")
                             }
                         assertEquals(REQUEST.repeat(REPLY_REPEAT).length, reply.length, "the reply must arrive in full")
                         assertEquals(REQUEST.repeat(REPLY_REPEAT), reply)
@@ -256,15 +271,40 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                     // The request fits one packet: the stream reaching the handler means all of it arrived.
                     val accepted = CompletableDeferred<Unit>()
                     val received = CompletableDeferred<String>()
+                    // How the handler ended when it did not read the request: the step it was on, and what
+                    // the connection said then — the difference between a close that never arrived and one
+                    // that cancelled a handler with the request still unread.
+                    val handlerEnded = CompletableDeferred<String>()
                     val serverJob =
                         launch {
                             connections {
-                                val state = (this as QuicConnection).state
-                                val stream = acceptStream()
-                                accepted.complete(Unit)
-                                withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
-                                delay(SLOW_READER)
-                                received.complete(stream.readToEnd())
+                                val connection = this as QuicConnection
+                                var step = "accepting the stream"
+                                try {
+                                    val stream = acceptStream()
+                                    accepted.complete(Unit)
+                                    step = "waiting for the client's close"
+                                    withTimeout(closeBound) { connection.state.first { it is QuicConnectionState.Closed } }
+                                    step = "waiting before reading"
+                                    delay(SLOW_READER)
+                                    step = "reading"
+                                    received.complete(stream.readToEnd())
+                                } catch (e: Throwable) {
+                                    // What quiche itself holds, read on the loop: whether the client's
+                                    // CONNECTION_CLOSE was received, and which timer the connection waits on.
+                                    val quiche =
+                                        withContext(NonCancellable) {
+                                            (connection as QuicheBackedConnection).quicheDriver.inspect { api, conn ->
+                                                "peerError=${api.connPeerError(conn)} closed=${api.connIsClosed(conn)} " +
+                                                    "timeout=${api.connTimeout(conn)} stats=${api.connStats(conn)}"
+                                            }
+                                        }
+                                    handlerEnded.complete(
+                                        "$step: $e (state=${connection.state.value}, unread=${connection.unreadAtClose.value}, " +
+                                            "quiche: $quiche)",
+                                    )
+                                    throw e
+                                }
                             }
                         }
                     try {
@@ -277,7 +317,10 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                         // withQuicConnection's return has closed the connection under the parked handler.
                         val request =
                             withTimeoutOrNull(closeBound + SLOW_READER) { received.await() }
-                                ?: fail("the server handler was cancelled before it read the request the client sent")
+                                ?: fail(
+                                    "the server handler did not read the request the client sent; it ended " +
+                                        (if (handlerEnded.isCompleted) handlerEnded.getCompleted() else "never (still running)"),
+                                )
                         assertEquals(REQUEST, request)
                     } finally {
                         serverJob.cancelAndJoin()
@@ -346,8 +389,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
             }
         }
 
-    private suspend fun QuicByteStream.readToEnd(): String {
-        val text = StringBuilder()
+    private suspend fun QuicByteStream.readToEnd(text: StringBuilder = StringBuilder()): String {
         while (true) {
             when (val r = read(closeBound) { it.readString(it.remaining(), Charset.UTF8) }) {
                 is ScopedRead.Data -> text.append(r.value)
