@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -266,9 +267,14 @@ class QuicLocalServerTests {
                                 launch(Dispatchers.IO) {
                                     reporting(echoResult, "client", { diag.clientStep }) {
                                         diag.clientStep = PeerStep.Reached("connect")
-                                        withQuicConnection("localhost", port, diag.clientOptions(testQuicOptions), timeout = 10.seconds) {
+                                        // Held, not a withQuicConnection block: a block is cancelled when its
+                                        // connection ends, so only a held connection reads after the teardown.
+                                        val connection =
+                                            QuicSessionTransport(diag.clientOptions(testQuicOptions))
+                                                .establish("localhost", port, TransportConfig())
+                                        try {
                                             diag.clientStep = PeerStep.Reached("openStream")
-                                            val stream = openStream()
+                                            val stream = connection.openStream()
                                             val sendBuf = BufferFactory.Default.allocate(4)
                                             sendBuf.writeString("ping", Charset.UTF8)
                                             sendBuf.resetForRead()
@@ -293,6 +299,8 @@ class QuicLocalServerTests {
                                             }
                                             diag.clientStep = PeerStep.Reached("close")
                                             stream.close()
+                                        } finally {
+                                            connection.close()
                                         }
                                     }
                                 }

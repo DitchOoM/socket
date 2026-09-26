@@ -3,12 +3,14 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -107,8 +109,8 @@ abstract class QuicServerLifecycleTestSuite {
      * the caller's own timeout.
      *
      * Here the connection ends via idle timeout. The client establishes a stream, then collects
-     * streams() while idle; when the idle timer fires, the connection closes and the flow must
-     * complete, because the driver closes its incoming-streams channel on close. Collecting streams()
+     * streams() while idle; when the idle timer fires, the connection closes and the collector must
+     * end — the flow completes, or the block is cancelled with its connection. Collecting streams()
      * (vs a single acceptStream) drains anything else the peer opens, so the test asserts exactly the
      * close-unblocks-consumers contract and nothing incidental.
      */
@@ -129,23 +131,25 @@ abstract class QuicServerLifecycleTestSuite {
                                 // Accept the client's stream then stay, so the connection closes via
                                 // the idle timer (not a handler return).
                                 acceptStream()
-                                kotlinx.coroutines.awaitCancellation()
+                                awaitCancellation()
                             }
                         }
                     try {
-                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
-                            openStream().writeString("hi") // establish a stream on the server, then go idle
-                            var completed = false
-                            // If streams() never completes, this withTimeout throws and the test fails loudly.
-                            withTimeout(15.seconds.scaled) {
-                                streams().collect { stream -> runCatching { stream.close() } } // drain any phantom
-                                completed = true
+                        // A collector parked in streams() must not outlive the connection: the flow
+                        // completes, or the block is cancelled with the connection, and either way the
+                        // caller is handed the idle close. A hang instead trips the withTimeout, whose
+                        // TimeoutCancellationException is not the QuicCloseException asserted here.
+                        val closed =
+                            assertFailsWith<QuicCloseException>("streams() must not hang once the connection idles out") {
+                                withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
+                                    openStream().writeString("hi") // establish a stream on the server, then go idle
+                                    withTimeout(8.seconds.scaled) {
+                                        streams().collect { stream -> runCatching { stream.close() } } // drain any phantom
+                                    }
+                                    awaitCancellation()
+                                }
                             }
-                            assertTrue(
-                                completed,
-                                "streams() must complete when the connection idles out, not hang",
-                            )
-                        }
+                        assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.closeReason)
                     } finally {
                         serverJob.cancel()
                     }

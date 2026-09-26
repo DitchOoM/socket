@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -50,7 +51,7 @@ abstract class QuicIdleTimeoutTestSuite {
     /**
      * An idle connection must time out, and a read pending on it must say so: the server accepts the
      * stream then stays in the connection without ever FINing it; with no traffic, the idle timer fires
-     * and the client's pending read throws [QuicCloseException] with a local [QuicError.IdleTimeout].
+     * and the client's pending read ends in a [QuicCloseException] with a local [QuicError.IdleTimeout].
      * [ReadResult.End] would claim the peer finished the stream, which it never did. If idle-timeout
      * didn't fire, the read would block to its own (longer) timeout and throw a
      * `TimeoutCancellationException` instead — failing the test.
@@ -67,34 +68,39 @@ abstract class QuicIdleTimeoutTestSuite {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
                     val serverJob = launch { echoEveryStream() }
                     try {
-                        withLiveQuicConnection(
-                            "127.0.0.1",
-                            port,
-                            opts,
-                            timeout = 10.seconds.scaled,
-                            reason = "idle-timeout connection never came up live",
-                        ) { confirmLive ->
-                            val stream = openStream()
-                            // Warmup round-trip proves the connection isn't drain-storm-wedged. A wedge here
-                            // retries a FRESH connection; the real idle-out assertion can only surface after
-                            // confirmLive() and is never retried.
-                            if (stream.echoOnce("warmup") != "warmup") retryConnection()
-                            confirmLive()
-                            // Connection proven live — now go idle. With no traffic the idle timer fires and
-                            // the pending read throws the typed close; the server never sent FIN.
-                            val closed =
-                                assertFailsWith<QuicCloseException>(
-                                    "a read pending across the idle timeout must throw the typed close within " +
-                                        "$READ_TIMEOUT — End would claim a FIN the peer never sent",
-                                ) {
-                                    stream.read(READ_TIMEOUT)
+                        // The pending read ends in the typed close either way the block ends: the read
+                        // throws it itself, or the block is cancelled with its connection and
+                        // withQuicConnection throws it. A read that returned instead fails the block with
+                        // an AssertionError, and a read that outlived the idle timeout with a
+                        // TimeoutCancellationException — neither of them the QuicCloseException asserted.
+                        val closed =
+                            assertFailsWith<QuicCloseException>(
+                                "a read pending across the idle timeout must end in the typed close within " +
+                                    "$READ_TIMEOUT — End would claim a FIN the peer never sent",
+                            ) {
+                                withLiveQuicConnection(
+                                    "127.0.0.1",
+                                    port,
+                                    opts,
+                                    timeout = 10.seconds.scaled,
+                                    reason = "idle-timeout connection never came up live",
+                                ) { confirmLive ->
+                                    val stream = openStream()
+                                    // Warmup round-trip proves the connection isn't drain-storm-wedged. A wedge
+                                    // here retries a FRESH connection; the real idle-out assertion can only
+                                    // surface after confirmLive() and is never retried.
+                                    if (stream.echoOnce("warmup") != "warmup") retryConnection()
+                                    confirmLive()
+                                    // Connection proven live — now go idle; the server never sends FIN.
+                                    val returned = stream.read(READ_TIMEOUT)
+                                    fail("a read pending across the idle timeout returned $returned")
                                 }
-                            assertEquals(
-                                QuicCloseReason.ByLocal(QuicError.IdleTimeout),
-                                closed.closeReason,
-                                "the pending read must carry the local idle timeout that ended the connection",
-                            )
-                        }
+                            }
+                        assertEquals(
+                            QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                            closed.closeReason,
+                            "the pending read must end in the local idle timeout that ended the connection",
+                        )
                     } finally {
                         serverJob.cancel()
                     }

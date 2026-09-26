@@ -42,7 +42,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     withTimeout(timeout) {
         val connection = buildJvmQuicConnection(endpoint, serverName, quicOptions, connectionOptions, timeout, api, tuning)
         try {
-            connection.block()
+            connection.runUntilClosed { block() }
         } finally {
             connection.close()
         }
