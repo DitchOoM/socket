@@ -40,6 +40,13 @@ public sealed interface RunVerdict {
         override val line: String get() = pool.runLine(connections)
     }
 
+    /** No attempt established a connection, so there is no path and no stream to judge. */
+    public data class NoConnection(
+        override val pool: PoolRecoveryVerdict,
+    ) : RunVerdict {
+        override val line: String get() = "INCONCLUSIVE — no connection was established, so there is nothing to judge"
+    }
+
     public data class Silenced(
         override val pool: PoolRecoveryVerdict,
         val silent: RunLiveness.Silent,
@@ -63,6 +70,7 @@ public fun PoolRecoveryVerdict.forRun(
     liveness: RunLiveness,
 ): RunVerdict =
     when (liveness) {
-        RunLiveness.NeverConnected, is RunLiveness.Live -> RunVerdict.Standing(this, connections)
+        RunLiveness.NeverConnected -> RunVerdict.NoConnection(this)
+        is RunLiveness.Live -> RunVerdict.Standing(this, connections)
         is RunLiveness.Silent -> RunVerdict.Silenced(this, liveness)
     }
