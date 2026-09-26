@@ -28,7 +28,6 @@ import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -102,13 +101,12 @@ class QuicheDriver(
      */
     private val clock: DriverClock = RealDriverClock,
     /**
-     * Context the driver's control loop and per-path UDP reader loops are launched in. Defaults to
-     * [Dispatchers.Default] — the pre-seam hardwired dispatcher, so production behaviour is
-     * byte-identical. A test passes [kotlin.coroutines.EmptyCoroutineContext] so both loops inherit
+     * Context the driver's control loop and per-path UDP reader loops are launched in, and the one
+     * [awaitEstablished] arms its bound in. Defaults to [productionDriverContext]. A test passes [kotlin.coroutines.EmptyCoroutineContext] so both loops inherit
      * the caller's (virtual-time) dispatcher and [clock] wakes run on the kotlinx-coroutines-test
      * scheduler. See RFC_DETERMINISTIC_SIMULATION.md §3.1.
      */
-    private val driverContext: CoroutineContext = Dispatchers.Default,
+    private val driverContext: CoroutineContext = productionDriverContext,
     /**
      * Liveness backstop on one `UdpChannel.send` — see [flushOutgoing] for what it prevents and
      * [DEFAULT_SEND_STALL_BOUND] for why it is this size and not derived from another timeout.
@@ -406,9 +404,13 @@ class QuicheDriver(
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
     suspend fun awaitEstablished(timeout: Duration) {
+        // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
+        // rather than on whatever the caller's dispatcher resolves timeouts against.
         val settled =
-            withTimeoutOrNull(timeout) {
-                state.first { it !is QuicConnectionState.Handshaking }
+            withContext(driverContext) {
+                withTimeoutOrNull(timeout) {
+                    state.first { it !is QuicConnectionState.Handshaking }
+                }
             }
         if (settled == null) {
             val bound = QuicError.HandshakeTimeout(timeout)
