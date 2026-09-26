@@ -204,10 +204,16 @@ object IoUringManager {
     }
 
     /**
-     * Initialize io_uring ring with progressive flag fallback.
-     *
-     * Tries SINGLE_ISSUER + COOP_TASKRUN + DEFER_TASKRUN first (best performance),
-     * falls back to fewer flags for older kernels.
+     * The `io_uring_queue_init_params` call ring setup makes, given a ring and params whose flags are
+     * already set. A test substitutes one that refuses, to drive the setup-failure path without a kernel.
+     */
+    internal val queueInit =
+        AtomicReference<(CPointer<io_uring>, CPointer<io_uring_params>) -> Int> { ring, params ->
+            io_uring_queue_init_params(queueDepth.toUInt(), ring, params)
+        }
+
+    /**
+     * The ring, created through [setUpIoUring] if there is none yet.
      *
      * MUST be called on the event loop thread (SINGLE_ISSUER binds to creating thread).
      */
@@ -216,63 +222,43 @@ object IoUringManager {
 
         val ptr = nativeHeap.alloc<io_uring>().ptr
         val params = nativeHeap.alloc<io_uring_params>()
-
-        // Progressive fallback: best flags first, then fewer, then none
-        val flagSets =
-            listOf(
-                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN or IORING_SETUP_DEFER_TASKRUN,
-                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN,
-                IORING_SETUP_SINGLE_ISSUER,
-                0u,
-            )
-
-        var lastError = 0
-        // Every attempt's errno, not just the last: the fallback ladder hides which flag set the
-        // kernel refused for which reason, and an ENOMEM on the bare attempt reads differently from
-        // an ENOMEM only under DEFER_TASKRUN.
-        val attempts = StringBuilder()
-        var pass = 0
-        val outcome =
-            withEnomemRetry({ micros -> usleep(micros.toUInt()) }) {
-                pass++
-                var refused = 0
-                var created: CPointer<io_uring>? = null
-                for (flags in flagSets) {
-                    memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
-                    params.flags = flags
-                    val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
-                    if (ret >= 0) {
-                        created = ptr
-                        break
-                    }
-                    refused = -ret
-                    attempts.append(
-                        "try=$pass flags=0x${flags.toString(16)} -> errno=$refused " +
-                            "(${strerror(refused)?.toKString() ?: "?"}); ",
-                    )
-                }
-                val ring = created
-                if (ring == null) SetupAttempt.Refused(refused) else SetupAttempt.Created(ring)
+        val init = queueInit.value
+        val setup =
+            setUpIoUring({ micros -> usleep(micros.toUInt()) }) { flags ->
+                memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
+                params.flags = flags
+                init(ptr, params.ptr)
             }
-        when (outcome) {
-            is SetupAttempt.Created -> {
-                nativeHeap.free(params)
-                ringsCreated.incrementAndGet()
-                ringRef.value = outcome.ring
-                return outcome.ring
-            }
-            is SetupAttempt.Refused -> lastError = outcome.errno
-        }
-
         nativeHeap.free(params)
-        nativeHeap.free(ptr)
-        val errorMsg = strerror(lastError)?.toKString() ?: "Unknown error"
-        throw SocketIOException(
-            "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
-                "This library requires Linux kernel 5.1+ with io_uring support. " +
-                "Attempts: ${attempts.toString().trimEnd(' ', ';')}\n" +
-                diagnosticSnapshot(),
-        )
+        return when (setup) {
+            RingSetup.Created -> {
+                ringsCreated.incrementAndGet()
+                ringRef.value = ptr
+                ptr
+            }
+            is RingSetup.Refused -> {
+                nativeHeap.free(ptr)
+                val refused = setup.final.errno
+                throw SocketIOException(
+                    "Failed to initialize io_uring: ${strerror(refused)?.toKString() ?: "Unknown error"} " +
+                        "(errno=$refused). This library requires Linux kernel 5.1+ with io_uring support. " +
+                        "Attempts: ${setup.describe()}\n" +
+                        diagnosticSnapshot(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Ends a poller start whose ring could not be set up: the start is withdrawn, so the next operation
+     * sets up a ring afresh, and every submission already queued fails with [cause].
+     */
+    private fun abandonStart(cause: SocketIOException) {
+        pollerStarted.compareAndSet(1, 0)
+        while (true) {
+            val request = submissionChannel.tryReceive().getOrNull() ?: break
+            request.deferred.completeExceptionally(cause)
+        }
     }
 
     /**
@@ -454,8 +440,13 @@ object IoUringManager {
      * 5. Check expired operations
      */
     private fun eventLoop() {
-        val ring = initRing()
-        setupEventfd(ring)
+        val ring =
+            try {
+                initRing().also(::setupEventfd)
+            } catch (e: SocketIOException) {
+                abandonStart(e)
+                return
+            }
 
         // Plain HashMap — only accessed from this thread, no synchronization needed
         val pendingOps = HashMap<Long, PendingOperation>()
@@ -590,15 +581,17 @@ object IoUringManager {
         timeout: Duration? = null,
         prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
     ): Int {
-        ensurePollerStarted()
-
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
 
-        // Send request to event loop via lock-free channel
+        // Queue first, then ensure the loop: a loop that stops (cleanup, or a ring it could not set
+        // up) clears pollerStarted before its last drain, so a request queued before the check is
+        // either drained by that loop or seen by the loop this check starts. Checking first leaves a
+        // window in which the request lands after the last drain and waits on no loop at all.
         val request = SubmissionRequest(userData, deferred, deadline, prepareOp)
         submissionChannel.trySend(request)
+        ensurePollerStarted()
         wakePoller()
 
         // Suspend until event loop dispatches our completion (or timeout).
@@ -658,6 +651,8 @@ object IoUringManager {
                 prepareOp(sqe)
             }
         submissionChannel.trySend(request)
+        // After queueing, for the reason given in [submitAndWait].
+        ensurePollerStarted()
         wakePoller()
 
         try {

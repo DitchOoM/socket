@@ -108,6 +108,14 @@ fun KotlinNativeTarget.configureNwUdpCinterop() {
 //
 // Phase 2 shipped JVM + Android (NIO DatagramChannel). Phase 3 adds Linux io_uring + Apple
 // Network.framework native actuals. Node dgram and the QUIC cutover land in later phases.
+// io_uring ring setup: the one source in root's src/linuxIoUringShared, copied into this module's
+// package, because two klibs declaring the same internal name cannot link into one binary.
+val generateIoUringSetup by tasks.registering(Sync::class) {
+    from(rootProject.file("src/linuxIoUringShared"))
+    into(layout.buildDirectory.dir("generated/ioUringSetup/kotlin"))
+    filter { line -> if (line.startsWith("package ")) "package com.ditchoom.socket.udp" else line }
+}
+
 kotlin {
     jvmToolchain(21)
 
@@ -235,6 +243,10 @@ kotlin {
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
+        }
+
+        if (linuxTargets) {
+            named("linuxMain") { kotlin.srcDir(generateIoUringSetup) }
         }
 
         val commonJvmTest by creating {

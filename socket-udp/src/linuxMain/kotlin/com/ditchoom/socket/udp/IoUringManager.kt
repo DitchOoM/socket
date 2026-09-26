@@ -4,7 +4,6 @@ import com.ditchoom.socket.udp.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import platform.posix.ENOMEM
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
@@ -209,10 +208,7 @@ internal object IoUringManager {
     }
 
     /**
-     * Initialize io_uring ring with progressive flag fallback.
-     *
-     * Tries SINGLE_ISSUER + COOP_TASKRUN + DEFER_TASKRUN first (best performance),
-     * falls back to fewer flags for older kernels.
+     * The ring, created through [setUpIoUring] if there is none yet.
      *
      * MUST be called on the event loop thread (SINGLE_ISSUER binds to creating thread).
      */
@@ -221,66 +217,42 @@ internal object IoUringManager {
 
         val ptr = nativeHeap.alloc<io_uring>().ptr
         val params = nativeHeap.alloc<io_uring_params>()
-
-        // Progressive fallback: best flags first, then fewer, then none
-        val flagSets =
-            listOf(
-                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN or IORING_SETUP_DEFER_TASKRUN,
-                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN,
-                IORING_SETUP_SINGLE_ISSUER,
-                0u,
-            )
-
-        var lastError = 0
-        // Every attempt's errno, not just the last: the fallback ladder hides which flag set the
-        // kernel refused for which reason, and an ENOMEM on the bare attempt reads differently from
-        // an ENOMEM only under DEFER_TASKRUN.
-        val attempts = StringBuilder()
-
-        // ⚠️ The ladder is retried on ENOMEM, because that errno here does not mean "out of memory":
-        // the ring ledger shows `created == released`, `live = 0` and `io_uring_disabled = 0` at the
-        // moment the kernel refuses *every* flag set including `flags=0x0`. Nothing is leaked; the
-        // rings have been released and the kernel's accounting for them has not yet settled. That is
-        // a race against teardown, and the only thing that clears it is a moment of waiting.
-        //
-        // Bounded and errno-scoped on purpose: ENOSYS (no io_uring at all) and EPERM (seccomp, or
-        // `io_uring_disabled=1`) are permanent, and retrying them would turn a clear diagnosis into a
-        // slow one. Only ENOMEM — the transient — buys another pass.
-        for (attempt in 0 until ENOMEM_SETUP_ATTEMPTS) {
-            for (flags in flagSets) {
-                // Zero out params for each attempt
+        val setup =
+            setUpIoUring({ micros -> usleep(micros.toUInt()) }) { flags ->
                 memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
                 params.flags = flags
-
-                val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
-                if (ret >= 0) {
-                    nativeHeap.free(params)
-                    ringsCreated.incrementAndGet()
-                    ringRef.value = ptr
-                    return ptr
-                }
-                lastError = -ret
-                attempts.append(
-                    "try=$attempt flags=0x${flags.toString(16)} -> errno=$lastError " +
-                        "(${strerror(lastError)?.toKString() ?: "?"}); ",
+                io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
+            }
+        nativeHeap.free(params)
+        return when (setup) {
+            RingSetup.Created -> {
+                ringsCreated.incrementAndGet()
+                ringRef.value = ptr
+                ptr
+            }
+            is RingSetup.Refused -> {
+                nativeHeap.free(ptr)
+                val refused = setup.final.errno
+                throw IoUringUnavailableException(
+                    "Failed to initialize io_uring: ${strerror(refused)?.toKString() ?: "Unknown error"} " +
+                        "(errno=$refused). This module requires Linux kernel 5.1+ with io_uring support. " +
+                        "Attempts: ${setup.describe()}\n" +
+                        diagnosticSnapshot(),
                 )
             }
-            if (lastError != ENOMEM) break
-            // Doubling from 1ms. The whole budget is ~31ms across five passes, which is nothing beside
-            // the 30s deadline a caller is working to, and long enough for a released ring's accounting
-            // to land — teardown is asynchronous, so the wait is the fix.
-            if (attempt < ENOMEM_SETUP_ATTEMPTS - 1) usleep((ENOMEM_BACKOFF_BASE_MICROS shl attempt).toUInt())
         }
+    }
 
-        nativeHeap.free(params)
-        nativeHeap.free(ptr)
-        val errorMsg = strerror(lastError)?.toKString() ?: "Unknown error"
-        throw IoUringUnavailableException(
-            "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
-                "This module requires Linux kernel 5.1+ with io_uring support. " +
-                "Attempts: ${attempts.toString().trimEnd(' ', ';')}\n" +
-                diagnosticSnapshot(),
-        )
+    /**
+     * Ends a poller start whose ring could not be set up: the start is withdrawn, so the next operation
+     * sets up a ring afresh, and every submission already queued fails with [cause].
+     */
+    private fun abandonStart(cause: IoUringUnavailableException) {
+        pollerStarted.compareAndSet(1, 0)
+        while (true) {
+            val request = submissionChannel.tryReceive().getOrNull() ?: break
+            request.deferred.completeExceptionally(cause)
+        }
     }
 
     /**
@@ -462,8 +434,13 @@ internal object IoUringManager {
      * 5. Check expired operations
      */
     private fun eventLoop() {
-        val ring = initRing()
-        setupEventfd(ring)
+        val ring =
+            try {
+                initRing().also(::setupEventfd)
+            } catch (e: IoUringUnavailableException) {
+                abandonStart(e)
+                return
+            }
 
         // Plain HashMap — only accessed from this thread, no synchronization needed
         val pendingOps = HashMap<Long, PendingOperation>()
@@ -598,15 +575,17 @@ internal object IoUringManager {
         timeout: Duration? = null,
         prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
     ): Int {
-        ensurePollerStarted()
-
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
 
-        // Send request to event loop via lock-free channel
+        // Queue first, then ensure the loop: a loop that stops (cleanup, or a ring it could not set
+        // up) clears pollerStarted before its last drain, so a request queued before the check is
+        // either drained by that loop or seen by the loop this check starts. Checking first leaves a
+        // window in which the request lands after the last drain and waits on no loop at all.
         val request = SubmissionRequest(userData, deferred, deadline, prepareOp)
         submissionChannel.trySend(request)
+        ensurePollerStarted()
         wakePoller()
 
         // Suspend until event loop dispatches our completion (or timeout).
@@ -710,15 +689,3 @@ internal object IoUringManager {
             // clock to fire.
         }
 }
-
-/**
- * Passes over the whole flag ladder before an `io_uring_setup` ENOMEM is treated as real.
- *
- * Five, because the failure is a race against asynchronous ring teardown rather than a resource limit:
- * the ledger shows `live = 0` at the moment of refusal, so what is missing is time, not memory. The
- * budget below is small enough to be invisible and the retry is scoped to ENOMEM alone.
- */
-private const val ENOMEM_SETUP_ATTEMPTS = 5
-
-/** First backoff, doubling per pass: ~31ms total across [ENOMEM_SETUP_ATTEMPTS]. */
-private const val ENOMEM_BACKOFF_BASE_MICROS = 1_000
