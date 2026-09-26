@@ -520,4 +520,9 @@ jobs:
           find socket-quic-quiche/libs/quiche -type f \( -name '*.a' -o -name '*.dylib' \) 2>/dev/null \
             | sort >> "$GITHUB_STEP_SUMMARY" || echo "(no artifacts produced)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # The tvOS/watchOS simulator klibs every Apple cinterop task resolves (the link job runs all
+          # of them for commonization), in the Gradle cache this job saves.
+          echo "tvOS/watchOS simulator klibs in ~/.gradle/caches:" | tee -a "$GITHUB_STEP_SUMMARY"
+          find ~/.gradle/caches/modules-2/files-2.1 -type f -name '*.klib' \
+            \( -path '*tvossimulatorarm64*' -o -path '*watchossimulatorarm64*' \) 2>/dev/null \
+            | sed 's#.*/##' | sort | tee -a "$GITHUB_STEP_SUMMARY"

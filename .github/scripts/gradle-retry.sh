@@ -13,10 +13,10 @@
 # sdkmanager license retry in build-linux.yaml, apt-install-cached, compose-up-retry.sh).
 #
 # It must never mask a real failure. The grep is anchored on Gradle's OWN "Could not GET/HEAD" /
-# "Could not get resource" wording plus a rate-limit / unavailability / timeout code, or Central's
-# host plus 403, so a compile error, a failing test or a publication problem matches nothing here and
-# fails on the FIRST attempt with its output intact. tests/gradle-retry.test.sh replays real logs both
-# ways.
+# "Could not get resource" wording plus a rate-limit / unavailability / timeout code, or on a
+# repository host plus a 403 or a name-resolution failure, so a compile error, a failing test or a
+# publication problem matches nothing here and fails on the FIRST attempt with its output intact.
+# tests/gradle-retry.test.sh replays real logs both ways.
 #
 # Deliberately NOT `set -e`: every failure below is handled explicitly, and errexit would abort at the
 # first failing gradle run before the transient check could classify it. pipefail IS required — without
@@ -24,7 +24,8 @@
 set -uo pipefail
 
 attempts="${GRADLE_RETRY_ATTEMPTS:-3}"
-log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-retry.XXXXXX.log")"
+# X's last: BSD mktemp (macOS) only replaces trailing X's.
+log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-retry.log.XXXXXX")"
 trap 'rm -f "$log"' EXIT
 
 # Rate limited (429), unavailable (502/503/504), or the connection died mid-fetch. All are answers
@@ -35,6 +36,12 @@ transient='Could not (GET|HEAD|get resource).*(429|502|503|504|Too Many Requests
 # Central's hosts only — a 403 from any other repository is a real answer and fails first time.
 # compute-version.yaml treats Central's 403 the same way.
 transient+="|Could not (GET|HEAD) 'https://(repo\.maven\.apache\.org|repo1\.maven\.org)/[^']*'\. Received status code 403 from server"
+# The runner could not resolve a repository host's name (run 36274263792: "repo.maven.apache.org:
+# nodename nor servname provided, or not known" on macOS). Anchored on the hosts settings.gradle.kts
+# resolves from, so a test asserting on a DNS failure of its own host never matches.
+repo_hosts='(repo\.maven\.apache\.org|repo1\.maven\.org|plugins\.gradle\.org|plugins-artifacts\.gradle\.org|dl\.google\.com|maven\.google\.com)'
+transient+="|> ${repo_hosts}: (nodename nor servname provided, or not known|Temporary failure in name resolution|Name or service not known)"
+transient+="|UnknownHostException: ${repo_hosts}"
 backoff_unit="${GRADLE_RETRY_BACKOFF_SECONDS:-30}"
 
 for i in $(seq 1 "$attempts"); do

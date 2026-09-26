@@ -18,7 +18,7 @@ outputs:
       (a restore-keys prefix hit leaves it false). The one shard designated to SAVE that key gates
       its save on this being false: cache entries are immutable per key, so re-saving an exact hit
       can only fail — but `actions/cache/save` tars the ~1GB directory before it discovers that.
-    value: ${{ steps.restore_gradle_caches.outputs.cache-hit }}
+    value: ${{ steps.restore_gradle_caches.outputs.cache-hit == 'true' || steps.restore_gradle_caches_retry.outputs.cache-hit == 'true' }}
 
 runs:
   using: composite
@@ -69,6 +69,26 @@ runs:
         restore-keys: |
           gradle-macos-kn-
           gradle-macos-
+
+    # A restore whose download aborts logs `Failed to restore`, then `Cache not found`, and leaves
+    # ~/.gradle/caches EMPTY with the step green; the build then resolves every dependency from the
+    # repositories (run 36274263792: the only red job of eleven sharing one entry). No matched key
+    # means an abort or a genuine miss, so try once more; a genuine miss costs one lookup.
+    - name: Retry the Gradle build outputs restore
+      id: restore_gradle_caches_retry
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.gradle/caches
+        key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-macos-kn-
+          gradle-macos-
+
+    - name: Surface a cold Gradle cache
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == '' && steps.restore_gradle_caches_retry.outputs.cache-matched-key == ''
+      shell: bash
+      run: echo "::warning::~/.gradle/caches restored nothing (twice); this job resolves its whole dependency graph from the repositories."
 
     - name: Restore Gradle wrapper distribution
       uses: actions/cache/restore@v6

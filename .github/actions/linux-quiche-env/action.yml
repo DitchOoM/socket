@@ -102,12 +102,30 @@ runs:
         restore-keys: konan-linux-
 
     - name: Restore Gradle build outputs
+      id: restore_gradle_caches
       uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/caches
         key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
         restore-keys: |
           gradle-linux-
+
+    # Retried once when no key matched: an aborted download leaves ~/.gradle/caches empty with the
+    # step green. See apple-quiche-env for the run that showed it.
+    - name: Retry the Gradle build outputs restore
+      id: restore_gradle_caches_retry
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.gradle/caches
+        key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-linux-
+
+    - name: Surface a cold Gradle cache
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == '' && steps.restore_gradle_caches_retry.outputs.cache-matched-key == ''
+      shell: bash
+      run: echo "::warning::~/.gradle/caches restored nothing (twice); this job resolves its whole dependency graph from the repositories."
 
     - name: Restore Gradle wrapper distribution
       uses: actions/cache/restore@v6

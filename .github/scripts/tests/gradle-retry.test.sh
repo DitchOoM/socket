@@ -72,6 +72,32 @@ cat >"$fixtures/central-429" <<'EOF'
             > Could not HEAD 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.0/kotlin-stdlib-2.4.0.pom'. Received status code 429 from server: Too Many Requests
 EOF
 
+# Verbatim from run 36274263792 (job 108494179660), timestamps stripped: a macOS DNS failure.
+cat >"$fixtures/central-dns-macos" <<'EOF'
+* What went wrong:
+Execution failed for task ':network-monitor:cinteropNetworkHelpersWatchosSimulatorArm64'.
+> Could not resolve all files for configuration ':network-monitor:watchosSimulatorArm64CInterop'.
+   > Could not download atomicfu-watchosSimulatorArm64Main-0.32.1.klib (org.jetbrains.kotlinx:atomicfu-watchossimulatorarm64:0.32.1)
+      > Could not get resource 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/atomicfu-watchossimulatorarm64/0.32.1/atomicfu-watchossimulatorarm64-0.32.1.klib'.
+         > Could not GET 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/atomicfu-watchossimulatorarm64/0.32.1/atomicfu-watchossimulatorarm64-0.32.1.klib'.
+            > repo.maven.apache.org: nodename nor servname provided, or not known
+BUILD FAILED in 7m 22s
+EOF
+
+# The same failure as glibc words it, for the plugin portal.
+sed -e 's#repo\.maven\.apache\.org: nodename nor servname provided, or not known#plugins.gradle.org: Temporary failure in name resolution#' \
+  "$fixtures/central-dns-macos" >"$fixtures/portal-dns-linux"
+
+# A test asserting on a DNS failure of its own host, failing: a real answer.
+cat >"$fixtures/test-dns-failure" <<'EOF'
+com.ditchoom.socket.ExceptionIntegrationTests > dnsFailure_producesSocketUnknownHostException FAILED
+    java.net.UnknownHostException: this-host-does-not-exist.invalid: nodename nor servname provided, or not known
+FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':jvmTest'.
+> There were failing tests.
+EOF
+
 # Verbatim from run 36266351401 (job 108472720254): a genuine test failure.
 cat >"$fixtures/test-failure" <<'EOF'
 14 tests completed, 1 failed
@@ -96,6 +122,15 @@ check "a 403 from another repository is not retried" 1 1 "$RC" "$N" "$OUT" "non-
 
 run "$fixtures/test-failure" 1
 check "a failing test is not retried and keeps its output" 1 1 "$RC" "$N" "$OUT" "There were failing tests"
+
+run "$fixtures/central-dns-macos" 1
+check "a Central name-resolution failure (macOS) is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
+
+run "$fixtures/portal-dns-linux" 1
+check "a plugin-portal name-resolution failure (glibc) is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
+
+run "$fixtures/test-dns-failure" 1
+check "a failing DNS test on its own host is not retried" 1 1 "$RC" "$N" "$OUT" "non-transient"
 
 echo "---"
 echo "$pass passed, $fail failed"
