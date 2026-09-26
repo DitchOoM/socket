@@ -2,3 +2,9 @@
 # keeps GitHub's language statistics and its "N files changed" review view honest — a 400KB RFC is
 # not a source file, and it never changes (see docs/rfc/README.md).
 docs/rfc/*.txt linguist-vendored
+
+# LF in every checkout, including Git for Windows (core.autocrlf=true): tests compare committed files
+# byte-for-byte against generated output. Windows batch files keep the CRLF cmd.exe expects.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

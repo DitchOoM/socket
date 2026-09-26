@@ -45,10 +45,10 @@ internal object JcaPeerCertificateBackend : PeerCertificateBackend {
             try {
                 return block(QuicTlsConfig(certChainPath = certificate.absolutePath, privKeyPath = key.absolutePath))
             } finally {
-                key.delete()
+                removePemFile(key)
             }
         } finally {
-            certificate.delete()
+            removePemFile(certificate)
         }
     }
 
@@ -73,6 +73,14 @@ internal object JcaPeerCertificateBackend : PeerCertificateBackend {
             throw PeerCertificateException(PeerCertificateFailure.PemFilesFailed(e.toString()), e)
         }
     }
+}
+
+/**
+ * Deletes [file] now or, when the platform refuses (Windows keeps a file another process holds open, a
+ * virus scanner say), when the JVM exits: the key must never outlive the process.
+ */
+private fun removePemFile(file: File) {
+    if (!file.delete() && file.exists()) file.deleteOnExit()
 }
 
 /** An empty file only the current user can read or write, created that way (never widened, then narrowed). */

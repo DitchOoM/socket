@@ -332,3 +332,35 @@ internal class RecvPacketReleasedTwice(
     first: QuicheCmd.ReleaseDoor,
     second: QuicheCmd.ReleaseDoor,
 ) : IllegalStateException("a queued receive was released twice: first $first, then $second")
+
+/**
+ * Read the connection for a caller off the loop: [read] runs on the driver coroutine, the only place
+ * allowed to touch the `quiche_conn`, and its answer comes back typed. The door for any read that has
+ * no command of its own — diagnostics above all, which would otherwise race the loop.
+ */
+internal class InspectConnection<T>(
+    private val read: (QuicheApi, QuicheConn) -> T,
+    val result: CompletableDeferred<Inspected<T>>,
+) : QuicheCmd {
+    fun run(
+        api: QuicheApi,
+        conn: QuicheConn,
+    ) {
+        result.complete(Inspected.Read(read(api, conn)))
+    }
+
+    fun connectionGone() {
+        result.complete(Inspected.ConnectionGone)
+    }
+}
+
+/** What an [InspectConnection] read answered. */
+internal sealed interface Inspected<out T> {
+    /** The loop ran the read; [value] is its answer. */
+    data class Read<out T>(
+        val value: T,
+    ) : Inspected<T>
+
+    /** The connection was already torn down, so there was nothing left to read. */
+    data object ConnectionGone : Inspected<Nothing>
+}

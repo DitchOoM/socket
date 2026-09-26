@@ -3,7 +3,6 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.trace.TraceCapture
-import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -21,7 +20,7 @@ import kotlin.time.Instant
  * while the simulation harness supplies a tuning whose members put the driver under test control:
  *
  *  - [driverContext] — context the driver's control loop and per-path UDP reader loops launch in.
- *    Default [Dispatchers.Default] (the pre-seam hardwired dispatcher). A test passes
+ *    Default [productionDriverContext]. A test passes
  *    [kotlin.coroutines.EmptyCoroutineContext] so the loops inherit the caller's virtual-time test
  *    dispatcher and [DriverClock.armTimeout] wakes land on the `kotlinx-coroutines-test` scheduler.
  *  - [clock] — the driver's keepalive/idle timing seam ([DriverClock]). Default [RealDriverClock];
@@ -43,7 +42,7 @@ import kotlin.time.Instant
  *    so all timestamps share one time source (RFC §5 "one clock").
  */
 internal class QuicheDriverTuning(
-    val driverContext: CoroutineContext = Dispatchers.Default,
+    val driverContext: CoroutineContext = productionDriverContext,
     val clock: DriverClock = RealDriverClock,
     val random: Random = Random.Default,
     val wallClock: () -> Instant = { Clock.System.now() },
@@ -69,6 +68,14 @@ internal class QuicheDriverTuning(
      */
     val sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
 )
+
+/**
+ * The context a driver's loops run in unless a test supplies one: [kotlinx.coroutines.Dispatchers.Default],
+ * with every timer armed there — the driver's wake, the send-stall bound, the handshake bound — firing
+ * on a thread the platform cannot lose after establishment. On the JVM that is a thread this library
+ * owns and starts at establishment; see `DeadlineTimer`.
+ */
+internal expect val productionDriverContext: CoroutineContext
 
 /**
  * The default liveness backstop on one `UdpChannel.send` (see [QuicheDriverTuning.sendStallBound]).

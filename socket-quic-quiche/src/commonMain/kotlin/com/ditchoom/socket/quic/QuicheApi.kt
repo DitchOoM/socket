@@ -688,7 +688,8 @@ interface QuicheApi {
      * event type, or null if none pending. For every type except
      * [QuichePathEventType.ReusedSourceConnectionId], fills the caller-provided
      * sockaddr_storage native buffers [localOut]/[peerOut] and the socklen_t out-words
-     * [localLenOut]/[peerLenOut] with the event's local/peer addresses. For
+     * [localLenOut]/[peerLenOut] with the event's local/peer addresses
+     * ([QuichePathEventType.PmtuUpdated]'s PMTU value itself is not surfaced). For
      * ReusedSourceConnectionId the type is returned but addresses are NOT surfaced
      * (its extra old/new-tuple + CID-seq fields are out of scope this slice); set
      * both length out-words to 0 in that case.

@@ -913,8 +913,8 @@ abstract class QuicServerTestSuite {
     }
 
     /**
-     * When one peer aborts the whole connection with [QuicScope.closeWithError], the other peer's
-     * next operation must surface a connection-level [QuicCloseException] carrying the typed reason
+     * When one peer aborts the whole connection with [QuicScope.closeWithError], the other peer must
+     * be handed a connection-level [QuicCloseException] carrying the typed reason
      * — never a stream-scoped [QuicStreamException] (the entire connection is gone, not one stream).
      *
      * This is the END-TO-END complement to the driver-level
@@ -942,22 +942,21 @@ abstract class QuicServerTestSuite {
                         }
 
                     try {
-                        withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                            val stream = openStream()
-                            val hello = BufferFactory.deterministic().allocate(5)
-                            hello.writeString("hello", Charset.UTF8)
-                            hello.resetForRead()
-                            stream.write(hello, 5.seconds)
-                            serverReadFirst.await()
-
-                            // After the peer's CONNECTION_CLOSE the next writes must raise a
-                            // connection-level QuicCloseException (mirrors the stream-reset test's
-                            // shape: repeated writes flush the peer's close frame in, then throw —
-                            // including its poll-interval delay, kept for the same reason).
-                            val closeError =
-                                assertFailsWith<QuicCloseException>(
-                                    "a peer connection abort must surface as a connection-level QuicCloseException",
-                                ) {
+                        // After the peer's CONNECTION_CLOSE the connection-level QuicCloseException
+                        // reaches the caller either way the block ends: a write that runs into the
+                        // closed connection throws it, and a block still running when the connection
+                        // ends is cancelled and withQuicConnection throws it.
+                        val closeError =
+                            assertFailsWith<QuicCloseException>(
+                                "a peer connection abort must surface as a connection-level QuicCloseException",
+                            ) {
+                                withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                    val stream = openStream()
+                                    val hello = BufferFactory.deterministic().allocate(5)
+                                    hello.writeString("hello", Charset.UTF8)
+                                    hello.resetForRead()
+                                    stream.write(hello, 5.seconds)
+                                    serverReadFirst.await()
                                     repeat(50) {
                                         val ping = BufferFactory.deterministic().allocate(4)
                                         ping.writeString("ping", Charset.UTF8)
@@ -966,8 +965,8 @@ abstract class QuicServerTestSuite {
                                         delay(100)
                                     }
                                 }
-                            assertConnectionCloseErrorObservedByPeer(closeError.closeReason)
-                        }
+                            }
+                        assertConnectionCloseErrorObservedByPeer(closeError.closeReason)
                     } finally {
                         serverJob.cancel()
                     }

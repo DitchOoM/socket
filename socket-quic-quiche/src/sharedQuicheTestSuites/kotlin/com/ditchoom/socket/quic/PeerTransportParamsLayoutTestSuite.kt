@@ -12,7 +12,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * ## What went wrong, and why nothing caught it
  * quiche declares `pub struct TransportParams` in `quiche/src/ffi.rs` **without `#[repr(C)]`**, while
- * its immediate neighbours `Stats` and `PathStats` both have it — in 0.28.0, 0.29.2 and 0.29.3 alike.
+ * its immediate neighbours `Stats` and `PathStats` both have it — in every release from 0.28.0 through 0.30.0.
  * Without the attribute rustc reorders the record by alignment and sinks the 1-byte
  * `disable_active_migration` past the two fields declared after it, so what `quiche/include/quiche.h`
  * calls offset 80 is really `active_conn_id_limit`:

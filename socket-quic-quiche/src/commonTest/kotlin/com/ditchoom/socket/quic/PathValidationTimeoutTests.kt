@@ -492,6 +492,7 @@ class PathValidationTimeoutTests {
         override val bufferFactory: BufferFactory get() = BufferFactory.Default
         override val capabilities: QuicCapabilities get() = QuicCapabilities.None
         override val state: StateFlow<QuicConnectionState> get() = driver.state
+        override val unreadAtClose: StateFlow<QuicUnreadAtClose> get() = driver.unreadAtClose
 
         override suspend fun openStream(): QuicByteStream = error("unused")
 
