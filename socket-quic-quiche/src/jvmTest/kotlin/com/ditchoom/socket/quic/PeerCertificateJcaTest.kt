@@ -6,7 +6,10 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.KeyFactory
 import java.security.MessageDigest
@@ -84,7 +87,7 @@ class PeerCertificateJcaTest {
                     val cert = File(tls.certChainPath)
                     seen += listOf(key, cert)
                     for (file in seen) {
-                        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file.toPath())), file.path)
+                        assertOwnerOnly(file)
                     }
                     val pemCert = CertificateFactory.getInstance("X.509").generateCertificate(cert.inputStream()) as X509Certificate
                     assertEquals(x509, pemCert)
@@ -157,4 +160,20 @@ class PeerCertificateJcaTest {
     private companion object {
         const val CERTIFICATES = 64
     }
+}
+
+/** Only [file]'s owner can reach it: `rw-------` on POSIX, one ALLOW entry for the owner on an ACL file system. */
+private fun assertOwnerOnly(file: File) {
+    val path = file.toPath()
+    if ("posix" in FileSystems.getDefault().supportedFileAttributeViews()) {
+        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(path)), file.path)
+        return
+    }
+    val view = Files.getFileAttributeView(path, AclFileAttributeView::class.java)
+    val entries = view.acl
+    assertEquals(
+        listOf(AclEntryType.ALLOW to view.owner),
+        entries.map { it.type() to it.principal() },
+        "${file.path} is reachable by more than its owner: $entries",
+    )
 }
