@@ -1176,11 +1176,9 @@ listOf("macosArm64Test", "macosX64Test", "testDebugUnitTest").forEach { name ->
 
 // ── CI dependency-cache warming (issue #427) ───────────────────────────────────────────────────
 //
-// Every job in build-linux.yaml and build-apple.yaml already `needs: natives`, so `natives` is
-// the pre-flight gate for both lanes — and it is also the single writer of the `gradle-linux-` /
-// `gradle-apple-` caches. What it writes, though, is shaped by what it RESOLVED, and it runs
-// nothing but `buildQuicheShared*` / `buildAndroidJni*`: cargo tasks that touch almost none of the
-// Kotlin dependency graph.
+// The `gradle-linux-` / `gradle-macos-` caches every CI job restores are written by
+// native-deps-freshness.yaml's `cache-warm` jobs. What they save is shaped by what they RESOLVED,
+// and their natives steps run only cargo tasks that touch almost none of the Kotlin graph.
 //
 // The cache KEY is a hash of the build scripts, not of the cache's contents. So every consumer job
 // gets an exact key hit, logs "Cache restored successfully", and re-fetches its half of the graph
@@ -1189,8 +1187,15 @@ listOf("macosArm64Test", "macosX64Test", "testDebugUnitTest").forEach { name ->
 // `:jsNpmAggregated`) and "QUIC quiche JVM (JNI)" (run 32411168329, on :socket-quic-quiche's test
 // classpath), each with every module answering 429 at once, seconds into the build.
 //
-// Resolving the graph in `natives`, before the save, is what makes the cached entry match what
-// consumers actually need — so they restore something that can serve them and never call Central.
+// Resolving the graph in the cache writer, before its save, is what makes the cached entry match
+// what consumers actually need — so they restore something that can serve them and never call
+// Central.
+//
+// That includes KSP's tool classpath. Each KSP task resolves `symbol-processing-aa-embeddable`,
+// `symbol-processing-common-deps` and its own pinned `kotlinx-coroutines-core-jvm` through a
+// DETACHED configuration, which `configurations` never lists, so it is resolved here through the
+// task's `kspClasspath`. Unwarmed, every KSP run fetched those from Central (run 36266351401 died
+// on a 403 for exactly those three).
 //
 // ⚠️ Registered PER PROJECT, and this is not a style choice. Gradle forbids resolving another
 // project's configuration from a task action ("Resolution of the configuration ... was attempted
@@ -1203,6 +1208,13 @@ allprojects {
         group = "build setup"
         notCompatibleWithConfigurationCache("resolves configurations at execution time")
         val resolvable = configurations.matching { it.isCanBeResolved }
+        // Realized here, at configuration. Matched by class name: the KSP plugin is not on the root
+        // build script's classpath.
+        val kspTasks =
+            tasks.names
+                .filter { it.startsWith("ksp") }
+                .map { tasks.getByName(it) }
+                .filter { it.javaClass.name.startsWith("com.google.devtools.ksp.gradle.KspAATask") }
         val projectPath = path
         doLast {
             var resolved = 0
@@ -1218,6 +1230,19 @@ allprojects {
                     skipped += "${configuration.name} (${e.message?.lineSequence()?.firstOrNull()?.take(140)})"
                 }
             }
+            val kspJars = sortedSetOf<String>()
+            kspTasks.forEach { task ->
+                try {
+                    val kspClasspath = task.javaClass.getMethod("getKspClasspath").invoke(task) as FileCollection
+                    kspClasspath.files.mapTo(kspJars) { it.name }
+                    resolved++
+                } catch (e: Exception) {
+                    skipped += "${task.name} KSP tool classpath (${e.message?.lineSequence()?.firstOrNull()?.take(140)})"
+                }
+            }
+            if (kspTasks.isNotEmpty()) {
+                logger.lifecycle("$projectPath: warmed the KSP tool classpath of ${kspTasks.size} task(s): ${kspJars.joinToString()}")
+            }
             // LOUD about what it skipped. A configuration that cannot resolve on this host is
             // expected — Apple klibs on a Linux runner — but a warm step that silently swallowed
             // everything would report success while warming nothing, which is precisely the failure
@@ -1229,7 +1254,7 @@ allprojects {
 }
 
 tasks.register("resolveAllDependencies") {
-    description = "Warms the whole dependency graph so CI's `natives` job caches something consumers can use (#427)."
+    description = "Warms the whole dependency graph so the CI cache writer saves something consumers can use (#427)."
     group = "build setup"
     dependsOn(allprojects.map { "${it.path}:resolveProjectDependencies" })
 }

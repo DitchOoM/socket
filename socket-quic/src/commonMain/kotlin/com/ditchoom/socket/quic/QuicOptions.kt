@@ -79,12 +79,21 @@ sealed interface QuicCloseLinger {
         }
     }
 
+    /**
+     * Hold the CONNECTION_CLOSE until the peer has acknowledged everything the connection wrote on its
+     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first,
+     * and at most the connection's [QuicOptions.idleTimeout].
+     *
+     * Unlike [UntilPeerDone]'s fixed bound, this waits exactly as long as delivery takes: a reply on a
+     * path slow or lossy enough to need more than a fixed wait is still delivered whole. The idle timeout
+     * bounds it because a peer that acknowledges nothing for that long would have ended the connection
+     * anyway.
+     */
+    data object UntilAcknowledged : QuicCloseLinger
+
     companion object {
-        /**
-         * The default: linger up to 3 seconds. Wide enough for several PTO-driven retransmissions on a
-         * lossy path, short enough that a vanished peer is reaped promptly.
-         */
-        val Default: QuicCloseLinger = UntilPeerDone(3.seconds)
+        /** The default: [UntilAcknowledged] — a reply is never cut short by a fixed wait. */
+        val Default: QuicCloseLinger = UntilAcknowledged
     }
 }
 
@@ -223,8 +232,8 @@ data class QuicOptions(
     /**
      * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
      * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
-     * (linger up to 3 seconds), so a reply whose datagram is lost on the wire is still retransmitted
-     * instead of dying with the connection.
+     * (linger until the peer has acknowledged everything written, bounded by [idleTimeout]), so a reply
+     * that is slow or lost on the wire is still delivered instead of dying with the connection.
      *
      * Ignored for the client role, where the application decides when to call
      * [QuicConnection.close] and nothing closes the connection behind its back.

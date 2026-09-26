@@ -44,7 +44,13 @@ class NetworkControlServer(
         }
 
     fun run() {
-        Runtime.getRuntime().addShutdownHook(Thread { cleanup() })
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                cleanup()
+                // A scheduled airplane-mode recovery still pending runs now rather than never.
+                scheduler.shutdownNow().forEach { it.run() }
+            },
+        )
 
         println("READY port=${serverSocket.localPort}")
         System.out.flush()
@@ -163,11 +169,15 @@ class NetworkControlServer(
                     applying("tc qdisc del dev $dev root")
                         .alsoUntrackingOnSuccess("tc qdisc del dev $dev root")
                 }
+            // Not tracked for cleanup: the recovery the device scheduled first is its undo. The device
+            // drops the control channel right after sending this, and the disconnect cleanup used to
+            // write `airplane_mode_on 0` at once — without the broadcast — so the setting read Off while
+            // the radios were still going down and stayed down until the scheduled broadcast.
             is NetCtrlCommand.AirplaneOn ->
                 applying(
                     "settings put global airplane_mode_on 1",
                     "am broadcast -a android.intent.action.AIRPLANE_MODE",
-                ).alsoTrackingOnSuccess("settings put global airplane_mode_on 0")
+                )
             is NetCtrlCommand.AirplaneOff -> {
                 airplaneOff()
                 NetCtrlResponse.Ok()
@@ -255,7 +265,6 @@ class NetworkControlServer(
     private fun airplaneOff() {
         adb("settings put global airplane_mode_on 0")
         adb("am broadcast -a android.intent.action.AIRPLANE_MODE")
-        untrack("settings put global airplane_mode_on 0")
         // Re-establish adb reverse mappings — airplane mode clears them
         Thread.sleep(1000) // wait for network stack to settle
         reestablishAdbReverse()

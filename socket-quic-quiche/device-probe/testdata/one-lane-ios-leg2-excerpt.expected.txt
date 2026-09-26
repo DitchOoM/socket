@@ -1,7 +1,7 @@
 START: START device=ios targets=192.0.2.1:44433/v4,[2001:db8::1]:44433/v6 minutes=4500 echoIntervalMs=250 qlog=/var/mobile/Containers/Data/Application/F584FE2E-5D14-4C36-BD66-C6D10AC83167/Documents/qlog
 lines=291 duration=7.99h
 
-connections: attempts=1
+connections: attempts=1 established=1 neverEstablished=[none]
   #1 t+0s 192.0.2.1:44433 [v4] lived 28753s — (still up at end of log)
 
 migrations: succeeded=1 failed=4 probes=5
@@ -42,6 +42,6 @@ ECHO-LIVENESS (re-derived — the log's own line may predate #620; limit 10 min)
   run: FAIL — connection 1 went 4.5h without an answered echo (from t+16s); 1 of 1 connection(s) SILENT
 
 per-family summary (family from each CONNECT-ATTEMPT's target; `unknown` = a log from before the probe rotated targets):
-  v4: attempts=1 connected=1 | migrations ok=1 failed=4 probes=5 | echoes ok=184 late=42 overdue=39 unanswered=0 fail=0
+  v4: attempts=1 connected=1 neverEstablished=[none] | migrations ok=1 failed=4 probes=5 | echoes ok=184 late=42 overdue=39 unanswered=0 fail=0
       #447={'FAIL': 1} liveness={'SILENT': 1}
   one family only — the next walk should pass a comma-separated rotation (SERVER_HOST="<v4>,<v6>" ./start.sh …, or ./launch.sh "<v4>,<v6>") so one device covers both

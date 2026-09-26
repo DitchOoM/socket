@@ -371,6 +371,11 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connIsInEarlyData(conn: QuicheConn) = false
 
+    /** Whether the stub's peer still owes an acknowledgement for stream data; nothing is owed until a test says so. */
+    @Volatile var streamDataUnacknowledged = false
+
+    override fun connStreamDataUnacknowledged(conn: QuicheConn) = streamDataUnacknowledged
+
     override fun connEarlyDataReason(conn: QuicheConn) = QuicEarlyDataReason.NO_SESSION_OFFERED
 
     /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline

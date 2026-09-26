@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
@@ -55,6 +56,103 @@ abstract class MigrationSimTestSuite {
      * leave this the default pass-through — on those platforms these tests always run.
      */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
+
+    /**
+     * A client that closes the moment its handshake completes — before the server's HANDSHAKE_DONE has
+     * reached it, so its handshake is not yet confirmed — still ends the server's connection.
+     *
+     * The server confirmed the handshake when the client's Finished arrived, and discarded its Handshake
+     * keys then (RFC 9001 §4.9.2), so a CONNECTION_CLOSE carried only in a Handshake packet is one it can
+     * no longer read. Without a copy the server can read, the server's side of a connection its peer has
+     * closed lives on until its idle timeout — here 120 s — and so does everything running on it.
+     */
+    @Test
+    fun aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 671_002L) {
+                    val sent = currentTime
+                    client.close()
+                    val closed =
+                        withTimeout(CLOSE_REACHES_SERVER_WITHIN) {
+                            serverDriver.state.first { it is QuicConnectionState.Closed }
+                        }
+                    assertEquals(
+                        QuicConnectionState.Closed(QuicCloseReason.Graceful),
+                        closed,
+                        "the server must end on the client's own NO_ERROR close, received " +
+                            "${currentTime - sent}ms after it was sent — not on its idle timer",
+                    )
+                }
+            }
+        }
+
+    /**
+     * A server handler that writes its reply and returns at once must not close the connection over that
+     * reply. After the handler returns, the server's close waits — [lingerBeforeClose], the shipped
+     * default — and on a slow, lossy path the reply takes longer to be acknowledged than any fixed wait.
+     * A close before then discards what quiche has not yet delivered: RFC 9000 §10.2 lets an endpoint in
+     * the closing state send nothing but CONNECTION_CLOSE, so there is no retransmission after it.
+     *
+     * The client reads through the scope API only after the server has closed, and must get every byte.
+     */
+    @Test
+    fun aReplyIsDeliveredWholeWhenTheServerHandlerReturnsRightAfterWritingIt() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 671_101L,
+                    primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+                ) {
+                    val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
+                    client.launch {
+                        val stream = server.acceptStream()
+                        while (stream
+                                .read(
+                                    IDLE_TIMEOUT_IN_THE_FIELD,
+                                ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                        ) {
+                            Unit
+                        }
+                        val out = BufferFactory.network().allocate(reply.length)
+                        out.writeString(reply, Charset.UTF8)
+                        out.resetForRead()
+                        stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                        out.freeNativeMemory()
+                        stream.close()
+                        // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
+                        serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                        server.close()
+                    }
+                    val received = StringBuilder()
+                    val outcome =
+                        runCatching {
+                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                                val stream = openStream()
+                                stream.writeText("request")
+                                stream.shutdownSend()
+                                state.first { it is QuicConnectionState.Closed }
+                                while (true) {
+                                    when (val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)) {
+                                        is ReadResult.Data -> {
+                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                            r.buffer.freeIfNeeded()
+                                        }
+                                        ReadResult.End, ReadResult.Reset -> break
+                                    }
+                                }
+                            }
+                        }
+                    assertEquals(
+                        reply.length,
+                        received.length,
+                        "the server closed over its own reply: the client got ${received.length} of ${reply.length} " +
+                            "bytes (${outcome.exceptionOrNull() ?: "then a clean end"}), traffic ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
 
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
@@ -2994,6 +3092,21 @@ abstract class MigrationSimTestSuite {
     }
 
     private companion object {
+        /**
+         * How long a client's close may take to end the server's connection: the 60 ms one-way path plus
+         * the server's draining period (3 × PTO), with room — and far below the sim's 120 s idle timeout.
+         */
+        val CLOSE_REACHES_SERVER_WITHIN = 5.seconds
+
+        /** A slow cellular path: 800 ms round trip. */
+        val SLOW_PATH_ONE_WAY = 400.milliseconds
+
+        /** Loss on it, so the reply needs retransmissions to arrive whole. */
+        const val SLOW_PATH_LOSS = 0.3
+
+        /** A reply several congestion windows long. */
+        const val SLOW_REPLY_BYTES = 34 * 1024
+
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
 
