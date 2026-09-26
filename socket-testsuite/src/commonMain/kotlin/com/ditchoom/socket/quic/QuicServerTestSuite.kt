@@ -5,22 +5,29 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import com.ditchoom.socket.udp.MultiplexedProtocol
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.demultiplex
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -649,10 +656,29 @@ abstract class QuicServerTestSuite {
         runQuicTest(timeout = 45.seconds) {
             wrapTestBody {
                 val interfaces = hostInterfaceAddresses()
-                if (interfaces.isEmpty()) println("[QuicServerTestSuite] SKIP interface pairings: no interface address for this platform")
+                if (interfaces.isEmpty()) {
+                    recordSkip(
+                        QuicServerTestSuite::class,
+                        SkipReason.HostBehaviourDiffers("interface pairings: this platform's suite names no interface address"),
+                        SkipGate.HostCannotProvideIt("an interface address beside loopback"),
+                    )
+                }
                 val dials =
                     listOf("127.0.0.1" to "127.0.0.1") +
-                        interfaces.map { (if (':' in it) "::1" else "127.0.0.1") to it }
+                        interfaces.mapNotNull { dialled ->
+                            val client = if (':' in dialled) "::1" else "127.0.0.1"
+                            when (val carried = hostCarries(client, dialled)) {
+                                PairProbe.Carried -> client to dialled
+                                is PairProbe.NotCarried -> {
+                                    recordSkip(
+                                        QuicServerTestSuite::class,
+                                        SkipReason.HostBehaviourDiffers("$client -> $dialled: ${carried.detail}"),
+                                        SkipGate.HostCannotProvideIt("UDP between $client and this host's $dialled"),
+                                    )
+                                    null
+                                }
+                            }
+                        }
                 val listening = CompletableDeferred<Int>()
                 val server =
                     launch {
@@ -706,6 +732,71 @@ abstract class QuicServerTestSuite {
                 } finally {
                     server.cancel()
                 }
+            }
+        }
+
+    /** Whether this host carries a plain UDP round trip between a pairing's two addresses. */
+    private sealed interface PairProbe {
+        data object Carried : PairProbe
+
+        data class NotCarried(
+            val detail: String,
+        ) : PairProbe
+    }
+
+    /**
+     * A plain datagram from a socket on [client] to a socket bound to [dialled], and one back, with
+     * no QUIC and no wildcard. A host whose own stack drops either leg cannot say anything about the
+     * server; one that carries both must also carry the QUIC pairing.
+     */
+    private suspend fun hostCarries(
+        client: String,
+        dialled: String,
+    ): PairProbe {
+        val server = UdpSocket.bind(localHost = dialled)
+        val sender = UdpSocket.bind(localHost = client)
+        try {
+            try {
+                sender.send(probePayload(), UdpSocket.resolve(dialled, server.localAddress.port))
+            } catch (e: Exception) {
+                return PairProbe.NotCarried("the send to $dialled failed: $e")
+            }
+            val request =
+                server.receiveWithin() ?: return PairProbe.NotCarried("a datagram sent to $dialled never arrived there")
+            request.payload.freeIfNeeded()
+            try {
+                server.send(probePayload(), request.peer)
+            } catch (e: Exception) {
+                return PairProbe.NotCarried("the reply to ${request.peer.host} failed: $e")
+            }
+            val reply =
+                sender.receiveWithin() ?: return PairProbe.NotCarried("the reply from $dialled never arrived at $client")
+            reply.payload.freeIfNeeded()
+            println("[QuicServerTestSuite] $client -> $dialled: a plain round trip arrives, the reply from ${reply.peer.host}")
+            return PairProbe.Carried
+        } finally {
+            server.close()
+            sender.close()
+        }
+    }
+
+    private fun probePayload() =
+        BufferFactory.deterministic().allocate(4).also {
+            it.writeInt(PROBE_WORD)
+            it.resetForRead()
+        }
+
+    /** The next datagram, or `null` after two seconds — closing the socket to end the wait. */
+    private suspend fun AddressedDatagramChannel.receiveWithin(): Datagram? =
+        coroutineScope {
+            val pending = async { receive() }
+            val result = withTimeoutOrNull(2.seconds.scaled) { pending.await() }
+            if (result == null) {
+                close()
+                (pending.await() as? DatagramReadResult.Received)?.datagram?.payload?.freeIfNeeded()
+                null
+            } else {
+                (result as? DatagramReadResult.Received)?.datagram
             }
         }
 
@@ -1337,3 +1428,6 @@ abstract class QuicServerTestSuite {
             }
         }
 }
+
+/** Any four bytes: the probe checks only that a datagram arrives, and from where. */
+private const val PROBE_WORD = 0x50524f42
