@@ -161,7 +161,7 @@ class QuicheLoopConfinementTest {
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicheLoopConfinementTest::class) {
                 val confinement = LoopConfinement(loadQuicheApi())
-                val tuning = QuicheDriverTuning(driverContext = Dispatchers.Default + confinement.loopMarker)
+                val tuning = QuicheDriverTuning(driverContext = productionDriverContext + confinement.loopMarker)
                 val opts = QuicOptions(alpnProtocols = listOf("confined"), verifyPeer = false, migration = MigrationPolicy.Manual)
                 val hammers = CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 val clientRounds = AtomicLong()
