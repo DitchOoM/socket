@@ -95,12 +95,13 @@ private sealed interface Attachment {
      * No routable, identified link has been reported yet, so the first one is the connect-time
      * baseline rather than a handoff.
      *
-     * A data-plane migration taken from here leaves it standing, which means the link the monitor
-     * eventually names is still read as the baseline. That is deliberate and it is correct:
-     * [MigrationTarget.FreshLocalEndpoint] binds on whatever the platform's current default interface
-     * is, so the first link the monitor manages to name *is* the one the connection is now on. If it
-     * is not — the device handed off in between — the path we just moved to dies too, and the
-     * data-plane trigger fires again; that backstop is exactly what makes leaving this alone safe.
+     * A default-route migration taken while the monitor still names nothing leaves it standing, which
+     * means the link the monitor eventually names is still read as the baseline. That is deliberate
+     * and it is correct: [MigrationTarget.FreshLocalEndpoint] binds on whatever the platform's current
+     * default interface is, so the first link the monitor manages to name *is* the one the connection
+     * is now on. If it is not — the device handed off in between — the path we just moved to dies too,
+     * and the data-plane trigger fires again; that backstop is exactly what makes leaving this alone
+     * safe.
      */
     data object AwaitingBaseline : Attachment
 
@@ -217,6 +218,15 @@ internal sealed interface MigrationTrigger {
  * platform later names that link as its default, the control-plane trigger finds the connection
  * already there and does not move it again.
  *
+ * ## Where a success lands
+ *
+ * The attachment a success records is decided by the [Route] the attempt took and nothing else
+ * ([Route.landedOn]): a standby attempt lands on the standby link, and a default-route attempt on the
+ * link the monitor was naming as its socket opened — whichever trigger woke it. So a data-plane move
+ * made while the platform already names a new link attaches to that link, and a link change queued
+ * behind it naming the same link is no handoff; and a move back off a standby link attaches to the
+ * default link again, which leaves the standby link somewhere to go the next time.
+ *
  * ## Why a failed attempt cannot wait for the next network event
  *
  * The event a "keep watching" answer would wait for is already in the past. The gate above the
@@ -290,10 +300,10 @@ internal fun wireAutoMigration(
                 .filter { it is PathLiveness.Silent }
                 .map { MigrationTrigger.PathStoppedAnswering },
         ).collect { trigger ->
-            // What `attachedTo` becomes if the move succeeds — and what makes a backoff stale. A
-            // data-plane trigger changes neither: we are moving to a fresh local endpoint on the link
-            // we were already told we are on.
-            val attachOnSuccess =
+            // The link this attempt is predicated on, which is what makes a backoff stale: the link being
+            // moved onto, or for a data-plane trigger the link we were already told we are on. Where a
+            // success lands is the route's to say ([Route.landedOn]), never this.
+            val premise =
                 when (trigger) {
                     MigrationTrigger.LinkChanged -> {
                         // Re-read, never the emission's own payload: see [MigrationTrigger].
@@ -323,23 +333,17 @@ internal fun wireAutoMigration(
             var attempt = 1
             while (true) {
                 // Chosen per attempt: a standby link that attached during the backoff is taken now.
-                val route = routeFor(trigger, attachedTo, standby.current)
+                val route = routeFor(trigger, attachedTo, standby.current, monitor.observedLink)
                 val result =
                     when (route) {
-                        Route.DefaultRoute -> connection.migrate(MigrationTarget.FreshLocalEndpoint)
+                        is Route.DefaultRoute -> connection.migrate(MigrationTarget.FreshLocalEndpoint)
                         is Route.Standby -> route.ready.migrate()
                     }
                 // One site, so no outcome can be added that forgets to record itself.
                 capture.record { it.migrationAttempt(trigger, attempt, result) }
                 when (result) {
                     is MigrationResult.Succeeded -> {
-                        attachedTo =
-                            when (route) {
-                                Route.DefaultRoute -> attachOnSuccess
-                                // The connection is on the standby link now, whatever the monitor still
-                                // names; the monitor naming that link later is then no handoff.
-                                is Route.Standby -> Attachment.On(route.ready.id)
-                            }
+                        attachedTo = route.landedOn(attachedTo)
                         return@collect
                     }
 
@@ -352,7 +356,7 @@ internal fun wireAutoMigration(
                     // this time" is worth saying again is the leaf's own answer, never a default.
                     is MigrationResult.Unmoved.Failed -> {
                         if (!result.retryableWithoutNewInformation()) return@collect
-                        when (awaitRetrySlot(trigger, monitor, pathLiveness, standby, attachOnSuccess, backoffBeforeAttempt(attempt))) {
+                        when (awaitRetrySlot(trigger, monitor, pathLiveness, standby, premise, backoffBeforeAttempt(attempt))) {
                             RetrySlot.Retry -> attempt++
                             RetrySlot.Abandon -> return@collect
                         }
@@ -497,10 +501,16 @@ private sealed interface RetrySlot {
     data object Abandon : RetrySlot
 }
 
-/** Where one migration attempt opens its socket. */
+/** Where one migration attempt opens its socket, and so the link a success leaves the connection on. */
 private sealed interface Route {
-    /** A fresh endpoint wherever the platform's default route points. */
-    data object DefaultRoute : Route
+    /**
+     * A fresh endpoint wherever the platform's default route points. [named] is what the monitor was
+     * naming as the attempt began, which is when its socket opens: the monitor's name for the default
+     * link.
+     */
+    class DefaultRoute(
+        val named: ObservedLink,
+    ) : Route
 
     /** A fresh endpoint pinned to the standby link [ready]. */
     class Standby(
@@ -509,8 +519,27 @@ private sealed interface Route {
 }
 
 /**
- * Where an attempt for [trigger] should open its socket, given the link the reactor believes it is on
- * and the standby link as it is now.
+ * The attachment after a successful attempt along this route, given the attachment before it.
+ *
+ * A standby attempt is on the standby link, whatever the monitor names. A default-route attempt is on
+ * the default link, which is the link the monitor named as the socket opened; when it named none,
+ * nothing contradicts [before], which stands. Read as the attempt begins rather than at the success,
+ * because that is when the socket is bound: a link the monitor names while the new path validates is a handoff
+ * *after* the move, and the trigger it queued has to find the connection still on the link it left.
+ */
+private fun Route.landedOn(before: Attachment): Attachment =
+    when (this) {
+        is Route.DefaultRoute ->
+            when (named) {
+                ObservedLink.None -> before
+                is ObservedLink.Link -> Attachment.On(named.id)
+            }
+        is Route.Standby -> Attachment.On(ready.id)
+    }
+
+/**
+ * Where an attempt for [trigger] should open its socket, given the link the reactor believes it is on,
+ * the standby link as it is now, and the link the monitor names now.
  *
  * Only the data-plane trigger moves onto the standby link. A path that stopped answering while the
  * platform still names the same default link is exactly the case where the default route leads back
@@ -524,13 +553,14 @@ private fun routeFor(
     trigger: MigrationTrigger,
     attachedTo: Attachment,
     standby: StandbyPath,
+    named: ObservedLink,
 ): Route =
     when (trigger) {
-        MigrationTrigger.LinkChanged -> Route.DefaultRoute
+        MigrationTrigger.LinkChanged -> Route.DefaultRoute(named)
         MigrationTrigger.PathStoppedAnswering ->
             when (standby) {
-                StandbyPath.Unavailable -> Route.DefaultRoute
-                is StandbyPath.Ready -> if (attachedTo.isAlready(standby.id)) Route.DefaultRoute else Route.Standby(standby)
+                StandbyPath.Unavailable -> Route.DefaultRoute(named)
+                is StandbyPath.Ready -> if (attachedTo.isAlready(standby.id)) Route.DefaultRoute(named) else Route.Standby(standby)
             }
     }
 
