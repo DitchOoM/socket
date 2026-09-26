@@ -1333,6 +1333,13 @@ jobs:
           # All three legs build their own natives and inventoried zero skips.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
+          # A run still going at 20 of its 24 minutes is hung (a healthy one takes under 10): print every
+          # test worker's threads into this log before the step lid kills them without a trace.
+          ( sleep 1200
+            for p in $(pgrep -f GradleWorkerMain); do echo "===== HANG: jstack pid=$p ====="; jstack -l "$p" || true; done
+          ) &
+          HANG_DUMP=$!
+          trap 'kill "$HANG_DUMP" 2>/dev/null || true' EXIT
           if [ "${{ matrix.leg.core-dump }}" = "true" ]; then
             # This is the lane where the intermittent JNI SIGSEGV (recv_info UAF) was first caught, so
             # capture a core here too — not just on the malloc-check lane. The forked worker inherits this
