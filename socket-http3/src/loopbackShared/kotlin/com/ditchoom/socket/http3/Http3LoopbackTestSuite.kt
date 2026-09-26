@@ -239,6 +239,45 @@ abstract class Http3LoopbackTestSuite {
             }
         }
 
+    /**
+     * Closing our own connection is not the server closing its control stream. Leaving the
+     * [withHttp3Connection] block closes the QUIC connection with the router still parked on the server's
+     * control and QPACK streams; those reads end with the connection's close, and the connection must
+     * record no HTTP/3 violation for it.
+     */
+    @Test
+    fun aLocalCloseRecordsNoCriticalStreamViolation() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    qpackCapacity = 4096,
+                    onRequest = { response.send(200) },
+                ) {
+                    val connection =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            quicOptions = clientQuicOptions,
+                            connectionOptions = connectionOptions,
+                            timeout = 15.seconds.scaled,
+                        ) {
+                            withTimeout(5.seconds.scaled) { peerSettings() }
+                            diagnostics.registerConnection("C", this)
+                            this
+                        }
+                    assertNull(
+                        connection.connectionError,
+                        "the client closed its own connection with the server's critical streams still open; " +
+                            "their reads ending with that close is not the server closing a critical stream",
+                    )
+                }
+            }
+        }
+
     @Test
     fun postEchoesRequestBodyThroughInProcessServer() =
         runHttp3LoopbackTest {

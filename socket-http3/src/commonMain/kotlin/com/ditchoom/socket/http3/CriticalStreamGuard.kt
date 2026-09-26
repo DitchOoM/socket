@@ -2,7 +2,6 @@ package com.ditchoom.socket.http3
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.concurrent.Volatile
 
 /**
  * The per-connection authority on what the peer may do to a critical unidirectional stream — the
@@ -32,12 +31,6 @@ internal class CriticalStreamGuard {
     private val mutex = Mutex()
     private val claimed = mutableSetOf<CriticalStreamType>()
 
-    // Whether this connection has ended — see [connectionEnded] for what sets it and why an
-    // end-of-stream means nothing without it. Volatile because the router/handler coroutines that read
-    // it are not the one that writes it.
-    @Volatile
-    private var ended = false
-
     /**
      * Claim [type] for this connection. Returns `null` when this is its first instance — the caller
      * proceeds — or the [Http3Violation] to abort the connection with when the peer has opened it
@@ -50,32 +43,16 @@ internal class CriticalStreamGuard {
         }
 
     /**
-     * Record that this connection has ended: its peer-stream flow completed, which is the one fact that
-     * says so ([com.ditchoom.socket.quic.QuicScope.streams] — "Completes when the connection closes").
-     * From here on nothing the peer does to a critical stream is a violation, because the peer is no
-     * longer the one ending them.
+     * The violation for the reader of this connection's [type] stream having seen end-of-stream.
      *
-     * An endpoint aborting the connection itself needs no second call: the abort latch is first-wins in
-     * both roles, so a critical stream ending in the wake of our own CONNECTION_CLOSE reaches an
-     * `abortConnection` that returns immediately, and the reported error stays the real one.
+     * End-of-stream is the peer's FIN and nothing else: a read on a stream whose connection ends without
+     * one — our close, the peer's CONNECTION_CLOSE, an idle timeout — throws the connection's
+     * [com.ditchoom.socket.quic.QuicCloseException] instead, and the routers treat that as the connection
+     * ending. So the verdict comes from what the read returned, never from when it returned: RFC 9114
+     * §6.2.1 and RFC 9204 §4.2 make closing a critical stream a connection error "at any point".
+     *
+     * Returned rather than chosen by the caller for the same reason as [claim]: the error code travels
+     * with the violation.
      */
-    fun connectionEnded() {
-        ended = true
-    }
-
-    /**
-     * The reader of this connection's [type] stream saw end-of-stream. Returns the [Http3Violation] to
-     * abort the connection with, or `null` when the connection itself has already ended and this is
-     * teardown rather than the peer closing a critical stream.
-     *
-     * A read on a stream whose connection ended without the peer's FIN throws the connection's
-     * [com.ditchoom.socket.quic.QuicCloseException] rather than returning end-of-stream, so a reader
-     * reaching here normally saw a real FIN. [connectionEnded] still guards the teardown edge: a peer
-     * that FINs its critical streams as part of closing the connection is ending the connection, not
-     * committing the violation, and reporting it would accuse the peer of one.
-     *
-     * Returning the violation rather than a `Boolean` for the same reason [claim] does: the caller
-     * cannot end up choosing the error code itself.
-     */
-    fun peerClosed(type: CriticalStreamType): Http3Violation? = if (ended) null else Http3Violation.ClosedCriticalStream(type)
+    fun peerClosed(type: CriticalStreamType): Http3Violation = Http3Violation.ClosedCriticalStream(type)
 }
