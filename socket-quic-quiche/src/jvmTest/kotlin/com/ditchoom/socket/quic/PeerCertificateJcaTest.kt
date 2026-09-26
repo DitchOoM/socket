@@ -89,7 +89,13 @@ class PeerCertificateJcaTest {
                     for (file in seen) {
                         assertOwnerOnly(file)
                     }
-                    val pemCert = CertificateFactory.getInstance("X.509").generateCertificate(cert.inputStream()) as X509Certificate
+                    val pemCert =
+                        cert.inputStream().use {
+                            CertificateFactory
+                                .getInstance(
+                                    "X.509",
+                                ).generateCertificate(it)
+                        } as X509Certificate
                     assertEquals(x509, pemCert)
                     val pkcs8 =
                         Base64.getMimeDecoder().decode(
