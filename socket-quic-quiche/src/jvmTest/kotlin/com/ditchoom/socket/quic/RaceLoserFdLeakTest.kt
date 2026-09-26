@@ -7,10 +7,8 @@ import com.ditchoom.socket.ConnectPacing
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
-import com.sun.management.UnixOperatingSystemMXBean
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
-import java.lang.management.ManagementFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -198,8 +196,7 @@ class RaceLoserFdLeakTest {
         return java.io.File(url.toURI()).absolutePath
     }
 
-    private fun openFileDescriptors(): Long =
-        (ManagementFactory.getOperatingSystemMXBean() as UnixOperatingSystemMXBean).openFileDescriptorCount
+    private fun openFileDescriptors(): Long = OpenHandleMeter.forThisProcess().openHandles()
 
     private companion object {
         const val WARMUP_RACES = 2
