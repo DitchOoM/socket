@@ -84,8 +84,8 @@ internal class NetworkControl(
      * 1. Tells the host to schedule [AirplaneOff] after [recoveryDelayMs]
      * 2. Sends [AirplaneOn] — the TCP connection dies after this
      *
-     * Call [waitForAirplaneModeRecovery] afterwards to wait for the scheduled recovery
-     * and re-establish the control connection.
+     * The caller waits for the scheduled recovery on the device ([DeviceNetworkWatch]) and then
+     * [reconnect]s the control channel.
      */
     fun airplaneModeOn(recoveryDelayMs: Long = 5000) {
         // Schedule recovery BEFORE activating airplane mode
@@ -109,15 +109,6 @@ internal class NetworkControl(
 
     fun airplaneModeOff() {
         sendCommand(NetCtrlCommand.AirplaneOff())
-    }
-
-    /**
-     * Waits for the scheduled airplane mode recovery, then reconnects the control channel.
-     * @param waitMs Total time to wait (should be > the scheduled recovery delay + margin)
-     */
-    fun waitForAirplaneModeRecovery(waitMs: Long = 7000) {
-        Thread.sleep(waitMs)
-        reconnect()
     }
 
     fun cleanup() {

@@ -141,6 +141,25 @@ class NetworkControlServerCapabilityTests {
     }
 
     /**
+     * Airplane mode is undone by the recovery the device scheduled, never by the cleanup its dropped
+     * control channel triggers: that cleanup wrote `airplane_mode_on 0` without the broadcast, so the
+     * device read the setting Off while its radios were still going down.
+     */
+    @Test
+    fun cleanupAfterAirplaneModeLeavesTheUndoToTheScheduledRecovery() {
+        val shell = ScriptedShell(rootAvailable = true)
+        val server = serverWith(shell)
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.AirplaneOn()))
+
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.Cleanup()))
+
+        assertTrue(
+            shell.ran.none { it == "settings put global airplane_mode_on 0" },
+            "cleanup must not clear the setting under the scheduled recovery: ${shell.ran}",
+        )
+    }
+
+    /**
      * The #554 gate. Latency must be applied to the interface the device actually routes through.
      *
      * `eth0` was hardcoded and no emulator image has one — API 29 routes through `radio0` — so
