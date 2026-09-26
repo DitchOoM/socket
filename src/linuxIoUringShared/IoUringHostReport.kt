@@ -1,4 +1,4 @@
-package com.ditchoom.socket.udp
+package com.ditchoom.socket.iouring
 
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
@@ -19,14 +19,10 @@ import platform.posix.uname
 import platform.posix.utsname
 
 /**
- * What the host looked like at the moment an `io_uring_setup` failed — the part of an `ENOMEM` that
- * cannot be reconstructed after the process is gone.
- *
- * WHY: an `io_uring_setup` `ENOMEM` is only diagnosable with the kernel version, the memlock budget
- * rings are charged against on older kernels, how much the process has locked, and how many rings
- * this manager has created and released. This gathers them at the failure site, from `/proc` and the
- * rlimits, and the manager appends its own ring ledger. Read only on the failure path; never on a hot
- * path.
+ * What the host looked like when an `io_uring_setup` failed: the kernel, the memlock budget rings are
+ * charged against on older kernels, how much the process has locked, its memory and fds. An `ENOMEM`
+ * names only the errno; these, with the manager's own ring ledger, say whether it was a leak or an
+ * exhausted budget, and none of them can be read once the process is gone. Failure path only.
  *
  * Every line is best-effort and says so when a source is unreadable, so a sandbox without `/proc`
  * degrades to a shorter report rather than a second failure inside the first.

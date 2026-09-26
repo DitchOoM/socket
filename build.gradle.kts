@@ -359,13 +359,31 @@ linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
     // linkerOpts.linux, so both still propagate to the final link.
 }
 
-// io_uring ring setup: one source, src/linuxIoUringShared, also compiled by :socket-udp. Each module
-// takes its own copy in its own package, because two klibs declaring the same internal name cannot
-// link into one binary.
-val generateIoUringSetup by tasks.registering(Sync::class) {
-    from(file("src/linuxIoUringShared"))
-    into(layout.buildDirectory.dir("generated/ioUringSetup/kotlin"))
-    filter { line -> if (line.startsWith("package ")) "package com.ditchoom.socket" else line }
+// The io_uring engine: one source, src/linuxIoUringShared (tests: src/linuxIoUringSharedTest), also
+// compiled by :socket-udp. Each module takes its own copy in its own package, because two klibs
+// declaring the same internal name cannot link into one binary. The package rewrite also selects the
+// module's own cinterop. This module's IoUringManager is public: :socket-quic-quiche submits through it.
+fun Sync.ioUringCopy(
+    source: String,
+    target: String,
+) {
+    from(file(source))
+    into(layout.buildDirectory.dir(target))
+    filter { line ->
+        line
+            .replace("com.ditchoom.socket.iouring", "com.ditchoom.socket")
+            .replace("internal object IoUringManager", "object IoUringManager")
+    }
+}
+val generateIoUring by tasks.registering(Sync::class) {
+    ioUringCopy("src/linuxIoUringShared", "generated/ioUring/kotlin")
+    val manager = destinationDir.resolve("IoUringManager.kt")
+    doLast {
+        check("\nobject IoUringManager {" in manager.readText()) { "IoUringManager was not made public for :socket-quic-quiche" }
+    }
+}
+val generateIoUringTest by tasks.registering(Sync::class) {
+    ioUringCopy("src/linuxIoUringSharedTest", "generated/ioUringTest/kotlin")
 }
 
 kotlin {
@@ -575,11 +593,12 @@ kotlin {
         if (linuxTargets) {
             val linuxMain by getting {
                 kotlin.srcDir(posixNativeImplDir)
-                kotlin.srcDir(generateIoUringSetup)
+                kotlin.srcDir(generateIoUring)
                 dependencies {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }
             }
+            named("linuxTest") { kotlin.srcDir(generateIoUringTest) }
         }
     }
 }

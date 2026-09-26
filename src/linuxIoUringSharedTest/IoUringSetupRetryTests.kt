@@ -1,6 +1,6 @@
-package com.ditchoom.socket
+package com.ditchoom.socket.iouring
 
-import com.ditchoom.socket.linux.io_uring_prep_nop
+import com.ditchoom.socket.iouring.linux.io_uring_prep_nop
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -65,7 +65,8 @@ class IoUringSetupRetryTests {
 
     /**
      * The manager's ring setup refused on every attempt: the operation waiting on it fails with the
-     * typed setup error instead of the process aborting, and the next operation sets up a ring afresh.
+     * module's [IoUringFailure] instead of the process aborting, and the next operation sets up a ring
+     * afresh.
      */
     @Test
     fun aRingTheKernelRefusesFailsTheWaitingOperationAndTheNextOneSetsUpAfresh() =
@@ -79,7 +80,7 @@ class IoUringSetupRetryTests {
             }
             val failure =
                 try {
-                    assertFailsWith<SocketIOException> {
+                    assertFailsWith<IoUringFailure> {
                         withTimeout(10.seconds) {
                             IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_nop(sqe) }
                         }

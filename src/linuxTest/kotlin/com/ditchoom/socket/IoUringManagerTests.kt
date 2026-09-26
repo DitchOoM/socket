@@ -411,10 +411,11 @@ class IoUringManagerTests {
      * Regression for issue #307: [IoUringManager.cleanup] must not be able to block forever when a
      * socket operation starts the poller concurrently with the last-socket close.
      *
-     * `cleanup()` signals stop by clearing `pollerStarted`, and the event loop runs
-     * `while (pollerStarted.value == 1)`. Before the lifecycle mutex, an `ensurePollerStarted()`
-     * racing that window could CAS the flag back to 1 *after* cleanup cleared it, so the running loop
-     * never observed the stop and cleanup's `runBlocking { job.join() }` blocked forever. Seen in CI as
+     * `cleanup()` stops the loop by moving the poller state off the running life, and the loop runs
+     * while the state is its own life. A start racing that window begins a new life rather than
+     * reviving the stopped one, so the stopped loop always observes the stop. With an anonymous
+     * started flag, a start could set it back *after* cleanup cleared it, so the running loop never
+     * observed the stop and cleanup's `runBlocking { job.join() }` blocked forever. Seen in CI as
      * >900s hangs of `DataIntegrityTests.largeDataTransfer_64KB` and `.partialReadHandling` on linuxX64,
      * both with `server.close()` on the stack while the test's accept loop was still live.
      *
@@ -453,7 +454,7 @@ class IoUringManagerTests {
                 bg.launch(acceptCtx) {
                     try {
                         // Accept loop stays live for the whole test — this is the submitter that
-                        // re-arms an accept (and so calls ensurePollerStarted) inside cleanup's window.
+                        // re-arms an accept (and so may start a new poller life) inside cleanup's window.
                         server.bind(0, "127.0.0.1").collect { it.close() }
                     } catch (e: Exception) {
                         // Expected once the server closes
@@ -503,8 +504,8 @@ class IoUringManagerTests {
                 // The process is about to exit; leaking a listening socket buys a legible failure.
                 fail(
                     "IoUringManager.cleanup() did not return within 10s on round $wedgedRound — a " +
-                        "concurrent ensurePollerStarted() resurrected pollerStarted after cleanup " +
-                        "cleared it, stranding the event loop (issue #307).",
+                        "concurrent poller start revived the life cleanup stopped, " +
+                        "stranding the event loop (issue #307).",
                 )
             }
 
