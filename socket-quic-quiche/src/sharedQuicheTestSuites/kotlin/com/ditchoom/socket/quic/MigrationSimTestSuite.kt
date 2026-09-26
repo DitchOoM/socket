@@ -8,6 +8,7 @@ import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceMigrationOutcome
 import com.ditchoom.socket.testkit.trace.TraceMigrationTrigger
 import com.ditchoom.socket.testkit.trace.TraceSilencePhase
 import com.ditchoom.socket.transport.NetworkId
@@ -1046,6 +1047,91 @@ abstract class MigrationSimTestSuite {
                             moved.localEndpoint.host,
                             "the connection re-homed, but onto the dead link rather than the one that answered: ${client.attempts}",
                         )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * **A data-plane move onto the link the platform names is the only move.**
+     *
+     * The dead Wi-Fi and dark cellular of [aRunOfUnansweredProbesOnADeadLinkLeavesTheNextLinkASpare]:
+     * the old path's silence queues a data-plane trigger behind the cellular ladder, and the platform
+     * then names a second Wi-Fi whose route answers. The ladder is abandoned for that news, the queued
+     * silence is served first, and its fresh socket opens on the second Wi-Fi — the link the platform
+     * was naming when it opened. The link change queued behind it names that same link, so it finds
+     * the connection already there. Moving again would spend a spare connection id and a path
+     * validation to land on the link the connection is already on.
+     */
+    @Test
+    fun aDataPlaneMoveOntoTheNamedLinkIsNotRepeatedByTheLinkChangeQueuedBehindIt() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val recorded = mutableListOf<TraceEvent>()
+            var route = SIM_LINK_HOST
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 45_307L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            trace = QuicTraceCapture({ event -> recorded += event }),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    probeHost = { route },
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = DEFAULT_PATH_LATENCY,
+                            reach = LinkReach(if (route == SIM_OTHER_LINK_HOST) PathReach.Open else PathReach.Dark),
+                        )
+                    },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitWalkPeerPool()
+
+                        pipe.impair(pipe.paths().first().local, PathImpairment(reach = LinkReach(PathReach.Dark)))
+                        monitor.setNetworkId(CELLULAR)
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (client.attempts.size <= WALK_PEER_SPARES) delay(10.milliseconds)
+                        }
+                        route = SIM_OTHER_LINK_HOST
+                        monitor.setNetworkId(OTHER_WIFI)
+
+                        assertEquals(
+                            "after",
+                            runCatching { stream.echo("after") }.getOrElse { "CONNECTION DIED: $it" },
+                            "the second link answered from the moment the platform reported it, yet the connection " +
+                                "never reached it: attempts=${client.attempts}",
+                        )
+                        // Long enough for the queued link change, its backoff and a second path validation.
+                        delay(QUEUED_TRIGGER_SETTLE)
+
+                        val migrations = recorded.filterIsInstance<TraceEvent.Migration>()
+                        val moved = migrations.indexOfFirst { it.outcome == TraceMigrationOutcome.Succeeded }
+                        assertEquals(
+                            TraceMigrationTrigger.PathStoppedAnswering,
+                            migrations[moved].trigger,
+                            "precondition: the move onto the second Wi-Fi must be the queued data-plane trigger's, " +
+                                "or this scenario is not the one under test: $migrations",
+                        )
+                        val afterTheMove = migrations.drop(moved + 1)
+                        assertTrue(
+                            afterTheMove.isEmpty(),
+                            "the data-plane trigger moved the connection onto $OTHER_WIFI, the link the platform " +
+                                "was naming, and ${afterTheMove.size} further attempt(s) followed for a link change " +
+                                "naming that same link: ${afterTheMove.map { "${it.trigger}#${it.attempt}=${it.outcome}" }}. " +
+                                "attempts=${client.attempts}, spares=${clientAvailableDcids()}",
+                        )
+                        assertEquals("still", stream.echo("still"), "the connection must still carry data on the second Wi-Fi")
                         stream.close()
                     } finally {
                         serverJob.cancel()
@@ -2853,6 +2939,12 @@ abstract class MigrationSimTestSuite {
          * attaches inside it must not wait it out.
          */
         val BACKOFF_AFTER_THIRD_ATTEMPT = 1.seconds
+
+        /**
+         * How long a scenario waits after a move for a trigger queued behind it to play out: its re-read,
+         * a `NoSpareConnectionId` answer, the 250ms backoff, and a full path validation on the next.
+         */
+        val QUEUED_TRIGGER_SETTLE = 10.seconds
 
         /**
          * How long the real connection survived on its dead path before `IdleTimeout` killed it, on the

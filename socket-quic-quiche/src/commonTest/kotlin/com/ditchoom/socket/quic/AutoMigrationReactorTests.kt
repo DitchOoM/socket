@@ -656,7 +656,7 @@ class AutoMigrationReactorTests {
     }
 
     /**
-     * A data-plane migration names no new link, so it must leave the recorded attachment alone.
+     * A data-plane migration while the platform still names the same link stays attached to that link.
      *
      * Get this wrong and the damage is silent and later. Clearing the record is the dangerous
      * direction: the next genuine handoff is then read as the connect-time baseline and swallowed,
@@ -975,6 +975,83 @@ class AutoMigrationReactorTests {
             liveness.value = PathLiveness.Silent
             assertEquals(1, standby.moves)
             assertEquals(1, conn.migrateCount, "a dead standby path has nowhere to go but the default route")
+        }
+    }
+
+    /**
+     * A move back onto the default route lands on the link the platform names, so the standby link is
+     * somewhere to go again when that path goes silent in turn.
+     */
+    @Test
+    fun aMoveBackOntoTheDefaultRouteLeavesTheStandbyLinkToGoToAgain() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent // onto the standby link
+            liveness.value = PathLiveness.Answering
+            liveness.value = PathLiveness.Silent // back onto the default route, on wifi
+            liveness.value = PathLiveness.Answering
+            liveness.value = PathLiveness.Silent // wifi is dead: the standby link is the way out
+            assertEquals(
+                2,
+                standby.moves,
+                "the connection moved back onto wifi, but the reactor still believed it was on the standby " +
+                    "link, so wifi dying sent it down the default route onto wifi again. " +
+                    "standby moves=${standby.moves}, default-route moves=${conn.migrateCount}",
+            )
+            assertEquals(1, conn.migrateCount)
+        }
+    }
+
+    /**
+     * A data-plane move opens its socket on the link the platform names at that moment, so a link
+     * change queued behind it that names the same link finds the connection already there.
+     */
+    @Test
+    fun aDataPlaneMoveOntoTheNamedLinkIsNotRepeatedByTheLinkChangeQueuedBehindIt() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        runReactor(monitor, pathLiveness = liveness) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            monitor.setNetworkId(cellular) // the handoff parks in migrate()
+            liveness.value = PathLiveness.Silent // queued behind it
+            monitor.setNetworkId(ethernet) // queued behind that
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "the data-plane move opened its socket while the platform named ethernet, and the link " +
+                    "change queued behind it for ethernet moved the connection again",
+            )
+        }
+    }
+
+    /**
+     * The other side of that: a link the platform names only while the new path is validating is a
+     * handoff after the move. The socket opened on the link named before it, so the link change it
+     * queued must still move the connection.
+     */
+    @Test
+    fun aLinkNamedWhileADataPlaneMoveValidatesIsStillAHandoff() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        runReactor(monitor, pathLiveness = liveness) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            liveness.value = PathLiveness.Silent // the data-plane move opens on wifi and parks
+            monitor.setNetworkId(ethernet) // named while it validates
+            liveness.value = PathLiveness.Answering
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "the data-plane move's socket opened while the platform named wifi, but the reactor " +
+                    "attached it to ethernet, named only afterwards, and skipped the handoff onto ethernet",
+            )
         }
     }
 
