@@ -249,18 +249,18 @@ class NetworkControlServer(
     /**
      * Drop [uid]'s UDP in both families, from a chain of our own hooked **first** in `OUTPUT`.
      *
-     * The rule this replaces (`iptables -A OUTPUT -p udp -j DROP`) was appended after every chain the
-     * platform installs in `OUTPUT`, covered IPv4 only, and had no counter anyone read, so whether it
-     * dropped the app's datagrams was never observed (#702). Hooking at position 1 puts it ahead of the
-     * platform's rules, `ip6tables` covers a harness reached over IPv6, and the owner match scopes the
-     * counter [udpDrops] reports to the app's own datagrams.
+     * The rule this replaces (`iptables -A OUTPUT -p udp -j DROP`) covered IPv4 only and had no counter
+     * anyone read, so whether it dropped the app's datagrams was never observed (#702). Position 1
+     * keeps the verdict independent of whatever the platform's `oem_out`/`fw_OUTPUT`/`bw_OUTPUT`
+     * chains do, `ip6tables` covers a harness reached over IPv6, and the owner match scopes the counter
+     * [udpDrops] reports to the app's own datagrams.
      */
     private fun blockUdp(uid: Int): NetCtrlResponse {
         for (family in UDP_BLOCK_FAMILIES) {
             val applied =
                 applying(
                     "$family -w -N $UDP_BLOCK_CHAIN",
-                    "$family -w -A $UDP_BLOCK_CHAIN -p udp -m owner --uid-owner ${uid + 1} -j DROP",
+                    "$family -w -A $UDP_BLOCK_CHAIN -p udp -m owner --uid-owner $uid -j DROP",
                     "$family -w -I OUTPUT 1 -j $UDP_BLOCK_CHAIN",
                 )
             if (applied !is NetCtrlResponse.Ok) return applied
