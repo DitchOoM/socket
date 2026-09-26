@@ -508,6 +508,17 @@ jobs:
       # lists quiche_jni.dll alone), so JNI is the only Windows path there is to exercise.
       - name: Run JVM tests
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache
+      # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
+      # diagnostics live in the XML's system-out, which is otherwise lost with the runner.
+      - name: Upload Windows test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-jvm-test-results
+          path: |
+            build/test-results/jvmTest
+            socket-quic-quiche/build/test-results/jvmTest
+          if-no-files-found: warn
 
   docs:
     name: "Validate Docs Generation"
