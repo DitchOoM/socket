@@ -391,6 +391,13 @@ jobs:
           find libs/boringssl libs/liburing socket-quic-quiche/libs/quiche \
             -type f \( -name '*.a' -o -name '*.so' \) 2>/dev/null \
             | sort >> "$GITHUB_STEP_SUMMARY" || echo "(no artifacts produced)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # KSP's tool jars in the Gradle cache this job saves (resolveAllDependencies resolves KSP's
+          # detached tool classpath); without them every KSP task fetches them from Central.
+          echo "KSP tool jars in ~/.gradle/caches:" | tee -a "$GITHUB_STEP_SUMMARY"
+          find ~/.gradle/caches/modules-2/files-2.1 -type f \( -name 'symbol-processing-aa-embeddable-*.jar' \
+            -o -name 'symbol-processing-common-deps-*.jar' -o -name 'kotlinx-coroutines-core-jvm-*.jar' \) \
+            -printf '%f\n' 2>/dev/null | sort | tee -a "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
   # 3. Apple native cache-warm.
