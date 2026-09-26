@@ -53,6 +53,7 @@ class TempSelectorWriteTimeoutProbe {
                 useAsyncChannels = savedAsync
                 useNioBlocking = savedBlocking
             }
-            fail("PROBE-RESULTS\n" + lines.joinToString("\n"))
+            println("PROBE-RESULTS\n" + lines.joinToString("\n"))
+            if (System.getProperty("os.name").startsWith("Windows")) fail("PROBE-RESULTS\n" + lines.joinToString("\n"))
         }
 }

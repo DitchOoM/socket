@@ -438,6 +438,7 @@ jobs:
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
     needs: [version, build-linux]
+    if: ${{ !cancelled() }} # TEMP: diagnostic iteration only
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up, and #515 is the run on which that
