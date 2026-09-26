@@ -16,6 +16,17 @@ interface QuicConnection : QuicScope {
     val state: StateFlow<QuicConnectionState>
 
     /**
+     * What this connection still holds for its application once [state] is
+     * [QuicConnectionState.Closed] — see [QuicUnreadAtClose]. Settled before [state] reads Closed, so
+     * an observer that saw Closed reads the settled value. [runUntilClosed] keeps a block running on a
+     * dead connection until this reaches [QuicUnreadAtClose.AllRead].
+     *
+     * Required, with no default, for the reason [identity] is: a backend that cannot say whether it is
+     * holding received bytes should fail to compile rather than claim it is not.
+     */
+    val unreadAtClose: StateFlow<QuicUnreadAtClose>
+
+    /**
      * Which connection this is — the stable session id plus the current wire CID.
      *
      * Deliberately lives here rather than on [QuicConnectionState]: identity belongs to a connection

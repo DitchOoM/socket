@@ -31,7 +31,8 @@ import kotlin.time.Duration.Companion.seconds
  *
  * [timeout] bounds establishment *and* the block.
  *
- * A connection that ends while [block] runs — the peer closes it, it idles out — cancels [block], and
+ * A connection that ends while [block] runs — the peer closes it, it idles out — cancels [block] once
+ * [block] has read what the connection received, or after [QuicOptions.idleTimeout] if it does not, and
  * this then throws the [QuicCloseException] saying why (see [runUntilClosed]).
  *
  * A handshake that stalls past [timeout] fails with a [QuicCloseException] whose reason is
@@ -112,7 +113,7 @@ suspend fun <R> withQuicConnection(
             val connection = raced.connection
             established = true
             try {
-                connection.runUntilClosed { block(raced.candidateRace) }
+                connection.runUntilClosed(quicOptions.idleTimeout) { block(raced.candidateRace) }
             } finally {
                 connection.close()
             }

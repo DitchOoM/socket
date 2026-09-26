@@ -38,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -252,6 +253,22 @@ class QuicheDriver(
 
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
+
+    private val _unreadAtClose = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
+
+    /** [QuicConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
+    val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
+
+    /**
+     * The application is done reading [slot]: latch its [StreamSlot.readSide] and, on a closed
+     * connection, stop waiting on it. Called from reading coroutines, so the latch comes first:
+     * [settleUnreadAtClose] re-reads every latch after publishing, which catches a reader that finished
+     * between its snapshot and its publication.
+     */
+    internal fun readSideFinished(slot: StreamSlot) {
+        slot.readSide = StreamReadSide.Finished
+        _unreadAtClose.update { unread -> if (unread is QuicUnreadAtClose.Unread) unread.without(slot.id) else unread }
+    }
 
     private val _sessionTicket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
 
@@ -2228,8 +2245,31 @@ class QuicheDriver(
         networkObservation.freeze()
         refreshSessionTicket()
         drainReadableStreamsIntoSlots()
+        settleUnreadAtClose()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())
+    }
+
+    /**
+     * Publish which streams the closing connection still holds something for — after the teardown drain,
+     * so every byte quiche held is already in a slot, and before [state] reads Closed. A stream counts
+     * while its reader is [StreamReadSide.Reading] and it holds queued bytes or a latched FIN/RESET; an
+     * open stream with nothing queued has nothing left to deliver but the close itself.
+     */
+    private fun settleUnreadAtClose() {
+        val unread =
+            streams.values
+                .filter { it.readSide == StreamReadSide.Reading && (!it.pendingData.isEmpty || it.end != StreamEnd.Open) }
+                .map { it.id }
+                .toSet()
+        _unreadAtClose.value = if (unread.isEmpty()) QuicUnreadAtClose.AllRead else QuicUnreadAtClose.Unread(unread)
+        // A reader that finished after the snapshot but before the publication found the flow still
+        // ConnectionOpen and removed nothing; its latch is visible here.
+        for (slot in streams.values) {
+            if (slot.readSide == StreamReadSide.Finished) {
+                _unreadAtClose.update { u -> if (u is QuicUnreadAtClose.Unread) u.without(slot.id) else u }
+            }
+        }
     }
 
     /**
@@ -3793,6 +3833,7 @@ class DriverStreamAdapter(
      * `read()` can hand them out, so holding them would leak a pooled/native buffer per undelivered chunk.
      */
     override fun releaseUndeliveredReads() {
+        driver.readSideFinished(slot)
         while (true) {
             val buffer = slot.pendingData.tryReceive().getOrNull() ?: return
             // Recorded before freeing: releasing here is CORRECT (no read() can hand these out any
@@ -3859,7 +3900,35 @@ class DriverStreamAdapter(
         return queued
     }
 
+    /**
+     * [readNext], latching the stream's read side [StreamReadSide.Finished] once a read hands out its
+     * terminal verdict — End, Reset, the connection's close or a stream read error. A deadline or a
+     * cancellation is not a verdict: the stream is still being read.
+     */
     override suspend fun streamRead(
+        streamId: QuicStreamId,
+        bufferFactory: BufferFactory,
+        bufferSize: Int,
+        timeout: Duration,
+    ): ReadResult {
+        val result =
+            try {
+                readNext(streamId, bufferFactory, bufferSize, timeout)
+            } catch (e: QuicCloseException) {
+                driver.readSideFinished(slot)
+                throw e
+            } catch (e: QuicStreamReadException) {
+                driver.readSideFinished(slot)
+                throw e
+            }
+        when (result) {
+            is ReadResult.Data -> Unit
+            ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
+        }
+        return result
+    }
+
+    private suspend fun readNext(
         streamId: QuicStreamId,
         bufferFactory: BufferFactory,
         bufferSize: Int,

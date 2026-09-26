@@ -63,6 +63,22 @@ class StreamSlot(
      * is closed is released by [DriverStreamAdapter.releaseUndeliveredReads].
      */
     val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
+
+    /** Whether the application is done with this stream's read side. See [StreamReadSide]. */
+    @Volatile
+    var readSide: StreamReadSide = StreamReadSide.Reading
+}
+
+/**
+ * The application's side of a stream's reads: [Reading] until a read hands out the stream's terminal
+ * verdict (End, Reset, the connection's close, a stream read error) or the application releases the read
+ * side — then [Finished], for good. A closed connection is waiting on exactly the [Reading] streams that
+ * still hold something (see [com.ditchoom.socket.quic.QuicUnreadAtClose]).
+ */
+sealed interface StreamReadSide {
+    data object Reading : StreamReadSide
+
+    data object Finished : StreamReadSide
 }
 
 /**

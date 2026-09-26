@@ -362,6 +362,8 @@ internal class AppleQuicConnection(
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
+    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = driver.unreadAtClose
+
     override val quicheDriver: QuicheDriver get() = driver
 
     /**

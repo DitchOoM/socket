@@ -10,7 +10,6 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.udp.MultiplexedProtocol
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.demultiplex
@@ -1108,13 +1107,10 @@ abstract class QuicServerTestSuite {
                             }
                         }
 
-                    // A held connection, not a withQuicConnection block: a block is cancelled when its
-                    // connection ends, so only a held connection can read after the teardown.
                     val clientJob =
                         launch {
-                            val connection = QuicSessionTransport(testQuicOptions).establish("localhost", port, TransportConfig())
-                            try {
-                                val stream = connection.openStream()
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
                                 val sendBuf = BufferFactory.deterministic().allocate(4)
                                 sendBuf.writeString("ping", Charset.UTF8)
                                 sendBuf.resetForRead()
@@ -1130,8 +1126,6 @@ abstract class QuicServerTestSuite {
                                     echoResult.complete("no_data:${response::class.simpleName}")
                                 }
                                 stream.close()
-                            } finally {
-                                connection.close()
                             }
                         }
 

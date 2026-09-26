@@ -76,6 +76,11 @@ internal class SharedQuicheServer(
      * ([QuicOptions.closeLinger], threaded here by every build function). See [lingerBeforeClose].
      */
     private val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
+    /**
+     * How long a handler on a dead connection keeps running while the connection still holds data it
+     * has not read — the [QuicOptions.idleTimeout] every build function passes. See [runUntilClosed].
+     */
+    private val unreadLinger: Duration,
     // Per-call lifecycle teardown wired by the build function (cancel the parent scope). Invoked last by
     // close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
@@ -184,7 +189,7 @@ internal class SharedQuicheServer(
                     try {
                         conn.state.first { it !is QuicConnectionState.Handshaking }
                         if (conn.state.value is QuicConnectionState.Established) {
-                            conn.runUntilClosed { handler() }
+                            conn.runUntilClosed(unreadLinger) { handler() }
                         }
                     } catch (_: QuicCloseException) {
                         // The connection ended while the handler was still running — cancelled by

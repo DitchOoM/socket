@@ -28,6 +28,8 @@ internal class DriverQuicConnection(
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
+    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = driver.unreadAtClose
+
     override val quicheDriver: QuicheDriver get() = driver
 
     override val sessionTicket: StateFlow<QuicSessionTicketState> get() = driver.sessionTicket

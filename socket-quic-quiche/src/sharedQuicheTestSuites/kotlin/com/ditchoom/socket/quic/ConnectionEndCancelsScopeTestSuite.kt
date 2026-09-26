@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
@@ -28,7 +31,8 @@ import kotlin.time.TimeSource
  * block's own body observed its cancellation: nothing here can pass because a close was *called*, only
  * because the code running on the connection was stopped. Every failure names the connection state the
  * block was left running on, which separates "the close never arrived" from "it arrived and nothing
- * cancelled the block". A close the block made itself is the one end that does not cancel it.
+ * cancelled the block". A close the block made itself is the one end that does not cancel it, and
+ * data the connection received and the block has not yet read keeps it running, for a bounded time.
  */
 abstract class ConnectionEndCancelsScopeTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -197,7 +201,185 @@ abstract class ConnectionEndCancelsScopeTestSuite {
             }
         }
 
+    /**
+     * The reply-then-close pattern with a slow client: the server writes its reply, FINs and returns, and
+     * its CONNECTION_CLOSE follows. The client does not read until well past its draining period (3 × PTO),
+     * so the connection has died with the reply unread — and the block, still running, reads it in full
+     * and returns it. A block cancelled the moment the connection read Closed would lose the reply.
+     */
+    @Test
+    fun aClientThatReadsAfterTheServerClosedStillGetsTheWholeReply() =
+        runQuicTest(timeout = 30.seconds) {
+            wrapTestBody {
+                // Short enough that the server closes long before the client reads; long enough for the
+                // whole reply to cross loopback first.
+                val serverOptions = options.copy(closeLinger = QuicCloseLinger.UntilPeerDone(SERVER_LINGER))
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                val request = stream.readToEnd()
+                                writeText(stream, request.repeat(REPLY_REPEAT))
+                                stream.close()
+                            }
+                        }
+                    try {
+                        val reply =
+                            withQuicConnection("127.0.0.1", port, options) {
+                                val state = (this as QuicConnection).state
+                                val stream = openStream()
+                                writeText(stream, REQUEST)
+                                stream.shutdownSend()
+                                withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
+                                delay(SLOW_READER)
+                                stream.readToEnd()
+                            }
+                        assertEquals(REQUEST.repeat(REPLY_REPEAT).length, reply.length, "the reply must arrive in full")
+                        assertEquals(REQUEST.repeat(REPLY_REPEAT), reply)
+                    } finally {
+                        serverJob.cancelAndJoin()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The same pattern the other way round: the client sends its request, FINs and closes, and the server's
+     * handler does not read until well past its draining period. The request is still delivered in full.
+     */
+    @Test
+    fun aServerHandlerThatReadsAfterTheClientClosedStillGetsTheWholeRequest() =
+        runQuicTest(timeout = 30.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
+                    // The request fits one packet: the stream reaching the handler means all of it arrived.
+                    val accepted = CompletableDeferred<Unit>()
+                    val received = CompletableDeferred<String>()
+                    val serverJob =
+                        launch {
+                            connections {
+                                val state = (this as QuicConnection).state
+                                val stream = acceptStream()
+                                accepted.complete(Unit)
+                                withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
+                                delay(SLOW_READER)
+                                received.complete(stream.readToEnd())
+                            }
+                        }
+                    try {
+                        withQuicConnection("127.0.0.1", port, options) {
+                            val stream = openStream()
+                            writeText(stream, REQUEST)
+                            stream.shutdownSend()
+                            withTimeout(closeBound) { accepted.await() }
+                        }
+                        // withQuicConnection's return has closed the connection under the parked handler.
+                        val request =
+                            withTimeoutOrNull(closeBound + SLOW_READER) { received.await() }
+                                ?: fail("the server handler was cancelled before it read the request the client sent")
+                        assertEquals(REQUEST, request)
+                    } finally {
+                        serverJob.cancelAndJoin()
+                    }
+                }
+            }
+        }
+
+    /**
+     * Unread data keeps a block on a dead connection running only for a bounded time: a block that never
+     * reads the reply is still cancelled, within the idle timeout, with the typed close.
+     */
+    @Test
+    fun aBlockThatNeverReadsIsCancelledWithinTheIdleTimeout() =
+        runQuicTest(timeout = 40.seconds) {
+            wrapTestBody {
+                val clientOptions = options.copy(idleTimeout = LINGER_IDLE_TIMEOUT)
+                val serverOptions = options.copy(closeLinger = QuicCloseLinger.Immediate)
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                stream.readToEnd()
+                                writeText(stream, REQUEST)
+                                stream.close()
+                            }
+                        }
+                    val block = ParkedBlock()
+                    val unreadWhenClosed = CompletableDeferred<QuicUnreadAtClose>()
+                    val outcome = CompletableDeferred<Throwable?>()
+                    val client =
+                        launch {
+                            outcome.complete(
+                                runCatching {
+                                    withQuicConnection("127.0.0.1", port, clientOptions) {
+                                        val connection = this as QuicConnection
+                                        launch {
+                                            connection.state.first { it is QuicConnectionState.Closed }
+                                            unreadWhenClosed.complete(connection.unreadAtClose.value)
+                                        }
+                                        val stream = openStream()
+                                        writeText(stream, REQUEST)
+                                        stream.shutdownSend()
+                                        block.park(this)
+                                    }
+                                }.exceptionOrNull(),
+                            )
+                        }
+                    try {
+                        withTimeout(closeBound) { block.entered.await() }
+                        val unread = withTimeout(closeBound) { unreadWhenClosed.await() }
+                        assertIs<QuicUnreadAtClose.Unread>(
+                            unread,
+                            "the reply must be unread when the connection closes, or this proves nothing",
+                        )
+                        val ended = block.awaitEnd(LINGER_IDLE_TIMEOUT + closeBound, "a block that never reads its reply")
+                        assertIs<CancellationException>(ended)
+                        val close = assertIs<QuicCloseException>(withTimeout(closeBound) { outcome.await() })
+                        assertEquals(QuicCloseReason.Graceful, close.closeReason)
+                    } finally {
+                        client.cancelAndJoin()
+                        serverJob.cancelAndJoin()
+                    }
+                }
+            }
+        }
+
+    private suspend fun QuicByteStream.readToEnd(): String {
+        val text = StringBuilder()
+        while (true) {
+            when (val r = read(closeBound) { it.readString(it.remaining(), Charset.UTF8) }) {
+                is ScopedRead.Data -> text.append(r.value)
+                ScopedRead.End -> return text.toString()
+                ScopedRead.Reset -> fail("the peer reset a stream it was answering on, after ${text.length} chars")
+            }
+        }
+    }
+
+    /** The whole of [text], across as many partial writes as flow control and congestion make it take. */
+    private suspend fun QuicScope.writeText(
+        stream: QuicByteStream,
+        text: String,
+    ) {
+        val out = bufferFactory.allocate(text.length)
+        try {
+            out.writeString(text, Charset.UTF8)
+            out.resetForRead()
+            stream.writeFully(out, closeBound)
+        } finally {
+            out.freeIfNeeded()
+        }
+    }
+
     private companion object {
+        const val REQUEST = "reply-then-close;"
+        const val REPLY_REPEAT = 2048
+        val SERVER_LINGER = 300.milliseconds
+
+        /** Well past a loopback connection's draining period (3 × PTO, tens of milliseconds). */
+        val SLOW_READER = 2.seconds
+        val LINGER_IDLE_TIMEOUT = 3.seconds
         const val APPLICATION_CLOSE_CODE = 0x7L
         val WATCHER_GRACE = 250.milliseconds
     }
