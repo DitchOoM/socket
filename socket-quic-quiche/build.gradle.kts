@@ -40,6 +40,7 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
 val quicheSha256 = libs.versions.quicheSha256.get()
+val quicheBoringCrateVersion = libs.versions.quicheBoringCrate.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 // Digest of THIS build script — the single source of truth for every quiche source patch
@@ -49,10 +50,12 @@ val quicheBuildDir = layout.buildDirectory.dir("quiche")
 // left it byte-identical and a cached pre-patch libquiche.dylib (missing quiche_set_virtual_time_nanos /
 // quiche_clear_virtual_time) satisfied it → JNI shim link failure. A content digest can't be forgotten the
 // way a hand-bumped version token can — which is exactly the failure mode that caused the incident.
+// The boring-crate pin is folded in because it changes the source build too, and lives in the version
+// catalog rather than this script.
 val quichePatchDigest: String =
     MessageDigest
         .getInstance("SHA-256")
-        .digest(buildFile.readBytes())
+        .digest(buildFile.readBytes() + quicheBoringCrateVersion.toByteArray())
         .joinToString("") { "%02x".format(it) }
         .take(12)
 
@@ -213,6 +216,7 @@ fun downloadQuicheSource(
 
     // Applied to every consumer of this clone (idempotent). Only affects the boringssl-boring-crate
     // code path; external `ffi,qlog` builds are untouched.
+    patchQuicheBoringCratePin(sourceDir, quicheBoringCrateVersion)
     patchQuicheBuildRsForBoringCrate(sourceDir)
     // Make the linux cdylib emit an UNVERSIONED soname (idempotent; no-op off-linux).
     patchQuicheBuildRsForUnversionedSoname(sourceDir)
@@ -315,7 +319,51 @@ fun resetQuicheSourceToPristine(sourceDir: File) {
 }
 
 /**
- * Patch quiche 0.29+'s build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
+ * Pin the `boring` / `boring-sys` crates quiche's workspace resolves to [version].
+ *
+ * quiche accepts `boring` 4.19 through 5.x and ships no lockfile, so an unpinned build takes whatever
+ * crates.io has newest. The boring crate is the BoringSSL of every self-contained libquiche (Apple,
+ * Android, Windows, the Linux fallback), while the Linux external build links the canonical
+ * boringssl-kmp bundle, which is boring-sys 4.22.0's BoringSSL. Pinning keeps every platform on that
+ * one BoringSSL: the 5.x line changes TLS behaviour (post-quantum key shares by default, so a
+ * ClientHello that spans several Initial packets) and would make the self-contained builds diverge
+ * from Linux. Moving to 5.x is a move of the canonical bundle and this pin together.
+ *
+ * Loud on drift: a manifest whose `boring` requirement is not the anchored one throws.
+ */
+fun patchQuicheBoringCratePin(
+    sourceDir: File,
+    version: String,
+) {
+    val cargoToml = sourceDir.resolve("Cargo.toml")
+    if (!cargoToml.exists()) return
+    val text = cargoToml.readText()
+    val marker = "socket-boring-crate-pin"
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |boring = { version = ">=4.19, <6" }
+        |boring-sys = { version = ">=4.19, <6" }
+        """.trimMargin()
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "$marker: quiche's workspace Cargo.toml no longer declares `$anchor`. A quiche bump changed the " +
+                "boring requirement — re-fit patchQuicheBoringCratePin, and check that the pinned boring " +
+                "($version) is still inside the new range and still matches the canonical Linux BoringSSL.",
+        )
+    }
+    val replacement =
+        """
+        |# $marker: every platform's BoringSSL is boring-sys $version's (the canonical Linux bundle's).
+        |boring = { version = "=$version" }
+        |boring-sys = { version = "=$version" }
+        """.trimMargin()
+    cargoToml.writeText(text.replaceFirst(anchor, replacement))
+    logger.lifecycle("Patched quiche Cargo.toml: boring / boring-sys pinned to =$version")
+}
+
+/**
+ * Patch quiche's build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
  * BoringSSL.
  *
  * quiche's `build.rs` emits `cargo:rustc-link-lib=static=ssl` + `=crypto` under
@@ -326,8 +374,10 @@ fun resetQuicheSourceToPristine(sourceDir: File) {
  * member in → "duplicate symbol" (ChaCha20_ctr32, TLS_server_method, bssl::CERT::~CERT()…).
  *
  * Neutralize quiche's redundant emission (boring-sys' is sufficient) so libquiche.a carries BoringSSL
- * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
- * or the external `ffi,qlog` path where the feature is off).
+ * exactly once. The emission sits behind a `cfg!(feature = "boringssl-boring-crate")` evaluated when
+ * the build script runs, so the edit is inert on the external `ffi,qlog` path. Idempotent (guarded by
+ * a marker comment); a missing anchor throws, because a silent no-op here is a staticlib carrying
+ * BoringSSL twice and a duplicate-symbol failure at a link far from the cause.
  */
 fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
     val buildRs = sourceDir.resolve("quiche/src/build.rs")
@@ -337,22 +387,22 @@ fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
 
     val original =
         """
-        |    if cfg!(feature = "boringssl-boring-crate") {
         |        println!("cargo:rustc-link-lib=static=ssl");
         |        println!("cargo:rustc-link-lib=static=crypto");
-        |    }
         """.trimMargin()
-    if (!text.contains(original)) return // ≤0.28 (no boring-crate block) or upstream changed — nothing to dedup
+    if (text.split(original).size != 2) {
+        throw GradleException(
+            "socket-dedup-boringssl: quiche/src/build.rs does not emit the boring-crate `static=ssl` / " +
+                "`static=crypto` link directives exactly once. A quiche bump reshaped that block — re-fit " +
+                "patchQuicheBuildRsForBoringCrate, or delete it if quiche no longer re-emits what boring-sys does.",
+        )
+    }
 
     val replacement =
         """
-        |    // socket-dedup-boringssl: boring-sys already emits these; quiche re-emitting them
-        |    // double-bundles BoringSSL into the staticlib (duplicate symbols under --whole-archive /
-        |    // -force_load). Neutralized so libquiche.a carries BoringSSL exactly once.
-        |    if false && cfg!(feature = "boringssl-boring-crate") {
-        |        println!("cargo:rustc-link-lib=static=ssl");
-        |        println!("cargo:rustc-link-lib=static=crypto");
-        |    }
+        |        // socket-dedup-boringssl: boring-sys already emits `static=ssl` / `static=crypto`;
+        |        // quiche re-emitting them double-bundles BoringSSL into the staticlib (duplicate symbols
+        |        // under --whole-archive / -force_load). Dropped so libquiche.a carries BoringSSL once.
         """.trimMargin()
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
@@ -638,7 +688,7 @@ fun patchQuicheOrphanPathLoss(sourceDir: File) {
  * our own `-soname` right after the metabuild call, making it the last (winning) `-soname` on the link
  * line. This is the underlying fix; no post-build ELF/soname surgery is needed.
  *
- * Idempotent (marker-guarded); a no-op if the metabuild block isn't present (upstream changed / ≤0.28).
+ * Idempotent (marker-guarded); a missing metabuild block throws rather than shipping a versioned soname.
  */
 fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
     val buildRs = sourceDir.resolve("quiche/src/build.rs")
@@ -652,7 +702,13 @@ fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
         |        cdylib_link_lines::metabuild();
         |    }
         """.trimMargin()
-    if (!text.contains(original)) return // upstream changed the ffi metabuild block — nothing to patch
+    if (!text.contains(original)) {
+        throw GradleException(
+            "socket-unversioned-soname: the `cdylib_link_lines::metabuild()` block was not found in " +
+                "quiche/src/build.rs. A quiche bump reshaped it — re-fit patchQuicheBuildRsForUnversionedSoname " +
+                "so the linux cdylib keeps the unversioned `libquiche.so` soname the JNI shim DT_NEEDEDs.",
+        )
+    }
 
     val replacement =
         """
@@ -677,7 +733,7 @@ fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
  * caller-clocked" cap: with it, a Tier-A QUIC sim can pin libquiche's loss/PTO/RTT/pacing/congestion clock
  * to virtual time and go bit-exact instead of "trace-prefix-exact ±1 datagram".
  *
- * quiche reads the monotonic clock at **72 `Instant::now()` sites across ~15 files** (leaf modules —
+ * quiche reads the monotonic clock at **over a hundred `Instant::now()` sites across ~20 files** (leaf modules —
  * `minmax`, `delivery_rate`, the congestion controllers — read it directly, so a per-`Connection` field
  * can't reach them) plus **one** `pkt_space.largest_rx_pkt_time.elapsed()` (which is `Instant::now() -
  * self` under the hood). A per-field clock is therefore intractable; the tractable shape is a uniform
@@ -700,7 +756,7 @@ fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
  * it asserts no `Instant::now()`/`.elapsed()` remains (a quiche bump that adds a clock site, or changes the
  * `.elapsed()` expression, throws here instead of silently leaving a real-time read un-clocked).
  *
- * 72 sites across recovery internals is a wider blast radius than the two `build.rs` patches — it will
+ * That many sites across recovery internals is a wider blast radius than the two `build.rs` patches — it will
  * conflict more often on bumps, which is exactly why upstreaming a pluggable clock to Cloudflare is the
  * real long-term plan (RFC §6.1); this patch is what we carry until that lands.
  */
@@ -715,8 +771,10 @@ fun patchQuicheForCallerClock(sourceDir: File) {
     //    routed too (targeted replace — there is exactly one such site).
     val elapsedSite = "pkt_space.largest_rx_pkt_time.elapsed()"
     val elapsedRewrite = "crate::now().saturating_duration_since(pkt_space.largest_rx_pkt_time)"
+    var rewrittenSites = 0
     srcDir.walkTopDown().filter { it.isFile && it.extension == "rs" }.forEach { f ->
         val before = f.readText()
+        rewrittenSites += before.split("Instant::now()").size - 1 + before.split(elapsedSite).size - 1
         val after =
             before
                 .replace("std::time::Instant::now()", "crate::now()")
@@ -839,7 +897,7 @@ fun patchQuicheForCallerClock(sourceDir: File) {
         |// ---- end socket-caller-clock ----
         """.trimMargin()
     libRs.appendText("\n" + clockModule + "\n")
-    logger.lifecycle("Patched quiche source: caller-clock (crate::now() over 72 sites + virtual-time FFI)")
+    logger.lifecycle("Patched quiche source: caller-clock (crate::now() over $rewrittenSites sites + virtual-time FFI)")
 }
 
 /**
@@ -849,7 +907,7 @@ fun patchQuicheForCallerClock(sourceDir: File) {
  * `quiche/include/quiche.h` declares it as a plain C struct — ten `uint64_t`, then `bool
  * peer_disable_active_migration`, then `uint64_t peer_active_conn_id_limit`, then `ssize_t
  * peer_max_datagram_frame_size`. But the Rust definition has **no `#[repr(C)]`**, while its immediate
- * neighbours `Stats` (ffi.rs ~1325) and `PathStats` (~1437) both do — in 0.28.0, 0.29.2 and 0.29.3 alike.
+ * neighbours `Stats` (ffi.rs ~1325) and `PathStats` (~1437) both do — in every release from 0.28.0 through 0.30.0.
  * Without the attribute rustc is free to reorder by alignment, and it does: the 1-byte `bool` sinks to the
  * end of the record. Measured, mutation-proven, on both K/N cinterop and JVM FFM:
  *
