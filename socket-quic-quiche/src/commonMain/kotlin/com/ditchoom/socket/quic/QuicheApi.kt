@@ -308,6 +308,13 @@ interface QuicheApi {
     fun connEarlyDataReason(conn: QuicheConn): Int
 
     /**
+     * Whether any stream still has data, or a FIN, this endpoint wrote and the peer has not acknowledged
+     * (`quiche_conn_stream_data_unacknowledged`, a patched-in export). A send side the peer stopped, or
+     * this endpoint shut down, owes nothing. What a graceful close waits for.
+     */
+    fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean
+
+    /**
      * Pin libquiche's internal clock for the **calling thread** to [nanos] — a monotonic reading in
      * nanoseconds from libquiche's fixed per-process anchor (RFC §6.1 caller-clock patch). While set,
      * every internal `Instant::now()` in the patched libquiche (loss/PTO/RTT/pacing/congestion — 72

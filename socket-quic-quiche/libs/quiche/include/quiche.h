@@ -1305,6 +1305,11 @@ void quiche_clear_virtual_time(void);
 // source patch in socket-quic-quiche/build.gradle.kts (patchQuicheEarlyDataReasonFfi).
 uint32_t quiche_conn_early_data_reason(const quiche_conn *conn);
 
+// socket-stream-data-unacknowledged: whether any stream still has data, or a FIN, this endpoint wrote
+// and the peer has not acknowledged — what a graceful close waits for. Added by the marker-guarded source
+// patch in socket-quic-quiche/build.gradle.kts (patchQuicheStreamDataUnacknowledgedFfi).
+bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif

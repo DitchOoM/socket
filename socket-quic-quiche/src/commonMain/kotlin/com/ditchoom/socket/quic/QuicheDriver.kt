@@ -256,6 +256,21 @@ class QuicheDriver(
 
     private val _unreadAtClose = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
 
+    private val mutableSentStreamData = MutableStateFlow<SentStreamData>(SentStreamData.AwaitingAcknowledgement)
+
+    /**
+     * Whether the peer has acknowledged everything this connection wrote on its streams — measured on the
+     * loop on every wake while something is waiting on it (a close lingering for delivery), and not at all
+     * otherwise, so a connection that never lingers pays nothing for it.
+     */
+    internal val sentStreamData: StateFlow<SentStreamData> = mutableSentStreamData
+
+    private fun measureSentStreamData() {
+        if (mutableSentStreamData.subscriptionCount.value == 0) return
+        mutableSentStreamData.value =
+            if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged
+    }
+
     /** [QuicConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
     val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
 
@@ -2173,6 +2188,7 @@ class QuicheDriver(
 
     private suspend fun afterCommand() {
         flushOutgoing()
+        measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         discoverNewStreams()
         signalWritableStreams()

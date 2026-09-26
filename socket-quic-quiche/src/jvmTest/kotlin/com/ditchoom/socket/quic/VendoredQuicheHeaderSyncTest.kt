@@ -156,11 +156,13 @@ private val TYPES_AND_MACROS =
 
 /**
  * Declarations this repository adds on purpose, absent upstream: the caller-clock patch's FFI and the
- * `early_data_reason` export (`patchQuicheEarlyDataReasonFfi`).
+ * `early_data_reason` export (`patchQuicheEarlyDataReasonFfi`) and the send-side acknowledgement
+ * export (`patchQuicheStreamDataUnacknowledgedFfi`).
  */
 private val OURS =
     setOf(
         "quiche_set_virtual_time_nanos",
         "quiche_clear_virtual_time",
         "quiche_conn_early_data_reason",
+        "quiche_conn_stream_data_unacknowledged",
     )
