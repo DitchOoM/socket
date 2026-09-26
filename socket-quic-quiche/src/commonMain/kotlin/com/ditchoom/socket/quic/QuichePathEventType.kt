@@ -13,4 +13,7 @@ enum class QuichePathEventType {
     Closed,
     ReusedSourceConnectionId,
     PeerMigrated,
+
+    /** The path's validated PMTU changed. Emitted only while PMTU discovery is enabled. */
+    PmtuUpdated,
 }
