@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import android.os.Process
 import com.ditchoom.socket.quic.netctrl.NetCtrlCommand
 import com.ditchoom.socket.quic.netctrl.NetCtrlCommandCodec
 import com.ditchoom.socket.quic.netctrl.NetCtrlFraming
@@ -62,9 +63,16 @@ internal class NetworkControl(
      */
     fun queryImpairment(): NetCtrlResponse = sendCommand(NetCtrlCommand.QueryImpairment())
 
+    /** Drop this app's outbound UDP until [unblockUdp]; [udpDrops] says how much it has dropped. */
     fun blockUdp() {
-        sendCommand(NetCtrlCommand.BlockUdp())
+        sendCommand(NetCtrlCommand.BlockUdp(uid = Process.myUid()))
     }
+
+    fun udpDrops(): NetCtrlResponse.UdpDrops =
+        when (val response = sendCommand(NetCtrlCommand.QueryUdpDrops())) {
+            is NetCtrlResponse.UdpDrops -> response
+            else -> throw IllegalStateException("QueryUdpDrops answered $response — a host/device version skew")
+        }
 
     fun unblockUdp() {
         sendCommand(NetCtrlCommand.UnblockUdp())

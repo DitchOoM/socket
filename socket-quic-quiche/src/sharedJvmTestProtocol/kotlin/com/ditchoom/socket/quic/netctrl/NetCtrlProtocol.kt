@@ -11,10 +11,14 @@ import com.ditchoom.buffer.codec.annotations.ProtocolMessage
 @Suppress("unused") // reserved fields are wire-format padding required by codec generation
 @ProtocolMessage
 sealed interface NetCtrlCommand {
+    /**
+     * Drop every UDP datagram sent by [uid] — the test app's own — in both address families, ahead of
+     * every rule the platform installed. See `NetworkControlServer` for why each of those matters.
+     */
     @ProtocolMessage
     @PacketType(0x01)
     data class BlockUdp(
-        val reserved: UByte = 0u,
+        val uid: Int,
     ) : NetCtrlCommand
 
     @ProtocolMessage
@@ -80,6 +84,13 @@ sealed interface NetCtrlCommand {
     data class QueryImpairment(
         val reserved: UByte = 0u,
     ) : NetCtrlCommand
+
+    /** How many datagrams the [BlockUdp] rules have dropped so far — the proof the block took effect. */
+    @ProtocolMessage
+    @PacketType(0x0B)
+    data class QueryUdpDrops(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 }
 
 /**
@@ -130,5 +141,18 @@ sealed interface NetCtrlResponse {
     @PacketType(0x05)
     data class ImpairmentUnavailable(
         @LengthPrefixed val why: String,
+    ) : NetCtrlResponse
+
+    /**
+     * The packet counters of the [NetCtrlCommand.BlockUdp] DROP rules, per family, and the device's
+     * `OUTPUT` chains as `iptables -L -v` printed them — so a block that dropped nothing can say what
+     * the traffic went through instead.
+     */
+    @ProtocolMessage
+    @PacketType(0x06)
+    data class UdpDrops(
+        val ipv4Packets: Long,
+        val ipv6Packets: Long,
+        @LengthPrefixed val outputChains: String,
     ) : NetCtrlResponse
 }
