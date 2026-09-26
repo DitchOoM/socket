@@ -63,12 +63,21 @@ class QlogPerConnectionTests {
             withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
                 val accepting = launch(Dispatchers.IO) { connections { } }
                 try {
-                    List(2) { withQuicConnection("localhost", port, clientOptions, timeout = 10.seconds) { identity.session.hex } }
+                    List(2) {
+                        val t0 = System.nanoTime()
+                        withQuicConnection(QuicPeer.Named("localhost", port), clientOptions, timeout = 10.seconds) { race ->
+                            races += "${identity.session.hex} in ${(System.nanoTime() - t0) / 1_000_000}ms: $race"
+                            identity.session.hex
+                        }
+                    }
                 } finally {
                     accepting.cancel()
                 }
             }
         }
+
+    // TEMP diagnostic: how each connection's candidates raced.
+    private val races = mutableListOf<String>()
 
     /** The client-vantage qlogs in [dir], by name: a server's accepted connection writes its own beside them. */
     private fun clientQlogs(dir: File): Map<String, String> =
@@ -99,7 +108,7 @@ class QlogPerConnectionTests {
                 assertEquals(2, sessions.toSet().size, "two connections carry two session ids: $sessions")
 
                 val qlogs = clientQlogs(dir)
-                assertEquals(2, qlogs.size, "one client qlog per connection, got ${qlogs.keys} for sessions $sessions")
+                assertEquals(2, qlogs.size, "one client qlog per connection, got ${qlogs.keys} for sessions $sessions; races $races")
                 for (session in sessions) {
                     assertEquals("quiche-client-$session.sqlog", qlogOf(qlogs, session), "named by the session id, never by a handle")
                 }
@@ -128,7 +137,7 @@ class QlogPerConnectionTests {
                 assertEquals(2, sessions.toSet().size, "two connections carry two session ids: $sessions")
 
                 val qlogs = clientQlogs(dir)
-                assertEquals(listOf("conn-0001.sqlog", "conn-0002.sqlog"), qlogs.keys.sorted(), "one qlog per connection, paired by name")
+                assertEquals(listOf("conn-0001.sqlog", "conn-0002.sqlog"), qlogs.keys.sorted(), "one qlog per connection, paired by name; races $races")
                 sessions.forEachIndexed { index, session ->
                     val name = "conn-000${index + 1}"
                     assertEquals("$name.sqlog", qlogOf(qlogs, session), "connection ${index + 1}'s qlog carries its own Initial")
@@ -153,7 +162,7 @@ class QlogPerConnectionTests {
                     "the directory must say which budget it keeps, in the directory a pull collects:\n$notes",
                 )
                 assertTrue("QLOG-INHERITED connections=1 files=1 bytes=1000" in notes, "the earlier record is counted:\n$notes")
-                assertEquals(2, clientQlogs(dir).size, "one client qlog per connection for sessions $sessions")
+                assertEquals(2, clientQlogs(dir).size, "one client qlog per connection for sessions $sessions; races $races")
             }
         }
 

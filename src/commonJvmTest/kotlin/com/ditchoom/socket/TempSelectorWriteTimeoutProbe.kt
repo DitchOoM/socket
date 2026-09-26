@@ -1,59 +1,39 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.harness.NonDrainingPeer
-import com.ditchoom.socket.harness.WriteOutcome
-import com.ditchoom.socket.harness.writeOutcome
+import com.ditchoom.socket.harness.WriteTimeoutContractTests
 import kotlin.test.Test
 import kotlin.test.fail
-import kotlin.time.Duration.Companion.seconds
 
 // TEMPORARY diagnostic for the Windows lane; removed before merge.
 class TempSelectorWriteTimeoutProbe {
     @Test
-    fun probe() =
-        runTestNoTimeSkipping(timeout = 300.seconds) {
-            val savedAsync = useAsyncChannels
-            val savedBlocking = useNioBlocking
-            useAsyncChannels = false
-            useNioBlocking = false
-            val lines = mutableListOf<String>()
-            try {
-                repeat(25) { i ->
-                    val peer = NonDrainingPeer.start()
-                    val client =
-                        ClientSocket.connect(
-                            peer.port,
-                            config =
-                                TransportConfig(
-                                    writePolicy = WritePolicy.Bounded(1.seconds),
-                                    connectTimeout = 5.seconds,
-                                    io = IoTuning(sendBuffer = NonDrainingPeer.SMALL_SOCKET_BUFFER),
-                                ),
-                        )
-                    try {
-                        peer.awaitAccepted()
-                        val o = client.writeOutcome(1.seconds, 6.seconds)
-                        val open = client.isOpen
-                        val line =
-                            when (o) {
-                                is WriteOutcome.Threw ->
-                                    "#$i open=$open ${o.error::class.qualifiedName}(${o.error.message}) cause=${o.error.cause} " +
-                                        "elapsed=${o.elapsed} bytes=${o.bytesBefore} blocked=${o.blockedFor} " +
-                                        "stack=${o.error.stackTrace.take(6).joinToString(" | ")}"
-                                else -> "#$i open=$open $o"
-                            }
-                        lines += line
-                    } finally {
-                        client.close()
-                        peer.close()
-                    }
+    fun probe() {
+        val savedAsync = useAsyncChannels
+        val savedBlocking = useNioBlocking
+        useAsyncChannels = false
+        useNioBlocking = false
+        val lines = mutableListOf<String>()
+        try {
+            repeat(15) { i ->
+                val c = WriteTimeoutContractTests()
+                listOf<Pair<String, () -> Unit>>(
+                    "untilClosed" to { c.untilClosedWriteToNonDrainingPeerSuspends() },
+                    "s2" to { c.boundedWriteToNonDrainingPeerTimesOut() },
+                    "s3" to { c.boundedWriteTimeoutThrowsSocketTimeoutException() },
+                    "s4" to { c.boundedWriteTimeoutClosesConnection() },
+                ).forEach { (name, body) ->
+                    val t0 = System.nanoTime()
+                    val r = runCatching { body() }
+                    val ms = (System.nanoTime() - t0) / 1_000_000
+                    val busy = Thread.getAllStackTraces().keys.count { it.isAlive && it.state == Thread.State.RUNNABLE }
+                    lines += "#$i $name ${ms}ms runnable=$busy " + (r.exceptionOrNull()?.let { "FAIL ${it.message}" } ?: "ok")
                 }
-            } finally {
-                useAsyncChannels = savedAsync
-                useNioBlocking = savedBlocking
             }
-            println("PROBE-RESULTS\n" + lines.joinToString("\n"))
-            if (System.getProperty("os.name").startsWith("Windows")) fail("PROBE-RESULTS\n" + lines.joinToString("\n"))
+        } finally {
+            useAsyncChannels = savedAsync
+            useNioBlocking = savedBlocking
         }
+        println("PROBE-RESULTS\n" + lines.joinToString("\n"))
+        if (System.getProperty("os.name").startsWith("Windows")) fail("PROBE-RESULTS\n" + lines.joinToString("\n"))
+    }
 }
