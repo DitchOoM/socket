@@ -77,6 +77,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_set_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
+import com.ditchoom.socket.quic.quiche.quiche_conn_stream_data_unacknowledged
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
@@ -672,6 +673,9 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun connIsInEarlyData(conn: QuicheConn): Boolean = quiche_conn_is_in_early_data(conn.handle.toCPointer()!!)
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = quiche_conn_early_data_reason(conn.handle.toCPointer()!!).toInt()
+
+    override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
+        quiche_conn_stream_data_unacknowledged(conn.handle.toCPointer()!!)
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = quiche_conn_timeout_as_nanos(conn.handle.toCPointer()!!)

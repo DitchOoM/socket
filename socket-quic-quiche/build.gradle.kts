@@ -246,6 +246,9 @@ fun downloadQuicheSource(
     // Export `Connection::early_data_reason` through the C FFI, the one 0-RTT fact the C API lacks:
     // whether the server accepted early data. Idempotent, fails loudly if upstream exports it itself.
     patchQuicheEarlyDataReasonFfi(sourceDir)
+    // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
+    // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
+    patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
 
     return sourceDir
 }
@@ -293,6 +296,97 @@ fun patchQuicheEarlyDataReasonFfi(sourceDir: File) {
         """.trimMargin()
     ffiRs.appendText("\n" + export + "\n")
     logger.lifecycle("Patched quiche source: quiche_conn_early_data_reason FFI export")
+}
+
+/**
+ * Export `quiche_conn_stream_data_unacknowledged`: whether any stream on the connection still has data,
+ * or a FIN, that this endpoint wrote and the peer has not acknowledged. A send side the peer stopped, or
+ * this endpoint shut down, owes nothing.
+ *
+ * It is the fact a graceful close waits for. RFC 9000 §10.2 lets an endpoint that has sent
+ * CONNECTION_CLOSE send nothing else, so bytes still unacknowledged when it closes are never
+ * retransmitted; a server that closes a fixed time after its handler returns truncates its own reply on
+ * any path slower or lossier than that time allows. quiche tracks the answer per stream (`SendBuf`'s
+ * `acked` ranges) and its C API exposes nothing that reaches it: `stream_capacity`/`stream_writable`
+ * are about flow control, `stream_finished` is the receive side, and connection `acked_bytes` never
+ * converges on `sent_bytes` because ACK-only packets are never acknowledged themselves.
+ *
+ * Three edits: `SendBuf::socket_unacknowledged`, `StreamMap::socket_any_unacknowledged`, and the export.
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports an equivalent throws, telling you to delete this patch.
+ */
+fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
+    val marker = "socket-stream-data-unacknowledged"
+    val sendBufRs = sourceDir.resolve("quiche/src/stream/send_buf.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!sendBufRs.exists() || !streamRs.exists() || !ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_stream_data_unacknowledged")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_stream_data_unacknowledged — DELETE " +
+                "patchQuicheStreamDataUnacknowledgedFfi and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertAfter(
+        file: File,
+        anchor: String,
+        addition: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `$anchor` not found exactly once in ${file.name} — a quiche bump moved it. Re-fit " +
+                    "patchQuicheStreamDataUnacknowledgedFfi, or delete it if quiche now exports the send-side ack state.",
+            )
+        }
+        file.writeText(text.replace(anchor, anchor + addition))
+    }
+
+    insertAfter(
+        sendBufRs,
+        "impl<F: BufFactory> SendBuf<F> {\n",
+        """
+        |    // $marker: whether the peer still owes an acknowledgement for data, or the FIN, this endpoint
+        |    // wrote. A send side the peer stopped, or this endpoint shut down, owes nothing.
+        |    pub fn socket_unacknowledged(&self) -> bool {
+        |        if self.error.is_some() || self.shutdown {
+        |            return false;
+        |        }
+        |        match self.fin_off {
+        |            Some(_) => !self.is_complete(),
+        |            None => self.ack_off() < self.off,
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertAfter(
+        streamRs,
+        "impl<F: BufFactory> StreamMap<F> {\n",
+        """
+        |    // $marker: whether any stream still has written data the peer has not acknowledged.
+        |    pub fn socket_any_unacknowledged(&self) -> bool {
+        |        self.streams.values().any(|s| s.send.socket_unacknowledged())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: whether any stream still has data, or a FIN, this endpoint wrote and the peer has not
+            |// acknowledged — what a graceful close waits for.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_stream_data_unacknowledged(conn: &Connection) -> bool {
+            |    conn.streams.socket_any_unacknowledged()
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_stream_data_unacknowledged FFI export")
 }
 
 /**

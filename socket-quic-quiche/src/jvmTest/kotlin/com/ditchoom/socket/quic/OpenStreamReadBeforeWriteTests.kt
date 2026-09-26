@@ -8,6 +8,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -78,7 +79,7 @@ class OpenStreamReadBeforeWriteTests {
             skipOnMissingNativeLib(OpenStreamReadBeforeWriteTests::class) {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val serverJob = launch(Dispatchers.IO) { connections { /* accept and hold */ } }
+                        val serverJob = launch(Dispatchers.IO) { connections { awaitCancellation() } } // accept and hold
                         try {
                             withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
                                 val stream = openStream()

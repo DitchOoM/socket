@@ -213,10 +213,9 @@ abstract class ConnectionEndCancelsScopeTestSuite {
     fun aClientThatReadsAfterTheServerClosedStillGetsTheWholeReply() =
         runQuicTest(timeout = 30.seconds) {
             wrapTestBody {
-                // Short enough that the server closes long before the client reads; long enough for the
-                // whole reply to cross loopback first.
-                val serverOptions = options.copy(closeLinger = QuicCloseLinger.UntilPeerDone(SERVER_LINGER))
-                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                // The shipped close: the server closes as soon as the client has acknowledged the whole
+                // reply, which is long before the client reads it.
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                     val serverJob =
                         launch {
                             connections {
@@ -417,7 +416,6 @@ abstract class ConnectionEndCancelsScopeTestSuite {
     private companion object {
         const val REQUEST = "reply-then-close;"
         const val REPLY_REPEAT = 2048
-        val SERVER_LINGER = 300.milliseconds
 
         /** Well past a loopback connection's draining period (3 × PTO, tens of milliseconds). */
         val SLOW_READER = 2.seconds
