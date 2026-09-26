@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
@@ -17,6 +18,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -119,15 +121,14 @@ class AndroidQuicMigrationTests {
     fun connectionTimesOutOnProlongedLoss() =
         runBlocking(Dispatchers.IO) {
             val options = testQuicOptions.copy(idleTimeout = 3.seconds)
-            try {
+            // Only the connection's own end: a connect that never happened is not a timeout.
+            assertFailsWith<QuicCloseException> {
                 withServerConnection(options) {
                     control.blockUdp()
                     delay(5.seconds)
                     control.unblockUdp()
                     delay(1.seconds)
                 }
-            } catch (_: Throwable) {
-                // Expected: connection timed out and block was cancelled
             }
         }
 
@@ -174,19 +175,31 @@ class AndroidQuicMigrationTests {
             }
         }
 
+    /**
+     * The connection may or may not outlive the outage; what this test holds is that the outage
+     * happened and that the device is back on the network before the next test connects.
+     */
     @Test
     fun airplaneModeToggle() =
         runBlocking(Dispatchers.IO) {
-            try {
-                withServerConnection {
-                    // Schedule recovery in 5s, then activate airplane mode
-                    control.airplaneModeOn(recoveryDelayMs = 5000)
-                    // Wait for scheduled recovery + margin
-                    control.waitForAirplaneModeRecovery(waitMs = 7000)
-                    // If we're still here, connection survived (or we can verify state)
+            DeviceNetworkWatch(InstrumentationRegistry.getInstrumentation().targetContext, server).use { device ->
+                try {
+                    withServerConnection {
+                        control.airplaneModeOn(recoveryDelayMs = AIRPLANE_RECOVERY_DELAY.inWholeMilliseconds)
+                        device.awaitAirplaneMode(AirplaneMode.On, bound = 5.seconds)
+                        device.awaitAirplaneMode(AirplaneMode.Off, bound = AIRPLANE_RECOVERY_DELAY + 10.seconds)
+                    }
+                } catch (_: QuicCloseException) {
+                    // The outage ended the connection.
+                } finally {
+                    device.awaitAirplaneMode(AirplaneMode.Off, bound = AIRPLANE_RECOVERY_DELAY + 10.seconds)
+                    device.awaitRouteToHarness(bound = 30.seconds)
+                    control.reconnect()
                 }
-            } catch (_: Throwable) {
-                // Connection may have closed — that's acceptable for airplane mode
             }
         }
+
+    private companion object {
+        val AIRPLANE_RECOVERY_DELAY = 5.seconds
+    }
 }
