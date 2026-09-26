@@ -339,39 +339,114 @@ class QuicheDriver(
 
     private var localCloseVerdict: LocalCloseVerdict = LocalCloseVerdict.None
 
-    /** Where [identity] comes from: the live quiche connection, or the value latched before it closed. */
-    private sealed interface IdentitySource {
-        data object Live : IdentitySource
+    /**
+     * This connection's [QuicSessionId] — quiche's stable trace id, read once, at construction, before the
+     * loop exists: the one moment a thread other than the loop may touch the connection.
+     *
+     * Read once because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
+     * representing the connection", and unlike the source CID it survives rotation and migration. That
+     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
+     *
+     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
+     * connection handle, which is still unique within this process and still tells concurrent
+     * connections apart — the question the session id exists to answer.
+     */
+    internal val sessionId: QuicSessionId = readSessionId(api, conn, bufferFactory)
 
+    /**
+     * The identity callers read, as a value the loop publishes: quiche is single-threaded and the loop
+     * owns the connection, so no caller thread ever reads it — not while it is live (a data race with
+     * the loop), and not once [cleanup] may have freed it (a use-after-free).
+     */
+    private sealed interface IdentitySource {
+        val identity: QuicConnectionIdentity
+
+        /** The connection is open; [refreshIdentity] republishes this whenever the wire CID moves. */
+        data class Live(
+            override val identity: QuicConnectionIdentity,
+        ) : IdentitySource
+
+        /** The connection has closed; this is its identity at the close, for good. */
         data class Latched(
-            val identity: QuicConnectionIdentity,
+            override val identity: QuicConnectionIdentity,
         ) : IdentitySource
     }
 
-    /**
-     * [IdentitySource.Latched] on the driver loop, with the connection still alive, before [state] reads
-     * Closed ([transitionToClosed]) and before [cleanup] frees the quiche handles — whichever comes first.
-     *
-     * Identity is read on CALLER threads: every connection facade's `identity`, and the attribution of
-     * every [QuicCloseException] a teardown hands out. Both reads dereference the live conn ([sessionId]
-     * lazily, [wireConnectionId] fresh by design), so once the connection may be freed they must come
-     * from the latch — and latching before Closed is published means anyone who has seen Closed reads it.
-     */
+    /** The loop's scratch for [refreshIdentity]: one allocation per connection, freed in [cleanup]. */
+    private val wireIdScratch = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
+
+    /** Published by the loop only; read by anyone. See [IdentitySource]. */
     @kotlin.concurrent.Volatile
-    private var identitySource: IdentitySource = IdentitySource.Live
+    private var identitySource: IdentitySource =
+        IdentitySource.Live(QuicConnectionIdentity(session = sessionId, wire = readWireConnectionId()))
 
-    /** This connection's identity: live while it is open, the latched value once it has closed. */
-    internal val identity: QuicConnectionIdentity
-        get() =
+    /**
+     * This connection's identity — the session id plus the CID currently on the wire — as the loop last
+     * published it. The wire CID rotates (RFC 9000 §9.5), so it is republished on every wake it moves
+     * rather than cached at connect; once the connection has closed it is the identity at the close.
+     */
+    internal val identity: QuicConnectionIdentity get() = identitySource.identity
+
+    /**
+     * Republish the wire CID if it moved. Runs on every wake, in [updateState], in the same loop step that
+     * issues and retires source CIDs and projects them into the server's routing map — so an identity a
+     * caller reads and the routing it was published beside come from one reading of quiche's CID state.
+     * Reads into [wireIdScratch] and allocates only when the CID has actually changed.
+     */
+    private fun refreshIdentity() {
+        val live =
             when (val source = identitySource) {
-                IdentitySource.Live -> QuicConnectionIdentity(session = sessionId, wire = wireConnectionId)
-                is IdentitySource.Latched -> source.identity
+                is IdentitySource.Live -> source
+                is IdentitySource.Latched -> return
             }
+        val len = api.connSourceId(conn, wireIdScratch.driverOwnedNativeAddress(), CONN_ID_TEXT_CAPACITY)
+        if (wireMatches(live.identity.wire, len)) return
+        identitySource = IdentitySource.Live(live.identity.copy(wire = wireFromScratch(len)))
+    }
 
-    /** Latch [identity] while the conn is alive, on its loop. Idempotent: the first latch stands. */
+    /** Whether the [len] bytes quiche just wrote into [wireIdScratch] are [wire], compared without allocating. */
+    private fun wireMatches(
+        wire: QuicWireConnectionId,
+        len: Int,
+    ): Boolean =
+        when (wire) {
+            QuicWireConnectionId.Unavailable -> len <= 0 || len > CONN_ID_TEXT_CAPACITY
+            is QuicWireConnectionId.Known ->
+                len > 0 &&
+                    len <= CONN_ID_TEXT_CAPACITY &&
+                    wire.hex.length == len * 2 &&
+                    (0 until len).all { i ->
+                        val v = wireIdScratch[i].toInt() and 0xFF
+                        wire.hex[2 * i] == HEX[v ushr 4] && wire.hex[2 * i + 1] == HEX[v and 0xF]
+                    }
+        }
+
+    private fun wireFromScratch(len: Int): QuicWireConnectionId {
+        if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return QuicWireConnectionId.Unavailable
+        val hex = StringBuilder(len * 2)
+        repeat(len) { i ->
+            val v = wireIdScratch[i].toInt() and 0xFF
+            hex.append(HEX[v ushr 4]).append(HEX[v and 0xF])
+        }
+        return QuicWireConnectionId.Known(hex.toString())
+    }
+
+    /** The wire CID, read at construction for the first published identity. Loop or constructor only. */
+    private fun readWireConnectionId(): QuicWireConnectionId =
+        readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
+            ?.let { QuicWireConnectionId.Known(it) }
+            ?: QuicWireConnectionId.Unavailable
+
+    /**
+     * Latch the identity on the loop, with the connection still alive: before [state] reads Closed
+     * ([transitionToClosed]) and before [cleanup] frees the quiche handles, whichever comes first.
+     * Idempotent: the first latch stands.
+     */
     private fun latchIdentity() {
-        if (identitySource is IdentitySource.Live) {
-            identitySource = IdentitySource.Latched(QuicConnectionIdentity(session = sessionId, wire = wireConnectionId))
+        refreshIdentity()
+        when (val source = identitySource) {
+            is IdentitySource.Live -> identitySource = IdentitySource.Latched(source.identity)
+            is IdentitySource.Latched -> Unit
         }
     }
 
@@ -388,32 +463,6 @@ class QuicheDriver(
             identity = identity,
             network = NetworkAtClose.NotObserved,
         )
-
-    /**
-     * This connection's [QuicSessionId] — quiche's stable trace id, read once and cached.
-     *
-     * Cached because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
-     * representing the connection", and unlike the source CID it survives rotation and migration. That
-     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
-     *
-     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
-     * connection handle, which is still unique within this process and still tells concurrent
-     * connections apart — the question the session id exists to answer.
-     */
-    internal val sessionId: QuicSessionId by lazy { readSessionId(api, conn, bufferFactory) }
-
-    /**
-     * The CID currently on the wire, read fresh on every access.
-     *
-     * Deliberately **not** cached: CIDs rotate, and migration issues a new one by design (RFC 9000
-     * §9.5). A cached value would be right until the first handoff and quietly wrong afterwards —
-     * which is the moment someone is most likely to be reading it.
-     */
-    internal val wireConnectionId: QuicWireConnectionId
-        get() =
-            readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
-                ?.let { QuicWireConnectionId.Known(it) }
-                ?: QuicWireConnectionId.Unavailable
 
     /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
@@ -2070,6 +2119,8 @@ class QuicheDriver(
                 cmd.result.complete(readSourceIds())
             }
 
+            is InspectConnection<*> -> cmd.run(api, conn)
+
             is QuicheCmd.Close -> {
                 val onTheWire = cmd.error.wireCloseError()
                 val accepted = api.connClose(conn, onTheWire) == 0
@@ -2225,6 +2276,7 @@ class QuicheDriver(
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
         }
+        refreshIdentity()
         if (api.connIsClosed(conn)) {
             transitionToClosed()
         }
@@ -3394,6 +3446,7 @@ class QuicheDriver(
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         latchIdentity()
+        wireIdScratch.freeNativeMemory()
         commands.close()
 
         while (true) {
@@ -3502,6 +3555,7 @@ class QuicheDriver(
             // Nothing negotiated can be read from a freed handle, which is exactly what this case means.
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
             is QuicheCmd.SourceIdsRead -> cmd.result.complete(emptyList())
+            is InspectConnection<*> -> cmd.connectionGone()
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
             is PathOpened -> {
@@ -3551,6 +3605,7 @@ class QuicheDriver(
             is QuicheCmd.Stats -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.PeerTransportParamsRead -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.SourceIdsRead -> cmd.result.completeExceptionally(cause)
+            is InspectConnection<*> -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Close -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.Migrate -> cmd.result.completeExceptionally(cause)
             is PathOpened -> cmd.migrate.result.completeExceptionally(cause)
@@ -3573,6 +3628,20 @@ class QuicheDriver(
         }
 
     /**
+     * Run [read] against this connection on the driver loop and hand back its answer — the way for code
+     * off the loop to read anything quiche has no dedicated command for, without touching a
+     * single-threaded library from a second thread.
+     */
+    internal suspend fun <T> inspect(read: (QuicheApi, QuicheConn) -> T): Inspected<T> =
+        try {
+            val deferred = CompletableDeferred<Inspected<T>>()
+            commands.send(InspectConnection(read, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            Inspected.ConnectionGone
+        }
+
+    /**
      * The source connection IDs quiche currently considers active, newest-first as the iterator
      * yields them. Empty once the connection is gone — the same honest answer
      * [peerTransportParams] gives for a freed handle.
@@ -3581,6 +3650,7 @@ class QuicheDriver(
      * routing table is reconciled against. Without it a divergence could only be discovered
      * downstream — as a dropped packet or a path slot pinned forever.
      */
+
     suspend fun sourceIds(): List<ByteArray> =
         try {
             val deferred = CompletableDeferred<List<ByteArray>>()
