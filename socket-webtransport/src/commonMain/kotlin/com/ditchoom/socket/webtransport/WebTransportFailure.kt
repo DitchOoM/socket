@@ -48,13 +48,17 @@ sealed interface WebTransportFailure {
 
     /**
      * A WebTransport **stream** was aborted by the peer (RESET_STREAM / STOP_SENDING) — carries the
-     * 32-bit unsigned WebTransport application [errorCode] (draft §4.3). This is the failure behind
+     * application [code] as the platform reported it (draft §4.3). This is the failure behind
      * [WebTransportStreamException].
      */
     data class StreamAborted(
-        val errorCode: UInt,
+        val code: WebTransportStreamAbortCode,
     ) : WebTransportFailure {
-        override fun describe(): String = "WebTransport stream aborted by peer (code $errorCode)"
+        override fun describe(): String =
+            when (code) {
+                is WebTransportStreamAbortCode.Reported -> "WebTransport stream aborted by peer (code ${code.value})"
+                WebTransportStreamAbortCode.Unreported -> "WebTransport stream aborted by peer (code not reported by the platform)"
+            }
     }
 
     /**

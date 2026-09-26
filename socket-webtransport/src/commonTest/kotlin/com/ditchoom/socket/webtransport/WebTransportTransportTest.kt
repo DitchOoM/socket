@@ -229,7 +229,7 @@ class WebTransportTransportTest {
         override suspend fun write(
             buffer: ReadBuffer,
             deadline: kotlin.time.Duration,
-        ) = throw WebTransportStreamException(code)
+        ) = throw WebTransportStreamException(WebTransportStreamAbortCode.Reported(code))
 
         override suspend fun close() {}
     }

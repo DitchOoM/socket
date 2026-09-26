@@ -62,7 +62,8 @@ internal class NativeWebTransportSession(
 }
 
 /** Translate socket-http3's stream-abort exception into the neutral one (same 32-bit code). */
-private fun Http3WebTransportStreamException.toNeutral(): WebTransportStreamException = WebTransportStreamException(errorCode, this)
+private fun Http3WebTransportStreamException.toNeutral(): WebTransportStreamException =
+    WebTransportStreamException(WebTransportStreamAbortCode.Reported(errorCode), this)
 
 /**
  * Wraps a socket-http3 bidirectional WebTransport stream so [write] raises the neutral

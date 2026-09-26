@@ -18,18 +18,25 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * If [e] is a `WebTransportError` raised by a peer **stream** RESET_STREAM / STOP_SENDING, its
- * `streamErrorCode` (the 32-bit WebTransport application code, W3C `unsigned long`); else null. A session/
- * transport-level error has `source === "session"` and no stream code. This is the inbound counterpart to
- * [webTransportResetReason] (which carries our code out): it maps the browser's error back onto the
- * platform-neutral [ReadResult.Reset] (read side) / [WebTransportStreamException] (write side), so a peer
- * abort surfaces identically to the native backend.
+ * Classify a stream read/write rejection [e] (the JS reason itself: coroutines' js `await()` throws it
+ * as-is) — the inbound counterpart to [webTransportResetReason]. See [BrowserStreamRejection] for the rules.
  */
-private fun streamResetCode(e: Throwable): UInt? {
-    val dyn = e.asDynamic()
-    if (dyn == null || dyn.source != "stream" || dyn.streamErrorCode == null) return null
-    return (dyn.streamErrorCode.unsafeCast<Double>()).toLong().toUInt()
+private fun classifyStreamRejection(e: Throwable): BrowserStreamRejection {
+    val reason = e.asDynamic()
+    if (reason == null) return BrowserStreamRejection.NotPeerAbort
+    val code = reason.streamErrorCode
+    if (reason.source == "stream" && jsTypeOf(code) == "number") {
+        return BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Reported(code.unsafeCast<Double>().toLong().toUInt()))
+    }
+    if (isNetworkErrorDomException(reason)) {
+        return BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Unreported)
+    }
+    return BrowserStreamRejection.NotPeerAbort
 }
+
+private fun isNetworkErrorDomException(reason: dynamic): Boolean =
+    js("typeof DOMException === 'function' && reason instanceof DOMException && reason.name === 'NetworkError'")
+        .unsafeCast<Boolean>()
 
 /**
  * The browser WebTransport streams, bridging WHATWG `ReadableStream`/`WritableStream` onto the
@@ -52,9 +59,12 @@ private suspend fun readChunk(
         } catch (t: TimeoutCancellationException) {
             throw t
         } catch (e: Throwable) {
-            // A peer RESET_STREAM rejects the read with a WebTransportError → the neutral ReadResult.Reset
-            // (matching the native backend); any other rejection means the stream is done → End.
-            return if (streamResetCode(e) != null) ReadResult.Reset else ReadResult.End
+            // A peer RESET_STREAM → the neutral ReadResult.Reset (matching the native backend); any other
+            // rejection means the stream is done → End.
+            return when (classifyStreamRejection(e)) {
+                is BrowserStreamRejection.PeerAborted -> ReadResult.Reset
+                BrowserStreamRejection.NotPeerAbort -> ReadResult.End
+            }
         }
     if (chunk.done) return ReadResult.End
     return ReadResult.Data((chunk.value.unsafeCast<Uint8Array>()).asReadBuffer())
@@ -73,11 +83,12 @@ private suspend fun writeChunk(
     } catch (t: TimeoutCancellationException) {
         throw t
     } catch (e: Throwable) {
-        // A peer STOP_SENDING rejects the write with a WebTransportError carrying its code → raise the
-        // neutral stream-scoped exception (the native backend's QuicStreamException analog).
-        val code = streamResetCode(e)
-        if (code != null) throw WebTransportStreamException(code, e)
-        throw e
+        // A peer STOP_SENDING → the neutral stream-scoped exception (the native backend's
+        // QuicStreamException analog).
+        when (val rejection = classifyStreamRejection(e)) {
+            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.code, e)
+            BrowserStreamRejection.NotPeerAbort -> throw e
+        }
     }
     buffer.position(buffer.position() + n)
     return BytesWritten(n)

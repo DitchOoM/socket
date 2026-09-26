@@ -299,7 +299,7 @@ Current state:
   write-side `WebTransportStreamException` is wrapped to `SocketClosedException.ConnectionReset`
   (carrying the original as `cause`) when it escapes through the `ByteStream.write` path.
 
-The rich per-transport exceptions (`QuicCloseException.quicError`, `WebTransportStreamException.errorCode`)
+The rich per-transport exceptions (`QuicCloseException.quicError`, `WebTransportStreamException.code`)
 remain available to power users on the Layer-2 surface — unification narrows the *thrown type at the
 agnostic boundary*, it does not erase structured detail (both are reachable as the wrapper's `cause`).
 

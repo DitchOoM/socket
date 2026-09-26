@@ -192,7 +192,7 @@ private fun mapStreamError(t: Throwable): Throwable =
         is SocketException -> t // already unified
         is WebTransportStreamException ->
             SocketClosedException.ConnectionReset(
-                "WebTransport stream reset by peer (code ${t.errorCode})",
+                t.failure.describe(),
                 cause = t,
             )
         is WebTransportException ->

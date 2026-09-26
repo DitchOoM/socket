@@ -41,16 +41,32 @@ open class WebTransportException(
  *
  * The READ side surfaces a peer reset as [com.ditchoom.buffer.flow.ReadResult.Reset] (the shared
  * buffer-flow signal) on both backings; this exception is the WRITE-side counterpart, carrying the
- * [errorCode] — the WebTransport application error code, a **32-bit unsigned** value (draft §4.3; the
- * same `unsigned long` the browser's `WebTransportError.streamErrorCode` uses), hence [UInt]. Every
- * backend resolves it on a real abort (quiche surfaces its `out_error_code` on every native binding —
- * FFM, JNI and cinterop, Apple included — and the browser surfaces `streamErrorCode`), so it is
- * non-null — no "unknown code" sentinel.
+ * [code] the platform reported with the abort (see [WebTransportStreamAbortCode]).
  */
 class WebTransportStreamException(
-    val errorCode: UInt,
+    val code: WebTransportStreamAbortCode,
     cause: Throwable? = null,
-) : WebTransportException(WebTransportFailure.StreamAborted(errorCode), cause)
+) : WebTransportException(WebTransportFailure.StreamAborted(code), cause)
+
+/** The application error code of a peer stream abort, as the platform reported it. */
+sealed interface WebTransportStreamAbortCode {
+    /**
+     * The peer's WebTransport application error code: a **32-bit unsigned** value (draft §4.3; the
+     * `unsigned long` of the browser's `WebTransportError.streamErrorCode`). Native backends always
+     * report it (quiche's `out_error_code`).
+     */
+    data class Reported(
+        val value: UInt,
+    ) : WebTransportStreamAbortCode
+
+    /**
+     * The platform ended the stream as aborted by the peer without the peer's code. Chrome does this when
+     * a send stream's data pipe closes before its STOP_SENDING notification is dispatched: the writable
+     * errors with a `NetworkError` `DOMException` and the later notification is dropped, so the code no
+     * longer exists anywhere the page can read it.
+     */
+    data object Unreported : WebTransportStreamAbortCode
+}
 
 /**
  * An established WebTransport session (RFC 9220 + draft-ietf-webtrans-http3) — **platform-neutral**.

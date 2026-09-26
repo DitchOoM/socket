@@ -34,15 +34,22 @@ import kotlin.time.Duration.Companion.seconds
  */
 private val DEFAULT_WRITE_POLICY = WritePolicy.Bounded(15.seconds)
 
-/** Read `WebTransportError.streamErrorCode` off a thrown JS value, or -1 if it isn't a stream reset. */
-private fun jsStreamErrorCode(e: JsAny): Double = js("(e && e.source === 'stream' && e.streamErrorCode != null) ? e.streamErrorCode : -1")
+/** Whether [e] is a `WebTransportError` with `source === "stream"` and a numeric `streamErrorCode`. */
+private fun jsHasStreamErrorCode(e: JsAny): Boolean = js("e.source === 'stream' && typeof e.streamErrorCode === 'number'")
+
+/** The `streamErrorCode` of [e]; only meaningful when [jsHasStreamErrorCode] holds. */
+private fun jsStreamErrorCode(e: JsAny): Double = js("e.streamErrorCode")
+
+/** Whether [e] is a `DOMException` named `NetworkError` (Chrome's code-less remote stream abort). */
+private fun jsIsNetworkErrorDomException(e: JsAny): Boolean =
+    js("typeof DOMException === 'function' && e instanceof DOMException && e.name === 'NetworkError'")
 
 /**
  * A caught JS promise rejection that **preserves** the original JS reason [value]. kotlinx-coroutines'
  * wasmJs `Promise.await()` collapses a non-Kotlin rejection (e.g. a `WebTransportError`) into a generic
  * `Exception` carrying only a string message — which would drop the `streamErrorCode` we need for
  * cross-backend parity. So the stream awaits route through [awaitOrThrowRejection], which preserves the
- * reason here intact for [streamResetCode] to inspect.
+ * reason here intact for [classifyStreamRejection] to inspect.
  */
 private class WebTransportJsRejection(
     val value: JsAny?,
@@ -68,15 +75,17 @@ private suspend fun <T : JsAny?> Promise<T>.awaitOrThrowRejection(): T =
     }
 
 /**
- * The 32-bit WebTransport application code of a peer **stream** RESET_STREAM / STOP_SENDING carried by a
- * caught `WebTransportError`, or null for a session/transport error — the inbound counterpart to
- * [webTransportResetReason]. Maps the browser error onto the neutral [ReadResult.Reset] /
- * [WebTransportStreamException] so a peer abort surfaces identically to the native backend.
+ * Classify a stream read/write rejection [e] — the inbound counterpart to [webTransportResetReason]. See
+ * [BrowserStreamRejection] for the rules.
  */
-private fun streamResetCode(e: Throwable): UInt? {
-    val thrown = (e as? WebTransportJsRejection)?.value ?: return null
-    val code = jsStreamErrorCode(thrown)
-    return if (code >= 0) code.toLong().toUInt() else null
+private fun classifyStreamRejection(e: Throwable): BrowserStreamRejection {
+    val reason = (e as? WebTransportJsRejection)?.value ?: return BrowserStreamRejection.NotPeerAbort
+    return when {
+        jsHasStreamErrorCode(reason) ->
+            BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Reported(jsStreamErrorCode(reason).toLong().toUInt()))
+        jsIsNetworkErrorDomException(reason) -> BrowserStreamRejection.PeerAborted(WebTransportStreamAbortCode.Unreported)
+        else -> BrowserStreamRejection.NotPeerAbort
+    }
 }
 
 private suspend fun readChunk(
@@ -89,7 +98,10 @@ private suspend fun readChunk(
         } catch (t: TimeoutCancellationException) {
             throw t
         } catch (e: Throwable) {
-            return if (streamResetCode(e) != null) ReadResult.Reset else ReadResult.End
+            return when (classifyStreamRejection(e)) {
+                is BrowserStreamRejection.PeerAborted -> ReadResult.Reset
+                BrowserStreamRejection.NotPeerAbort -> ReadResult.End
+            }
         }
     if (chunk.done) return ReadResult.End
     return ReadResult.Data(chunk.value!!.uint8ArrayToReadBuffer())
@@ -108,9 +120,10 @@ private suspend fun writeChunk(
     } catch (t: TimeoutCancellationException) {
         throw t
     } catch (e: Throwable) {
-        val code = streamResetCode(e)
-        if (code != null) throw WebTransportStreamException(code, e)
-        throw e
+        when (val rejection = classifyStreamRejection(e)) {
+            is BrowserStreamRejection.PeerAborted -> throw WebTransportStreamException(rejection.code, e)
+            BrowserStreamRejection.NotPeerAbort -> throw e
+        }
     }
     buffer.position(buffer.position() + n)
     return BytesWritten(n)

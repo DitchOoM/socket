@@ -30,7 +30,7 @@ class WebTransportFailureTests {
             WebTransportFailure.PeerDoesNotSupport,
             WebTransportFailure.ConnectRejected(status = 401),
             WebTransportFailure.DatagramsNotEnabled,
-            WebTransportFailure.StreamAborted(errorCode = 7u),
+            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)),
             WebTransportFailure.TlsHandshake(badCertificate = true, detail = "untrusted"),
             WebTransportFailure.SessionError(detail = "dropped"),
         )
@@ -44,7 +44,14 @@ class WebTransportFailureTests {
     @Test
     fun describe_isStableAndRenderedFromTypedFields() {
         assertEquals("WebTransport session was rejected with status 401", WebTransportFailure.ConnectRejected(401).describe())
-        assertEquals("WebTransport stream aborted by peer (code 7)", WebTransportFailure.StreamAborted(7u).describe())
+        assertEquals(
+            "WebTransport stream aborted by peer (code 7)",
+            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)).describe(),
+        )
+        assertEquals(
+            "WebTransport stream aborted by peer (code not reported by the platform)",
+            WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Unreported).describe(),
+        )
         assertTrue(WebTransportFailure.TlsHandshake(badCertificate = true, detail = "untrusted").describe().contains("certificate"))
         assertTrue(WebTransportFailure.TlsHandshake(badCertificate = false, detail = "alert").describe().contains("handshake"))
     }
@@ -53,9 +60,11 @@ class WebTransportFailureTests {
     fun dataVariants_areStructurallyDeterministic() {
         assertEquals(WebTransportFailure.ConnectRejected(401), WebTransportFailure.ConnectRejected(401))
         assertNotEquals(WebTransportFailure.ConnectRejected(401), WebTransportFailure.ConnectRejected(404))
-        assertEquals(WebTransportFailure.StreamAborted(7u), WebTransportFailure.StreamAborted(7u))
+        val seven = WebTransportStreamAbortCode.Reported(7u)
+        assertEquals(WebTransportFailure.StreamAborted(seven), WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Reported(7u)))
+        assertNotEquals(WebTransportFailure.StreamAborted(seven), WebTransportFailure.StreamAborted(WebTransportStreamAbortCode.Unreported))
         // typed fields are first-class
-        assertEquals(7u, WebTransportFailure.StreamAborted(7u).errorCode)
+        assertEquals(seven, WebTransportFailure.StreamAborted(seven).code)
         assertEquals(true, WebTransportFailure.TlsHandshake(badCertificate = true, detail = "x").badCertificate)
     }
 }

@@ -371,19 +371,19 @@ abstract class WebTransportTestSuite {
                                     // browser backend raises (this is the cross-backend exception-parity
                                     // guard).
                                     diagnostics.mark("writing until the peer's reset surfaces")
-                                    var code: UInt? = null
+                                    var code: WebTransportStreamAbortCode? = null
                                     while (code == null) {
                                         try {
                                             stream.write(textBuffer("x"))
                                             delay(25)
                                         } catch (e: WebTransportStreamException) {
-                                            code = e.errorCode
+                                            code = e.code
                                         }
                                     }
                                     code
                                 }
                             diagnostics.mark("reset observed")
-                            assertEquals(wtCode, observed)
+                            assertEquals(WebTransportStreamAbortCode.Reported(wtCode), observed)
                         } finally {
                             session.close()
                         }
