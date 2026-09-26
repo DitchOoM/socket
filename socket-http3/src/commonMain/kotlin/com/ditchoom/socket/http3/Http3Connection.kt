@@ -656,7 +656,13 @@ class Http3Connection private constructor(
             if (peerMax <= 0) return@launch
             val capacity = minOf(QPACK_MAX_TABLE_CAPACITY, peerMax)
             val newEncoder = QpackEncoder(peerMax, settings.qpackBlockedStreams) { writeEncoderInstruction(it) }
-            newEncoder.setCapacity(capacity)
+            try {
+                newEncoder.setCapacity(capacity)
+            } catch (_: QuicCloseException) {
+                // The connection ended before the capacity instruction left: there is no connection left
+                // to encode for. Escaping would fail the connection's scope with its own close.
+                return@launch
+            }
             encoder = newEncoder
         }
     }
@@ -686,12 +692,6 @@ class Http3Connection private constructor(
             try {
                 scope.streams().collect { stream -> routes += launch { route(stream) } }
             } finally {
-                // The streams flow only completes when the connection closes (QuicScope.streams'
-                // contract), so this is the moment every still-parked read stops being able to say
-                // anything about the peer: from here an end-of-stream on a critical stream is the
-                // connection going away, not the peer closing it. Recorded BEFORE the join
-                // below, because the routes being joined are exactly the readers that will see it.
-                criticalStreams.connectionEnded()
                 // Let any in-flight route() finish first (one may be resolving SETTINGS), then — if
                 // the peer's control stream never delivered SETTINGS — unblock any awaiter.
                 routes.joinAll()
@@ -845,11 +845,11 @@ class Http3Connection private constructor(
      * the peer has already closed neither stalled nor can be asked to stop sending. The report is the
      * CONNECTION_CLOSE [abortConnection] sends.
      *
-     * [CriticalStreamGuard.peerClosed] returning null is the connection having already ended — see it
-     * for why an end-of-stream on its own cannot tell the two apart.
+     * The connection ending under the reader never reaches here: that read throws the connection's
+     * [QuicCloseException], which [route] takes as the connection's end (see [CriticalStreamGuard.peerClosed]).
      */
     private suspend fun criticalStreamClosed(type: CriticalStreamType) {
-        criticalStreams.peerClosed(type)?.let { abortConnection(Http3StreamException(it)) }
+        abortConnection(Http3StreamException(criticalStreams.peerClosed(type)))
     }
 
     /**

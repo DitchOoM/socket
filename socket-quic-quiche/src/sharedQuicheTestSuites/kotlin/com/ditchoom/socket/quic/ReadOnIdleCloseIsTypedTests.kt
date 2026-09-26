@@ -67,6 +67,45 @@ class ReadOnIdleCloseIsTypedTests {
             }
         }
 
+    /**
+     * Reader parked on dataSignal when the application closes the connection itself. This is the read an
+     * HTTP/3 endpoint has parked on the peer's control stream when it tears its own connection down, and
+     * End here would read as the peer closing a critical stream.
+     */
+    @Test
+    fun aReadParkedWhenTheApplicationClosesTheConnectionThrowsTheTypedClose() =
+        runTest {
+            val api = StubQuicheApi()
+            api.established = true
+            api.closesOnLocalClose = true
+            api.streamRecvResult = StreamRecvResult.Done // nothing readable, no FIN -> the reader parks
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                runCurrent()
+                val slot = openStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+                val read = async { runCatching { adapter.streamRead(slot.id, bufferFactory, 1024, 30.seconds) } }
+                runCurrent()
+                assertTrue(read.isActive, "reader should be parked — nothing has been made readable")
+
+                val closed = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, closed))
+                closed.await()
+                runCurrent()
+                assertIs<QuicConnectionState.Closed>(driver.state.value, "the application's close never closed the connection")
+
+                val outcome = read.await()
+                assertIs<QuicCloseException>(
+                    outcome.exceptionOrNull(),
+                    "a read pending across the application's own close (no peer FIN) returned ${outcome.getOrNull()} — " +
+                        "our close was flattened into the peer finishing the stream",
+                )
+            } finally {
+                driver.commands.close()
+            }
+        }
+
     /** A read issued after the idle close (the ClosedSendChannelException edge). */
     @Test
     fun aReadStartedAfterTheIdleCloseThrowsTheTypedClose() =

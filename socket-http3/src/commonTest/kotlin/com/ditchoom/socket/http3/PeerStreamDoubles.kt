@@ -11,6 +11,8 @@ import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.PoolStats
+import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
@@ -111,26 +113,43 @@ internal class StalledStream(
 }
 
 /**
- * A **conformant** peer critical stream (#530): delivers [prefix], then stays open — silent, unfinished —
- * for [openFor], which every scripted test outlives, and only then ends.
+ * How a scripted peer stream's reads end, in the transport's terms: [ReadResult.End] is the peer's FIN
+ * and nothing else, and a connection that goes away under a stream the peer never finished throws the
+ * connection's [QuicCloseException] from the read.
+ */
+internal sealed interface StreamEnding {
+    /** The peer FINs the stream: the read returns [ReadResult.End]. */
+    data object PeerFin : StreamEnding
+
+    /** The connection ends with the stream unfinished: the read throws the connection's close. */
+    data class ConnectionGone(
+        val reason: QuicCloseReason = QuicCloseReason.Graceful,
+    ) : StreamEnding
+
+    /** The read that reaches this ending: returns End, or throws the connection's close. */
+    fun read(): ReadResult =
+        when (this) {
+            PeerFin -> ReadResult.End
+            is ConnectionGone -> throw QuicCloseException(reason, "connection closed with the stream unfinished")
+        }
+}
+
+/**
+ * A **conformant** peer critical stream: delivers [prefix], then stays open — silent, unfinished — for
+ * [openFor], and then [endsWith], by default the connection going away under it.
  *
  * This is what RFC 9114 §6.2.1 and RFC 9204 §4.2 require of a control or QPACK instruction stream: "The
  * sender MUST NOT close the control stream", "The sender MUST NOT close either of these streams". A
- * double that delivers its bytes and immediately FINs is scripting a peer that violates that rule, and
- * since #530 both roles say so — with `H3_CLOSED_CRITICAL_STREAM`, which then wins the race to be the
- * connection's error and hides whatever the test was actually about. Use this wherever a critical stream
- * is scenery rather than the subject.
- *
- * "Ends after [openFor]" rather than "never ends": the end has to come eventually or the harness's
- * enclosing `coroutineScope` would never join the reader. By then the connection's peer-stream flow has
- * long completed, which is exactly the shape of a connection going away — so the endpoint reads that end
- * as teardown and not as the peer closing anything (see [CriticalStreamGuard]). Under `runTest` the wait
- * is virtual time and costs nothing.
+ * double that delivers its bytes and then FINs is scripting a peer that violates that rule, and both
+ * roles say so with `H3_CLOSED_CRITICAL_STREAM`, which then wins the race to be the connection's error
+ * and hides whatever the test was actually about. Use this wherever a critical stream is scenery rather
+ * than the subject. Under `runTest` the wait is virtual time and costs nothing.
  */
 internal class OpenCriticalStream(
     prefix: List<Int>,
     private val openFor: Duration = CONNECTION_LIFETIME,
     chunks: BufferFactory = BufferFactory.Default,
+    private val endsWith: StreamEnding = StreamEnding.ConnectionGone(),
 ) : ByteStream {
     private val script = ArrayDeque<ReadResult>()
     var closed = false
@@ -155,7 +174,7 @@ internal class OpenCriticalStream(
         withTimeout(deadline) {
             script.removeFirstOrNull() ?: run {
                 delay(openFor)
-                ReadResult.End
+                endsWith.read()
             }
         }
 
@@ -173,10 +192,7 @@ internal class OpenCriticalStream(
     }
 
     private companion object {
-        /**
-         * How long [OpenCriticalStream] models "the life of the connection" — longer than any scripted
-         * test's virtual timeline, so its end always lands after the peer-stream flow has completed.
-         */
+        /** How long [OpenCriticalStream] models "the life of the connection" — longer than any scripted test's timeline. */
         val CONNECTION_LIFETIME: Duration = 1.hours
     }
 }
@@ -201,17 +217,18 @@ internal fun BufferPool.outstanding(): Int = stats().let { (it.poolMisses - it.c
  * the silence — the one this stream answers with [ReadResult.End] — and a reader whose deadline expired
  * inside the silence never gets there.
  *
- * [stayOpenFor] delays that end without moving the witness, for a **critical** stream (#530): a control
- * or QPACK instruction stream that FINs is itself a connection error (RFC 9114 §6.2.1, RFC 9204 §4.2),
- * so a test about something else must not have one end while the connection is live. Default zero — the
- * stream ends as soon as the reader comes back, which is right for a GREASE or reserved stream and for
- * any critical stream whose connection has already closed.
+ * [stayOpenFor] delays that end without moving the witness, and [endsWith] is what the end is. A
+ * **critical** stream — a control or QPACK instruction stream, whose FIN is itself a connection error
+ * (RFC 9114 §6.2.1, RFC 9204 §4.2) — passes [StreamEnding.ConnectionGone], so a test about something
+ * else does not script a peer committing that violation. The default, a FIN as soon as the reader comes
+ * back, is right for a GREASE or reserved stream.
  */
 internal class SilentThenSpeakingStream(
     private val first: List<Int>,
     private val silence: Duration,
     private val afterSilence: List<Int>,
     private val stayOpenFor: Duration = Duration.ZERO,
+    private val endsWith: StreamEnding = StreamEnding.PeerFin,
 ) : ByteStream {
     private var stage = 0
     var closed = false
@@ -236,7 +253,7 @@ internal class SilentThenSpeakingStream(
                 else -> {
                     readToEnd = true
                     delay(stayOpenFor)
-                    ReadResult.End
+                    endsWith.read()
                 }
             }
         }

@@ -15,6 +15,8 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CompletableDeferred
@@ -42,6 +44,7 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -115,11 +118,18 @@ class Http3ServerConnectionTests {
             ),
         )
 
-    /** A peer (client-initiated, unidirectional id 2) control stream: 0x00 prefix then [trailing] bytes. */
-    private fun clientControl(trailing: List<Int>): QuicByteStream =
+    /**
+     * A peer (client-initiated, unidirectional id 2) control stream: 0x00 prefix, then [trailing] bytes,
+     * then [endsWith] — by default the connection going away under it, the only way a conformant
+     * client's control stream ends.
+     */
+    private fun clientControl(
+        trailing: List<Int>,
+        endsWith: StreamEnding = StreamEnding.ConnectionGone(),
+    ): QuicByteStream =
         QuicByteStream(
             QuicStreamId(2),
-            RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + trailing), ReadResult.End)),
+            RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + trailing)), endsWith),
         )
 
     /**
@@ -127,19 +137,19 @@ class Http3ServerConnectionTests {
      * sender MUST NOT close the control stream" (RFC 9114 §6.2.1). Use this wherever the control stream
      * is scenery rather than the subject: since #530 one that FINs while the connection is live is itself
      * a connection error, and `H3_CLOSED_CRITICAL_STREAM` would win the race to be the error under test.
-     * [clientControl] above still FINs, which is right where the connection's streams run out with it.
      */
     private fun openClientControl(trailing: List<Int>): QuicByteStream =
         QuicByteStream(QuicStreamId(2), OpenCriticalStream(listOf(Http3StreamType.CONTROL.toInt()) + trailing))
 
-    /** A peer (client-initiated, unidirectional) uni stream carrying only its [type] prefix, then FIN. */
+    /** A peer (client-initiated, unidirectional) uni stream carrying only its [type] prefix, then [endsWith]. */
     private fun clientUniStream(
         id: Long,
         type: Long,
+        endsWith: StreamEnding = StreamEnding.ConnectionGone(),
     ): QuicByteStream =
         QuicByteStream(
             QuicStreamId(id),
-            RecordingByteStream(listOf(dataChunk(listOf(type.toInt())), ReadResult.End)),
+            RecordingByteStream(listOf(dataChunk(listOf(type.toInt()))), endsWith),
         )
 
     /** A peer (client-initiated, bidirectional id 0) request stream carrying [bytes] then FIN. */
@@ -151,6 +161,7 @@ class Http3ServerConnectionTests {
     /** A [ByteStream] that records everything written and replays a scripted read sequence. */
     private class RecordingByteStream(
         readScript: List<ReadResult> = emptyList(),
+        private val endsWith: StreamEnding = StreamEnding.PeerFin,
     ) : ByteStream,
         com.ditchoom.buffer.flow.Resettable {
         val written = mutableListOf<Int>()
@@ -164,7 +175,7 @@ class Http3ServerConnectionTests {
         override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
         override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
-        override suspend fun read(deadline: Duration): ReadResult = if (reads.isEmpty()) ReadResult.End else reads.removeFirst()
+        override suspend fun read(deadline: Duration): ReadResult = reads.removeFirstOrNull() ?: endsWith.read()
 
         override suspend fun write(
             buffer: ReadBuffer,
@@ -279,7 +290,7 @@ class Http3ServerConnectionTests {
     @Test
     fun control_endsBeforeSettings_isClosedCriticalStream(): TestResult =
         // The control stream carries only its type prefix, then FINs ⇒ H3_CLOSED_CRITICAL_STREAM (§6.2.1).
-        runServer(listOf(clientControl(emptyList()))) { scope ->
+        runServer(listOf(clientControl(emptyList(), endsWith = StreamEnding.PeerFin))) { scope ->
             assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, scope.awaitCloseCode())
         }
 
@@ -631,9 +642,8 @@ class Http3ServerConnectionTests {
                 "sanity: the section must reference dynamic-table inserts, or it cannot tell whether the pump applied them",
             )
 
-            // Both stay open past the end of this connection's stream flow: a QPACK instruction stream that
-            // FINs while the connection is live is a connection error of its own (#530, RFC 9204 §4.2), and
-            // this test is about the pumps surviving silence, not about that.
+            // Neither is ever FINed: a QPACK instruction stream that FINs is a connection error of its own
+            // (RFC 9204 §4.2), and this test is about the pumps surviving silence, not about that.
             val clientQpackEncoder =
                 SilentThenSpeakingStream(
                     first = listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes(setCapacity),
@@ -641,6 +651,7 @@ class Http3ServerConnectionTests {
                     silence = 20.seconds,
                     afterSilence = inserts.flatMap { encoderBytes(it) },
                     stayOpenFor = 1.hours,
+                    endsWith = StreamEnding.ConnectionGone(),
                 )
             val clientQpackDecoder =
                 SilentThenSpeakingStream(
@@ -650,6 +661,7 @@ class Http3ServerConnectionTests {
                     // (it has no encoder: the client advertised capacity 0), but the pump must still be reading.
                     afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
                     stayOpenFor = 1.hours,
+                    endsWith = StreamEnding.ConnectionGone(),
                 )
             val server = ServerStreams()
             val decodedHeaders = CompletableDeferred<List<QpackHeaderField>>()
@@ -1156,12 +1168,14 @@ class Http3ServerConnectionTests {
                 // Longer than the 15s default, so a deadline armed on the drain expires inside the silence.
                 silence = 20.seconds,
                 afterSilence = encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                endsWith = StreamEnding.ConnectionGone(),
             )
         val clientQpackDecoder =
             SilentThenSpeakingStream(
                 first = listOf(Http3StreamType.QPACK_DECODER.toInt()),
                 silence = 20.seconds,
                 afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                endsWith = StreamEnding.ConnectionGone(),
             )
         return runServer(
             listOf(
@@ -1192,12 +1206,9 @@ class Http3ServerConnectionTests {
     // === #530: a client that closes a critical stream ends the connection ==========================
 
     /**
-     * Client streams delivered on a connection that is still **live** afterwards — the distinction #530
-     * turns on. [QuicScope.streams] completes when the connection closes, so a plain list of client
-     * streams is a connection that has *already ended* by the time its streams are read, and an
-     * end-of-stream there is teardown rather than the client closing anything. Emitting and then staying
-     * open for [liveFor] models the other case: the client FINs a critical stream while the connection
-     * carries on, and whatever the server does about it happens on a live connection.
+     * Client streams delivered on a connection that stays **live** for [liveFor] afterwards.
+     * [QuicScope.streams] completes when the connection closes, so a plain list is a connection that ends
+     * as soon as its streams are handed out; this keeps it open while the streams are read.
      */
     private fun liveStreams(
         vararg streams: QuicByteStream,
@@ -1228,7 +1239,7 @@ class Http3ServerConnectionTests {
         val laterRequest = StalledStream(prefix = frameBytes(requestHeadersFrame()))
         return runServer(
             flow {
-                emit(clientControl(frameBytes(clientSettings())))
+                emit(clientControl(frameBytes(clientSettings()), endsWith = StreamEnding.PeerFin))
                 delay(1.seconds) // the control stream's FIN has been observed, on a live connection
                 emit(QuicByteStream(QuicStreamId(0), laterRequest))
             },
@@ -1322,7 +1333,10 @@ class Http3ServerConnectionTests {
      */
     @Test
     fun aStaticOnlyServerAbortsWhenTheClientClosesADrainedQpackStream(): TestResult =
-        runServer(liveStreams(clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER)), qpackCapacity = 0) { scope ->
+        runServer(
+            liveStreams(clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER, endsWith = StreamEnding.PeerFin)),
+            qpackCapacity = 0,
+        ) { scope ->
             assertTrue(
                 scope.closeErrorCode.isCompleted,
                 "a QPACK encoder stream is critical whether or not this server has a dynamic table to apply it " +
@@ -1333,36 +1347,70 @@ class Http3ServerConnectionTests {
         }
 
     /**
-     * **A clean connection shutdown is not a closed critical stream (#530's control).**
+     * **The connection ending under the critical-stream readers is not a closed critical stream.**
      *
-     * The escalation must not fire on the ordinary end of a connection, and it very nearly would:
-     * `QuicheDriver` answers a read parked on a stream of a connection that has gone away with
-     * `ReadResult.End` — the same value a client's FIN produces (its `StreamRecvResult.ConnectionGone`
-     * arm; a typed connection-gone read result needs `ReadResult` to gain a case, DitchOoM/buffer#376).
-     * End-of-stream alone therefore cannot say which happened, and a fix that read it as the client's FIN
-     * would report every clean close as a violation the client never committed.
-     *
-     * [QuicScope.streams] is what tells them apart: it "completes when the connection closes". Here the
-     * client's control and QPACK streams end *after* that flow has completed — the shape of a connection
-     * going away — and the server must abort nothing.
+     * A read on a stream the client never finished throws the connection's close when the connection goes
+     * away — ours or the client's — and only the client's FIN reads as end-of-stream. Here the control
+     * stream and both drained QPACK streams end with that close *before* the client-stream flow
+     * completes, the ordering a local close produces when the readers wake ahead of the router. The
+     * server must abort nothing.
      */
     @Test
-    fun aCleanShutdownEndsTheCriticalStreamsWithoutAViolation(): TestResult =
-        runServer(
-            listOf(
-                clientControl(frameBytes(clientSettings())),
-                clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER),
-                clientUniStream(id = 10, type = Http3StreamType.QPACK_DECODER),
+    fun theConnectionEndingUnderTheCriticalStreamsIsNotAViolation(): TestResult {
+        val closedLocally = StreamEnding.ConnectionGone(QuicCloseReason.ByLocal(QuicError.NoError))
+
+        fun critical(
+            id: Long,
+            prefix: List<Int>,
+        ) = QuicByteStream(QuicStreamId(id), OpenCriticalStream(prefix, openFor = 100.milliseconds, endsWith = closedLocally))
+        return runServer(
+            liveStreams(
+                critical(2, listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings())),
+                critical(6, listOf(Http3StreamType.QPACK_ENCODER.toInt())),
+                critical(10, listOf(Http3StreamType.QPACK_DECODER.toInt())),
+                // The flow completes well after every read has ended.
+                liveFor = 1.seconds,
             ),
             qpackCapacity = 0,
         ) { scope ->
             assertFalse(
                 scope.closeErrorCode.isCompleted,
-                "the connection closed: its client-stream flow completed, and the reads parked on the control and " +
-                    "QPACK streams ended with it. That is a clean shutdown, not the client closing a critical " +
-                    "stream — reporting H3_CLOSED_CRITICAL_STREAM here would blame the client for our own close " +
-                    "(#530)",
+                "the control and QPACK stream reads ended with the connection's close while the client-stream flow " +
+                    "was still running. That is the connection going away, not the client closing a critical " +
+                    "stream — sending H3_CLOSED_CRITICAL_STREAM here blames the client for our own close",
             )
+        }
+    }
+
+    /**
+     * **The client's FIN on its control stream is a violation whenever it is read.**
+     *
+     * End-of-stream is the client's FIN and nothing else, so what it means cannot depend on whether the
+     * client-stream flow happened to complete before the reader got to it. Here the flow completes at once
+     * and the FIN is read a second later: the order is explicit, not left to the dispatcher.
+     */
+    @Test
+    fun aControlStreamFinReadAfterTheClientStreamFlowCompletedIsStillAViolation(): TestResult =
+        runServer(
+            listOf(
+                QuicByteStream(
+                    QuicStreamId(2),
+                    OpenCriticalStream(
+                        listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()),
+                        openFor = 1.seconds,
+                        endsWith = StreamEnding.PeerFin,
+                    ),
+                ),
+            ),
+        ) { scope ->
+            assertTrue(
+                scope.closeErrorCode.isCompleted,
+                "the client FINed its control stream; the read returned end-of-stream, which is the client's FIN " +
+                    "and nothing else. Whether the client-stream flow completed before the reader got there must " +
+                    "not decide whether that is reported — no close means a timing flag, not the read, chose the " +
+                    "verdict",
+            )
+            assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, scope.awaitCloseCode())
         }
 
     // === WebTransport stream demux (draft-ietf-webtrans-http3 §4.1 / §4.2) — #496 ==============

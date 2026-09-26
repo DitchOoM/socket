@@ -120,16 +120,7 @@ class Http3ServerConnection internal constructor(
         }
         // WebTransport datagram demux (RFC 9297): a no-op when QUIC datagrams aren't enabled.
         webTransportMux?.startDatagramLoop()
-        try {
-            servePeerStreams()
-        } finally {
-            // The streams flow only completes when the connection closes (QuicScope.streams' contract),
-            // so this is the moment every still-parked read stops being able to say anything about the
-            // client: from here an end-of-stream on a critical stream is the connection going away, not
-            // the client closing it. The handlers that observe it are launched into [scope], so
-            // they outlive this frame and see the flag.
-            criticalStreams.connectionEnded()
-        }
+        servePeerStreams()
     }
 
     /** [serve]'s router: one launched handler per client-initiated stream, for the connection's life. */
@@ -446,9 +437,13 @@ class Http3ServerConnection internal constructor(
      * one request cannot take the connection down, which is right for a request and wrong for this — the
      * same reason [claimCriticalStream] aborts. Not [abandonStalledStream] either: nothing stalled, and
      * STOP_SENDING is meaningless on a stream the client has already closed.
+     *
+     * The connection ending under the reader never reaches here: that read throws the connection's
+     * [QuicCloseException], which [servePeerStreams] takes as the connection's end (see
+     * [CriticalStreamGuard.peerClosed]).
      */
     private suspend fun criticalStreamClosed(type: CriticalStreamType) {
-        criticalStreams.peerClosed(type)?.let { abortConnection(Http3StreamException(it)) }
+        abortConnection(Http3StreamException(criticalStreams.peerClosed(type)))
     }
 
     /**

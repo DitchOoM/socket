@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
@@ -49,6 +50,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -82,20 +84,25 @@ class Http3ConnectionTests {
         return ReadResult.Data(buf)
     }
 
-    /** A peer control stream: type prefix 0x00, then [settings], then end-of-stream. */
-    private fun peerControlStream(settings: Http3Frame.Settings): QuicByteStream =
+    /**
+     * A peer control stream: type prefix 0x00, then [settings], then [endsWith] — by default the
+     * connection going away under it, the only way a conformant peer's control stream ends.
+     */
+    private fun peerControlStream(
+        settings: Http3Frame.Settings,
+        endsWith: StreamEnding = StreamEnding.ConnectionGone(),
+    ): QuicByteStream =
         QuicByteStream(
             QuicStreamId(3), // server-initiated unidirectional
-            RecordingByteStream(
-                listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(settings)), ReadResult.End),
-            ),
+            RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(settings))), endsWith),
         )
 
     // --- test doubles -------------------------------------------------------
 
-    /** A [ByteStream] that records everything written and replays a scripted read sequence. */
+    /** A [ByteStream] that records everything written, replays a scripted read sequence, then [endsWith]. */
     private class RecordingByteStream(
         readScript: List<ReadResult> = emptyList(),
+        private val endsWith: StreamEnding = StreamEnding.PeerFin,
     ) : ByteStream,
         com.ditchoom.buffer.flow.Resettable {
         val written = mutableListOf<Int>()
@@ -111,7 +118,7 @@ class Http3ConnectionTests {
         override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
         override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
-        override suspend fun read(deadline: Duration): ReadResult = if (reads.isEmpty()) ReadResult.End else reads.removeFirst()
+        override suspend fun read(deadline: Duration): ReadResult = reads.removeFirstOrNull() ?: endsWith.read()
 
         override suspend fun write(
             buffer: ReadBuffer,
@@ -226,6 +233,7 @@ class Http3ConnectionTests {
                         // Longer than the 15s default, so the pre-#472 deadline expires inside the silence.
                         silence = 20.seconds,
                         afterSilence = encoderBytes(insert),
+                        endsWith = StreamEnding.ConnectionGone(),
                     ),
                 )
             val scope =
@@ -667,11 +675,9 @@ class Http3ConnectionTests {
     ): QuicByteStream = QuicByteStream(QuicStreamId(id), RecordingByteStream(listOf(dataChunk(prefix), ReadResult.End)))
 
     /**
-     * Peer streams delivered on a connection that is still **live** afterwards — the distinction #530
-     * turns on. [QuicScope.streams] completes when the connection closes, so a list of peer streams is a
-     * connection that has *already ended* by the time its streams are read, and an end-of-stream there is
-     * teardown rather than the peer closing anything. Emitting and then staying open for [liveFor] models
-     * the other case: the peer FINs a critical stream while the connection carries on.
+     * Peer streams delivered on a connection that stays **live** for [liveFor] afterwards.
+     * [QuicScope.streams] completes when the connection closes, so a plain list is a connection that ends
+     * as soon as its streams are handed out; this keeps it open while the streams are read.
      */
     private fun liveStreams(
         vararg streams: QuicByteStream,
@@ -703,7 +709,12 @@ class Http3ConnectionTests {
             lateinit var connection: Http3Connection
             lateinit var scope: FakeQuicScope
             coroutineScope {
-                scope = FakeQuicScope(this, ClientStreams().outgoing(), liveStreams(peerControlStream(clientSettings())))
+                scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        liveStreams(peerControlStream(clientSettings(), endsWith = StreamEnding.PeerFin)),
+                    )
                 connection = Http3Connection.bootstrap(scope, TransportConfig())
             }
 
@@ -812,21 +823,72 @@ class Http3ConnectionTests {
         }
 
     /**
-     * **A clean connection shutdown is not a closed critical stream (#530's control).**
+     * **The connection ending under the critical-stream readers is not a closed critical stream.**
      *
-     * The escalation above must not fire on the ordinary end of a connection, and it very nearly would:
-     * `QuicheDriver` answers a read parked on a stream of a connection that has gone away with
-     * `ReadResult.End` — the same value a peer's FIN produces (its `StreamRecvResult.ConnectionGone` arm;
-     * a typed connection-gone read result needs `ReadResult` to gain a case, DitchOoM/buffer#376). So
-     * end-of-stream alone cannot say which happened, and a fix reading it as the peer's FIN would report
-     * every clean close as a protocol violation the peer never committed.
-     *
-     * [QuicScope.streams] is what tells them apart: it "completes when the connection closes". Here the
-     * peer's control and QPACK encoder streams end *after* that flow has completed — the shape of a
-     * connection going away — and the connection must record nothing.
+     * A read on a stream the peer never finished throws the connection's close when the connection goes
+     * away — ours or theirs — and only the peer's FIN reads as end-of-stream. Here both reads end with
+     * that close *before* the peer-stream flow completes, the ordering a local close produces when the
+     * readers wake ahead of the router. The connection must record nothing and send no HTTP/3 code.
      */
     @Test
-    fun aCleanShutdownEndsTheCriticalStreamsWithoutAViolation() =
+    fun theConnectionEndingUnderTheCriticalStreamsIsNotAViolation() =
+        runTest {
+            lateinit var connection: Http3Connection
+            lateinit var scope: FakeQuicScope
+            val closedLocally = StreamEnding.ConnectionGone(QuicCloseReason.ByLocal(QuicError.NoError))
+            coroutineScope {
+                scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        liveStreams(
+                            QuicByteStream(
+                                QuicStreamId(3),
+                                OpenCriticalStream(
+                                    listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()),
+                                    openFor = 100.milliseconds,
+                                    endsWith = closedLocally,
+                                ),
+                            ),
+                            QuicByteStream(
+                                QuicStreamId(7),
+                                OpenCriticalStream(
+                                    listOf(Http3StreamType.QPACK_ENCODER.toInt()) +
+                                        encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                                    openFor = 100.milliseconds,
+                                    endsWith = closedLocally,
+                                ),
+                            ),
+                            // The flow completes well after both reads have ended.
+                            liveFor = 1.seconds,
+                        ),
+                    )
+                connection = Http3Connection.bootstrap(scope, TransportConfig())
+            }
+
+            assertNull(
+                connection.connectionError,
+                "both critical-stream reads ended with the connection's close while the peer-stream flow was still " +
+                    "running. That is the connection going away, not the peer closing a critical stream — reporting " +
+                    "H3_CLOSED_CRITICAL_STREAM here blames the peer for our own close",
+            )
+            assertFalse(
+                scope.closeErrorCode.isCompleted,
+                "and no CONNECTION_CLOSE carrying an HTTP/3 error code may be sent for the connection's own end",
+            )
+        }
+
+    /**
+     * **The peer's FIN on its control stream is a violation whenever it is read.**
+     *
+     * End-of-stream is the peer's FIN and nothing else, so what it means cannot depend on whether the
+     * peer-stream flow happened to complete before the reader got to it. Here the flow completes at once
+     * and the FIN is read a second later: the order is explicit, not left to the dispatcher. RFC 9114
+     * §6.2.1 — "If either control stream is closed at any point, this MUST be treated as a connection
+     * error of type H3_CLOSED_CRITICAL_STREAM."
+     */
+    @Test
+    fun aControlStreamFinReadAfterThePeerStreamFlowCompletedIsStillAViolation() =
         runTest {
             lateinit var connection: Http3Connection
             lateinit var scope: FakeQuicScope
@@ -837,27 +899,25 @@ class Http3ConnectionTests {
                         ClientStreams().outgoing(),
                         incoming =
                             listOf(
-                                peerControlStream(clientSettings()),
-                                peerStreamThatFins(
-                                    id = 7,
-                                    prefix =
-                                        listOf(Http3StreamType.QPACK_ENCODER.toInt()) +
-                                            encoderBytes(QpackEncoderInstruction.SetCapacity(0)),
+                                QuicByteStream(
+                                    QuicStreamId(3),
+                                    OpenCriticalStream(
+                                        listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()),
+                                        openFor = 1.seconds,
+                                        endsWith = StreamEnding.PeerFin,
+                                    ),
                                 ),
                             ),
                     )
                 connection = Http3Connection.bootstrap(scope, TransportConfig())
             }
 
-            assertNull(
-                connection.connectionError,
-                "the connection closed: its peer-stream flow completed, and the reads parked on the control and " +
-                    "QPACK streams ended with it. That is a clean shutdown, not the peer closing a critical " +
-                    "stream — reporting H3_CLOSED_CRITICAL_STREAM here would blame the peer for our own close (#530)",
-            )
-            assertFalse(
-                scope.closeErrorCode.isCompleted,
-                "and no CONNECTION_CLOSE carrying an HTTP/3 error code may be sent for an ordinary shutdown",
+            assertEquals(
+                Http3Violation.ClosedCriticalStream(CriticalStreamType.CONTROL),
+                connection.connectionError?.violation,
+                "the peer FINed its control stream; the read returned end-of-stream, which is the peer's FIN and " +
+                    "nothing else. Whether the peer-stream flow completed before the reader got there must not " +
+                    "decide whether that is reported — null means a timing flag, not the read, chose the verdict",
             )
         }
 
@@ -1226,7 +1286,8 @@ class Http3ConnectionTests {
                     QuicByteStream(
                         QuicStreamId(7),
                         RecordingByteStream(
-                            listOf(dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt(), 0x20)), ReadResult.End),
+                            listOf(dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt(), 0x20))),
+                            StreamEnding.ConnectionGone(),
                         ),
                     )
                 val peerPush =
@@ -1375,6 +1436,51 @@ class Http3ConnectionTests {
         }
     }
 
+    /**
+     * **The connection closing under the encoder's capacity instruction ends encoder setup, not the
+     * connection's scope.** Once the peer's SETTINGS allow a dynamic table, the client writes a Set
+     * Dynamic Table Capacity on its QPACK encoder stream. A connection closed right after SETTINGS
+     * arrived makes that write throw the connection's [QuicCloseException]; escaping the launched setup
+     * coroutine fails the connection's scope, so a caller that simply closed its connection gets the
+     * close thrown back at it.
+     */
+    @Test
+    fun encoderCapacityWrite_racingConnectionClose_endsSetupQuietly() =
+        runTest {
+            val throwingEncoder = ClosedAfterFirstWriteByteStream()
+            val outgoing =
+                ArrayDeque(
+                    listOf(
+                        QuicByteStream(QuicStreamId(2), RecordingByteStream()),
+                        QuicByteStream(QuicStreamId(6), throwingEncoder),
+                        QuicByteStream(QuicStreamId(10), RecordingByteStream()),
+                    ),
+                )
+            val dynamicSettings =
+                Http3Frame.Settings(
+                    listOf(
+                        Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L),
+                        Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, 16L),
+                    ),
+                )
+
+            val outcome =
+                runCatching {
+                    coroutineScope {
+                        val scope = FakeQuicScope(this, outgoing, incoming = listOf(peerControlStream(dynamicSettings)))
+                        val connection = Http3Connection.bootstrap(scope, TransportConfig())
+                        withTimeout(5.seconds) { connection.peerSettings() }
+                    }
+                }
+
+            assertTrue(throwingEncoder.writeAttempts >= 2, "sanity: the Set Dynamic Table Capacity write must have been attempted")
+            assertNull(
+                outcome.exceptionOrNull(),
+                "the connection closed while the encoder's capacity instruction was being written; that ends " +
+                    "encoder setup, it must not escape into the connection's scope and fail it",
+            )
+        }
+
     @Test
     fun decoderInstructionWrite_racingConnectionClose_isSwallowed_notPropagated() =
         runTest {
@@ -1391,10 +1497,8 @@ class Http3ConnectionTests {
                 QuicByteStream(
                     QuicStreamId(7), // server-initiated unidirectional
                     RecordingByteStream(
-                        listOf(
-                            dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes),
-                            ReadResult.End,
-                        ),
+                        listOf(dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes)),
+                        StreamEnding.ConnectionGone(),
                     ),
                 )
             val throwingDecoder = ClosedAfterFirstWriteByteStream()
@@ -1428,14 +1532,14 @@ class Http3ConnectionTests {
 
     // --- critical stream creation (RFC 9114 §6.2 / RFC 9204 §4.2) -----------
 
-    /** A peer uni stream carrying only its [type] prefix, then end-of-stream. */
+    /** A peer uni stream carrying only its [type] prefix, left open until the connection goes away. */
     private fun peerUniStream(
         id: Long,
         type: Long,
     ): QuicByteStream =
         QuicByteStream(
             QuicStreamId(id),
-            RecordingByteStream(listOf(dataChunk(listOf(type.toInt())), ReadResult.End)),
+            RecordingByteStream(listOf(dataChunk(listOf(type.toInt()))), StreamEnding.ConnectionGone()),
         )
 
     /** Runs a connection whose peer opens [incoming], joins the router, and returns the connection. */
