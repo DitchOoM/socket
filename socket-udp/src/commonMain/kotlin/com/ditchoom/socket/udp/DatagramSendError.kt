@@ -244,6 +244,27 @@ sealed interface SourceAddressRejection {
         val probeErrno: Int,
     ) : SourceAddressRejection
 
+    /**
+     * The channel sends through sockets each bound to one local address, and none of them is bound to
+     * the named one. Nothing was sent.
+     *
+     * Such a channel pins a source by choosing the socket bound to it, so a source without a socket is
+     * one it cannot leave from. The host may or may not hold the address — one it gained after the
+     * channel was bound is held and still unserved — so this says only what the channel knows.
+     */
+    data object NotBound : SourceAddressRejection
+
+    /**
+     * The backend checks a named source itself before sending, because its kernel does not refuse one
+     * the host does not hold, and that check could not answer. [probeErrno] is why. Nothing was sent.
+     *
+     * The Darwin IPv4 path: a socket that has already sent to a destination sends from any
+     * `IP_PKTINFO` source without checking it, so the check is this library's.
+     */
+    data class Unverified(
+        val probeErrno: Int,
+    ) : SourceAddressRejection
+
     /** Human-readable rendering, for [DatagramSendError.describe]. Display only. */
     fun describe(): String =
         when (this) {
@@ -251,6 +272,8 @@ sealed interface SourceAddressRejection {
             UnscopedLinkLocal -> "an IPv6 link-local source needs the interface it is scoped to"
             is NotAssigned -> "no interface on this host holds it (errno=$errno)"
             is Undetermined -> "the send failed (errno=$sendErrno) and the source could not be checked (errno=$probeErrno)"
+            NotBound -> "no socket of this channel is bound to it"
+            is Unverified -> "it could not be checked before sending (errno=$probeErrno)"
         }
 }
 

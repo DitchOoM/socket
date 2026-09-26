@@ -34,5 +34,16 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = java.io.File(certPath("cert.crt")).readText()
 
+    /** The source the kernel picks for a documentation-prefix destination, per family; `connect` sends nothing. */
+    override fun hostInterfaceAddresses(): List<String> =
+        listOf("192.0.2.1", "2001:db8::1").mapNotNull { target ->
+            runCatching {
+                java.net.DatagramSocket().use { socket ->
+                    socket.connect(java.net.InetSocketAddress(java.net.InetAddress.getByName(target), 9))
+                    socket.localAddress.takeUnless { it.isAnyLocalAddress }?.hostAddress?.substringBefore('%')
+                }
+            }.getOrNull()
+        }
+
     override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmQuicServerTestSuite::class, block)
 }

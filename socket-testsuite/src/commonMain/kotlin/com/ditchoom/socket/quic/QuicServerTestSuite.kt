@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
@@ -628,6 +629,97 @@ abstract class QuicServerTestSuite {
                 }
             }
         }
+
+    /**
+     * This host's addresses on an interface other than loopback, at most one per family: each is dialled
+     * by a client on that family's loopback address. Empty skips those pairings.
+     */
+    protected open fun hostInterfaceAddresses(): List<String> = emptyList()
+
+    /**
+     * A wildcard-bound server answers each client from the address that client dialled.
+     *
+     * Each client is a socket bound to a loopback address, and the connection over it accepts only
+     * datagrams whose source (as `recvfrom` reports it) is the address it dialled. Dialling one of this
+     * host's interface addresses from loopback is the pairing a server that leaves the reply's source to
+     * the kernel gets wrong on Darwin, which answers a local destination from that destination.
+     */
+    @Test
+    fun aWildcardServerAnswersFromTheAddressEachClientDialled() =
+        runQuicTest(timeout = 45.seconds) {
+            wrapTestBody {
+                val interfaces = hostInterfaceAddresses()
+                if (interfaces.isEmpty()) println("[QuicServerTestSuite] SKIP interface pairings: no interface address for this platform")
+                val dials =
+                    listOf("127.0.0.1" to "127.0.0.1") +
+                        interfaces.map { (if (':' in it) "::1" else "127.0.0.1") to it }
+                val listening = CompletableDeferred<Int>()
+                val server =
+                    launch {
+                        withQuicServer(QuicPortBinding.Own(0), testTlsConfig(), testQuicOptions) {
+                            listening.complete(port)
+                            connections {
+                                replyTagged(acceptStream(), "reply")
+                            }
+                        }
+                    }
+                val port = listening.await()
+                try {
+                    for ((client, dialled) in dials) {
+                        val socket = SourceRecordingChannel(UdpSocket.bind(localHost = client))
+                        try {
+                            val reply =
+                                try {
+                                    withQuicConnection(
+                                        dialled,
+                                        port,
+                                        testQuicOptions,
+                                        timeout = 5.seconds.scaled,
+                                        binding = QuicClientBinding.Shared(socket),
+                                    ) {
+                                        val stream = openStream()
+                                        val out = BufferFactory.deterministic().allocate(4)
+                                        out.writeString("ping", Charset.UTF8)
+                                        out.resetForRead()
+                                        stream.write(out, 5.seconds)
+                                        val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
+                                        stream.close()
+                                        if (response is ScopedRead.Data) response.value else "no_data:${response::class.simpleName}"
+                                    }
+                                } catch (e: Throwable) {
+                                    if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+                                    throw AssertionError(
+                                        "$client dialled $dialled and got no connection; the server's datagrams arrived from " +
+                                            "${socket.sources()} ($e)",
+                                        e,
+                                    )
+                                }
+                            assertEquals("reply:ping", reply, "$client -> $dialled")
+                        } finally {
+                            socket.close()
+                        }
+                    }
+                } finally {
+                    server.cancel()
+                }
+            }
+        }
+
+    /** Passes everything through, remembering the source of each datagram received. */
+    private class SourceRecordingChannel(
+        private val delegate: AddressedDatagramChannel,
+    ) : AddressedDatagramChannel by delegate {
+        private val seen = Mutex()
+        private val hosts = linkedSetOf<String>()
+
+        suspend fun sources(): Set<String> = seen.withLock { hosts.toSet() }
+
+        override suspend fun receive(): DatagramReadResult {
+            val result = delegate.receive()
+            if (result is DatagramReadResult.Received) seen.withLock { hosts += result.datagram.peer.host }
+            return result
+        }
+    }
 
     /**
      * The [ReadResult] a peer observes when the remote abruptly resets a stream: [ReadResult.Reset],

@@ -15,6 +15,9 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.udp.DatagramSendError
+import com.ditchoom.socket.udp.DatagramSendException
+import com.ditchoom.socket.udp.SourceAddressRejection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -23,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -123,6 +127,91 @@ class PerLocalAddressServerChannelTests {
                 "fromLocal is consumed by choosing the socket; passing it to a member that ignores it would be a lie",
             )
             channel.close()
+        }
+
+    /**
+     * A named source no member is bound to is refused, typed, and nothing is sent: leaving from another
+     * socket would report success for a datagram from an address the caller did not ask for.
+     */
+    @Test
+    fun aNamedSourceNoSocketIsBoundToIsRefusedTypedAndNothingIsSent() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+
+            val peer = literal("198.51.100.7", 51000)
+            alias.deliver(peer)
+            withTimeout(5.seconds) { channel.receive() }
+
+            val refused =
+                assertFailsWith<DatagramSendException> {
+                    channel.send(payload(), peer, DatagramSendOptions(fromLocal = literal("10.0.0.5", 4433)))
+                }
+            val error = assertIs<DatagramSendError.SourceAddressUnavailable>(refused.error)
+            assertEquals("10.0.0.5", error.requestedHost)
+            assertEquals(SourceAddressRejection.NotBound, error.reason)
+            assertEquals(0, loopback.sent.size + alias.sent.size, "a refused send must not leave by any socket")
+            channel.close()
+        }
+
+    /** A named source is an address; its port is the one the members share, whatever the caller wrote. */
+    @Test
+    fun aNamedSourceIsMatchedByAddressNotPort() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+
+            val peer = literal("198.51.100.7", 51000)
+            alias.deliver(peer)
+            withTimeout(5.seconds) { channel.receive() }
+
+            channel.send(payload(), peer, DatagramSendOptions(fromLocal = literal("127.0.0.1", 0)))
+
+            assertEquals(1, loopback.sent.size, "the socket bound to the named address sends, whatever port was named")
+            assertEquals(0, alias.sent.size)
+            channel.close()
+        }
+
+    /** `::ffff:7f00:1` is `127.0.0.1`: the IPv4-mapped spelling a dual-stack socket reports. */
+    @Test
+    fun anIpv4MappedNamedSourceIsItsIpv4Address() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+
+            val peer = literal("198.51.100.7", 51000)
+            alias.deliver(peer)
+            withTimeout(5.seconds) { channel.receive() }
+
+            channel.send(payload(), peer, DatagramSendOptions(fromLocal = literal("::ffff:7f00:1", 4433)))
+
+            assertEquals(1, loopback.sent.size, "the IPv4-mapped spelling names the IPv4 socket")
+            assertEquals(0, alias.sent.size)
+            channel.close()
+        }
+
+    /** A wildcard names no source: the reply follows the peer's route, as if nothing were named. */
+    @Test
+    fun aWildcardNamedSourceLeavesTheReplyToThePeersRoute() =
+        runBlocking {
+            for (wildcard in listOf("0.0.0.0", "::")) {
+                val loopback = FakeSocket("127.0.0.1", 4433)
+                val alias = FakeSocket("127.0.0.2", 4433)
+                val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+
+                val peer = literal("198.51.100.7", 51000)
+                alias.deliver(peer)
+                withTimeout(5.seconds) { channel.receive() }
+
+                channel.send(payload(), peer, DatagramSendOptions(fromLocal = literal(wildcard, 4433)))
+
+                assertEquals(1, alias.sent.size, "fromLocal=$wildcard: the reply leaves by the socket the peer dialled")
+                assertEquals(0, loopback.sent.size)
+                channel.close()
+            }
         }
 
     /** Closing the composite closes every member — a leaked socket holds the port. */
