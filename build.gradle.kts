@@ -566,6 +566,8 @@ kotlin {
         if (linuxTargets) {
             val linuxMain by getting {
                 kotlin.srcDir(posixNativeImplDir)
+                // io_uring ring setup, shared with :socket-udp's ring so the two cannot drift.
+                kotlin.srcDir(file("src/linuxIoUringShared/kotlin"))
                 dependencies {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }

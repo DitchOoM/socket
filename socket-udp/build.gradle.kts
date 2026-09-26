@@ -237,6 +237,11 @@ kotlin {
             }
         }
 
+        // io_uring ring setup, shared with root :socket's ring so the two cannot drift.
+        if (linuxTargets) {
+            named("linuxMain") { kotlin.srcDir(rootProject.file("src/linuxIoUringShared/kotlin")) }
+        }
+
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
         }
