@@ -31,6 +31,8 @@ class AppleQuicServerTests : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = AppleTestCerts.readText(AppleTestCerts.path("cert.crt"))
 
+    override fun hostInterfaceAddresses() = appleHostInterfaceAddresses()
+
     /**
      * Skips only the two tests that actually touch the generated `localhost` identity, and only where it
      * is physically unreachable (see [AppleTestCerts.skippingWhenSimulatorLacksFixtures]). The other 14

@@ -140,7 +140,52 @@ class ServerConnectionUdpChannelTests {
             assertNull(options.fromLocal, "and no source is named")
         }
 
-    private fun channel(socket: AddressedDatagramChannel): ServerConnectionUdpChannel {
+    /**
+     * A reply names its source only on a channel that honours one. A socket bound to one address has
+     * nothing to choose, and a wildcard socket that cannot pin would ignore the name.
+     */
+    @Test
+    fun aChannelThatCannotChooseASourceIsNeverNamedOne() =
+        runTest {
+            for (pinning in listOf(ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses)) {
+                val socket = RecordingSocket()
+                val channel = channel(socket, pinning)
+
+                channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = ReplySource.Recorded(aliasKey)))
+
+                assertNull(
+                    socket.sent
+                        .single()
+                        .second.fromLocal,
+                    "$pinning: no source is named",
+                )
+            }
+        }
+
+    /** Both channels that do honour a source are named the one quiche recorded. */
+    @Test
+    fun aChannelThatChoosesASourceIsNamedTheRecordedOne() =
+        runTest {
+            for (pinning in listOf(ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress)) {
+                val socket = RecordingSocket()
+                val channel = channel(socket, pinning)
+
+                channel.send(payload(), LEN, SendTarget.ServerReply(to = peerKey, from = ReplySource.Recorded(aliasKey)))
+
+                assertSame(
+                    alias,
+                    socket.sent
+                        .single()
+                        .second.fromLocal,
+                    "$pinning: the recorded source is named",
+                )
+            }
+        }
+
+    private fun channel(
+        socket: AddressedDatagramChannel,
+        pinning: ReplySourcePinning = ReplySourcePinning.PerDatagram,
+    ): ServerConnectionUdpChannel {
         val peers = mapOf(peerKey to peer, migratedKey to migratedPeer)
         val locals = mapOf(loopbackKey to loopback, aliasKey to alias)
         return ServerConnectionUdpChannel(
@@ -149,6 +194,7 @@ class ServerConnectionUdpChannelTests {
             fixedPeerKey = peerKey,
             peerFor = peers::get,
             localFor = locals::get,
+            pinning = pinning,
         )
     }
 

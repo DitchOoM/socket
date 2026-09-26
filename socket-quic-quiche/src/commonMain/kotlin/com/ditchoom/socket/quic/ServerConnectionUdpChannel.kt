@@ -34,10 +34,10 @@ import com.ditchoom.buffer.flow.SocketAddress
  * actually addressed instead of whichever one the kernel prefers — the reply a `connect()`ed client on
  * another local address of the same host would otherwise drop as off-path.
  *
- * A miss, or a `from` whose family is 0 (a backend that decodes no egress address), leaves the source
- * unnamed and lets the platform choose. That is kept deliberately as the
- * fallback: it is what a channel without [com.ditchoom.buffer.flow.DatagramCapabilities.sourceAddressSelect]
- * can do, and naming a source such a channel would silently ignore is a worse lie than not naming one.
+ * A source is named only where [pinning] says the channel honours one: per datagram, or by the socket
+ * bound to it. A channel bound to one address has nothing to choose, and a wildcard socket that cannot
+ * pin would ignore the name, so both send with the source unnamed. A miss, or a `from` whose family is
+ * 0 (a backend that decodes no egress address), also leaves the source unnamed.
  */
 internal class ServerConnectionUdpChannel(
     private val channel: AddressedDatagramChannel,
@@ -45,6 +45,7 @@ internal class ServerConnectionUdpChannel(
     private val fixedPeerKey: PathKey,
     private val peerFor: (PathKey) -> SocketAddress?,
     private val localFor: (PathKey) -> SocketAddress?,
+    private val pinning: ReplySourcePinning,
 ) : UdpChannel {
     override suspend fun receive(buffer: PlatformBuffer): Int =
         throw UnsupportedOperationException("server egress channel does not receive")
@@ -64,7 +65,11 @@ internal class ServerConnectionUdpChannel(
 
             is SendTarget.ServerReply -> {
                 peer = if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to) ?: fixedPeer
-                options = optionsFor(target.from)
+                options =
+                    when (pinning) {
+                        ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress -> optionsFor(target.from)
+                        ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses -> DatagramSendOptions.Default
+                    }
             }
         }
         buffer.position(0)

@@ -221,3 +221,93 @@ uint32_t socket_if_ipv4_be(unsigned int ifindex)
     freeifaddrs(ifap);
     return result;
 }
+
+// --- Destination / source address (see nw_udp_helpers.h) ---
+
+// RFC 2292's IPV6_PKTINFO shares the name and is option 19; the kernel reads 46 as the RFC 3542 struct.
+_Static_assert(IPV6_PKTINFO == 46, "IPV6_PKTINFO must be the RFC 3542 option; define __APPLE_USE_RFC_3542 first");
+
+int udp_report_destination(int fd, int ipv6)
+{
+    int on = 1;
+    if (ipv6) return setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on));
+    return setsockopt(fd, IPPROTO_IP, IP_RECVPKTINFO, &on, sizeof(on));
+}
+
+int32_t udp_recv_with_destination(int fd, void * _Nonnull buf, int32_t cap,
+    struct sockaddr_storage * _Nonnull peer, struct sockaddr_storage * _Nonnull destination)
+{
+    // Room for one IPV6_PKTINFO or IP_PKTINFO and whatever else a caller enabled on the socket.
+    union { struct cmsghdr align; unsigned char bytes[256]; } control;
+    struct iovec iov = { buf, (size_t)cap };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = peer;
+    msg.msg_namelen = sizeof(*peer);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = sizeof(control.bytes);
+    memset(destination, 0, sizeof(*destination));
+    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT);
+    if (n < 0) return -1;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c != NULL; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO) {
+            struct in6_pktinfo info;
+            memcpy(&info, CMSG_DATA(c), sizeof(info));
+            struct sockaddr_in6 *d = (struct sockaddr_in6 *)destination;
+            d->sin6_len = sizeof(*d);
+            d->sin6_family = AF_INET6;
+            d->sin6_addr = info.ipi6_addr;
+        } else if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO) {
+            struct in_pktinfo info;
+            memcpy(&info, CMSG_DATA(c), sizeof(info));
+            struct sockaddr_in *d = (struct sockaddr_in *)destination;
+            d->sin_len = sizeof(*d);
+            d->sin_family = AF_INET;
+            d->sin_addr = info.ipi_addr;
+        }
+    }
+    return (int32_t)n;
+}
+
+int32_t udp_send_from(int fd, const void * _Nonnull buf, int32_t len,
+    const struct sockaddr * _Nonnull dest, uint32_t dest_len,
+    int source_family, const uint8_t * _Nonnull source)
+{
+    union { struct cmsghdr align; unsigned char bytes[CMSG_SPACE(sizeof(struct in6_pktinfo))]; } control;
+    memset(&control, 0, sizeof(control));
+    struct iovec iov = { (void *)buf, (size_t)len };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = (void *)dest;
+    msg.msg_namelen = dest_len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes;
+    struct cmsghdr *c = (struct cmsghdr *)control.bytes;
+    if (source_family == AF_INET) {
+        struct in_pktinfo info;
+        memset(&info, 0, sizeof(info));
+        memcpy(&info.ipi_spec_dst, source, 4);
+        c->cmsg_level = IPPROTO_IP;
+        c->cmsg_type = IP_PKTINFO;
+        c->cmsg_len = CMSG_LEN(sizeof(info));
+        memcpy(CMSG_DATA(c), &info, sizeof(info));
+        msg.msg_controllen = CMSG_SPACE(sizeof(info));
+    } else if (source_family == AF_INET6) {
+        struct in6_pktinfo info;
+        memset(&info, 0, sizeof(info));
+        memcpy(&info.ipi6_addr, source, 16);
+        c->cmsg_level = IPPROTO_IPV6;
+        c->cmsg_type = IPV6_PKTINFO;
+        c->cmsg_len = CMSG_LEN(sizeof(info));
+        memcpy(CMSG_DATA(c), &info, sizeof(info));
+        msg.msg_controllen = CMSG_SPACE(sizeof(info));
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    ssize_t n = sendmsg(fd, &msg, 0);
+    return n < 0 ? -1 : (int32_t)n;
+}

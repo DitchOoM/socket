@@ -81,7 +81,7 @@ internal class AppleSocketAddress(
  */
 @ExperimentalDatagramApi
 internal fun SocketAddress.writeSockaddr(storage: sockaddr_storage): socklen_t {
-    val apple = this as? AppleSocketAddress ?: parseNumericHost(host, port)
+    val apple = asAppleAddress()
     val bytes = storage.ptr.reinterpret<ByteVar>()
     for (i in 0 until sizeOf<sockaddr_storage>().toInt()) bytes[i] = 0
     return when (apple.family) {
@@ -107,6 +107,10 @@ internal fun SocketAddress.writeSockaddr(storage: sockaddr_storage): socklen_t {
         }
     }
 }
+
+/** [this] as an [AppleSocketAddress]; a foreign [SocketAddress] (a buffer-flow literal) is re-parsed from its numeric host. */
+@ExperimentalDatagramApi
+internal fun SocketAddress.asAppleAddress(): AppleSocketAddress = this as? AppleSocketAddress ?: parseNumericHost(host, port)
 
 /**
  * Decode a kernel/NW-filled BSD `sockaddr` (from `recvfrom`/`getsockname`/`nw_udp_copy_*_sockaddr`) into
