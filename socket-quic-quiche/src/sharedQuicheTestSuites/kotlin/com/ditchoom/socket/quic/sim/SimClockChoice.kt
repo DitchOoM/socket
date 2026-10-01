@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.quic.DriverClock
+import com.ditchoom.socket.quic.QuicheEntropy
 import com.ditchoom.socket.quic.RealDriverClock
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -94,17 +95,17 @@ private suspend fun callingDispatcher(): CallingDispatcher =
  * The [DriverClock] this choice means on the calling dispatcher — or an [IncoherentSimClockException]
  * when the two contradict. Call it in the sim's constructor before anything native is allocated.
  */
-internal suspend fun SimClockChoice.resolve(): DriverClock {
+internal suspend fun SimClockChoice.resolve(entropy: QuicheEntropy = QuicheEntropy.Seeded(0L)): DriverClock {
     val calling = callingDispatcher()
     return when (this) {
         SimClockChoice.OfCallingDispatcher ->
             when (calling) {
-                is CallingDispatcher.Test -> SimClock(calling.scheduler)
+                is CallingDispatcher.Test -> SimClock(calling.scheduler, entropy)
                 is CallingDispatcher.Real -> RealDriverClock
             }
         SimClockChoice.Virtual ->
             when (calling) {
-                is CallingDispatcher.Test -> SimClock(calling.scheduler)
+                is CallingDispatcher.Test -> SimClock(calling.scheduler, entropy)
                 is CallingDispatcher.Real ->
                     throw IncoherentSimClockException(
                         "SimClockChoice.Virtual needs a TestDispatcher (runTest) to read virtual time from, but " +

@@ -620,7 +620,7 @@ internal suspend fun <R> withMigrationSim(
 ): R {
     // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
     // to tear down.
-    val driverClock = clock.resolve()
+    val driverClock = clock.resolve(QuicheEntropy.Seeded(seed))
     val api = env.api
     val codec = env.codec
     val bufferFactory = BufferFactory.network()

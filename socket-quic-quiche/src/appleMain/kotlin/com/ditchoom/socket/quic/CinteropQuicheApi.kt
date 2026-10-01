@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_accept
+import com.ditchoom.socket.quic.quiche.quiche_clear_thread_random_state
 import com.ditchoom.socket.quic.quiche.quiche_clear_virtual_time
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_dgram
@@ -100,6 +101,7 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_send_info
+import com.ditchoom.socket.quic.quiche.quiche_set_thread_random_state
 import com.ditchoom.socket.quic.quiche.quiche_set_virtual_time_nanos
 import com.ditchoom.socket.quic.quiche.quiche_stats
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
@@ -695,6 +697,11 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun setThreadVirtualTimeNanos(nanos: Long) = quiche_set_virtual_time_nanos(nanos.convert())
 
     override fun clearThreadVirtualTime() = quiche_clear_virtual_time()
+
+    // Caller-entropy: thread-local seeded random stream in the patched libquiche. Simulation-only.
+    override fun setThreadRandomState(state: Long) = quiche_set_thread_random_state(state.convert())
+
+    override fun clearThreadRandomState() = quiche_clear_thread_random_state()
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
 

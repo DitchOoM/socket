@@ -154,6 +154,79 @@ abstract class MigrationSimTestSuite {
             }
         }
 
+    /**
+     * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
+     * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
+     * datagrams at the same virtual instants every time. Runs the slow, lossy reply scenario above
+     * [DETERMINISM_RUNS] times and requires every run's wire log to match the first, line for line.
+     */
+    @Test
+    fun theSameSeedCrossesTheWireIdenticallyEveryRun() {
+        val logs =
+            (1..DETERMINISM_RUNS).map {
+                var log = emptyList<String>()
+                runTest { wrapTestBody { log = replyOverASlowLossyPath(seed = DETERMINISM_SEED) } }
+                log
+            }
+        val first = logs.first()
+        logs.forEachIndexed { run, log ->
+            val diverged =
+                first.indices.firstOrNull { it >= log.size || first[it] != log[it] } ?: if (log.size != first.size) first.size else null
+            assertEquals(
+                null,
+                diverged,
+                "run ${run + 1} of seed $DETERMINISM_SEED left the wire differently from run 1 at datagram $diverged:\n" +
+                    "run 1: ${diverged?.let { first.subList(maxOf(0, it - 3), minOf(first.size, it + 3)) }}\n" +
+                    "run ${run + 1}: ${diverged?.let { log.subList(maxOf(0, it - 3), minOf(log.size, it + 3)) }}",
+            )
+        }
+    }
+
+    /** The scenario of [aReplyIsDeliveredWholeWhenTheServerHandlerReturnsRightAfterWritingIt], returning the wire log. */
+    internal suspend fun replyOverASlowLossyPath(
+        seed: Long,
+        env: MigrationSimEnv = simEnv(),
+    ): List<String> =
+        withMigrationSim(
+            env,
+            seed = seed,
+            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+        ) {
+            val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
+            client.launch {
+                val stream = server.acceptStream()
+                while (stream
+                        .read(IDLE_TIMEOUT_IN_THE_FIELD)
+                        .also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                ) {
+                    Unit
+                }
+                val out = BufferFactory.network().allocate(reply.length)
+                out.writeString(reply, Charset.UTF8)
+                out.resetForRead()
+                stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                out.freeNativeMemory()
+                stream.close()
+                serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                server.close()
+            }
+            runCatching {
+                client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                    val stream = openStream()
+                    stream.writeText("request")
+                    stream.shutdownSend()
+                    state.first { it is QuicConnectionState.Closed }
+                    while (true) {
+                        when (val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)) {
+                            is ReadResult.Data -> r.buffer.freeIfNeeded()
+                            ReadResult.End, ReadResult.Reset -> break
+                        }
+                    }
+                }
+            }
+            pipe.wireLog()
+        }
+
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
         runTest {
@@ -3030,6 +3103,11 @@ abstract class MigrationSimTestSuite {
 
         /** Loss on it, so the reply needs retransmissions to arrive whole. */
         const val SLOW_PATH_LOSS = 0.3
+
+        /** Enough repeats that a scheduling-dependent interleaving shows up; each is a few hundred ms of wall. */
+        const val DETERMINISM_RUNS = 6
+
+        const val DETERMINISM_SEED = 671_101L
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024

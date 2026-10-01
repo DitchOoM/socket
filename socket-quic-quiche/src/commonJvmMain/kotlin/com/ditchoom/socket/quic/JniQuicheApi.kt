@@ -453,6 +453,10 @@ object JniQuicheApi : QuicheApi {
 
     override fun clearThreadVirtualTime() = nClearVirtualTime()
 
+    override fun setThreadRandomState(state: Long) = nSetThreadRandomState(state)
+
+    override fun clearThreadRandomState() = nClearThreadRandomState()
+
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
 
     override fun connClose(
@@ -999,6 +1003,10 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nSetVirtualTimeNanos(nanos: Long)
 
     @JvmStatic private external fun nClearVirtualTime()
+
+    @JvmStatic private external fun nSetThreadRandomState(state: Long)
+
+    @JvmStatic private external fun nClearThreadRandomState()
 
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 

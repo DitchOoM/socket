@@ -243,7 +243,7 @@ class QuicheDriver(
      * [DriverTime.Real], so the bare backend api is used unchanged and nothing is injected — zero cost.
      */
     private val api: QuicheApi =
-        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock) else rawApi
+        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi
 
     /**
      * The command channel — and the owner of every command in it. A command the channel accepted but

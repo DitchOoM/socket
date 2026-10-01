@@ -71,6 +71,32 @@ interface DriverClock {
      * quiche becomes fully caller-clocked and loss/PTO/timeout scenarios go bit-exact.
      */
     fun quicheTime(): DriverTime = DriverTime.Real
+
+    /**
+     * Where quiche's own random draws come from — packet-number skips and path-challenge data. Read once,
+     * when the driver installs [CallerClockQuicheApi]. Production returns [QuicheEntropy.Os]: quiche keeps
+     * drawing from BoringSSL. A simulation returns [QuicheEntropy.Seeded], without which a run is not a
+     * function of its seed: a random packet-number skip changes the peer's ACK ranges, and with them the
+     * size of every ACK that follows.
+     */
+    fun quicheEntropy(): QuicheEntropy = QuicheEntropy.Os
+}
+
+/**
+ * Which source quiche's C library draws its randomness from for a connection. Sealed for the same reason
+ * as [DriverTime]: "BoringSSL's OS entropy" and "this seed" are two distinct, exhaustively-handled cases.
+ */
+sealed interface QuicheEntropy {
+    /** Production: quiche draws from BoringSSL's `RAND_bytes`; nothing is injected. */
+    object Os : QuicheEntropy
+
+    /**
+     * Simulation: quiche's draws follow [seed]. Each connection derives its own stream from it (see
+     * [CallerClockQuicheApi]), so a client and a server on one seed still draw differently.
+     */
+    data class Seeded(
+        val seed: Long,
+    ) : QuicheEntropy
 }
 
 /**

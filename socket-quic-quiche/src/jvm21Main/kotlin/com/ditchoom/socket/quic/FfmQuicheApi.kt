@@ -230,6 +230,12 @@ class FfmQuicheApi private constructor(
         downcall("quiche_set_virtual_time_nanos", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
     private val hClearVirtualTime by lazy { downcall("quiche_clear_virtual_time", FunctionDescriptor.ofVoid()) }
+
+    // Caller-entropy: thread-local seeded random stream in the patched libquiche. Simulation-only.
+    private val hSetThreadRandomState by lazy {
+        downcall("quiche_set_thread_random_state", FunctionDescriptor.ofVoid(JAVA_LONG))
+    }
+    private val hClearThreadRandomState by lazy { downcall("quiche_clear_thread_random_state", FunctionDescriptor.ofVoid()) }
     private val hSendAckEliciting by lazy {
         downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
@@ -915,6 +921,14 @@ class FfmQuicheApi private constructor(
 
     override fun clearThreadVirtualTime() {
         hClearVirtualTime.invokeExact()
+    }
+
+    override fun setThreadRandomState(state: Long) {
+        hSetThreadRandomState.invokeExact(state)
+    }
+
+    override fun clearThreadRandomState() {
+        hClearThreadRandomState.invokeExact()
     }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(seg(conn.handle)) as Long).toInt()
