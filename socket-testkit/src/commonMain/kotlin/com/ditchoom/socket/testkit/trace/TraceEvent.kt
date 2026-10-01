@@ -211,6 +211,20 @@ sealed interface TraceEvent {
         override fun toString(): String = encodeTraceLine(this)
     }
 
+    /**
+     * A datagram the endpoint dropped on purpose, for a reason that is part of normal operation — a late
+     * packet for a connection that has just closed. [type] is the reason's **qualified** class name,
+     * typed like [Error]'s; [message] is diagnostic detail. Kept apart from [Error] so an expected drop is
+     * never read as a failure. Observation: it records this endpoint's disposition of a datagram.
+     */
+    data class Drop(
+        override val at: Duration,
+        val type: String,
+        val message: String,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
     /** An auto-migration attempt, the trigger that woke it, and how it ended. Observation. */
     data class Migration(
         override val at: Duration,
@@ -386,7 +400,7 @@ sealed interface TraceEvent {
                 // in would be replaying our own reaction, not the input that caused it. QlogRefused is
                 // the same shape: a local filesystem fact, not something the far side caused.
                 is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence,
-                is QlogRefused, is TrafficSecretsRefused,
+                is QlogRefused, is TrafficSecretsRefused, is Drop,
                 -> false
             }
 
