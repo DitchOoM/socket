@@ -92,7 +92,7 @@ jobs:
       # No Konan cache here. This job runs cargo and a Gradle configure, neither of which touches
       # ~/.konan, so it never had anything to save: every run ended "Path Validation Error … no cache
       # is being saved", no konan-macos-* entry ever existed, and every K/N job downloaded the K/N
-      # toolchain. The writer is now the `macOS x64 (all other modules)` K/N shard (see kn-tests).
+      # toolchain. The writer is now native-deps-freshness.yaml's `cache-warm-apple`.
 
       # Persist the local Gradle build cache (~/.gradle/caches/build-cache-1) across runs so the
       # compiled native klibs, cinterop klibs, and per-target native shim archives are reused
@@ -424,60 +424,13 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # ⚠️ Restores the Kotlin/Native build cache that the fan-out otherwise LOSES.
-      #
-      # The monolith saved one ~1GB gradle-macos-* entry containing every compiled klib, because
-      # one job did all the compiling. After the split, `natives` is the single cache writer — and
-      # `natives` only runs cargo and a Gradle configure, so the entry it saves holds no klibs at
-      # all (measured: 258MB here vs 1088MB on a pre-fan-out PR). Every shard then recompiled the
-      # klibs cold on every run, quietly giving back much of what the parallelism bought.
-      #
-      # This shard compiles the widest set (unqualified macosX64Test = every module) so it is the
-      # designated writer of a SECOND key that actually contains build-cache-1 output. The other
-      # shards restore it (see apple-quiche-env) and get the shared commonMain metadata and
-      # dependency resolution even though their own target's klibs are not in it.
-      #
-      # Deliberately NOT per-shard keys: five ~1GB entries would blow the repo's 10GB Actions cache
-      # cap and trigger exactly the LRU eviction that makes a "cached" quiche build cost 514s.
-      # if: !cancelled() — the klibs compiled before a test assertion failed are still valid and
-      # worth keeping; gating on success would mean a flaky lane also poisons the next run's cache.
-      # continue-on-error: a save whose key already exists warns rather than fails, and a cache
-      # problem must never turn a green test lane red.
-      #
-      # ⚠️ main's ref scope only, like the two gradle-macos entries in `natives`. This is the single
-      # largest per-ref entry in the repo (713MB); written per PR ref it was pure eviction pressure,
-      # because a PR ref's copy is read only by that PR and dies with it. Written on main it is
-      # prefix-restorable by every PR (apple-quiche-env's restore-keys start at `gradle-macos-kn-`).
-      # merged.yaml runs this workflow on `pull_request_target: closed`, i.e. as main, so the entry
-      # is refreshed on every merge.
-      #
-      # ⚠️ Same `cache-hit != 'true'` guard as the two saves in `natives`, and it matters most here:
-      # this is the repo's single largest entry (713MB-1GB). A cache key is immutable once written,
-      # so on an exact hit this save can only fail to reserve — but `actions/cache/save` tars the
-      # whole directory BEFORE it tries, so an unguarded step burns minutes taring a gigabyte to
-      # throw it away, with continue-on-error hiding the waste. The exact-hit case is common on
-      # main: this key rotates only on build-script/version-catalog/wrapper changes, so every merge
-      # that touches source alone hits it. `cache-hit` comes from apple-quiche-env's output because
-      # the restore lives inside that composite action.
-      - name: Save Gradle build outputs (K/N klibs)
-        if: ${{ !cancelled() && matrix.shard.name == 'macOS x64 (all other modules)' && github.ref == 'refs/heads/main' && steps.quiche_env.outputs.gradle-cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.gradle/caches
-          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-
-      # The Konan cache's single writer, on main only like the klib entry above, and for the same
-      # reasons. This shard runs a K/N compile, so ~/.konan holds the K/N distribution and its
-      # LLVM/sysroot dependencies by now; `natives` never populated it, so no entry was ever saved.
-      # Keyed on the version catalog alone, so it rotates only on a Kotlin bump.
-      - name: Save Konan (K/N toolchain)
-        if: ${{ !cancelled() && matrix.shard.name == 'macOS x64 (all other modules)' && github.ref == 'refs/heads/main' && steps.quiche_env.outputs.konan-cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.konan
-          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+      # No cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
+      # (`konan-macos-*`) are both written by native-deps-freshness.yaml's `cache-warm-apple`, a
+      # scheduled run on main. This shard used to save both "on main", but on main it runs from
+      # merged.yaml as `pull_request_target`, whose token cannot write caches: job 108256043120
+      # (2026-09-25) logged "Failed to save: Unable to reserve cache with key gradle-macos-kn-3b71…
+      # cache write denied: token has no writable scope". Only a workflow_dispatch release run ever
+      # saved, so the entry went stale on every build-script change in between.
 
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}

@@ -446,15 +446,32 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      # ---- Cache entries mirrored EXACTLY from build-apple.yaml's `natives` job ----
-      # No Konan cache, as in `natives`: this job never compiles Kotlin/Native, so ~/.konan never
-      # exists here and a save could only skip. build-apple's K/N shard writes konan-macos-*.
-      - name: Cache Gradle build outputs
-        uses: actions/cache@v6
+      # The single writer of `konan-macos-*` and `gradle-macos-kn-*`, the two entries every Apple
+      # Kotlin/Native job restores. Both used to be "written on main" by build-apple jobs that never
+      # could: `natives` never compiles K/N (its Konan save always ended "Path Validation Error"), and
+      # the K/N shard runs on main only from merged.yaml as `pull_request_target`, whose saves are
+      # denied ("cache write denied: token has no writable scope", job 108256043120). This scheduled
+      # run on main can write. Both are restored here, topped up by a real K/N compile below, and
+      # saved explicitly only after that compile succeeded: a save after a failed or skipped compile
+      # could pin an empty or partial tree under an immutable key. Exact hits on both skip it all.
+      - name: Restore Konan (K/N toolchain)
+        id: restore_konan
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.konan
+          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-macos-
+
+      # Restores the klib entry, falling back to the newest klib entry and then to the plain one, the
+      # same order every consumer uses (apple-quiche-env).
+      - name: Restore Gradle build outputs (K/N klibs)
+        id: restore_gradle_kn
+        uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/caches
-          key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
+            gradle-macos-kn-
             gradle-macos-
 
       - name: Cache Gradle wrapper distribution
@@ -506,6 +523,34 @@ jobs:
       - name: Warm the Kotlin dependency graph
         continue-on-error: true
         run: ./gradlew resolveAllDependencies --no-configuration-cache
+
+      # Every module's macOS x64 main + test compilation, which is what build-apple's K/N shards and
+      # the docs/review jobs restore klibs for, and the first K/N compiler run, which fills ~/.konan
+      # with the distribution and its LLVM/libffi/lldb dependencies. After the quiche warm above,
+      # whose static libs the quiche cinterop links against.
+      - name: Compile Kotlin/Native (macOS x64, every module)
+        id: kn_compile
+        if: steps.restore_konan.outputs.cache-hit != 'true' || steps.restore_gradle_kn.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: ./gradlew compileTestKotlinMacosX64 --no-configuration-cache
+
+      - name: Save Konan (K/N toolchain)
+        if: steps.kn_compile.outcome == 'success' && steps.restore_konan.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.konan
+          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Save Gradle build outputs (K/N klibs)
+        if: steps.kn_compile.outcome == 'success' && steps.restore_gradle_kn.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Report a K/N warm that could not run
+        if: steps.kn_compile.outcome == 'failure'
+        run: echo "::warning::The Kotlin/Native compile failed, so neither konan-macos-* nor gradle-macos-kn-* was saved; Apple K/N jobs fall back to older entries until it succeeds."
 
       - name: Report warmed Apple artifacts
         if: always()
