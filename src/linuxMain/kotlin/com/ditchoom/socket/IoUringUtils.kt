@@ -85,6 +85,9 @@ object IoUringManager {
     // we ensure the event loop thread is stopped and the process can terminate.
     private val activeSocketCount = AtomicInt(0)
 
+    /** Sockets currently counted as open; the last one's close releases the ring. */
+    internal val activeSockets: Int get() = activeSocketCount.value
+
     /**
      * Called when a socket is opened. Increments the active socket counter.
      */
