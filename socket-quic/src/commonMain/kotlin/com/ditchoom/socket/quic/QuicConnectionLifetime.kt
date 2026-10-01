@@ -44,7 +44,10 @@ sealed interface QuicUnreadAtClose {
  * [QuicServer.connections]) runs user code through this, and it is public only so a runner in an engine
  * module can.
  *
- * Returns what [block] returns when it finishes first. When the connection dies first — the peer closed
+ * Returns what [block] returns when it finishes first — including when the connection's cancellation
+ * reaches the coroutine running [block] after [block] has returned, which a read that hands over the
+ * last of what the connection held makes possible on a multi-threaded dispatcher: the value was
+ * produced, and only its delivery raced the close. When the connection dies first — the peer closed
  * it, it idled out, the transport failed — [block] is cancelled once nothing the connection received is
  * left to read ([QuicConnection.unreadAtClose] reaching [QuicUnreadAtClose.AllRead]), so a reply that
  * landed in the same flight as the peer's close is still delivered; and once it has unwound this throws
@@ -63,9 +66,10 @@ suspend fun <R> QuicConnection.runUntilClosed(
     block: suspend QuicConnection.() -> R,
 ): R {
     val diedFirst = CompletableDeferred<QuicCloseException>()
+    val returned = CompletableDeferred<R>()
     return try {
         coroutineScope {
-            val body = async(start = CoroutineStart.UNDISPATCHED) { block() }
+            val body = async(start = CoroutineStart.UNDISPATCHED) { block().also { returned.complete(it) } }
             val watch =
                 launch {
                     val closed = state.filterIsInstance<QuicConnectionState.Closed>().first()
@@ -89,6 +93,7 @@ suspend fun <R> QuicConnection.runUntilClosed(
     } catch (e: CancellationException) {
         // The caller's own cancellation wins over the connection's close.
         currentCoroutineContext().ensureActive()
+        if (returned.isCompleted) return returned.await()
         if (diedFirst.isCompleted) throw diedFirst.await()
         throw e
     }
