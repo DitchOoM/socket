@@ -100,59 +100,124 @@ abstract class MigrationSimTestSuite {
     fun aReplyIsDeliveredWholeWhenTheServerHandlerReturnsRightAfterWritingIt() =
         runTest {
             wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 671_101L,
-                    primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
-                ) {
-                    val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
-                    client.launch {
-                        val stream = server.acceptStream()
-                        while (stream
-                                .read(
-                                    IDLE_TIMEOUT_IN_THE_FIELD,
-                                ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
-                        ) {
-                            Unit
-                        }
-                        val out = BufferFactory.network().allocate(reply.length)
-                        out.writeString(reply, Charset.UTF8)
-                        out.resetForRead()
-                        stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
-                        out.freeNativeMemory()
-                        stream.close()
-                        // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
-                        serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
-                        server.close()
-                    }
-                    val received = StringBuilder()
-                    val outcome =
-                        runCatching {
-                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
-                                val stream = openStream()
-                                stream.writeText("request")
-                                stream.shutdownSend()
-                                state.first { it is QuicConnectionState.Closed }
-                                while (true) {
-                                    when (val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)) {
-                                        is ReadResult.Data -> {
-                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                            r.buffer.freeIfNeeded()
-                                        }
-                                        ReadResult.End, ReadResult.Reset -> break
-                                    }
-                                }
-                            }
-                        }
+                val read = readAReplyAfterTheServerClosed(seed = 671_101L)
+                assertEquals(
+                    read.expected,
+                    read.received,
+                    "the server closed over its own reply: the client got ${read.received} of ${read.expected} " +
+                        "bytes, then ${read.ending}, traffic ${read.traffic}",
+                )
+                assertEquals(ReplyEnding.Fin, read.ending, "the reply arrived whole; it must also end, traffic ${read.traffic}")
+            }
+        }
+
+    /**
+     * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
+     * the shape of a handler that writes and then closes — acknowledging the data does not deliver it.
+     * quiche used to count a send side complete once its data was acknowledged, so it collected the
+     * stream with that FIN unsent or lost, and the server's close stopped waiting: the client read the
+     * whole reply and then the connection's close, never the end of the stream.
+     *
+     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened.
+     */
+    @Test
+    fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
+        runTest {
+            wrapTestBody {
+                for (seed in listOf(12L, 22L, 30L)) {
+                    val read = readAReplyAfterTheServerClosed(seed)
                     assertEquals(
-                        reply.length,
-                        received.length,
-                        "the server closed over its own reply: the client got ${received.length} of ${reply.length} " +
-                            "bytes (${outcome.exceptionOrNull() ?: "then a clean end"}), traffic ${pipeTraffic()}",
+                        ReplyEnding.Fin,
+                        read.ending,
+                        "seed $seed: the client read ${read.received} of ${read.expected} bytes and then not the " +
+                            "stream's end, traffic ${read.traffic}",
                     )
+                    assertEquals(read.expected, read.received, "seed $seed: the reply must arrive whole")
                 }
             }
         }
+
+    /** How a client's read of the reply in [readAReplyAfterTheServerClosed] ended. */
+    private sealed interface ReplyEnding {
+        /** The stream's FIN: the reply ended. */
+        data object Fin : ReplyEnding
+
+        /** The server reset the stream. */
+        data object Reset : ReplyEnding
+
+        /** The read, or the block it ran in, ended with [cause] — the connection's close, without the stream's end. */
+        data class Failed(
+            val cause: Throwable,
+        ) : ReplyEnding
+    }
+
+    private class ReplyRead(
+        val expected: Int,
+        val received: Int,
+        val ending: ReplyEnding,
+        val traffic: String,
+    )
+
+    /**
+     * A server handler on a slow, lossy path reads a request, writes a reply several congestion windows
+     * long, closes the stream and returns; its connection then closes as [SharedQuicheServer] closes it.
+     * The client reads the reply only after the connection has closed.
+     */
+    private suspend fun readAReplyAfterTheServerClosed(seed: Long): ReplyRead =
+        withMigrationSim(
+            simEnv(),
+            seed = seed,
+            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+        ) {
+            val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
+            client.launch {
+                val stream = server.acceptStream()
+                while (stream
+                        .read(
+                            IDLE_TIMEOUT_IN_THE_FIELD,
+                        ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                ) {
+                    Unit
+                }
+                val out = BufferFactory.network().allocate(reply.length)
+                out.writeString(reply, Charset.UTF8)
+                out.resetForRead()
+                stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                out.freeNativeMemory()
+                stream.close()
+                // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
+                serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                server.close()
+            }
+            var received = 0
+            val ending =
+                try {
+                    client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                        val stream = openStream()
+                        stream.writeText("request")
+                        stream.shutdownSend()
+                        state.first { it is QuicConnectionState.Closed }
+                        stream.readToItsEnding { received += it }
+                    }
+                } catch (e: QuicCloseException) {
+                    ReplyEnding.Failed(e)
+                }
+            ReplyRead(expected = reply.length, received = received, ending = ending, traffic = pipeTraffic())
+        }
+
+    /** Read this stream until it ends, passing each chunk's size to [onData]; how it ended. */
+    private suspend fun QuicByteStream.readToItsEnding(onData: (Int) -> Unit): ReplyEnding {
+        while (true) {
+            when (val r = read(IDLE_TIMEOUT_IN_THE_FIELD)) {
+                is ReadResult.Data -> {
+                    onData(r.buffer.remaining())
+                    r.buffer.freeIfNeeded()
+                }
+                ReadResult.End -> return ReplyEnding.Fin
+                ReadResult.Reset -> return ReplyEnding.Reset
+            }
+        }
+    }
 
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
