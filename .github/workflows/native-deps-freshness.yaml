@@ -447,13 +447,8 @@ jobs:
           java-version: '21'
 
       # ---- Cache entries mirrored EXACTLY from build-apple.yaml's `natives` job ----
-      - name: Cache Konan
-        uses: actions/cache@v6
-        with:
-          path: ~/.konan
-          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-macos-
-
+      # No Konan cache, as in `natives`: this job never compiles Kotlin/Native, so ~/.konan never
+      # exists here and a save could only skip. build-apple's K/N shard writes konan-macos-*.
       - name: Cache Gradle build outputs
         uses: actions/cache@v6
         with:
