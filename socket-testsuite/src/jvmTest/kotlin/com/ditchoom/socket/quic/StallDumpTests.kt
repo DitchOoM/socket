@@ -22,8 +22,8 @@ class StallDumpTests {
     fun aRunQuicTestThatTimesOutNamesTheCallItWasBlockedIn() {
         val printed =
             capturingStdout {
-                assertFailsWith<TimeoutCancellationException> {
-                    runQuicTest(timeout = 2.seconds) {
+                assertFailsWith<TimeoutCancellationException>("the blocked call must outlast runQuicTest's deadline") {
+                    runQuicTest(timeout = DEADLINE) {
                         withContext(Dispatchers.IO) { blockedPastTheDeadline() }
                     }
                 }
@@ -42,7 +42,13 @@ class StallDumpTests {
         assertFalse("STALL-DUMP" in printed, "a disarmed dump printed:\n$printed")
     }
 
-    private fun blockedPastTheDeadline() = Thread.sleep(3_000)
+    // runQuicTest scales its deadline by QUIC_TEST_TIME_SCALE (3 on CI), so the block must outlast
+    // the scaled deadline, not the nominal one.
+    private fun blockedPastTheDeadline() = Thread.sleep((DEADLINE.scaled + 1.seconds).inWholeMilliseconds)
+
+    private companion object {
+        val DEADLINE = 2.seconds
+    }
 
     private fun capturingStdout(block: () -> Unit): String {
         val original = System.out
