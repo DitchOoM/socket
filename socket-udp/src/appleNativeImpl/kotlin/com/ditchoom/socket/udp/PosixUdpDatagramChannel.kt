@@ -3,6 +3,8 @@
     kotlinx.coroutines.DelicateCoroutinesApi::class,
     // CloseableCoroutineDispatcher is experimental, and recvDispatcher is exposed (internal) to the handoff tests.
     kotlinx.coroutines.ExperimentalCoroutinesApi::class,
+    // Job.invokeOnCompletion(onCancelling): the one synchronous hook that runs when a receiver is cancelled.
+    kotlinx.coroutines.InternalCoroutinesApi::class,
 )
 
 package com.ditchoom.socket.udp
@@ -41,19 +43,28 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.withContext
 import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
+import platform.posix.F_GETFL
+import platform.posix.F_SETFL
+import platform.posix.O_NONBLOCK
 import platform.posix.POLLIN
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.fcntl
 import platform.posix.memset
 import platform.posix.pipe
 import platform.posix.poll
 import platform.posix.pollfd
+import platform.posix.read
 import platform.posix.sendto
 import platform.posix.sockaddr_storage
 import platform.posix.write
@@ -125,6 +136,13 @@ internal class PosixUdpDatagramChannel(
     // dispatcher thread running behind a constructor that never returns.
     private val wake = WakePipe.openOrClose(fd)
 
+    /**
+     * Ends a receiver's `poll` when its coroutine is cancelled, leaving the socket open: a socket is not
+     * always its reader's to close (a connection riding a port another party owns cancels its reader
+     * and must leave the port serving). Non-blocking at both ends, and drained by the receiver it wakes.
+     */
+    private val interrupt = WakePipe.openOrClose(fd, wake.readEnd, wake.writeEnd, nonBlocking = true)
+
     /** `internal` only so the handoff tests can prove it is closed once the channel is; not an API. */
     internal val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
 
@@ -173,13 +191,29 @@ internal class PosixUdpDatagramChannel(
                             watched[SOCKET_SLOT].events = POLLIN.convert()
                             watched[WAKE_SLOT].fd = wake.readEnd
                             watched[WAKE_SLOT].events = POLLIN.convert()
+                            watched[INTERRUPT_SLOT].fd = interrupt.readEnd
+                            watched[INTERRUPT_SLOT].events = POLLIN.convert()
                             memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
+                            // The blocking wait cannot see cancellation, so cancellation is made to reach
+                            // it: the handler writes the interrupt pipe, poll returns, and the hop back
+                            // throws the CancellationException.
+                            val onCancel =
+                                currentCoroutineContext().job.invokeOnCompletion(onCancelling = true, invokeImmediately = true) {
+                                    interruptReceiver()
+                                }
                             val step =
-                                withContext(recvDispatcher) {
-                                    pollThenReceive(watched, ptr, payload.capacity, addr.ptr, destination.ptr)
+                                try {
+                                    withContext(recvDispatcher) {
+                                        pollThenReceive(watched, ptr, payload.capacity, addr.ptr, destination.ptr)
+                                    }
+                                } finally {
+                                    onCancel.dispose()
                                 }
                             when (step) {
                                 is Step.Woken -> DatagramReadResult.Closed()
+                                // A wake whose receiver was not cancelled: one left over from an earlier
+                                // receive's cancellation. Wait again.
+                                is Step.Interrupted -> null
                                 // Negated: buffer-flow's OsError carries a *negative* errno (that is what
                                 // the Linux backend's io_uring `res` already is). Darwin's `recvfrom`
                                 // returns a bare -1, which names nothing, so the errno is read instead.
@@ -245,6 +279,9 @@ internal class PosixUdpDatagramChannel(
         /** The wake pipe fired: [close] ran, and this receiver returns closed without a datagram. */
         data object Woken : Step
 
+        /** The interrupt pipe fired and was drained: a receiver's coroutine was cancelled. */
+        data object Interrupted : Step
+
         /** A syscall failed with this (positive) `errno`; the receive ends. */
         data class Failed(
             val errno: Int,
@@ -271,12 +308,17 @@ internal class PosixUdpDatagramChannel(
         while (true) {
             watched[SOCKET_SLOT].revents = 0
             watched[WAKE_SLOT].revents = 0
+            watched[INTERRUPT_SLOT].revents = 0
             if (poll(watched, WATCHED_DESCRIPTORS.convert(), NO_TIMEOUT) < 0) {
                 val code = errno
                 if (code == EINTR) continue
                 return Step.Failed(code)
             }
             if (watched[WAKE_SLOT].revents.toInt() != 0) return Step.Woken
+            if (watched[INTERRUPT_SLOT].revents.toInt() != 0) {
+                interrupt.drain()
+                return Step.Interrupted
+            }
             // Any event on the socket — readable, or an error condition poll reports unasked — is a
             // question only the syscall can answer, and its errno is the honest reason.
             if (watched[SOCKET_SLOT].revents.toInt() == 0) continue
@@ -349,7 +391,31 @@ internal class PosixUdpDatagramChannel(
         close(fd)
         close(wake.readEnd)
         close(wake.writeEnd)
+        close(interrupt.readEnd)
+        close(interrupt.writeEnd)
         recvDispatcher.close()
+    }
+
+    /**
+     * Wakes the receiver parked in `poll`, from a cancellation handler on the cancelling thread. Admitted
+     * like every other party, so the pipe cannot be released under the write; a closed channel needs no
+     * interrupt, its wake pipe already fired. Never throws — it runs inside the job's completion — and a
+     * full pipe already holds a pending wake. The last party out releases off this thread, which may be
+     * any thread at all.
+     */
+    private fun interruptReceiver() {
+        when (handoff.enter()) {
+            LastOutHandoff.Admission.Refused -> return
+            LastOutHandoff.Admission.Admitted -> Unit
+        }
+        try {
+            interrupt.poke()
+        } finally {
+            when (handoff.exit()) {
+                LastOutHandoff.Departure.NotLast -> Unit
+                LastOutHandoff.Departure.LastOut -> GlobalScope.launch(Dispatchers.Default + NonCancellable) { releaseAll() }
+            }
+        }
     }
 
     override suspend fun send(
@@ -451,18 +517,49 @@ internal class PosixUdpDatagramChannel(
             }
         }
 
+        /** One byte, without blocking; a full pipe already holds a pending wake, and nothing here throws. */
+        fun poke() {
+            memScoped {
+                val byte = alloc<ByteVar>()
+                byte.value = 0
+                while (write(writeEnd, byte.ptr, 1.convert()).toInt() < 0 && errno == EINTR) Unit
+            }
+        }
+
+        /** Reads [readEnd] empty; it must be non-blocking. */
+        fun drain() {
+            memScoped {
+                val scratch = allocArray<ByteVar>(DRAIN_CHUNK)
+                while (true) {
+                    val n = read(readEnd, scratch, DRAIN_CHUNK.convert()).toInt()
+                    if (n > 0) continue
+                    if (n < 0 && errno == EINTR) continue
+                    return
+                }
+            }
+        }
+
         companion object {
+            private const val DRAIN_CHUNK = 64
+
             /**
-             * Opens the pipe, or closes [socketFd] and throws. The channel has taken ownership of that
-             * descriptor by the time this runs, so a construction that cannot complete must not leak it.
+             * Opens the pipe, or closes every descriptor in [owned] and throws. The channel has taken
+             * ownership of those by the time this runs, so a construction that cannot complete must not
+             * leak them. [nonBlocking] sets `O_NONBLOCK` on both ends.
              */
-            fun openOrClose(socketFd: Int): WakePipe =
+            fun openOrClose(
+                vararg owned: Int,
+                nonBlocking: Boolean = false,
+            ): WakePipe =
                 memScoped {
                     val ends = allocArray<IntVar>(2)
                     if (pipe(ends) != 0) {
                         val code = errno
-                        close(socketFd)
+                        owned.forEach { close(it) }
                         error("pipe() for the receive wake failed: errno $code")
+                    }
+                    if (nonBlocking) {
+                        for (end in listOf(ends[0], ends[1])) fcntl(end, F_SETFL, fcntl(end, F_GETFL) or O_NONBLOCK)
                     }
                     WakePipe(readEnd = ends[0], writeEnd = ends[1])
                 }
@@ -472,10 +569,11 @@ internal class PosixUdpDatagramChannel(
     companion object {
         private const val MAX_UDP_PAYLOAD = 65507
 
-        /** `poll` slots: the socket first, its wake second — and the wake is read first. */
+        /** `poll` slots: the socket, its close wake, its cancellation interrupt — and the wakes are read first. */
         private const val SOCKET_SLOT = 0
         private const val WAKE_SLOT = 1
-        private const val WATCHED_DESCRIPTORS = 2
+        private const val INTERRUPT_SLOT = 2
+        private const val WATCHED_DESCRIPTORS = 3
 
         /** `poll` blocks until one of the two speaks; the wake is what ends the wait, not a deadline. */
         private const val NO_TIMEOUT = -1

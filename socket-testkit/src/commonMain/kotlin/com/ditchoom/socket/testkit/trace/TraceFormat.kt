@@ -70,6 +70,12 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append(' ')
                 append(flattenLine(event.message))
             }
+            is TraceEvent.Drop -> {
+                append("DROP ")
+                append(event.type)
+                append(' ')
+                append(flattenLine(event.message))
+            }
             is TraceEvent.Stats -> {
                 val s = event.stats
                 append("STATS ")
@@ -184,6 +190,17 @@ internal fun decodeTraceLine(line: String): TraceEvent {
                 TraceEvent.Error(at, fields, "")
             } else {
                 TraceEvent.Error(at, fields.substring(0, sp), fields.substring(sp + 1))
+            }
+        }
+        // `v1` still: DROP is a new line kind in the existing version, exactly as NET_GAP was added after
+        // the format shipped. A reader predating it fails the unknown-event branch below rather than
+        // mis-parsing.
+        "DROP" -> {
+            val sp = fields.indexOf(' ')
+            if (sp < 0) {
+                TraceEvent.Drop(at, fields, "")
+            } else {
+                TraceEvent.Drop(at, fields.substring(0, sp), fields.substring(sp + 1))
             }
         }
         "STATS" -> {
