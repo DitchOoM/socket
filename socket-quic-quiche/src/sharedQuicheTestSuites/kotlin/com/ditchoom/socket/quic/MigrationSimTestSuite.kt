@@ -100,59 +100,174 @@ abstract class MigrationSimTestSuite {
     fun aReplyIsDeliveredWholeWhenTheServerHandlerReturnsRightAfterWritingIt() =
         runTest {
             wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 671_101L,
-                    primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
-                ) {
-                    val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
-                    client.launch {
-                        val stream = server.acceptStream()
-                        while (stream
-                                .read(
-                                    IDLE_TIMEOUT_IN_THE_FIELD,
-                                ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
-                        ) {
-                            Unit
-                        }
-                        val out = BufferFactory.network().allocate(reply.length)
-                        out.writeString(reply, Charset.UTF8)
-                        out.resetForRead()
-                        stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
-                        out.freeNativeMemory()
-                        stream.close()
-                        // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
-                        serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
-                        server.close()
-                    }
-                    val received = StringBuilder()
-                    val outcome =
-                        runCatching {
-                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
-                                val stream = openStream()
-                                stream.writeText("request")
-                                stream.shutdownSend()
-                                state.first { it is QuicConnectionState.Closed }
-                                while (true) {
-                                    when (val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)) {
-                                        is ReadResult.Data -> {
-                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                            r.buffer.freeIfNeeded()
-                                        }
-                                        ReadResult.End, ReadResult.Reset -> break
-                                    }
-                                }
-                            }
-                        }
+                val read = readAReplyAfterTheServerClosed(seed = 671_101L)
+                assertEquals(
+                    read.expected,
+                    read.received,
+                    "the server closed over its own reply: the client got ${read.received} of ${read.expected} " +
+                        "bytes, then ${read.ending}, traffic ${read.traffic}",
+                )
+                assertEquals(ReplyEnding.Fin, read.ending, "the reply arrived whole; it must also end, traffic ${read.traffic}")
+            }
+        }
+
+    /**
+     * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
+     * the shape of a handler that writes and then closes — quiche could lose it: by counting the send side
+     * complete once the data was acknowledged (and collecting the stream with the FIN unsent or lost, while
+     * the server's close stopped waiting), or by dropping the stream from its send queue behind a
+     * retransmission with the FIN never sent ([aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent]
+     * stages that one). Either way the client read the whole reply and then the connection's close, never
+     * the end of the stream.
+     *
+     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened; the order inside each run
+     * still depends on thread timing, so this is the end-to-end witness, not the deterministic one.
+     */
+    @Test
+    fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
+        runTest {
+            wrapTestBody {
+                for (seed in listOf(12L, 22L, 30L)) {
+                    val read = readAReplyAfterTheServerClosed(seed)
                     assertEquals(
-                        reply.length,
-                        received.length,
-                        "the server closed over its own reply: the client got ${received.length} of ${reply.length} " +
-                            "bytes (${outcome.exceptionOrNull() ?: "then a clean end"}), traffic ${pipeTraffic()}",
+                        ReplyEnding.Fin,
+                        read.ending,
+                        "seed $seed: the client read ${read.received} of ${read.expected} bytes and then not the " +
+                            "stream's end, traffic ${read.traffic}",
                     )
+                    assertEquals(read.expected, read.received, "seed $seed: the reply must arrive whole")
                 }
             }
         }
+
+    /**
+     * A FIN written after a stream's last bytes were sent, while an earlier range of it waits to be
+     * retransmitted, is still sent.
+     *
+     * quiche drops a stream from its send queue once nothing it holds is flushable, and counted only data:
+     * the stream was already queued for the retransmission, so the FIN did not queue it again, the
+     * retransmission went out without the FIN (it ends mid-stream), and the stream left the queue with the
+     * FIN never sent. The peer read the whole reply and never its end; a server closing once its writes are
+     * acknowledged waited for a FIN it would never send. The sim's reply-after-close scenario reached this
+     * order at random (seed 12, about one run in ten); here it is staged.
+     */
+    @Test
+    fun aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.settle()
+                    assertEquals(7, pair.streamSend(pair.client, stream, "request", fin = true))
+                    pair.settle()
+                    assertEquals(7 to true, pair.readAll(pair.server, stream))
+
+                    // The reply goes out in several datagrams, its last bytes included, without the FIN.
+                    val reply = "reply;".repeat(STAGED_REPLY_BYTES / 6)
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val flight = pair.sends(pair.server)
+                    assertTrue(flight.size >= 4, "the reply must span at least four datagrams to stage a loss, was ${flight.size}")
+                    // The first is lost; the client acknowledges the rest, which declares it lost: its
+                    // range now waits to be retransmitted.
+                    pair.deliver(flight.drop(1), pair.client)
+                    pair.deliver(pair.sends(pair.client), pair.server)
+                    // The handler closes the stream now.
+                    assertEquals(0, pair.streamSend(pair.server, stream, "", fin = true))
+                    pair.settle()
+
+                    assertEquals(
+                        reply.length to true,
+                        pair.readAll(pair.client, stream),
+                        "the client must read the whole reply and its end",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /** How a client's read of the reply in [readAReplyAfterTheServerClosed] ended. */
+    private sealed interface ReplyEnding {
+        /** The stream's FIN: the reply ended. */
+        data object Fin : ReplyEnding
+
+        /** The server reset the stream. */
+        data object Reset : ReplyEnding
+
+        /** The read, or the block it ran in, ended with [cause] — the connection's close, without the stream's end. */
+        data class Failed(
+            val cause: Throwable,
+        ) : ReplyEnding
+    }
+
+    private class ReplyRead(
+        val expected: Int,
+        val received: Int,
+        val ending: ReplyEnding,
+        val traffic: String,
+    )
+
+    /**
+     * A server handler on a slow, lossy path reads a request, writes a reply several congestion windows
+     * long, closes the stream and returns; its connection then closes as [SharedQuicheServer] closes it.
+     * The client reads the reply only after the connection has closed.
+     */
+    private suspend fun readAReplyAfterTheServerClosed(seed: Long): ReplyRead =
+        withMigrationSim(
+            simEnv(),
+            seed = seed,
+            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+        ) {
+            val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
+            client.launch {
+                val stream = server.acceptStream()
+                while (stream
+                        .read(
+                            IDLE_TIMEOUT_IN_THE_FIELD,
+                        ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                ) {
+                    Unit
+                }
+                val out = BufferFactory.network().allocate(reply.length)
+                out.writeString(reply, Charset.UTF8)
+                out.resetForRead()
+                stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                out.freeNativeMemory()
+                stream.close()
+                // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
+                serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                server.close()
+            }
+            var received = 0
+            val ending =
+                try {
+                    client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                        val stream = openStream()
+                        stream.writeText("request")
+                        stream.shutdownSend()
+                        state.first { it is QuicConnectionState.Closed }
+                        stream.readToItsEnding { received += it }
+                    }
+                } catch (e: QuicCloseException) {
+                    ReplyEnding.Failed(e)
+                }
+            ReplyRead(expected = reply.length, received = received, ending = ending, traffic = pipeTraffic())
+        }
+
+    /** Read this stream until it ends, passing each chunk's size to [onData]; how it ended. */
+    private suspend fun QuicByteStream.readToItsEnding(onData: (Int) -> Unit): ReplyEnding {
+        while (true) {
+            when (val r = read(IDLE_TIMEOUT_IN_THE_FIELD)) {
+                is ReadResult.Data -> {
+                    onData(r.buffer.remaining())
+                    r.buffer.freeIfNeeded()
+                }
+                ReadResult.End -> return ReplyEnding.Fin
+                ReadResult.Reset -> return ReplyEnding.Reset
+            }
+        }
+    }
 
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
@@ -3030,6 +3145,9 @@ abstract class MigrationSimTestSuite {
 
         /** Loss on it, so the reply needs retransmissions to arrive whole. */
         const val SLOW_PATH_LOSS = 0.3
+
+        /** A reply of a handful of datagrams, inside the initial congestion window. */
+        const val STAGED_REPLY_BYTES = 6000
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
