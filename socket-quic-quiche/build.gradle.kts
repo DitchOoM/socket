@@ -249,10 +249,10 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
-    // Count a stream's send side complete only once the peer has acknowledged its FIN, not just its data,
-    // so a FIN still unsent or in flight is neither dropped with the stream nor mistaken for delivered.
-    // Idempotent, fails loudly on drift. See the KDoc.
-    patchQuicheSendCompleteNeedsFinAck(sourceDir)
+    // Keep a stream's FIN queued until a frame carries it and owed until the peer acknowledges it, so a
+    // FIN written behind a retransmission is still sent and a send side is not complete before its FIN
+    // is delivered. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheFinIsSentUntilAcknowledged(sourceDir)
 
     return sourceDir
 }
@@ -394,33 +394,39 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
 }
 
 /**
- * Make `SendBuf::is_complete` — "the peer has everything this send side owes it" — require the peer's
- * acknowledgement of the FIN itself, not only of the data before it.
+ * Keep a stream's FIN owed until the peer acknowledges it: queued for sending until a frame carries it,
+ * queued again when that frame is lost, and the send side complete only once it is acknowledged.
  *
- * quiche judges completion by `acked == 0..fin_off`. A FIN written after the data was already sent goes
- * out in a zero-length STREAM frame, and acknowledging that frame adds nothing to `acked`, so a send side
- * reads complete the moment its data is acknowledged — with the FIN unsent, or in flight. Two things
- * follow, both observed as a reply that arrives whole and then never ends:
+ * quiche tracks a send side's data and leaves its FIN implicit, which loses the FIN two ways when it goes
+ * out on its own (written after the data was sent):
  *
- *  - quiche collects the stream (an ACK, or the `stream_send` that wrote the FIN, sees it complete), and
- *    the collected stream's queued or lost FIN is never sent again: `send` and loss recovery both skip a
- *    stream that is gone;
- *  - `quiche_conn_stream_data_unacknowledged` ([patchQuicheStreamDataUnacknowledgedFfi]) reads the same
- *    predicate, so a server's graceful close stops waiting and sends CONNECTION_CLOSE, after which RFC
- *    9000 §10.2 lets it send nothing else.
+ *  - **Never sent.** `send` drops a stream from its flushable queue once `Stream::is_flushable` is false,
+ *    and that counts only data. A FIN written while the stream is queued for a retransmission of an
+ *    earlier range does not queue it again; the retransmission goes out without the FIN (it ends
+ *    mid-stream), the stream leaves the queue, and the FIN is never sent.
+ *  - **Counted as delivered.** `SendBuf::is_complete` is `acked == 0..fin_off`, and acknowledging a
+ *    zero-length FIN frame adds nothing to `acked`, so the send side reads complete as soon as its data
+ *    is acknowledged. quiche then collects the stream, and its unsent or lost FIN with it, and
+ *    `quiche_conn_stream_data_unacknowledged` ([patchQuicheStreamDataUnacknowledgedFfi]) tells a
+ *    graceful close there is nothing left to wait for.
  *
- * Reproduced by `MigrationSimTestSuite.aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt`.
+ * Either way the peer reads the whole stream and never its end. Reproduced by
+ * `MigrationSimTestSuite.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
+ * `aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt`.
  *
- * Four edits: a `socket_fin_acked` field on `SendBuf`, set by the ACK of a frame carrying the FIN (the
- * ACK handler in `lib.rs` binds the frame's `fin`) and by `reset` — a send side reset, stopped or shut
- * down owes no FIN — and the `is_complete` comparison. Marker-guarded and loud: a re-run returns, a moved
- * anchor throws.
+ * The edits: `SendBuf` gains `socket_fin_sent` (set when `emit` puts the FIN on a frame, cleared when the
+ * ACK handler's loss arm sees a frame carrying it lost) and `socket_fin_acked` (set when the ACK handler
+ * sees a frame carrying it acknowledged); `reset` sets both, since a send side reset, stopped or shut down
+ * owes no FIN. `Stream::is_flushable` is also true while the FIN is owed with no data before it, and
+ * `is_complete` requires the acknowledgement. Marker-guarded and loud: a re-run returns, a moved anchor
+ * throws.
  */
-fun patchQuicheSendCompleteNeedsFinAck(sourceDir: File) {
-    val marker = "socket-send-complete-needs-fin-ack"
+fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
+    val marker = "socket-fin-sent-until-acknowledged"
     val sendBufRs = sourceDir.resolve("quiche/src/stream/send_buf.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
     val libRs = sourceDir.resolve("quiche/src/lib.rs")
-    if (!sendBufRs.exists() || !libRs.exists()) return
+    if (!sendBufRs.exists() || !streamRs.exists() || !libRs.exists()) return
     if (sendBufRs.readText().contains(marker)) return
 
     fun replaceOnce(
@@ -432,8 +438,9 @@ fun patchQuicheSendCompleteNeedsFinAck(sourceDir: File) {
         if (text.split(anchor).size != 2) {
             throw GradleException(
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
-                    "bump moved it. Re-fit patchQuicheSendCompleteNeedsFinAck, or delete it if quiche's " +
-                    "SendBuf::is_complete now waits for the FIN's acknowledgement.",
+                    "bump moved it. Re-fit patchQuicheFinIsSentUntilAcknowledged, or delete it if quiche now " +
+                    "keeps a stream's FIN queued until it is sent and counts the send side complete only once " +
+                    "the FIN is acknowledged.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -443,7 +450,9 @@ fun patchQuicheSendCompleteNeedsFinAck(sourceDir: File) {
         sendBufRs,
         "    /// The error code received via STOP_SENDING.\n    error: Option<u64>,\n}\n",
         "    /// The error code received via STOP_SENDING.\n    error: Option<u64>,\n\n" +
-            "    // $marker: the peer acknowledged a frame carrying the FIN, or the send side was reset.\n" +
+            "    // $marker: a frame carrying the FIN was sent and not since declared lost.\n" +
+            "    socket_fin_sent: bool,\n\n" +
+            "    // $marker: the peer acknowledged a frame carrying the FIN.\n" +
             "    socket_fin_acked: bool,\n}\n",
     )
     replaceOnce(
@@ -451,17 +460,32 @@ fun patchQuicheSendCompleteNeedsFinAck(sourceDir: File) {
         "impl<F: BufFactory> SendBuf<F> {\n",
         "impl<F: BufFactory> SendBuf<F> {\n" +
             "    // $marker: the peer acknowledged a frame that carried the FIN.\n" +
-            "    pub fn socket_ack_fin(&mut self) {\n        self.socket_fin_acked = true;\n    }\n\n",
+            "    pub fn socket_ack_fin(&mut self) {\n        self.socket_fin_acked = true;\n    }\n\n" +
+            "    // $marker: a frame that carried the FIN was declared lost.\n" +
+            "    pub fn socket_fin_lost(&mut self) {\n        self.socket_fin_sent = false;\n    }\n\n" +
+            "    // $marker: the FIN is written, no data is waiting to go before it, and no frame carries it.\n" +
+            "    pub fn socket_fin_owed(&self) -> bool {\n" +
+            "        !self.socket_fin_sent && self.fin_off.is_some() && self.fin_off == Some(self.off_front())\n    }\n\n",
+    )
+    replaceOnce(
+        sendBufRs,
+        "        let fin = self.fin_off == Some(next_off);\n",
+        "        let fin = self.fin_off == Some(next_off);\n        if fin {\n            self.socket_fin_sent = true;\n        }\n",
     )
     replaceOnce(
         sendBufRs,
         "        self.fin_off = Some(unsent_off);\n",
-        "        self.fin_off = Some(unsent_off);\n        self.socket_fin_acked = true;\n",
+        "        self.fin_off = Some(unsent_off);\n        self.socket_fin_sent = true;\n        self.socket_fin_acked = true;\n",
     )
     replaceOnce(
         sendBufRs,
         "            if self.acked == (0..fin_off) {\n",
         "            if self.acked == (0..fin_off) && self.socket_fin_acked {\n",
+    )
+    replaceOnce(
+        streamRs,
+        "            off_front < self.send.max_off()\n    }\n",
+        "            off_front < self.send.max_off() ||\n            // $marker\n            self.send.socket_fin_owed()\n    }\n",
     )
     replaceOnce(
         libRs,
@@ -491,7 +515,14 @@ fun patchQuicheSendCompleteNeedsFinAck(sourceDir: File) {
             "                        // $marker\n" +
             "                        if fin {\n                            stream.send.socket_ack_fin();\n                        }\n",
     )
-    logger.lifecycle("Patched quiche source: SendBuf::is_complete waits for the FIN's acknowledgement")
+    replaceOnce(
+        libRs,
+        "                        let retransmitted =\n                            stream.send.retransmit(offset, length);\n",
+        "                        let retransmitted =\n                            stream.send.retransmit(offset, length);\n" +
+            "                        // $marker\n" +
+            "                        if fin {\n                            stream.send.socket_fin_lost();\n                        }\n",
+    )
+    logger.lifecycle("Patched quiche source: a stream's FIN stays queued until sent and owed until acknowledged")
 }
 
 /**

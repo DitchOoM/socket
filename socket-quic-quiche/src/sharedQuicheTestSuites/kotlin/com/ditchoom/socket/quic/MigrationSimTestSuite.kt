@@ -113,12 +113,15 @@ abstract class MigrationSimTestSuite {
 
     /**
      * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
-     * the shape of a handler that writes and then closes — acknowledging the data does not deliver it.
-     * quiche used to count a send side complete once its data was acknowledged, so it collected the
-     * stream with that FIN unsent or lost, and the server's close stopped waiting: the client read the
-     * whole reply and then the connection's close, never the end of the stream.
+     * the shape of a handler that writes and then closes — quiche could lose it: by counting the send side
+     * complete once the data was acknowledged (and collecting the stream with the FIN unsent or lost, while
+     * the server's close stopped waiting), or by dropping the stream from its send queue behind a
+     * retransmission with the FIN never sent ([aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent]
+     * stages that one). Either way the client read the whole reply and then the connection's close, never
+     * the end of the stream.
      *
-     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened.
+     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened; the order inside each run
+     * still depends on thread timing, so this is the end-to-end witness, not the deterministic one.
      */
     @Test
     fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
@@ -133,6 +136,53 @@ abstract class MigrationSimTestSuite {
                             "stream's end, traffic ${read.traffic}",
                     )
                     assertEquals(read.expected, read.received, "seed $seed: the reply must arrive whole")
+                }
+            }
+        }
+
+    /**
+     * A FIN written after a stream's last bytes were sent, while an earlier range of it waits to be
+     * retransmitted, is still sent.
+     *
+     * quiche drops a stream from its send queue once nothing it holds is flushable, and counted only data:
+     * the stream was already queued for the retransmission, so the FIN did not queue it again, the
+     * retransmission went out without the FIN (it ends mid-stream), and the stream left the queue with the
+     * FIN never sent. The peer read the whole reply and never its end; a server closing once its writes are
+     * acknowledged waited for a FIN it would never send. The sim's reply-after-close scenario reached this
+     * order at random (seed 12, about one run in ten); here it is staged.
+     */
+    @Test
+    fun aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.settle()
+                    assertEquals(7, pair.streamSend(pair.client, stream, "request", fin = true))
+                    pair.settle()
+                    assertEquals(7 to true, pair.readAll(pair.server, stream))
+
+                    // The reply goes out in several datagrams, its last bytes included, without the FIN.
+                    val reply = "reply;".repeat(STAGED_REPLY_BYTES / 6)
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val flight = pair.sends(pair.server)
+                    assertTrue(flight.size >= 4, "the reply must span at least four datagrams to stage a loss, was ${flight.size}")
+                    // The first is lost; the client acknowledges the rest, which declares it lost: its
+                    // range now waits to be retransmitted.
+                    pair.deliver(flight.drop(1), pair.client)
+                    pair.deliver(pair.sends(pair.client), pair.server)
+                    // The handler closes the stream now.
+                    assertEquals(0, pair.streamSend(pair.server, stream, "", fin = true))
+                    pair.settle()
+
+                    assertEquals(
+                        reply.length to true,
+                        pair.readAll(pair.client, stream),
+                        "the client must read the whole reply and its end",
+                    )
+                } finally {
+                    pair.close()
                 }
             }
         }
@@ -3095,6 +3145,9 @@ abstract class MigrationSimTestSuite {
 
         /** Loss on it, so the reply needs retransmissions to arrive whole. */
         const val SLOW_PATH_LOSS = 0.3
+
+        /** A reply of a handful of datagrams, inside the initial congestion window. */
+        const val STAGED_REPLY_BYTES = 6000
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
