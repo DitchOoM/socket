@@ -264,9 +264,8 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
-      # RESTORE-ONLY, and `konan-macos-` — see the identical note on the `docs` job below. This
-      # job's `needs: [validate]` puts it after build-apple's `natives`, so the current run's entry
-      # is already there to restore.
+      # RESTORE-ONLY, and `konan-macos-` — see the identical note on the `docs` job below. The entry
+      # is written on main by build-apple's `macOS x64 (all other modules)` K/N shard.
       - name: Restore Konan cache
         uses: actions/cache/restore@v6
         with:
@@ -547,11 +546,11 @@ jobs:
             gradle-macos-kn-
             gradle-macos-
       # RESTORE-ONLY, and `konan-macos-` (lowercase literal), not `konan-${{ runner.os }}-`.
-      # runner.os is "macOS", and the writer of the real entry — build-apple.yaml's `natives` job —
-      # uses the lowercase literal. Keys compare verbatim and restore-key prefixes do not cross the
-      # two spellings, so this job was writing its own 434MB duplicate of a Konan distribution that
-      # already existed under the other name, once per ref. Read-only because `natives` is the
-      # single writer for this key.
+      # runner.os is "macOS", and the writer of the real entry — build-apple.yaml's
+      # `macOS x64 (all other modules)` K/N shard — uses the lowercase literal. Keys compare verbatim
+      # and restore-key prefixes do not cross the two spellings, so this job was writing its own
+      # 434MB duplicate of a Konan distribution under the other name, once per ref. Read-only
+      # because that shard is the single writer for this key.
       - name: Restore Konan cache
         uses: actions/cache/restore@v6
         with:

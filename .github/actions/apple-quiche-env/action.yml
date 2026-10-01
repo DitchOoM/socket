@@ -12,6 +12,11 @@ inputs:
     default: "true"
 
 outputs:
+  konan-cache-hit:
+    description: >-
+      'true' only when `~/.konan` was restored from an EXACT `konan-macos-<hash>` match. The shard
+      that saves Konan gates its save on this being false, for the same reason as gradle-cache-hit.
+    value: ${{ steps.restore_konan.outputs.cache-hit == 'true' }}
   gradle-cache-hit:
     description: >-
       'true' only when `~/.gradle/caches` was restored from an EXACT `gradle-macos-kn-<hash>` match
@@ -45,8 +50,10 @@ runs:
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with six parallel consumers a cache miss would have
     # all six racing to upload the same key — five of them losing, all six paying the upload. The
-    # `natives` job is the single writer for these keys.
+    # `natives` job is the single writer for the Gradle keys; Konan's writer is the
+    # `macOS x64 (all other modules)` K/N shard, the first job that actually populates ~/.konan.
     - name: Restore Konan cache
+      id: restore_konan
       if: inputs.konan == 'true'
       uses: actions/cache/restore@v6
       with:
