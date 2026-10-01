@@ -41,7 +41,7 @@ class NetworkControlServerCapabilityTests {
 
         val impairments =
             listOf(
-                NetCtrlCommand.BlockUdp(),
+                NetCtrlCommand.BlockUdp(uid = APP_UID),
                 NetCtrlCommand.UnblockUdp(),
                 NetCtrlCommand.AddLatency(200),
                 NetCtrlCommand.RemoveLatency(),
@@ -71,10 +71,10 @@ class NetworkControlServerCapabilityTests {
         val shell = ScriptedShell(rootAvailable = true)
         val server = serverWith(shell)
 
-        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.BlockUdp()))
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.BlockUdp(uid = APP_UID)))
         assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.AddLatency(120)))
         assertTrue(
-            shell.ran.any { it.startsWith("iptables -A") } && shell.ran.any { it.startsWith("tc qdisc add") },
+            shell.ran.any { it.startsWith("iptables -w -A") } && shell.ran.any { it.startsWith("tc qdisc add") },
             "the impairments must actually reach the device: ${shell.ran}",
         )
     }
@@ -128,16 +128,82 @@ class NetworkControlServerCapabilityTests {
     fun aFailedRemovalKeepsItsCleanupTracked() {
         val shell = ScriptedShell(rootAvailable = true)
         val server = serverWith(shell)
-        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.BlockUdp()))
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.BlockUdp(uid = APP_UID)))
 
         shell.rootAvailable = false
         assertIs<NetCtrlResponse.Error>(server.dispatchForTest(NetCtrlCommand.UnblockUdp()))
 
         assertEquals(
-            listOf("iptables -D OUTPUT -p udp -j DROP"),
+            listOf("iptables", "ip6tables").flatMap { family ->
+                listOf(
+                    "$family -w -X netctrl_udp",
+                    "$family -w -F netctrl_udp",
+                    "$family -w -D OUTPUT -j netctrl_udp",
+                )
+            },
             server.trackedForTest(),
             "the undo for a rule that is still installed must survive a failed removal",
         )
+    }
+
+    /**
+     * The #702 gate. The block must sit ahead of every platform rule in `OUTPUT`, in both families,
+     * scoped to the app's uid so its counter counts the app's datagrams and nothing else.
+     *
+     * RED against the previous server, which appended one IPv4 rule matching all UDP to the end of
+     * `OUTPUT` and could not say whether it had dropped anything.
+     */
+    @Test
+    fun aUdpBlockIsHookedFirstInBothFamiliesAndScopedToTheApp() {
+        val shell = ScriptedShell(rootAvailable = true)
+        val server = serverWith(shell)
+
+        assertIs<NetCtrlResponse.Ok>(server.dispatchForTest(NetCtrlCommand.BlockUdp(uid = APP_UID)))
+
+        for (family in listOf("iptables", "ip6tables")) {
+            assertTrue(
+                "$family -w -A netctrl_udp -p udp -m owner --uid-owner $APP_UID -j DROP" in shell.ran,
+                "$family must drop the app's UDP by owner: ${shell.ran}",
+            )
+            assertTrue(
+                "$family -w -I OUTPUT 1 -j netctrl_udp" in shell.ran,
+                "$family must hook the block at the head of OUTPUT: ${shell.ran}",
+            )
+        }
+        assertTrue(shell.ran.none { " -A OUTPUT" in it }, "nothing may be appended behind the platform's rules: ${shell.ran}")
+    }
+
+    /** The drop counters are the device's own, one per family, with the OUTPUT chains beside them. */
+    @Test
+    fun udpDropsReportsEachFamilysDropCounter() {
+        val shell =
+            DeviceShell { command ->
+                when {
+                    command.startsWith("iptables -w -L netctrl_udp") -> ShellOutcome.Ran(chainListing(pkts = 7))
+                    command.startsWith("ip6tables -w -L netctrl_udp") -> ShellOutcome.Ran(chainListing(pkts = 0))
+                    else -> ShellOutcome.Ran("Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)")
+                }
+            }
+        val drops = assertIs<NetCtrlResponse.UdpDrops>(serverWith(shell).dispatchForTest(NetCtrlCommand.QueryUdpDrops()))
+
+        assertEquals(7, drops.ipv4Packets)
+        assertEquals(0, drops.ipv6Packets)
+        assertTrue("[ip6tables OUTPUT]" in drops.outputChains, drops.outputChains)
+    }
+
+    @Test
+    fun theDropCounterIsReadFromTheDropLine() {
+        assertEquals(12, NetworkControlServer.parseDropPackets(chainListing(pkts = 12)))
+        assertEquals(null, NetworkControlServer.parseDropPackets("Chain netctrl_udp (1 references)"))
+    }
+
+    /** A full-size chain listing still fits one frame and survives the codec. */
+    @Test
+    fun aUdpDropsResponseRoundTripsWithAFullListing() {
+        val sent = NetCtrlResponse.UdpDrops(ipv4Packets = 3, ipv6Packets = 0, outputChains = "x".repeat(6000))
+        val wire = java.io.ByteArrayOutputStream()
+        NetCtrlFraming.send(wire, NetCtrlResponseCodec, sent)
+        assertEquals(sent, NetCtrlFraming.recv(java.io.ByteArrayInputStream(wire.toByteArray()), NetCtrlResponseCodec))
     }
 
     /**
@@ -303,6 +369,16 @@ class NetworkControlServerCapabilityTests {
     }
 
     private companion object {
+        const val APP_UID = 10151
+
+        /** A `iptables -L netctrl_udp -v -n -x` listing in the shape iptables prints it. */
+        fun chainListing(pkts: Long) =
+            """
+            Chain netctrl_udp (1 references)
+                pkts      bytes target     prot opt in     out     source               destination
+                $pkts     ${pkts * 100} DROP       17   --  *      *       0.0.0.0/0            0.0.0.0/0            owner UID match $APP_UID
+            """.trimIndent()
+
         const val SU_MISSING = "su: inaccessible or not found"
         const val ROUTE_GET_API29 = "8.8.8.8 via 10.0.2.2 dev radio0 src 10.0.2.16 uid 0"
     }
