@@ -5,6 +5,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.managed
 import kotlinx.coroutines.channels.Channel
+import kotlin.time.TimeMark
 
 /**
  * Platform-agnostic connection-lifecycle bookkeeping shared by every quiche-backed QUIC server
@@ -34,6 +35,8 @@ import kotlinx.coroutines.channels.Channel
  */
 internal class ServerConnectionRegistry<K>(
     private val api: QuicheApi,
+    /** The clock a closed connection's draining period is measured on — the drivers' own. */
+    private val clock: DriverClock = RealDriverClock,
 ) {
     /**
      * Routing table: every DCID and server-issued SCID currently mapping to a live driver. NOT a
@@ -118,24 +121,55 @@ internal class ServerConnectionRegistry<K>(
     private val maxPeerRecvInfos = 256
     private val peerRecvInfos = LinkedHashMap<K, CachedRecvInfo>()
 
+    /**
+     * The ids of connections closed within their draining period (RFC 9000 §10.2), each with the moment
+     * it ends. A closing or draining endpoint keeps enough state to recognise packets for a connection it
+     * has just closed, and on every close some arrive: the peer's packets already in flight, its own
+     * CONNECTION_CLOSE crossing ours. Recognised, they are an expected drop rather than an unknown id.
+     * Receive-loop only; expired entries are pruned on every [drainRoutingQueues].
+     */
+    private val closedConnections = mutableMapOf<ConnectionIdKey, TimeMark>()
+
     // --- Routing table (receive-loop coroutine only) ---
 
     fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]
+
+    /** Where a datagram addressed to [key] belongs. See [DcidRoute]. */
+    fun routeFor(key: ConnectionIdKey): DcidRoute {
+        connectionsByDcid[key]?.let { return DcidRoute.Live(it) }
+        val until = closedConnections[key] ?: return DcidRoute.Unknown
+        if (until.hasPassedNow()) {
+            closedConnections.remove(key)
+            return DcidRoute.Unknown
+        }
+        return DcidRoute.RecentlyClosed
+    }
+
+    /** Move every id routed to [driver] into [closedConnections] for the driver's draining period. */
+    private fun retire(driver: QuicheDriver) {
+        val until = clock.markNow() + driver.drainingPeriod
+        val keys = connectionsByDcid.keys.filter { connectionsByDcid[it] === driver }
+        for (key in keys) {
+            connectionsByDcid.remove(key)
+            closedConnections[key] = until
+        }
+        projectedRoutes.remove(driver)
+    }
 
     fun routeDriver(
         key: ConnectionIdKey,
         driver: QuicheDriver,
     ) {
         connectionsByDcid[key] = driver
+        closedConnections.remove(key)
     }
 
-    /** Remove ALL routing entries pointing at [driver] (a driver may hold several: SCID + DCIDs). */
-    fun deRouteDriver(driver: QuicheDriver) {
-        connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
-        // The projection baseline goes with them: it describes what is in the map, and claiming
-        // routes the map no longer holds would make the next diff a no-op.
-        projectedRoutes.remove(driver)
-    }
+    /**
+     * Stop routing to [driver], which has closed: every id it held (SCID + DCIDs) moves to
+     * [closedConnections] for its draining period. The projection baseline goes with them: it describes
+     * what is in the map, and claiming routes the map no longer holds would make the next diff a no-op.
+     */
+    fun deRouteDriver(driver: QuicheDriver) = retire(driver)
 
     fun enqueueCleanup(driver: QuicheDriver) {
         driverCleanupQueue.trySend(driver)
@@ -173,9 +207,9 @@ internal class ServerConnectionRegistry<K>(
         }
         while (true) {
             val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
-            connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
-            projectedRoutes.remove(driver)
+            retire(driver)
         }
+        closedConnections.values.removeAll { it.hasPassedNow() }
     }
 
     /**
@@ -194,6 +228,7 @@ internal class ServerConnectionRegistry<K>(
         }
         for (key in projection.sourceIds) {
             connectionsByDcid[key] = driver
+            closedConnections.remove(key)
         }
         projectedRoutes[driver] = projection.sourceIds
     }
@@ -281,6 +316,7 @@ internal class ServerConnectionRegistry<K>(
         liveDrivers.clear()
         connectionsByDcid.clear()
         projectedRoutes.clear()
+        closedConnections.clear()
         for (cached in peerRecvInfos.values) {
             check(cached.inFlight.get() == 0) {
                 "recv_info still in-flight at server close (inFlight=${cached.inFlight.get()})"
@@ -348,6 +384,20 @@ internal fun decodeConnectionIdSlots(
         if (length in 1..QUIC_MAX_CONN_ID_LEN) ids += ConnectionIdKey.from(slots, slot + 1, length)
     }
     return ids
+}
+
+/** Where a datagram belongs, by its destination connection id. */
+internal sealed interface DcidRoute {
+    /** A connection that is open: hand the datagram to its [driver]. */
+    class Live(
+        val driver: QuicheDriver,
+    ) : DcidRoute
+
+    /** A connection this server closed within its draining period: an expected, late datagram. */
+    data object RecentlyClosed : DcidRoute
+
+    /** No connection this server knows: only a conforming Initial may create one. */
+    data object Unknown : DcidRoute
 }
 
 /**
