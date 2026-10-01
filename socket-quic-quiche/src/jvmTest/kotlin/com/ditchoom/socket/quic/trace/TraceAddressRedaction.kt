@@ -41,6 +41,7 @@ internal object TraceAddressRedaction {
             is TraceEvent.PathState -> listOfNotNull(event.localHost?.let(::literal))
             is TraceEvent.OsNet -> event.facts.links.flatMap { link -> link.addresses.mapNotNull(::literal) }
             is TraceEvent.Error -> literalsIn(event.message)
+            is TraceEvent.Drop -> literalsIn(event.message)
             is TraceEvent.StreamLoss, is TraceEvent.State, is TraceEvent.Migration, is TraceEvent.Silence,
             is TraceEvent.Stats, is TraceEvent.Net, is TraceEvent.NetGap, is TraceEvent.NetCapability,
             is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused,
@@ -77,6 +78,7 @@ internal object TraceAddressRedaction {
                         facts = event.facts.copy(links = event.facts.links.map { OsLink(it.name, it.addresses.map(::rewriteText)) }),
                     )
                 is TraceEvent.Error -> event.copy(message = rewriteText(event.message))
+                is TraceEvent.Drop -> event.copy(message = rewriteText(event.message))
                 is TraceEvent.StreamLoss, is TraceEvent.State, is TraceEvent.Migration, is TraceEvent.Silence,
                 is TraceEvent.Stats, is TraceEvent.Net, is TraceEvent.NetGap, is TraceEvent.NetCapability,
                 is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused,
