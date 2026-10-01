@@ -289,8 +289,14 @@ runs:
         # this, in which case the rewrite is an idempotent no-op and the retry simply resumes the
         # download — apt keeps completed .debs in /var/cache/apt/archives, so the second attempt
         # does not start from zero.
+        #
+        # The budget can expire after the download, inside dpkg's unpack (2026-10-01: the fetch took
+        # 5m58s of 6m and the kill landed 2 s into unpacking). That leaves dpkg marked interrupted,
+        # and every later apt-get refuses to run until `dpkg --configure -a` finishes the job — so
+        # the retry must repair dpkg first or it can only fail.
         if [ "$rc" -eq 124 ]; then
           echo "::warning::apt-get install stalled past ${{ inputs.timeout }} for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
+          timeout --foreground "${{ inputs.timeout }}" sudo dpkg --configure -a
           if [ -e /etc/apt/apt-mirrors.txt ]; then
             printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
           fi
