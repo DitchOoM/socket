@@ -80,7 +80,11 @@ class IoUringSetupRetryTests {
         assertEquals(ENOMEM_SETUP_PASSES * IO_URING_SETUP_LADDER.size, calls)
         assertEquals(calls, refused.earlier.size + 1, "every refused attempt must be in the report")
         assertEquals(RefusedSetup(ENOMEM_SETUP_PASSES - 1, 0u, ENOMEM), refused.final)
-        assertEquals(listOf(1_000, 2_000, 4_000, 8_000), slept, "four waits, doubling: 15ms total")
+        assertEquals(
+            (0 until ENOMEM_SETUP_PASSES - 1).map { 1_000 shl it },
+            slept,
+            "one wait before each pass after the first, doubling",
+        )
     }
 
     /**
