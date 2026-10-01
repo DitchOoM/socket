@@ -249,8 +249,90 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
+    // Keep the FIN of a STREAM frame whose bytes the reader has already consumed, so a FIN that only
+    // ever arrives on such a retransmission still ends the stream. Idempotent, fails loudly on drift OR
+    // on an upstream fix. See the KDoc.
+    patchQuicheDuplicateDataFinIsKept(sourceDir)
 
     return sourceDir
+}
+
+/**
+ * Patch quiche's `RecvBuf::write` so a STREAM frame whose bytes have all been read already, but which
+ * carries the FIN, still delivers that FIN.
+ *
+ * **Why.** `write` records the final size from the frame first, then discards any non-empty frame
+ * ending at or below the read offset as a duplicate. When that frame is the first to carry the FIN,
+ * nothing is stored: `ready()` needs a buffer at the read offset, so the stream is never reported
+ * readable and `stream_recv` is never asked for the end it knows about. Every later FIN-only copy is
+ * then dropped by the "final size already known, empty buffer" early return. The stream has ended
+ * and its reader waits on it until the idle timeout.
+ *
+ * It takes two losses: the receiver's ACK of the data and the sender's FIN-only packet. The sender
+ * then declares both lost and retransmits them as one frame (offset 0, all the data, FIN set), every
+ * byte of which the reader already has. Reproduced deterministically by
+ * `MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
+ * a request that never ended on an 800 ms / 30 % loss sim path.
+ *
+ * The edit: such a frame is reduced to its empty FIN-carrying tail at the read offset — exactly the
+ * buffer a FIN-only frame would have produced, which the same branch already admits and stores.
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline): the marker
+ * returns early, and a moved or upstream-fixed anchor throws rather than silently no-opping.
+ */
+fun patchQuicheDuplicateDataFinIsKept(sourceDir: File) {
+    val recvBuf = sourceDir.resolve("quiche/src/stream/recv_buf.rs")
+    if (!recvBuf.exists()) return
+
+    val text = recvBuf.readText()
+    if (text.contains("socket-duplicate-data-fin-is-kept")) return // already patched
+
+    val anchor =
+        """
+        |        if self.off >= buf.max_off() {
+        |            // An exception is applied to empty range buffers, because an empty
+        |            // buffer's max offset matches the max offset of the recv buffer.
+        |            //
+        |            // By this point all spurious empty buffers should have already been
+        |            // discarded, so allowing empty buffers here should be safe.
+        |            if !buf.is_empty() {
+        |                return Ok(());
+        |            }
+        |        }
+        """.trimMargin()
+
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "socket-duplicate-data-fin-is-kept: RecvBuf::write's fully-duplicate branch was not found. A " +
+                "quiche bump moved or reshaped it — possibly fixing this upstream, which is the outcome we " +
+                "want. If a fully-duplicate frame carrying the FIN now leaves the stream readable at its end: " +
+                "DELETE this patch and its call site, and KEEP the regression guard " +
+                "MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
+                "Otherwise re-fit the anchor and re-verify with that guard before shipping.",
+        )
+    }
+
+    val replacement =
+        """
+        |        // socket-duplicate-data-fin-is-kept: a fully-duplicate frame that carries the FIN is
+        |        // reduced to its empty FIN tail at the read offset — the buffer a FIN-only frame makes,
+        |        // which this branch admits. Discarding it whole records the final size where nothing
+        |        // reports it: the stream is never readable again and later FIN-only copies are dropped
+        |        // because the final size is already known.
+        |        let buf = if self.off >= buf.max_off() && !buf.is_empty() {
+        |            if !buf.fin() {
+        |                return Ok(());
+        |            }
+        |
+        |            let mut buf = buf;
+        |            let len = buf.len();
+        |            buf.split_off(len)
+        |        } else {
+        |            buf
+        |        };
+        """.trimMargin()
+
+    recvBuf.writeText(text.replaceFirst(anchor, replacement))
 }
 
 /**
