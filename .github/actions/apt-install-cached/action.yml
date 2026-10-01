@@ -107,6 +107,13 @@ runs:
         # suffix so a -v1 entry from before this change is never misread as containing lists it
         # does not have.
         echo "value=apt-debs-${arch}-${image}-${manifest_hash}-v2" >>"$GITHUB_OUTPUT"
+        # Any image's entry, newest first. GitHub rolls a new runner image out over days, so the
+        # nightly warmer and a PR job routinely land on different images (2026-10-01: the warmer
+        # wrote 20260920.314.1 every night while PR lanes ran 20260927.320.1, and every lane missed).
+        # A fallback hit contributes its .debs ONLY: apt checks each against the fresh index's hash
+        # and re-downloads whatever changed, so an older image's .deb can cost a download but can
+        # never be installed wrongly. Its index is never seeded — that is the half that can mislead.
+        echo "fallback=apt-debs-${arch}-" >>"$GITHUB_OUTPUT"
         echo "staging=${RUNNER_TEMP}/apt-deb-cache" >>"$GITHUB_OUTPUT"
 
     # Restore-only for every caller but the warmer. This follows the single-writer discipline the
@@ -123,6 +130,9 @@ runs:
       with:
         path: ${{ steps.key.outputs.staging }}
         key: ${{ steps.key.outputs.value }}
+        # The writer restores its exact key only: what it stages is tomorrow's cache, and an older
+        # image's .debs seeded into it would be carried forward forever.
+        restore-keys: ${{ inputs.save != 'true' && steps.key.outputs.fallback || '' }}
 
     - name: Seed apt's archive + package index from the cache
       id: seed
@@ -136,7 +146,11 @@ runs:
         if [ -d "$staging" ] && compgen -G "$staging/*.deb" >/dev/null; then
           n=$(find "$staging" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
           mb=$(du -sm "$staging" | cut -f1)
-          echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
+          if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ]; then
+            echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
+          else
+            echo "::notice::apt .deb cache FALLBACK HIT from '${{ steps.restore.outputs.cache-matched-key }}' (another runner image) — pre-seeding ${n} packages (${mb} MB); a fresh index decides which of them still match"
+          fi
           sudo cp "$staging"/*.deb /var/cache/apt/archives/
           debs_present="true"
         else
@@ -165,6 +179,8 @@ runs:
         if [ "${{ inputs.save }}" = "true" ]; then
           echo "::notice::writer run — a fresh apt-get update follows in the next step; not seeding the cached index onto itself (see comment above)."
           lists_present="true"
+        elif [ "${{ steps.restore.outputs.cache-hit }}" != "true" ]; then
+          echo "::notice::apt package-index not seeded for '${{ inputs.purpose }}' — the cache entry is another runner image's; a fresh index will be fetched in the next step."
         elif [ -d "$staging/lists" ] && compgen -G "$staging/lists/*" >/dev/null; then
           n=$(find "$staging/lists" -maxdepth 1 -type f | wc -l | tr -d ' ')
           echo "::notice::apt package-index cache HIT — pre-seeding ${n} index files, no 'apt-get update' needed for the install below"
