@@ -95,7 +95,7 @@ private suspend fun callingDispatcher(): CallingDispatcher =
  * The [DriverClock] this choice means on the calling dispatcher — or an [IncoherentSimClockException]
  * when the two contradict. Call it in the sim's constructor before anything native is allocated.
  */
-internal suspend fun SimClockChoice.resolve(entropy: QuicheEntropy = QuicheEntropy.Seeded(0L)): DriverClock {
+internal suspend fun SimClockChoice.resolve(entropy: QuicheEntropy = QuicheEntropy.Os): DriverClock {
     val calling = callingDispatcher()
     return when (this) {
         SimClockChoice.OfCallingDispatcher ->

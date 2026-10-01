@@ -3780,6 +3780,21 @@ kotlin {
         compilations.create("java21") {
             compilerOptions.configure {
                 jvmTarget.set(JvmTarget.JVM_21)
+                // The FFM backend is part of this module, so it may see main's `internal` declarations —
+                // which is what keeps the deterministic-simulation seam (QuicheRandomPin) out of the
+                // public API. A friend path, not associateWith: that would depend on the jvm jar, which
+                // packs this compilation's own output (the multi-release jar) — a task cycle.
+                freeCompilerArgs.add(
+                    provider {
+                        "-Xfriend-paths=" +
+                            this@jvm
+                                .compilations
+                                .getByName("main")
+                                .output
+                                .classesDirs
+                                .joinToString(",") { it.absolutePath }
+                    },
+                )
             }
             defaultSourceSet {
                 kotlin.srcDir("src/jvm21Main/kotlin")

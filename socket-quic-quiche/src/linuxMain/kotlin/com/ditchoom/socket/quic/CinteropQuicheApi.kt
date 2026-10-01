@@ -140,7 +140,7 @@ import kotlin.time.Duration.Companion.nanoseconds
  * Converts between [Long]-based handles and [kotlinx.cinterop.CPointer] types.
  * All `memScoped` blocks use stack allocation — fast, no GC pressure.
  */
-internal object CinteropQuicheApi : QuicheApi {
+internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     private fun Long.toNativePtr(): NativePtr = requireNotNull(this.toCPointer<ByteVar>()) { "null pointer" }.rawValue
 
     // --- Config ---

@@ -34,7 +34,13 @@ internal class CallerClockQuicheApi(
      * call sequence — not on the thread, nor on what another connection did in between.
      */
     private val entropy: QuicheEntropy =
-        when (val e = clock.quicheEntropy()) {
+        when (
+            val e =
+                when (clock) {
+                    is QuicheEntropySource -> clock.quicheEntropy()
+                    else -> QuicheEntropy.Os
+                }
+        ) {
             QuicheEntropy.Os -> e
             is QuicheEntropy.Seeded ->
                 QuicheEntropy.Seeded(
@@ -45,6 +51,7 @@ internal class CallerClockQuicheApi(
                                 QuicRole.Server -> SERVER_STREAM
                             },
                     ),
+                    e.pin,
                 )
         }
 
@@ -81,13 +88,13 @@ internal class CallerClockQuicheApi(
     private fun pinEntropy() =
         when (val e = entropy) {
             QuicheEntropy.Os -> Unit
-            is QuicheEntropy.Seeded -> delegate.setThreadRandomState(mix(e.seed + calls.fetchAndAdd(1L) * GOLDEN_GAMMA))
+            is QuicheEntropy.Seeded -> e.pin.setThreadRandomState(mix(e.seed + calls.fetchAndAdd(1L) * GOLDEN_GAMMA))
         }
 
     private fun unpinEntropy() =
-        when (entropy) {
+        when (val e = entropy) {
             QuicheEntropy.Os -> Unit
-            is QuicheEntropy.Seeded -> delegate.clearThreadRandomState()
+            is QuicheEntropy.Seeded -> e.pin.clearThreadRandomState()
         }
 
     override fun connRecv(

@@ -923,13 +923,17 @@ class FfmQuicheApi private constructor(
         hClearVirtualTime.invokeExact()
     }
 
-    override fun setThreadRandomState(state: Long) {
-        hSetThreadRandomState.invokeExact(state)
-    }
+    /** This backend's caller-entropy binding. Internal: deterministic simulation only — see [QuicheEntropy]. */
+    internal val randomPin: QuicheRandomPin =
+        object : QuicheRandomPin {
+            override fun setThreadRandomState(state: Long) {
+                hSetThreadRandomState.invokeExact(state)
+            }
 
-    override fun clearThreadRandomState() {
-        hClearThreadRandomState.invokeExact()
-    }
+            override fun clearThreadRandomState() {
+                hClearThreadRandomState.invokeExact()
+            }
+        }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(seg(conn.handle)) as Long).toInt()
 

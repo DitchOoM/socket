@@ -71,32 +71,51 @@ interface DriverClock {
      * quiche becomes fully caller-clocked and loss/PTO/timeout scenarios go bit-exact.
      */
     fun quicheTime(): DriverTime = DriverTime.Real
-
-    /**
-     * Where quiche's own random draws come from — packet-number skips and path-challenge data. Read once,
-     * when the driver installs [CallerClockQuicheApi]. Production returns [QuicheEntropy.Os]: quiche keeps
-     * drawing from BoringSSL. A simulation returns [QuicheEntropy.Seeded], without which a run is not a
-     * function of its seed: a random packet-number skip changes the peer's ACK ranges, and with them the
-     * size of every ACK that follows.
-     */
-    fun quicheEntropy(): QuicheEntropy = QuicheEntropy.Os
 }
 
 /**
- * Which source quiche's C library draws its randomness from for a connection. Sealed for the same reason
- * as [DriverTime]: "BoringSSL's OS entropy" and "this seed" are two distinct, exhaustively-handled cases.
+ * Which source quiche's C library draws its randomness from for a connection — packet-number skips and
+ * PATH_CHALLENGE data. Sealed for the same reason as [DriverTime].
+ *
+ * **Deterministic simulation only, and internal on purpose.** RFC 9000 §8.2.1 requires PATH_CHALLENGE
+ * data to be unpredictable, and quiche's packet-number skips exist so a peer cannot guess them; a seeded
+ * stream makes both predictable. Nothing in a published build can construct [Seeded]: only a clock that
+ * implements the internal [QuicheEntropySource] — the test sources' sim clock — ever returns one.
  */
-sealed interface QuicheEntropy {
+internal sealed interface QuicheEntropy {
     /** Production: quiche draws from BoringSSL's `RAND_bytes`; nothing is injected. */
     object Os : QuicheEntropy
 
     /**
-     * Simulation: quiche's draws follow [seed]. Each connection derives its own stream from it (see
-     * [CallerClockQuicheApi]), so a client and a server on one seed still draw differently.
+     * Simulation: quiche's draws follow [seed], pinned through [pin] — the loaded backend's binding of the
+     * caller-entropy FFI. Each connection derives its own stream from [seed] (see [CallerClockQuicheApi]),
+     * so a client and a server on one seed still draw differently.
      */
     data class Seeded(
         val seed: Long,
+        val pin: QuicheRandomPin,
     ) : QuicheEntropy
+}
+
+/**
+ * A [DriverClock] that also decides [QuicheEntropy]. Read once, when the driver installs
+ * [CallerClockQuicheApi]; a clock that does not implement it — every production clock — leaves quiche on
+ * BoringSSL. Without a seeded source a simulation is not a function of its seed: a random packet-number
+ * skip changes the peer's ACK ranges, and with them the size of every ACK that follows.
+ */
+internal interface QuicheEntropySource {
+    fun quicheEntropy(): QuicheEntropy
+}
+
+/**
+ * The caller-entropy FFI (`patchQuicheForCallerEntropy`): pin the calling thread's seeded random stream in
+ * libquiche, and release it. Implemented by each real backend's binding; reached only through
+ * [QuicheEntropy.Seeded].
+ */
+internal interface QuicheRandomPin {
+    fun setThreadRandomState(state: Long)
+
+    fun clearThreadRandomState()
 }
 
 /**

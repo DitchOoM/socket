@@ -42,6 +42,7 @@ class LinuxQlogBudgetTests : QlogBudgetTestSuite() {
             certChainPath = certPath("cert.crt"),
             privKeyPath = certPath("cert.key"),
             codec = SocketAddressCodec(linuxSockAddrLayout),
+            randomPin = CinteropQuicheApi,
         )
 
     override fun freshDirectory(tag: String): String =

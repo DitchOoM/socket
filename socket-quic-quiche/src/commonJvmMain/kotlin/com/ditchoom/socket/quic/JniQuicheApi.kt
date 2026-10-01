@@ -453,9 +453,13 @@ object JniQuicheApi : QuicheApi {
 
     override fun clearThreadVirtualTime() = nClearVirtualTime()
 
-    override fun setThreadRandomState(state: Long) = nSetThreadRandomState(state)
+    /** This backend's caller-entropy binding. Internal: deterministic simulation only — see [QuicheEntropy]. */
+    internal val randomPin: QuicheRandomPin =
+        object : QuicheRandomPin {
+            override fun setThreadRandomState(state: Long) = nSetThreadRandomState(state)
 
-    override fun clearThreadRandomState() = nClearThreadRandomState()
+            override fun clearThreadRandomState() = nClearThreadRandomState()
+        }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
 

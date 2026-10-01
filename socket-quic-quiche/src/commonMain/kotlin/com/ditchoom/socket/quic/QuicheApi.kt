@@ -343,20 +343,6 @@ interface QuicheApi {
     fun clearThreadVirtualTime() {}
 
     /**
-     * Pin the calling thread's seeded random stream in libquiche to [state], so quiche's own draws —
-     * packet-number skips, path-challenge data — follow a simulation's seed instead of BoringSSL's OS
-     * entropy (the caller-entropy source patch). Pushed by [CallerClockQuicheApi] in the same synchronous
-     * frame as the connection call, and released by [clearThreadRandomState] right after it.
-     *
-     * Simulation-only, and a no-op by default for the same reason as [setThreadVirtualTimeNanos]: a test
-     * double has no libquiche to seed, and only the real backends reach the patched C symbol.
-     */
-    fun setThreadRandomState(state: Long) {}
-
-    /** Release the pin set by [setThreadRandomState]; quiche draws from BoringSSL again on this thread. */
-    fun clearThreadRandomState() {}
-
-    /**
      * Returns the timeout duration until the next quiche timer fires, or `null` if no timeout is set.
      * Implementations normalize platform-specific "no timeout" sentinels (UINT64_MAX on native,
      * negative Long on JVM) into `null`.

@@ -27,5 +27,6 @@ class LinuxMigrationSimTests : MigrationSimTestSuite() {
             certChainPath = certPath("cert.crt"),
             privKeyPath = certPath("cert.key"),
             codec = SocketAddressCodec(linuxSockAddrLayout),
+            randomPin = CinteropQuicheApi,
         )
 }

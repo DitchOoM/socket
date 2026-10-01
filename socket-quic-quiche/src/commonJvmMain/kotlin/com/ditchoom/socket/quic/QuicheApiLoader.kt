@@ -10,4 +10,7 @@ package com.ditchoom.socket.quic
  */
 fun loadQuicheApi(): QuicheApi = jniQuicheApi
 
+/** The caller-entropy binding of the backend [loadQuicheApi] returns. Deterministic simulation only. */
+internal fun loadQuicheRandomPin(): QuicheRandomPin = JniQuicheApi.randomPin
+
 private val jniQuicheApi: QuicheApi by lazy { maybeGuardRecvInfo(JniQuicheApi) }
