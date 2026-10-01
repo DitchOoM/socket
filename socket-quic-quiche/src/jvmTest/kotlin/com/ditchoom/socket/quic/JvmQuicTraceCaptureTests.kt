@@ -387,10 +387,13 @@ class JvmQuicTraceCaptureTests {
                         // creates a connection is consumed before that connection's driver exists —
                         // so by design it carries every peer's path, and it is exactly the sink whose
                         // per-connection isolation is NOT expected. It holds nothing but those inbound
-                        // records and typed drops: no STATE, no DGRAM_OUT.
+                        // records, typed errors, and the typed DROP of a datagram that arrived for a
+                        // connection after it closed — every close has some in flight: no STATE, no
+                        // DGRAM_OUT.
                         val receiveLoop = minted.first()
+                        val lateForClosed = " DROP ${ServerDatagramDrop.ForClosedConnection::class.qualifiedName} "
                         assertTrue(
-                            receiveLoop.all { it.contains(" DGRAM_IN ") || it.contains(" ERROR ") },
+                            receiveLoop.all { it.contains(" DGRAM_IN ") || it.contains(" ERROR ") || it.contains(lateForClosed) },
                             "the receive loop's sink must carry only accept-time DGRAM_IN and typed drops: $receiveLoop",
                         )
                         val perConn = minted.drop(1)
