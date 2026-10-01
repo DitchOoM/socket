@@ -86,15 +86,18 @@ jobs:
   # .a + JNI shims), the Windows x64 JNI shim via MinGW, and the Android arm64 pair via cargo-ndk.
   # Everything downstream consumes the results as artifacts.
   #
-  # This job is the SINGLE WRITER for the konan-linux / gradle-linux / gradle-wrapper-linux /
-  # boringssl / openssl / liburing / quiche / cargo cache keys. Every fanned-out consumer restores
-  # them read-only via .github/actions/linux-quiche-env, so a cache miss cannot turn into five
+  # This job is the SINGLE WRITER for the gradle-linux / gradle-wrapper-linux / boringssl /
+  # openssl / liburing / quiche / cargo cache keys. Every fanned-out consumer restores them
+  # read-only via .github/actions/linux-quiche-env, so a cache miss cannot turn into five
   # parallel jobs racing to upload the same key.
   # ⚠️ For the two Gradle keys that is now further narrowed to main's ref scope only — see the
   # `Restore Gradle …` steps below and their `Save … (main only)` twins at the end of this job.
-  # The native keys (konan/boringssl/openssl/liburing/quiche/cargo) are still written from every
+  # The native keys (boringssl/openssl/liburing/quiche/cargo) are still written from every
   # ref: they are keyed on content that rotates rarely, and a miss there costs a 10-20 minute
   # rebuild on the job every other job in this workflow waits for.
+  # Not konan-linux: this job never compiles Kotlin/Native, so ~/.konan never exists here and its
+  # save always skipped ("Path Validation Error … no cache is being saved"). The writer is
+  # native-deps-freshness.yaml's `cache-warm`, which runs a K/N Linux compile on main.
   natives:
     name: "quiche natives (Linux/Android/Windows)"
     runs-on: ubuntu-24.04
@@ -151,13 +154,6 @@ jobs:
           done
           echo "::error::Android SDK license acceptance failed after $attempts attempts"
           exit 1
-
-      - name: Cache Konan
-        uses: actions/cache@v6
-        with:
-          path: ~/.konan
-          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-linux-
 
       # Persist the local Gradle build cache (~/.gradle/caches/build-cache-1) across runs so
       # compiled Kotlin/Native klibs, cinterop klibs, and KSP/codegen outputs are reused instead
