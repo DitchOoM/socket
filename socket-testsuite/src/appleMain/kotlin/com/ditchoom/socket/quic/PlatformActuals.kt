@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.testkit.skip.SkipReason
 import kotlinx.cinterop.toKString
 import platform.posix.getenv
+import kotlin.time.Duration
 
 actual fun isAppleKNative(): Boolean = true
 
@@ -27,4 +28,12 @@ actual fun quicHarnessAvailability(): QuicHarnessAvailability {
                 "and runs with standalone=false (no such lane exists yet — issue #81)",
         ),
     )
+}
+
+actual fun armStallDump(
+    after: Duration,
+    label: String,
+): StallDump {
+    // Kotlin/Native exposes no other thread's stack: there is nothing to dump.
+    return StallDump { }
 }
