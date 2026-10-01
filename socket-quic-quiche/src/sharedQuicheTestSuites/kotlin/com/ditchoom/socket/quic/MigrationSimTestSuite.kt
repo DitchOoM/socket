@@ -120,14 +120,15 @@ abstract class MigrationSimTestSuite {
      * stages that one). Either way the client read the whole reply and then the connection's close, never
      * the end of the stream.
      *
-     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened; the order inside each run
-     * still depends on thread timing, so this is the end-to-end witness, not the deterministic one.
+     * Each seed is one fixed run — quiche's own random draws follow it ([theSameSeedCrossesTheWireIdenticallyEveryRun]).
+     * These are the seeds among 0..199 on this 800 ms, 30 %-loss path that read the whole reply and never
+     * its end without `patchQuicheFinIsSentUntilAcknowledged`, every run; with it, each ends with the FIN.
      */
     @Test
     fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
         runTest {
             wrapTestBody {
-                for (seed in listOf(12L, 22L, 30L)) {
+                for (seed in FIN_LOST_WITHOUT_THE_PATCH_SEEDS) {
                     val read = readAReplyAfterTheServerClosed(seed)
                     assertEquals(
                         ReplyEnding.Fin,
@@ -3184,6 +3185,9 @@ abstract class MigrationSimTestSuite {
         const val DETERMINISM_RUNS = 6
 
         const val DETERMINISM_SEED = 671_101L
+
+        /** Measured: the seeds whose reply loses its FIN when quiche is built without the FIN patch. */
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(30L, 71L, 107L, 124L)
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
