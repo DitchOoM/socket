@@ -27,6 +27,13 @@ inputs:
       the step with a diagnostic naming the mirror, instead of silently eating the job's budget.
     required: false
     default: "8m"
+  mirror-patience:
+    description: >-
+      Budget for the first attempt, on the runner's default (Azure) mirror, before failing over to
+      archive.ubuntu.com. Short on purpose: a healthy mirror delivers a whole lane's packages in
+      seconds, and the failover keeps every .deb already fetched. Capped at `timeout`.
+    required: false
+    default: "2m"
 
 runs:
   using: composite
@@ -269,8 +276,15 @@ runs:
         # NOTE: `timeout --foreground`, not a bare `timeout`. Composite-action steps do not support
         # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
         # and --foreground keeps apt attached to the job's TTY so its progress still streams.
+        #
+        # The first attempt gets only `mirror-patience`. apt's timeouts are inactivity timeouts, so a
+        # mirror crawling at 70 KB/s is "healthy" to apt and used to hold the step for the whole
+        # budget before the failover ran (2026-10-01: 8 min on Azure, then 3 s on archive.ubuntu.com).
+        secs() { case "$1" in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *s) echo "${1%s}" ;; *) echo "$1" ;; esac; }
+        first_budget="${{ inputs.mirror-patience }}"
+        if [ "$(secs "$first_budget")" -gt "$(secs "${{ inputs.timeout }}")" ]; then first_budget="${{ inputs.timeout }}"; fi
         set +e
-        timeout --foreground "${{ inputs.timeout }}" \
+        timeout --foreground "$first_budget" \
           sudo apt-get install -y \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
@@ -295,7 +309,7 @@ runs:
         # and every later apt-get refuses to run until `dpkg --configure -a` finishes the job — so
         # the retry must repair dpkg first or it can only fail.
         if [ "$rc" -eq 124 ]; then
-          echo "::warning::apt-get install stalled past ${{ inputs.timeout }} for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
+          echo "::warning::apt-get install stalled past $first_budget for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
           timeout --foreground "${{ inputs.timeout }}" sudo dpkg --configure -a
           if [ -e /etc/apt/apt-mirrors.txt ]; then
             printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
