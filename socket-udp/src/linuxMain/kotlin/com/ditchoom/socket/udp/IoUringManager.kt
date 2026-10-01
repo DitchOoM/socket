@@ -88,8 +88,8 @@ internal object IoUringManager {
     // Unique ID generator for user_data (starts at 1; 0 is reserved for eventfd)
     private val nextUserDataCounter = AtomicLong(1L)
 
-    // Reference counting for auto-cleanup when all sockets are closed: the last close destroys the
-    // ring and closes the eventfd. The poller worker thread itself is kept (see cleanup).
+    // Reference counting: the last socket's close releases the ring and its eventfd once the event loop
+    // is idle (see releaseIfIdle). The poller worker thread itself is kept (see cleanup).
     private val activeSocketCount = AtomicInt(0)
 
     /** Sockets currently counted as open; the last one's close releases the ring. */
@@ -103,15 +103,79 @@ internal object IoUringManager {
     }
 
     /**
-     * Called when a socket is closed. Decrements the active socket counter.
-     * When the last socket closes, automatically cleans up the io_uring
-     * infrastructure (event loop thread, ring, dispatcher) so the process can exit.
+     * Called when a socket is closed. Decrements the active socket counter, and when the last socket
+     * closes asks the event loop to release the ring if it is idle — see [releaseIfIdle].
      */
     fun onSocketClosed() {
         if (activeSocketCount.decrementAndGet() <= 0) {
             // Reset to 0 in case of underflow from double-close
             activeSocketCount.compareAndSet(-1, 0)
-            cleanup()
+            releaseIfIdle()
+        }
+    }
+
+    /**
+     * The release a last-socket close asks of the event loop. The loop owns the answer because only it
+     * knows what is in flight: a connect is not counted as a socket until it completes, and a socket can
+     * open after the count reached zero, so a count of zero does not mean nothing is using the ring.
+     */
+    private sealed interface IdleReleaseRequest {
+        object None : IdleReleaseRequest
+
+        class Asked(
+            val answer: CompletableDeferred<IdleRelease>,
+        ) : IdleReleaseRequest
+    }
+
+    private enum class IdleRelease {
+        /** Nothing was in flight and no socket was open: the loop exited and the ring is released. */
+        Released,
+
+        /** An operation was in flight or a socket had opened: the loop is still running. */
+        Refused,
+    }
+
+    private val idleRelease = AtomicReference<IdleReleaseRequest>(IdleReleaseRequest.None)
+
+    /** How the event loop ended, which decides what its `finally` owes the operations it leaves. */
+    private sealed interface LoopExit {
+        /** [cleanup] stopped it: everything pending or queued fails with `-ECANCELED`. */
+        object Stopped : LoopExit
+
+        /** It released an idle ring: nothing is pending, and anything queued since is the next start's. */
+        class Idle(
+            val answer: CompletableDeferred<IdleRelease>,
+        ) : LoopExit
+    }
+
+    /**
+     * Releases the ring after the last socket closed, unless the event loop still has work. Unlike
+     * [cleanup], this never fails an operation: an operation in flight, or a socket opened since the
+     * count reached zero, makes the loop refuse and keep running, and the ring is released on a later
+     * last close.
+     */
+    private fun releaseIfIdle() =
+        withLifecycleLock {
+            if (activeSocketCount.value > 0 || pollerStarted.value != 1) return@withLifecycleLock
+            val answer = CompletableDeferred<IdleRelease>()
+            // Asked before the flag clears, so a loop that sees the flag clear always finds the request.
+            idleRelease.value = IdleReleaseRequest.Asked(answer)
+            pollerStarted.value = 0
+            forceWake()
+            if (runBlocking { answer.await() } == IdleRelease.Released) {
+                pollerJobRef.getAndSet(null)?.let { runBlocking { it.join() } }
+            }
+        }
+
+    /** Wakes the event loop whether or not it is marked sleeping, so it observes a stop request now. */
+    private fun forceWake() {
+        val fd = wakeupFd.value
+        if (fd >= 0) {
+            memScoped {
+                val buf = alloc<eventfd_tVar>()
+                buf.value = 1u
+                eventfd_write(fd, buf.value)
+            }
         }
     }
 
@@ -442,6 +506,11 @@ internal object IoUringManager {
                 initRing().also(::setupEventfd)
             } catch (e: IoUringUnavailableException) {
                 abandonStart(e)
+                // A release asked while this start was setting up finds no ring to release.
+                when (val asked = idleRelease.getAndSet(IdleReleaseRequest.None)) {
+                    IdleReleaseRequest.None -> Unit
+                    is IdleReleaseRequest.Asked -> asked.answer.complete(IdleRelease.Released)
+                }
                 return
             }
 
@@ -451,8 +520,29 @@ internal object IoUringManager {
         val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
         val ts = nativeHeap.alloc<__kernel_timespec>()
 
+        var exit: LoopExit = LoopExit.Stopped
         try {
-            while (pollerStarted.value == 1) {
+            while (true) {
+                // 0. A stop: cleanup() ends the loop now; a last-socket close asks it to release the
+                //    ring only if idle. Requests queued before the stop are this loop's, so they are
+                //    taken in before deciding — a request queued after it was made by a submitter that
+                //    saw the flag clear, and that submitter starts the next loop.
+                if (pollerStarted.value == 0) {
+                    when (val asked = idleRelease.getAndSet(IdleReleaseRequest.None)) {
+                        IdleReleaseRequest.None -> break
+                        is IdleReleaseRequest.Asked -> {
+                            exit = LoopExit.Idle(asked.answer)
+                            if (drainSubmissionChannel(ring, pendingOps)) {
+                                io_uring_submit(ring)
+                            }
+                            if (pendingOps.isEmpty() && activeSocketCount.value == 0) break
+                            exit = LoopExit.Stopped
+                            pollerStarted.value = 1
+                            asked.answer.complete(IdleRelease.Refused)
+                        }
+                    }
+                }
+
                 // 1. Mark as sleeping FIRST — any request arriving after the drain
                 //    will see this flag and write to eventfd, waking us from step 4.
                 //    This eliminates the race between drain and sleep.
@@ -550,10 +640,14 @@ internal object IoUringManager {
                 ringsReleased.incrementAndGet()
             }
 
-            // Drain remaining channel requests so callers aren't left hanging
-            while (true) {
-                val request = submissionChannel.tryReceive().getOrNull() ?: break
-                request.deferred.complete(-ECANCELED)
+            when (val ended = exit) {
+                // Drain remaining channel requests so callers aren't left hanging
+                LoopExit.Stopped ->
+                    while (true) {
+                        val request = submissionChannel.tryReceive().getOrNull() ?: break
+                        request.deferred.complete(-ECANCELED)
+                    }
+                is LoopExit.Idle -> ended.answer.complete(IdleRelease.Released)
             }
         }
     }
@@ -659,14 +753,7 @@ internal object IoUringManager {
             // observes the 0, so the loop is guaranteed to terminate and the join
             // below cannot block forever. Ring, eventfd, and channel cleanup happen
             // in the event loop's finally block — no cross-thread resource teardown.
-            val fd = wakeupFd.value
-            if (fd >= 0) {
-                memScoped {
-                    val buf = alloc<eventfd_tVar>()
-                    buf.value = 1u
-                    eventfd_write(fd, buf.value)
-                }
-            }
+            forceWake()
 
             // Wait for event loop to fully exit (it handles ring/eventfd/channel cleanup)
             val job = pollerJobRef.getAndSet(null)
