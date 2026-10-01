@@ -1,6 +1,6 @@
-package com.ditchoom.socket
+package com.ditchoom.socket.udp
 
-import com.ditchoom.socket.linux.io_uring_prep_poll_add
+import com.ditchoom.socket.udp.linux.io_uring_prep_poll_add
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -27,9 +27,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The ring is released when the last socket closes, and that release must not end an operation that
- * is still in flight. A connect is not counted as a socket until it completes, so on CI a
- * `bidirectionalDataTransfer` connect failed with `ECANCELED` when the previous test's accepted socket
- * closed late, dropped the count to zero and stopped the loop under it.
+ * is still in flight — the same contract as `:socket`'s copy of this manager, whose CI failure (a TCP
+ * connect ending in `ECANCELED`) found it. Here it covers a socket bound while another's close is
+ * releasing the ring.
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringIdleReleaseTests {

@@ -92,6 +92,9 @@ internal object IoUringManager {
     // ring and closes the eventfd. The poller worker thread itself is kept (see cleanup).
     private val activeSocketCount = AtomicInt(0)
 
+    /** Sockets currently counted as open; the last one's close releases the ring. */
+    internal val activeSockets: Int get() = activeSocketCount.value
+
     /**
      * Called when a socket is opened. Increments the active socket counter.
      */
