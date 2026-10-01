@@ -3,12 +3,17 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
+import kotlinx.coroutines.selects.SelectBuilder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeMark
 
 /**
  * Pure, cross-platform unit tests for [ServerConnectionRegistry] — the bookkeeping layer extracted
@@ -196,5 +201,78 @@ class ServerConnectionRegistryTests {
                 "a projection read just before the connection closed re-routed a dead driver — the " +
                     "cleanup must outrank it",
             )
+        }
+
+    // ── A closed connection's ids are recognised for its draining period (RFC 9000 §10.2) ──
+
+    /** A clock the test steps by hand; nothing here arms a timer on it. */
+    private class SteppedClock : DriverClock {
+        var elapsed: Duration = Duration.ZERO
+
+        override fun markNow(): TimeMark {
+            val origin = elapsed
+            return object : TimeMark {
+                override fun elapsedNow(): Duration = elapsed - origin
+            }
+        }
+
+        override fun armTimeout(
+            builder: SelectBuilder<QuicheCmd?>,
+            wait: Duration,
+        ) = throw UnsupportedOperationException("the registry arms no timers")
+    }
+
+    @Test
+    fun aClosedConnectionsIdsAreRecentlyClosedForItsDrainingPeriodThenUnknown() =
+        runQuicTest {
+            val clock = SteppedClock()
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), clock)
+            val closed = idleDriver()
+            registry.routeDriver(cid(0x51), closed)
+            registry.routeDriver(cid(0x52), closed)
+
+            registry.enqueueCleanup(closed)
+            registry.drainRoutingQueues()
+
+            for (id in listOf(cid(0x51), cid(0x52))) {
+                assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(id), "a closed connection's id $id must be recognised")
+            }
+            assertIs<DcidRoute.Unknown>(registry.routeFor(cid(0x53)), "an id no connection ever held is unknown")
+
+            clock.elapsed += closed.drainingPeriod - 1.milliseconds
+            assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(cid(0x51)), "still inside the draining period")
+
+            clock.elapsed += 1.milliseconds
+            registry.drainRoutingQueues()
+            assertIs<DcidRoute.Unknown>(registry.routeFor(cid(0x51)), "past the draining period the id means nothing")
+            assertIs<DcidRoute.Unknown>(registry.routeFor(cid(0x52)), "past the draining period the id means nothing")
+        }
+
+    @Test
+    fun aNewConnectionThatReusesAClosedConnectionsIdRoutesToTheNewOne() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), SteppedClock())
+            val closed = idleDriver()
+            val reborn = idleDriver()
+            registry.routeDriver(cid(0x61), closed)
+            registry.enqueueCleanup(closed)
+            registry.drainRoutingQueues()
+
+            registry.routeDriver(cid(0x61), reborn)
+
+            val route = assertIs<DcidRoute.Live>(registry.routeFor(cid(0x61)))
+            assertSame(reborn, route.driver, "a live connection outranks the closed one that held its id before")
+        }
+
+    @Test
+    fun aDriverThatStoppedTakingPacketsIsRetiredLikeACleanup() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), SteppedClock())
+            val closed = idleDriver()
+            registry.routeDriver(cid(0x71), closed)
+
+            registry.deRouteDriver(closed)
+
+            assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(cid(0x71)))
         }
 }
