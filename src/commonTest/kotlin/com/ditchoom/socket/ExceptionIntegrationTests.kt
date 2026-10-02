@@ -170,10 +170,13 @@ class ExceptionIntegrationTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { serverClient ->
-                        // Send non-TLS data — client expects ServerHello, gets garbage → immediate TLS error
-                        serverClient.writeString("NOT A TLS RESPONSE\r\n")
-                        kotlinx.coroutines.delay(200)
-                        serverClient.close()
+                        try {
+                            // Send non-TLS data — client expects ServerHello, gets garbage → immediate TLS error
+                            serverClient.writeString("NOT A TLS RESPONSE\r\n")
+                            kotlinx.coroutines.delay(200)
+                        } finally {
+                            serverClient.close()
+                        }
                     }
                 }
 

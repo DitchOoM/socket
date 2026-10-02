@@ -28,7 +28,8 @@ class LinuxClientSocket(
     /** The injected transport configuration, supplied at `allocate(config)` time. */
     private val config: TransportConfig = TransportConfig(),
 ) : ClientToServerSocket {
-    private var sockfd: Int = -1
+    private val descriptor = SocketDescriptor()
+    private val sockfd: Int get() = descriptor.value
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
     private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
@@ -69,20 +70,19 @@ class LinuxClientSocket(
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         try {
-            sockfd =
+            descriptor.adopt(
                 connectRace(
                     candidates = config.nameResolution.candidatesFor(host),
                     pacing = config.connectPacing,
                     verdict = AttemptVerdict::of,
                     close = { closeSocket(it) },
-                ) { candidate -> connectCandidate(candidate, port, timeout) }
+                ) { candidate -> connectCandidate(candidate, port, timeout) },
+            )
             // Cache the socket's receive buffer size for efficient read operations
             cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
             if (tlsConfig != null) {
                 initTls(host, timeout)
             }
-            // Track active socket for IoUringManager auto-cleanup
-            IoUringManager.onSocketOpened()
         } catch (e: Exception) {
             closeInternal()
             throw e
@@ -614,30 +614,24 @@ class LinuxClientSocket(
     }
 
     private fun closeInternal() {
-        val wasOpen = sockfd >= 0
         // Promptly cancel a concurrently-parked recv so it returns -ECANCELED (→
         // SocketClosedException) instead of waiting out its full timeout. Closing the
         // fd alone is not prompt on Linux ARM64 (issue #83). Submit the cancel before
         // closing the fd; it targets the recv by user_data, so it is correct regardless
         // of fd state. A same-coroutine close (read already returned) sees 0 here.
         IoUringManager.cancelOperation(pendingReadUserData.getAndSet(0L))
-        ssl?.let {
-            SSL_shutdown(it)
-            SSL_free(it)
-            ssl = null
-        }
-        sslCtx?.let {
-            SSL_CTX_free(it)
-            sslCtx = null
-        }
-        if (sockfd >= 0) {
-            closeSocket(sockfd)
-            sockfd = -1
-        }
-        // Notify IoUringManager so it can auto-cleanup when last socket closes.
-        // Only decrement if the socket was actually open (avoid double-close underflow).
-        if (wasOpen) {
-            IoUringManager.onSocketClosed()
+        // Only the closer that takes the descriptor tears TLS down: two racing closes would otherwise
+        // free the same SSL twice.
+        descriptor.release {
+            ssl?.let {
+                SSL_shutdown(it)
+                SSL_free(it)
+                ssl = null
+            }
+            sslCtx?.let {
+                SSL_CTX_free(it)
+                sslCtx = null
+            }
         }
     }
 

@@ -35,9 +35,12 @@ class LinuxCloseCancelTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        clientConnected.unlock()
-                        delay(30.seconds)
-                        serverToClient.close()
+                        try {
+                            clientConnected.unlock()
+                            delay(30.seconds)
+                        } finally {
+                            serverToClient.close()
+                        }
                     }
                 }
 

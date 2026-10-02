@@ -30,9 +30,12 @@ class IoUringCancelTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        clientConnected.unlock()
-                        delay(10.seconds)
-                        serverToClient.close()
+                        try {
+                            clientConnected.unlock()
+                            delay(10.seconds)
+                        } finally {
+                            serverToClient.close()
+                        }
                     }
                 }
 
@@ -79,9 +82,12 @@ class IoUringCancelTests {
                 val serverJob =
                     launch(Dispatchers.Default) {
                         acceptedClientFlow.collect { serverToClient ->
-                            clientConnected.unlock()
-                            delay(10.seconds)
-                            serverToClient.close()
+                            try {
+                                clientConnected.unlock()
+                                delay(10.seconds)
+                            } finally {
+                                serverToClient.close()
+                            }
                         }
                     }
 

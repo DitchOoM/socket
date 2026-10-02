@@ -442,10 +442,13 @@ class ClientCancellationTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        clientConnected.unlock()
-                        // Hold connection open but don't send anything
-                        delay(10.seconds)
-                        serverToClient.close()
+                        try {
+                            clientConnected.unlock()
+                            // Hold connection open but don't send anything
+                            delay(10.seconds)
+                        } finally {
+                            serverToClient.close()
+                        }
                     }
                 }
 
@@ -503,10 +506,13 @@ class ClientCancellationTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        clientConnected.unlock()
-                        // Hold connection open but don't read
-                        delay(10.seconds)
-                        serverToClient.close()
+                        try {
+                            clientConnected.unlock()
+                            // Hold connection open but don't read
+                            delay(10.seconds)
+                        } finally {
+                            serverToClient.close()
+                        }
                     }
                 }
 
@@ -579,9 +585,12 @@ class ClientCancellationTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        clientConnected.unlock()
-                        delay(10.seconds)
-                        serverToClient.close()
+                        try {
+                            clientConnected.unlock()
+                            delay(10.seconds)
+                        } finally {
+                            serverToClient.close()
+                        }
                     }
                 }
 
@@ -636,9 +645,12 @@ class ClientCancellationTests {
                 val serverJob =
                     launch(Dispatchers.Default) {
                         acceptedClientFlow.collect { serverToClient ->
-                            clientConnected.unlock()
-                            delay(10.seconds)
-                            serverToClient.close()
+                            try {
+                                clientConnected.unlock()
+                                delay(10.seconds)
+                            } finally {
+                                serverToClient.close()
+                            }
                         }
                     }
 

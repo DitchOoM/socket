@@ -73,10 +73,13 @@ class ErrorHandlingTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        serverReady.unlock()
-                        // Don't send any data - client should timeout
-                        kotlinx.coroutines.delay(5000) // Hold connection open
-                        client.close()
+                        try {
+                            serverReady.unlock()
+                            // Don't send any data - client should timeout
+                            kotlinx.coroutines.delay(5000) // Hold connection open
+                        } finally {
+                            client.close()
+                        }
                     }
                 }
 

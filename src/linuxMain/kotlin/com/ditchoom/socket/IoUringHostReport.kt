@@ -49,6 +49,7 @@ internal fun ioUringHostReport(): String =
         appendLine("  /proc/self/status: " + procLines("/proc/self/status", listOf("VmLck", "VmRSS", "VmSize", "Threads", "FDSize")))
         appendLine("  /proc/meminfo: " + procLines("/proc/meminfo", listOf("MemAvailable", "Committed_AS", "Mlocked")))
         appendLine("  open fds: ${openFdCount()}")
+        appendLine("  io_uring rings of this user: ${ioUringRingsOfThisUser()}")
         appendLine("  /proc/sys/kernel/io_uring_disabled: " + procFirstLine("/proc/sys/kernel/io_uring_disabled"))
     }.trimEnd()
 
