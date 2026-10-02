@@ -13,7 +13,10 @@ import kotlinx.cinterop.toCPointer
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Linux [UdpChannel] backed by io_uring.
+ * A connected io_uring UDP channel for the linuxTest proxies (impairment, passive migration). Not a
+ * production channel: production Linux QUIC sends and receives through socket-udp's channels, which close a
+ * descriptor only when the last submit on it has ended. This one closes its descriptor at once, so a test
+ * closes it only once nothing is submitting on it.
  *
  * [receive] suspends via [IoUringManager.submitAndWait] until a datagram arrives — zero CPU when idle.
  * [send] submits an io_uring send and awaits completion.
@@ -33,15 +36,7 @@ internal class IoUringUdpChannel(
         len: Int,
         target: SendTarget,
     ): SendOutcome {
-        // Connected socket — always sends to the connected peer, so a [SendTarget.ServerReply]
-        // (server egress routing to sendInfo.to, pinned to sendInfo.from) does not apply here.
-        //
-        // This does NOT mean Linux lacks server-side egress routing. This class is not on any
-        // production path: the Linux client builds UdpSocketChannelFactory and the Linux server runs
-        // SharedQuicheServer, whose per-connection
-        // egress is the shared ServerConnectionUdpChannel (commonMain) — and that one does resolve
-        // the destination to a migrated peer, on every platform. What remains here is the userspace proxy
-        // plumbing the linuxTest impairment/passive-migration suites build on.
+        // Connected socket — always sends to the connected peer, so a [SendTarget.ServerReply] does not apply.
         val ptr = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         return sendOutcomeOf {
             IoUringManager.submitAndWait(1.seconds) { sqe, _ ->

@@ -11,6 +11,12 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.TimeSource
@@ -28,6 +34,12 @@ class LinuxClientSocket(
     private val config: TransportConfig = TransportConfig(),
 ) : ClientToServerSocket {
     private val descriptor = SocketDescriptor(teardown = { freeTls() })
+
+    /**
+     * Completed by [closeInternal]. Until the connect race hands a descriptor to [descriptor], the attempts
+     * hold their own, which [SocketDescriptor.close] cannot reach; [open] watches this to end them.
+     */
+    private val closeRequested = CompletableDeferred<Unit>()
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
     private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
@@ -59,14 +71,7 @@ class LinuxClientSocket(
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         try {
-            descriptor.adopt(
-                connectRace(
-                    candidates = config.nameResolution.candidatesFor(host),
-                    pacing = config.connectPacing,
-                    verdict = AttemptVerdict::of,
-                    close = { closeSocket(it) },
-                ) { candidate -> connectCandidate(candidate, port, timeout) },
-            )
+            descriptor.adopt(connectUnlessClosed(host, port, timeout))
             // Cache the socket's receive buffer size for efficient read operations
             cachedReadBufferSize = descriptor.withOpenNow(::getSocketReceiveBufferSize)
             if (tlsConfig != null) {
@@ -77,6 +82,44 @@ class LinuxClientSocket(
             throw e
         }
     }
+
+    /**
+     * The connect race, ended by [close] as well as by its own outcome: a close cancels every attempt — each
+     * closes its descriptor once its connect has ended — and this throws [SocketClosedException]. A
+     * cancellation of the caller stays the caller's.
+     */
+    private suspend fun connectUnlessClosed(
+        host: String,
+        port: Int,
+        timeout: Duration,
+    ): Int =
+        try {
+            coroutineScope {
+                val race =
+                    async {
+                        connectRace(
+                            candidates = config.nameResolution.candidatesFor(host),
+                            pacing = config.connectPacing,
+                            verdict = AttemptVerdict::of,
+                            close = { closeSocket(it) },
+                        ) { candidate -> connectCandidate(candidate, port, timeout) }
+                    }
+                val watch =
+                    launch {
+                        closeRequested.await()
+                        race.cancel()
+                    }
+                try {
+                    race.await()
+                } finally {
+                    watch.cancel()
+                }
+            }
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            if (!closeRequested.isCompleted) throw e
+            throw SocketClosedException.General("Socket closed while connecting")
+        }
 
     /** One connect attempt to a resolved literal: the connected descriptor on success, closed again on failure. */
     private suspend fun connectCandidate(
@@ -608,11 +651,12 @@ class LinuxClientSocket(
 
     /**
      * Refuses further reads and writes and cancels any parked one at once — closing the descriptor alone
-     * does not wake a parked recv on Linux ARM64 (issue #83). The descriptor, and the TLS state with it,
-     * goes when the last read or write still inside lets go of it.
+     * does not wake a parked recv on Linux ARM64 (issue #83) — and ends a connect still in flight. The
+     * descriptor, and the TLS state with it, goes when the last read or write still inside lets go of it.
      */
     private fun closeInternal() {
         descriptor.close()
+        closeRequested.complete(Unit)
     }
 
     /** Run by [descriptor] exactly once, while the descriptor is open and no read or write is using it. */

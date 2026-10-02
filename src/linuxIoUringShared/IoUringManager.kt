@@ -4,6 +4,8 @@ import com.ditchoom.socket.iouring.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import platform.posix.fputs
+import platform.posix.stderr
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
@@ -149,6 +151,9 @@ internal object IoUringManager {
 
     /** How long the loop sleeps when no operation has a deadline. */
     private val DEFAULT_POLL_TIMEOUT = 1.seconds
+
+    /** How long a cancelled caller waits for its operation before saying it is still waiting. */
+    private val CANCELLED_WAIT_REPORT_AFTER = 10.seconds
 
     /** user_data source; starts at 1 because 0 is [EVENTFD_USER_DATA]. */
     private val nextUserDataCounter = AtomicLong(1L)
@@ -728,6 +733,14 @@ internal object IoUringManager {
         return awaitCompletion(userData, deferred)
     }
 
+    /**
+     * Awaits [userData]'s completion. A cancelled caller still waits for the operation itself to end before
+     * this returns: its next step is typically to close the descriptor the operation names, and an operation
+     * the poller has not prepared yet would then be submitted against whatever the process opens next under
+     * that number. The wait ends: the cancel is enqueued behind its target, so the kernel completes the
+     * operation with `-ECANCELED` once it is submitted; a forced [stop] completes every pending operation;
+     * an idle release never ends a life that holds one.
+     */
     private suspend fun awaitCompletion(
         userData: Long,
         deferred: CompletableDeferred<Int>,
@@ -739,10 +752,14 @@ internal object IoUringManager {
                 io_uring_prep_cancel64(sqe, userData.toULong(), 0)
             }
             withContext(NonCancellable) {
-                try {
-                    withTimeout(100) { deferred.await() }
-                } catch (_: Exception) {
-                    // Timed out or failed: the kernel is done with the op either way.
+                if (withTimeoutOrNull(CANCELLED_WAIT_REPORT_AFTER) { deferred.join() } == null) {
+                    // Still waiting: one of the reasons above has not held. Say so, and keep waiting — returning
+                    // would hand the caller a descriptor an operation may yet be submitted against.
+                    reportToStderr(
+                        "io_uring: a cancelled operation (user_data=$userData) has not ended " +
+                            "$CANCELLED_WAIT_REPORT_AFTER after its cancel; its caller waits on. state=${state.value}",
+                    )
+                    deferred.join()
                 }
             }
             throw e
@@ -810,4 +827,10 @@ internal object IoUringManager {
         writeWakeup()
         runBlocking { observed.ended.await() }
     }
+}
+
+/** One line to the process's stderr, for a diagnostic that must reach a CI log even when nothing else does. */
+@OptIn(ExperimentalForeignApi::class)
+private fun reportToStderr(line: String) {
+    fputs("$line\n", stderr)
 }

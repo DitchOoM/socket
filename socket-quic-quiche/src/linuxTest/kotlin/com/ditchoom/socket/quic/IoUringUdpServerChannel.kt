@@ -16,7 +16,6 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
-import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
@@ -94,7 +93,10 @@ internal class RecvFromResult(
 )
 
 /**
- * Unconnected UDP socket for QUIC server use, backed by io_uring `recvmsg`/`sendmsg`.
+ * An unconnected io_uring UDP socket for the linuxTest proxies and their own test, backed by `recvmsg`/
+ * `sendmsg`. Not a production channel: the production Linux server binds through socket-udp
+ * (ServerPortBinding), whose channels close a descriptor only when the last submit on it has ended. This one
+ * closes its descriptor at once, so a test closes it only once nothing is submitting on it.
  *
  * [recvFrom] returns both the datagram and the sender's address (needed for QUIC connection routing).
  * [sendTo] sends a datagram to a specific peer via the same bound socket.
@@ -241,88 +243,12 @@ internal class IoUringUdpServerChannel(
     }
 
     /**
-     * Convenience for tests / single-threaded callers with no in-flight receive loop:
-     * close the fd and free buffers in one shot. Production server uses
-     * [closeFd] + receive-loop join + [freeBuffers] explicitly to avoid use-after-free.
+     * Convenience for single-threaded callers with no in-flight receive loop: close the fd and free buffers
+     * in one shot. A caller with a receive loop uses [closeFd] + receive-loop join + [freeBuffers] explicitly
+     * to avoid use-after-free.
      */
     fun close() {
         closeFd()
         freeBuffers()
-    }
-}
-
-/**
- * [UdpChannel] adapter for a single QUIC server-side connection.
- *
- * Sends outgoing packets via the shared [IoUringUdpServerChannel] to a fixed peer address.
- * Does not support [receive] — the server's central receive loop delivers packets
- * to each connection's [QuicheDriver] directly.
- *
- * Owns [peerAddr] (a nativeHeap-allocated copy) and frees it on [close].
- */
-internal class IoUringServerConnectionUdpChannel(
-    private val serverChannel: IoUringUdpServerChannel,
-    private val peerAddr: CPointer<sockaddr_storage>,
-    private val peerAddrLen: socklen_t,
-    private val bufferFactory: BufferFactory,
-) : UdpChannel {
-    // 1-entry cache for the last sendInfo.to reconstruction. After a migration the server targets
-    // the same new source on consecutive datagrams, so this keeps egress alloc-free in steady
-    // state. Mirrors NioUdpChannel's lastDestKey/lastDestAddr cache.
-    private var lastDestKey: PathKey? = null
-    private var lastDestBuf: PlatformBuffer? = null
-    private var lastDestLen: Int = 0
-
-    override suspend fun receive(buffer: PlatformBuffer): Int =
-        error("Server connections receive via central loop, not per-connection UdpChannel")
-
-    override suspend fun send(
-        buffer: PlatformBuffer,
-        len: Int,
-        target: SendTarget,
-    ): SendOutcome = sendOutcomeOf { transmit(buffer, len, target) }
-
-    /**
-     * The throwing send, kept separate so [send] is a one-line boundary crossing. Split rather than
-     * inlined into `sendOutcomeOf { }` because the destination-cache path returns early, and a
-     * non-local `return` out of an inline lambda would return from [send] itself.
-     */
-    private suspend fun transmit(
-        buffer: PlatformBuffer,
-        len: Int,
-        target: SendTarget,
-    ) {
-        // A [SendTarget.ServerReply] carries quiche's sendInfo.to: after a peer migrates, replies must
-        // follow it to its new source. Reconstruct that sockaddr (cached) and send there; otherwise use
-        // the fixed peer.
-        //
-        // Its `from` (sendInfo.from) is deliberately NOT honoured here — this legacy proxy channel
-        // sends through a single `serverChannel` fd with no per-send source control, so reply-source
-        // pinning belongs to the io_uring cmsg path, not to this class. The shared
-        // ServerConnectionUdpChannel is what the Linux server actually runs.
-        val dest = (target as? SendTarget.ServerReply)?.to
-        if (dest != null && dest.family != 0) {
-            if (dest != lastDestKey) {
-                lastDestBuf?.freeNativeMemory()
-                val reconstructed = dest.toSockAddrBuffer(bufferFactory)
-                lastDestBuf = reconstructed?.first
-                lastDestLen = reconstructed?.second ?: 0
-                lastDestKey = dest
-            }
-            val destBuf = lastDestBuf
-            if (destBuf != null) {
-                val destPtr = destBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<sockaddr>()!!
-                serverChannel.sendTo(buffer, len, destPtr, lastDestLen.convert())
-                return
-            }
-        }
-        serverChannel.sendTo(buffer, len, peerAddr.reinterpret(), peerAddrLen)
-    }
-
-    /** Frees the per-connection peer address copy + any cached dest. Does NOT close the shared socket. */
-    override fun close() {
-        lastDestBuf?.freeNativeMemory()
-        lastDestBuf = null
-        nativeHeap.free(peerAddr.pointed)
     }
 }
