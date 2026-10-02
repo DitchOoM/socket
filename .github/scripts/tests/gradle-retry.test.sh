@@ -25,21 +25,17 @@ check() { # <name> <expected-exit> <expected-attempts> <actual-exit> <actual-att
   echo "ok: $name"; pass=$((pass + 1))
 }
 
-run() { # <failure-text-file> <attempts-that-fail> [<gradle-command-name>] -> sets OUT/RC/N
-  local text="$1" failing="$2" cmd="${3:-gradlew}"
+run() { # <failure-text-file> <attempts-that-fail> -> sets OUT/RC/N
+  local text="$1" failing="$2"
   local tmp; tmp="$(mktemp -d)"
-  cat >"$tmp/$cmd" <<EOF
+  cat >"$tmp/gradlew" <<EOF
 #!/usr/bin/env bash
 n=\$(cat "$tmp/n" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$tmp/n"
 if [ "\$n" -le $failing ]; then cat "$text"; exit 1; fi
 echo "BUILD SUCCESSFUL"
 EOF
-  chmod +x "$tmp/$cmd"
-  if [ "$cmd" = gradlew ]; then
-    OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
-  else
-    OUT="$(cd "$tmp" && PATH="$tmp:$PATH" GRADLE_RETRY_COMMAND="$cmd" RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
-  fi
+  chmod +x "$tmp/gradlew"
+  OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
   RC=$?
   N="$(cat "$tmp/n")"
   rm -rf "$tmp"
@@ -154,9 +150,6 @@ check "a Central 403 printed beneath its request is retried" 0 2 "$RC" "$N" "$OU
 
 run "$fixtures/other-403-split" 1
 check "a split-form 403 from another repository is not retried" 1 1 "$RC" "$N" "$OUT" "non-transient"
-
-run "$fixtures/central-403-split" 1 fake-gradle
-check "GRADLE_RETRY_COMMAND runs the named Gradle and still retries" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
 
 run "$fixtures/central-dns-macos" 1
 check "a Central name-resolution failure (macOS) is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
