@@ -524,7 +524,9 @@ object IoUringManager {
         val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
         val ts = nativeHeap.alloc<__kernel_timespec>()
 
-        var exit: LoopExit = LoopExit.Stopped
+        // A holder, not a `var`: Kotlin/Native smart-cast a `var` read in `finally` to its initial
+        // `Stopped` even after the loop set it to `Idle`, and the cast then threw ClassCastException.
+        val exit = AtomicReference<LoopExit>(LoopExit.Stopped)
         try {
             while (true) {
                 // 0. A stop: cleanup() ends the loop now; a last-socket close asks it to release the
@@ -535,12 +537,12 @@ object IoUringManager {
                     when (val asked = idleRelease.getAndSet(IdleReleaseRequest.None)) {
                         IdleReleaseRequest.None -> break
                         is IdleReleaseRequest.Asked -> {
-                            exit = LoopExit.Idle(asked.answer)
+                            exit.value = LoopExit.Idle(asked.answer)
                             if (drainSubmissionChannel(ring, pendingOps)) {
                                 io_uring_submit(ring)
                             }
                             if (pendingOps.isEmpty() && activeSocketCount.value == 0) break
-                            exit = LoopExit.Stopped
+                            exit.value = LoopExit.Stopped
                             pollerStarted.value = 1
                             asked.answer.complete(IdleRelease.Refused)
                         }
@@ -644,7 +646,7 @@ object IoUringManager {
                 ringsReleased.incrementAndGet()
             }
 
-            when (val ended = exit) {
+            when (val ended = exit.value) {
                 // Drain remaining channel requests so callers aren't left hanging
                 LoopExit.Stopped ->
                     while (true) {
