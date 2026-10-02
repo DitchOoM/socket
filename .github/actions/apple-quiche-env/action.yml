@@ -11,15 +11,6 @@ inputs:
     required: false
     default: "true"
 
-outputs:
-  gradle-cache-hit:
-    description: >-
-      'true' only when `~/.gradle/caches` was restored from an EXACT `gradle-macos-kn-<hash>` match
-      (a restore-keys prefix hit leaves it false). The one shard designated to SAVE that key gates
-      its save on this being false: cache entries are immutable per key, so re-saving an exact hit
-      can only fail — but `actions/cache/save` tars the ~1GB directory before it discovers that.
-    value: ${{ steps.restore_gradle_caches.outputs.cache-hit == 'true' || steps.restore_gradle_caches_retry.outputs.cache-hit == 'true' }}
-
 runs:
   using: composite
   steps:
@@ -45,7 +36,8 @@ runs:
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with six parallel consumers a cache miss would have
     # all six racing to upload the same key — five of them losing, all six paying the upload. The
-    # `natives` job is the single writer for these keys.
+    # writer for the Konan and `gradle-macos-kn-*` keys is native-deps-freshness.yaml's
+    # `cache-warm-apple`, the one job that compiles Kotlin/Native on main in a scope that can write.
     - name: Restore Konan cache
       if: inputs.konan == 'true'
       uses: actions/cache/restore@v6
@@ -54,7 +46,7 @@ runs:
         key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
         restore-keys: konan-macos-
 
-    # Prefers the `gradle-macos-kn-*` entry, which is saved by the widest K/N test shard and so
+    # Prefers the `gradle-macos-kn-*` entry, which is saved after a K/N compile of every module and so
     # actually contains build-cache-1 klib output. The plain `gradle-macos-*` entry is written by
     # `natives`, which only runs cargo and a Gradle configure — it holds no klibs (measured: 258MB
     # vs 1088MB for a pre-fan-out entry), so restoring only that would make every shard recompile
