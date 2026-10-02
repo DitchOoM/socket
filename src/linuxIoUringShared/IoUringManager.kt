@@ -370,13 +370,7 @@ internal object IoUringManager {
                 PollerState.Idle -> {
                     val life = PollerState.Running()
                     if (state.compareAndSet(PollerState.Idle, life)) {
-                        getOrCreatePollerScope().launch {
-                            try {
-                                eventLoop(life)
-                            } finally {
-                                life.ended.complete(Unit)
-                            }
-                        }
+                        launchLoop(life)
                         return life
                     }
                 }
@@ -384,11 +378,22 @@ internal object IoUringManager {
         }
     }
 
+    /** Runs [life]'s loop on the worker thread, after any loop still running there has returned. */
+    private fun launchLoop(life: PollerState.Running) {
+        getOrCreatePollerScope().launch {
+            try {
+                eventLoop(life)
+            } finally {
+                life.ended.complete(Unit)
+            }
+        }
+    }
+
     /** Hands [request] to the running loop, starting one if there is none. */
     private fun enqueue(request: SubmissionRequest) {
         while (true) {
-            // A closed queue belongs to a life the state has already moved off, so the next read
-            // sees its successor or Idle.
+            // A closed queue belongs to a life the state is moving off, so a later read sees its
+            // successor or Idle.
             if (running().queue.trySend(request).isSuccess) {
                 wakePoller()
                 return
@@ -422,18 +427,38 @@ internal object IoUringManager {
     }
 
     /**
-     * Ends [life] after it released an idle ring. A submission still queued was sent by a caller that
-     * read [life] before the state moved off it, after the loop's last drain: it never reached a ring,
-     * so it is handed, in order, to the next life instead of failing. A batch with no awaited operation
-     * still waited on is dropped: its fire-and-forget cancels can only aim at operations in flight here —
-     * there are none — or queued ahead of them, and forwarding it would start a ring for nothing.
+     * Hands the idle-releasing [life] on. Its queue is closed first, while the state is still [life], so
+     * what is left in it is final: a sender that reads [life] now finds the queue closed and retries until
+     * the state has moved. A submission still queued was sent after the loop's last drain and never
+     * reached a ring. If one is still awaited, they all go, in order, into a successor's queue before the
+     * successor is published, so nothing sent later — a cancel naming one of them included — can reach a
+     * ring ahead of them. Otherwise the state goes idle: a fire-and-forget left over can only aim at an
+     * operation in flight here — there are none — or queued ahead of it, and nothing is.
+     *
+     * Returns how the loop exits: [LoopExit.Stopped] when a [stop] moved the state off [life] first, in
+     * which case the leftovers are failed as a stopped life's are.
      */
-    private fun endIdleLife(life: PollerState.Running) {
-        closeLife(life)
+    private fun handOnIdle(
+        life: PollerState.Running,
+        answer: CompletableDeferred<IdleRelease>,
+    ): LoopExit {
+        life.queue.close()
         val leftover = ArrayList<SubmissionRequest>()
         while (true) leftover += life.queue.tryReceive().getOrNull() ?: break
-        if (leftover.none { it.kind == SubmissionKind.Awaited && !it.deferred.isCompleted }) return
-        leftover.forEach(::enqueue)
+        val next: PollerState =
+            if (leftover.any { it.kind == SubmissionKind.Awaited && !it.deferred.isCompleted }) {
+                PollerState.Running().also { successor -> leftover.forEach { successor.queue.trySend(it) } }
+            } else {
+                PollerState.Idle
+            }
+        if (!state.compareAndSet(life, next)) {
+            leftover.forEach { it.deferred.complete(-ECANCELED) }
+            // The request was taken off the slot, so only this answers it; the life ends either way.
+            answer.complete(IdleRelease.Released)
+            return LoopExit.Stopped
+        }
+        if (next is PollerState.Running) launchLoop(next)
+        return LoopExit.Idle(answer)
     }
 
     /** Time until the earliest live deadline, or [DEFAULT_POLL_TIMEOUT]. On the event loop thread. */
@@ -552,12 +577,9 @@ internal object IoUringManager {
                         if (drainSubmissionChannel(ring, life.queue, pendingOps)) {
                             io_uring_submit(ring)
                         }
-                        if (pendingOps.isEmpty() &&
-                            activeSocketCount.value == 0 &&
-                            state.compareAndSet(life, PollerState.Idle)
-                        ) {
-                            exit.value = LoopExit.Idle(asked.answer)
+                        if (pendingOps.isEmpty() && activeSocketCount.value == 0 && state.value === life) {
                             idleReleaseGranted.value(life)
+                            exit.value = handOnIdle(life, asked.answer)
                             break
                         }
                         asked.answer.complete(IdleRelease.Refused)
@@ -654,7 +676,7 @@ internal object IoUringManager {
             when (val ended = exit.value) {
                 LoopExit.Stopped -> endLife(life) { it.complete(-ECANCELED) }
                 is LoopExit.Idle -> {
-                    endIdleLife(life)
+                    closeLife(life)
                     ended.answer.complete(IdleRelease.Released)
                 }
             }
@@ -737,14 +759,19 @@ internal object IoUringManager {
      * operation is in flight for it to act on. Non-suspending, for cancellation handlers.
      */
     fun submitNoWaitUnsafe(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
-        val life = state.value
-        if (life !is PollerState.Running) return
-        life.queue.trySend(
+        val request =
             SubmissionRequest(nextUserData(), CompletableDeferred(), null, SubmissionKind.FireAndForget) { sqe, _ ->
                 prepareOp(sqe)
-            },
-        )
-        wakePoller()
+            }
+        while (true) {
+            val life = state.value as? PollerState.Running ?: return
+            // A closed queue belongs to a life the state is moving off; what it held moves first, so the
+            // next read sees the life this request must follow it into.
+            if (life.queue.trySend(request).isSuccess) {
+                wakePoller()
+                return
+            }
+        }
     }
 
     /**

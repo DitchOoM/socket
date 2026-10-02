@@ -14,6 +14,7 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -119,5 +120,70 @@ class IoUringIdleReleaseTests {
             )
             assertNotSame<PollerState>(idle, IoUringManager.pollerState, "the operation must have started a new life")
             IoUringManager.cleanup()
+        }
+
+    /**
+     * A caller that sent its operation into a life as that life granted an idle release, and then gave
+     * up on it, cancels it by user_data. The operation runs on the next life, so the cancel must reach the
+     * ring after it: dropped because no life was running at that instant, or sent to the next life ahead
+     * of the operation it names, it finds nothing, and the operation — here a poll on a pipe nobody writes
+     * — holds the caller's buffers in the kernel after the caller has gone.
+     */
+    @Test
+    fun aCancelSentWhileALifeGrantsAnIdleReleaseFollowsItsOperationToTheNextLife() =
+        cancelFollowsItsForwardedOperation(nextLifeStartedFirst = false)
+
+    /** As above, with another submitter starting the next life before the cancel is sent. */
+    @Test
+    fun aCancelSentAfterTheNextLifeStartedStillFollowsItsForwardedOperation() =
+        cancelFollowsItsForwardedOperation(nextLifeStartedFirst = true)
+
+    private fun cancelFollowsItsForwardedOperation(nextLifeStartedFirst: Boolean) =
+        runBlocking {
+            IoUringManager.cleanup()
+            assertEquals(0, IoUringManager.activeSockets, "a socket another test opened is still counted")
+            memScoped {
+                val fds = allocArray<IntVar>(2)
+                check(pipe(fds) == 0) { "pipe() failed" }
+                val readFd = fds[0]
+                val writeFd = fds[1]
+                try {
+                    withTimeout(10.seconds) { IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_nop(sqe) } }
+                    val idle = assertIs<PollerState.Running>(IoUringManager.pollerState)
+                    val parked = CompletableDeferred<Int>()
+                    val parkedUserData = IoUringManager.nextUserData()
+                    IoUringManager.idleReleaseGranted.value = { life ->
+                        life.queue.trySend(
+                            SubmissionRequest(parkedUserData, parked, null, SubmissionKind.Awaited) { sqe, _ ->
+                                io_uring_prep_poll_add(sqe, readFd, POLLIN.toUInt())
+                            },
+                        )
+                        // A submitter that reads the state now: it starts the next life if none is running.
+                        if (nextLifeStartedFirst) IoUringManager.registerOperation()
+                        IoUringManager.cancelOperation(parkedUserData)
+                    }
+                    try {
+                        IoUringManager.releaseIfIdle(idle)
+                    } finally {
+                        IoUringManager.idleReleaseGranted.value = { }
+                    }
+                    val result = withTimeout(10.seconds) { parked.await() }
+                    assertEquals(
+                        -ECANCELED,
+                        result,
+                        "the cancelled poll must end -ECANCELED (${-ECANCELED}), but returned $result",
+                    )
+                } catch (e: TimeoutCancellationException) {
+                    throw AssertionError(
+                        "the poll was still parked 10 s after its cancel: the cancel was dropped, or reached " +
+                            "the next life ahead of the operation it names",
+                        e,
+                    )
+                } finally {
+                    close(readFd)
+                    close(writeFd)
+                    IoUringManager.cleanup()
+                }
+            }
         }
 }
