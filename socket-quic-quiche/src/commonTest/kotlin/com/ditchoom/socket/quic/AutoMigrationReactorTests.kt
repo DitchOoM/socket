@@ -1056,6 +1056,192 @@ class AutoMigrationReactorTests {
         }
     }
 
+    /** The Wi-Fi address the monitor reports in the address-ownership tests. */
+    private val wifiAddress = "192.0.2.10"
+
+    /** The cellular address the walk's second move landed on; cellular stayed up beside Wi-Fi. */
+    private val cellularAddress = "198.51.100.20"
+
+    private val ethernetAddress = "2001:db8::3"
+
+    /**
+     * The 2026-09-26 iPhone walk, in the order it happened. Cellular stays up beside Wi-Fi, and the
+     * monitor reports both links' addresses while naming Wi-Fi. The Wi-Fi path goes silent, the kernel's
+     * default route has already moved to cellular, so the data-plane move binds a cellular address; the
+     * monitor names cellular only while that move validates. The connection is on cellular already, so
+     * that is no handoff.
+     */
+    @Test
+    fun aDataPlaneMoveOntoALinkTheMonitorNamesOnlyAfterwardsIsTheOnlyMove() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress), cellular to listOf(cellularAddress)))
+        val liveness = livenessFlow()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint(cellularAddress, 61657)),
+            pathLiveness = liveness,
+        ) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            liveness.value = PathLiveness.Silent // the move opens on cellular while Wi-Fi is named, and parks
+            monitor.setNetworkId(cellular) // named while it validates
+            liveness.value = PathLiveness.Answering
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the data-plane move bound $cellularAddress, which the monitor reports on cellular, and the " +
+                    "monitor naming cellular moved the connection a second time onto the link it was on",
+            )
+        }
+    }
+
+    /**
+     * The walk's second double move. On cellular, the monitor names a Wi-Fi link that carries no IPv4
+     * address, so the IPv4 connection's fresh socket still opens on cellular; the monitor names cellular
+     * again while that move validates. The connection never left cellular, so naming it is no handoff.
+     */
+    @Test
+    fun aLinkChangeWhoseSocketOpensOnTheLinkItLeftIsNotUndoneByTheFlapBack() {
+        val monitor = SimNetworkMonitor.on(cellular)
+        monitor.setLinkAddresses(mapOf(cellular to listOf(cellularAddress), wifi to listOf("2001:db8:90:f171:25:b130:8a70:1a66")))
+        runReactor(monitor, migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint(cellularAddress, 63857))) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            monitor.setNetworkId(wifi) // the handoff parks in migrate(), its socket on cellular
+            monitor.setNetworkId(cellular) // the flap back, queued behind it
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the move for wifi bound $cellularAddress on cellular, and the flap back to cellular moved the " +
+                    "connection a second time onto the link it was on",
+            )
+        }
+    }
+
+    /**
+     * The same walk when the monitor lags further: the move lands on an address no link the monitor
+     * reports carries. The monitor then reports cellular carrying it and names cellular, which is where
+     * the connection already is.
+     */
+    @Test
+    fun aMoveOntoAnAddressNoLinkClaimsYetIsOnTheLinkThatLaterClaimsIt() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress)))
+        val liveness = livenessFlow()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint(cellularAddress, 61657)),
+            pathLiveness = liveness,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            assertEquals(1, conn.migrateCount, "precondition: the data-plane move")
+
+            monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress), cellular to listOf(cellularAddress)))
+            monitor.setNetworkId(cellular)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the move landed on $cellularAddress before any link claimed it; cellular claimed it and was " +
+                    "named, and the connection was moved again onto the link it was already on",
+            )
+        }
+    }
+
+    /**
+     * A move onto an address no link claims yet is not on a link named afterwards that does not carry
+     * that address: that link is a handoff.
+     */
+    @Test
+    fun aLinkThatDoesNotCarryAnUnclaimedAddressIsAHandoff() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress)))
+        val liveness = livenessFlow()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint(cellularAddress, 61657)),
+            pathLiveness = liveness,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+
+            monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress), ethernet to listOf(ethernetAddress)))
+            monitor.setNetworkId(ethernet)
+            assertEquals(2, conn.migrateCount, "ethernet does not carry $cellularAddress, so naming it is a handoff")
+        }
+    }
+
+    /**
+     * With addresses reported, a link named while a data-plane move validates that does not carry the
+     * move's address is still a handoff: the move landed on Wi-Fi, where its address is.
+     */
+    @Test
+    fun aLinkNamedWhileAMoveValidatesThatDoesNotCarryItsAddressIsStillAHandoff() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress), ethernet to listOf(ethernetAddress)))
+        val liveness = livenessFlow()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint(wifiAddress, 50816)),
+            pathLiveness = liveness,
+        ) { conn ->
+            val gate = CompletableDeferred<Unit>()
+            conn.gate = gate
+            liveness.value = PathLiveness.Silent // the data-plane move opens on wifi and parks
+            monitor.setNetworkId(ethernet) // named while it validates
+            liveness.value = PathLiveness.Answering
+            conn.gate = null
+            gate.complete(Unit)
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "the data-plane move bound $wifiAddress on wifi, and the reactor skipped the handoff onto " +
+                    "ethernet, named while the move validated",
+            )
+        }
+    }
+
+    /**
+     * A standby move lands on the standby link its socket is pinned to, even when the monitor reports
+     * the address it bound on no link, so the platform naming the standby link is no handoff.
+     */
+    @Test
+    fun aStandbyMoveLandsOnTheStandbyLinkWhateverTheAddressesSay() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress)))
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            monitor.setNetworkId(cellular)
+            assertEquals(1, standby.moves)
+            assertEquals(0, conn.migrateCount, "the connection was moved again onto the standby link it was pinned to")
+        }
+    }
+
+    /** Two spellings of one address are one address: a dual-stack socket reports IPv4 as IPv4-mapped IPv6. */
+    @Test
+    fun anIpv4MappedEndpointIsOnTheLinkCarryingItsIpv4Address() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress), cellular to listOf(cellularAddress)))
+        val liveness = livenessFlow()
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Succeeded(QuicLocalEndpoint("::ffff:$cellularAddress", 61657)),
+            pathLiveness = liveness,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            monitor.setNetworkId(cellular)
+            assertEquals(1, conn.migrateCount, "::ffff:$cellularAddress is $cellularAddress, which cellular carries")
+        }
+    }
+
     /**
      * A standby link that attaches while a data-plane retry is backing off is taken at once, not when
      * the backoff runs out.

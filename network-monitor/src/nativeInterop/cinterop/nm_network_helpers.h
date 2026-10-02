@@ -42,10 +42,20 @@ typedef void (^nm_path_update_handler_t)(
     NSString * _Nullable interface_name,
     int32_t uses_interface_types);
 
+// Per-interface callback, invoked synchronously once for every interface the path enumerates, in the
+// path's order, before the update handler for that same path:
+//   interface_type: nw_interface_type_t (0=other, 1=wifi, 2=cellular, 3=wired, 4=loopback);
+//   interface_index: OS interface index; interface_name: BSD name, nil when none.
+typedef void (^nm_path_interface_handler_t)(
+    int32_t interface_type,
+    uint32_t interface_index,
+    NSString * _Nullable interface_name);
+
 nw_path_monitor_t _Nonnull nm_create_path_monitor(void);
 
 void nm_path_monitor_set_update_handler(
     nw_path_monitor_t _Nonnull monitor,
+    nm_path_interface_handler_t _Nonnull interface_handler,
     nm_path_update_handler_t _Nonnull handler);
 
 void nm_path_monitor_start(nw_path_monitor_t _Nonnull monitor);

@@ -1,10 +1,13 @@
 package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.NumericAddress
+import com.ditchoom.socket.ParsedAddress
 import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +39,22 @@ internal class SimNetworkMonitor(
 ) : NetworkMonitor {
     private val _state = MutableStateFlow(initial)
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
+
+    private val _linkAddresses = MutableStateFlow<LinkAddresses>(LinkAddresses.NotReported)
+    override val linkAddresses: StateFlow<LinkAddresses> = _linkAddresses.asStateFlow()
+
+    /**
+     * Report which addresses each link carries, by numeric literal. Script it before the state that
+     * names a link, as a platform monitor publishes it.
+     */
+    fun setLinkAddresses(byLink: Map<NetworkId, List<String>>) {
+        _linkAddresses.value =
+            LinkAddresses.Reported(
+                byLink.mapValues { (_, literals) ->
+                    literals.mapTo(LinkedHashSet()) { (NumericAddress.parse(it) as ParsedAddress.Address).address }
+                },
+            )
+    }
 
     /** Publish an arbitrary state. */
     fun set(value: NetworkState) {
