@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.linux.io_uring_prep_cancel64
 import com.ditchoom.socket.linux.io_uring_prep_nop
 import com.ditchoom.socket.linux.io_uring_sqe
 import kotlinx.cinterop.CPointer
@@ -120,14 +119,15 @@ internal class SocketDescriptor(
         val result =
             try {
                 IoUringManager.submitAndWait(timeout) { sqe, userData ->
-                    // On the poller thread, as is [close]'s wake: the two are ordered. Either this ran first and
-                    // the wake cancels the user_data it recorded, or closing had begun and nothing is named.
+                    // Publish, then check: [close] sets the bit, then reads the slot. Each side writes before it
+                    // reads, so at least one sees the other — this prepares a no-op, or [close] cancels this
+                    // user_data, which it enqueues behind the SQE being prepared now.
+                    prepared.value = userData
+                    slot.value = userData
                     if (state.value and CLOSED_BIT != 0) {
                         refused.value = 1
                         io_uring_prep_nop(sqe)
                     } else {
-                        prepared.value = userData
-                        slot.value = userData
                         prepare(sqe, fd)
                     }
                 }
@@ -148,15 +148,8 @@ internal class SocketDescriptor(
      */
     fun close() {
         if (!beginClosing()) return
-        Lane.entries.forEach { lane ->
-            IoUringManager.submitNoWaitUnsafe { sqe ->
-                // Read on the poller thread: see [submit].
-                when (val parked = inFlight[lane.ordinal].value) {
-                    NO_OPERATION -> io_uring_prep_nop(sqe)
-                    else -> io_uring_prep_cancel64(sqe, parked.toULong(), 0)
-                }
-            }
-        }
+        // After the bit is set: see [submit]. A lane with nothing prepared has nothing to cancel.
+        Lane.entries.forEach { lane -> IoUringManager.cancelOperation(inFlight[lane.ordinal].value) }
         if (exit()) release()
     }
 
