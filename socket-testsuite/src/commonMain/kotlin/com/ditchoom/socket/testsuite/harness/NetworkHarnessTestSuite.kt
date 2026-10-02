@@ -99,7 +99,7 @@ abstract class NetworkHarnessTestSuite {
                     echoRoundTrip(endpoint, "w6-direct-warmup")
                     val direct = roundTrips { echoRoundTrip(endpoint, "w6-direct") }
                     var impaired = emptyList<Duration>()
-                    impaired(latency = IMPAIRED_LATENCY) { proxy ->
+                    impaired(latency = 0.milliseconds) { proxy ->
                         echoRoundTrip(proxy, "w6-impaired-warmup")
                         impaired = roundTrips { echoRoundTrip(proxy, "w6-impaired") }
                     }
