@@ -156,13 +156,13 @@ class SharedPortBindTests {
         }
 
     /**
-     * A member receives exactly as the single server socket [openServerChannel] binds does: staged at
+     * A member receives exactly as the single server socket [bindServerSocket] binds does: staged at
      * QUIC's datagram size, not the 64 KB UDP ceiling — visible as where an oversized datagram is cut.
      */
     @Test
     fun aMemberReceivesLikeTheSingleServerSocket() =
         runBlocking<Unit> {
-            val reference = receiveThrough { pool -> QuicPortBinding.Own(host = "127.0.0.1").openServerChannel(pool) }
+            val reference = receiveThrough { pool -> QuicPortBinding.Own(host = "127.0.0.1").bindServerSocket(pool) }
             val member = receiveThrough { pool -> bindServerMember("127.0.0.1", 0, pool) }
             assertEquals(reference, member, "a member must stage and pool its receives as the single server socket does")
         }

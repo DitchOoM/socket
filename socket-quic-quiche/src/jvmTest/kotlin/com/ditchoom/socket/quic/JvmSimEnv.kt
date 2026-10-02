@@ -17,6 +17,7 @@ internal fun jvmMigrationSimEnv(): MigrationSimEnv =
         certChainPath = jvmSimCertPath("cert.crt"),
         privKeyPath = jvmSimCertPath("cert.key"),
         codec = SocketAddressCodec(hostOsSockAddrLayout()),
+        randomPin = loadQuicheRandomPin(),
     )
 
 private fun jvmSimCertPath(name: String): String {

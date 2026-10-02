@@ -24,6 +24,7 @@ class AppleQlogBudgetTests : QlogBudgetTestSuite() {
             certChainPath = AppleTestCerts.tlsConfig.certChainPath,
             privKeyPath = AppleTestCerts.tlsConfig.privKeyPath,
             codec = SocketAddressCodec(appleSockAddrLayout),
+            randomPin = CinteropQuicheApi,
         )
 
     override fun freshDirectory(tag: String): String {

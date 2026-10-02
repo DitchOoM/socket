@@ -11,6 +11,9 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.DatagramSendError
+import com.ditchoom.socket.udp.DatagramSendException
+import com.ditchoom.socket.udp.SourceAddressRejection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +23,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
+import java.net.InetAddress
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
@@ -59,7 +63,8 @@ import kotlin.coroutines.CoroutineContext
  * ## How a reply finds its socket
  *
  * By quiche's own `send_info.from`, handed down as [DatagramSendOptions.fromLocal], when the server
- * names one. Otherwise by the peer: the socket its most recent datagram arrived on, remembered in the
+ * names one; a named address no socket is bound to is refused, typed, never sent from another socket.
+ * Otherwise by the peer: the socket its most recent datagram arrived on, remembered in the
  * [replyRoute] map.
  *
  * ## What this narrows
@@ -214,22 +219,54 @@ internal class PerLocalAddressServerChannel private constructor(
     /**
      * Send from the address this peer dialled — the whole point of the class.
      *
-     * [DatagramSendOptions.fromLocal] wins when the caller names one, so an explicit choice is
-     * honoured; otherwise the peer's own route is used. A peer with neither (a server sending first,
-     * which QUIC never does, or one whose route the bound evicted) falls back to the first member,
-     * which is what a wildcard bind would have done anyway.
+     * A named [DatagramSendOptions.fromLocal] leaves by the member bound to that address, matched by
+     * address alone (every member shares one port, and an IPv4-mapped spelling is its IPv4 address). A
+     * named address no member is bound to is refused as [SourceAddressRejection.NotBound] and nothing is
+     * sent. A wildcard names no address.
+     *
+     * With no source named, the peer's own route is used. A peer without one (a server sending first,
+     * which QUIC never does, or one whose route the bound evicted) leaves by the first member, which is
+     * what a wildcard bind would have done anyway.
      */
     override suspend fun send(
         payload: ReadBuffer,
         to: SocketAddress,
         options: DatagramSendOptions,
     ) {
-        val explicit = options.fromLocal?.let { wanted -> members.firstOrNull { it.localAddress.routeKey() == wanted.routeKey() } }
-        val routed = explicit ?: synchronized(replyRoute) { replyRoute[to.routeKey()] }
-        val member = routed ?: members.first()
+        val member =
+            when (val source = sourceOf(options.fromLocal)) {
+                Source.Unnamed -> synchronized(replyRoute) { replyRoute[to.routeKey()] } ?: members.first()
+                is Source.Named ->
+                    members.getOrElse(memberAddresses.indexOf(source.address)) {
+                        throw DatagramSendException(
+                            DatagramSendError.SourceAddressUnavailable(source.host, SourceAddressRejection.NotBound),
+                        )
+                    }
+            }
         // fromLocal is consumed here, by choosing the socket; passing it down to a member that
         // reports sourceAddressSelect=false would be asking for something it silently ignores.
         member.send(payload, to, if (options.fromLocal == null) options else options.withoutFromLocal())
+    }
+
+    /** Each member's bound address, in [members] order, as the JDK compares addresses. */
+    private val memberAddresses: List<InetAddress> = members.map { it.localAddress.inetAddress() }
+
+    /** What a send's `fromLocal` asks for. */
+    private sealed interface Source {
+        /** No source, or a wildcard: the reply follows the peer's route. */
+        data object Unnamed : Source
+
+        /** Leave from [address]; [host] is how the caller spelled it. */
+        class Named(
+            val address: InetAddress,
+            val host: String,
+        ) : Source
+    }
+
+    private fun sourceOf(fromLocal: SocketAddress?): Source {
+        if (fromLocal == null) return Source.Unnamed
+        val address = fromLocal.inetAddress()
+        return if (address.isAnyLocalAddress) Source.Unnamed else Source.Named(address, fromLocal.host)
     }
 
     override fun close() {
@@ -256,6 +293,9 @@ internal class PerLocalAddressServerChannel private constructor(
 
         /** Stable identity for a [SocketAddress], which is an interface with no equality contract. */
         internal fun SocketAddress.routeKey(): String = "$host/$port"
+
+        /** The address a numeric [SocketAddress] names; a literal, so no lookup. Any zone suffix is dropped. */
+        private fun SocketAddress.inetAddress(): InetAddress = InetAddress.getByName(host.substringBefore('%'))
 
         private fun DatagramSendOptions.withoutFromLocal(): DatagramSendOptions =
             DatagramSendOptions(

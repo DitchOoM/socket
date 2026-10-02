@@ -86,7 +86,7 @@ class AppleCallerClockSimTests {
         val rawApi = CinteropQuicheApi
         val scheduler = TestCoroutineScheduler()
         val clock = SimClock(scheduler)
-        val api: QuicheApi = CallerClockQuicheApi(rawApi, clock)
+        val api: QuicheApi = CallerClockQuicheApi(rawApi, clock, QuicRole.Client)
 
         val codec = SocketAddressCodec(appleSockAddrLayout)
         val peer = UdpSocket.resolve("127.0.0.1", 4433)

@@ -19,6 +19,9 @@ package com.ditchoom.socket.quic
  */
 fun loadQuicheApi(): QuicheApi = ffmQuicheApi
 
+/** The caller-entropy binding of the backend [loadQuicheApi] returns. Deterministic simulation only. */
+internal fun loadQuicheRandomPin(): QuicheRandomPin = ffmBackend.randomPin
+
 /**
  * Process-wide singleton. `loadQuicheApi()` is called per connection/server; loading per call
  * mapped a fresh ~5 MB libquiche copy each time AND made every copy GC-unloadable via its
@@ -26,9 +29,12 @@ fun loadQuicheApi(): QuicheApi = ffmQuicheApi
  * pthread TLS destructors outliving a dlclosed copy; see QuicheApiLifecycleTest). One extraction,
  * one dlopen, held for the process lifetime.
  */
-private val ffmQuicheApi: QuicheApi by lazy { loadFfmQuicheApi() }
+private val ffmQuicheApi: QuicheApi by lazy { maybeGuardRecvInfo(ffmBackend) }
 
-private fun loadFfmQuicheApi(): QuicheApi {
+/** The bare backend under [ffmQuicheApi]'s guard — what [loadQuicheRandomPin] binds. */
+private val ffmBackend: FfmQuicheApi by lazy { loadFfmBackend() }
+
+private fun loadFfmBackend(): FfmQuicheApi {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
@@ -48,7 +54,7 @@ private fun loadFfmQuicheApi(): QuicheApi {
         }
         stream.close()
         try {
-            return maybeGuardRecvInfo(FfmQuicheApi.create(extractToTemp(resourcePath)))
+            return FfmQuicheApi.create(extractToTemp(resourcePath))
         } catch (t: Throwable) {
             failures += "$resourcePath (${t.message})"
         }

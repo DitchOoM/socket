@@ -169,11 +169,20 @@ class WriteTimeoutContractTests {
                 peer.awaitAccepted()
                 val first = client.writeOutcome(deadline, watchdog)
                 assertTrue(first is WriteOutcome.Threw, "precondition: first bounded write should time out; got $first")
+                val timedOut = describe(first)
+                assertTrue(
+                    first.blockedFor >= deadline,
+                    "precondition: the write that threw must have been blocked for the whole $deadline deadline; $timedOut",
+                )
+                assertTrue(
+                    first.error is SocketTimeoutException,
+                    "precondition: a bounded write blocked past its deadline must end in SocketTimeoutException; $timedOut",
+                )
 
                 assertFalse(
                     client.isOpen,
                     "connection stayed open after a bounded write-timeout — the timeout must be destructive " +
-                        "(auto-close) for writes (RFC write §4)",
+                        "(auto-close) for writes (RFC write §4); $timedOut",
                 )
                 val second =
                     runCatching {
@@ -189,4 +198,8 @@ class WriteTimeoutContractTests {
                 peer.close()
             }
         }
+
+    private fun describe(outcome: WriteOutcome.Threw): String =
+        "the write threw ${outcome.error::class.simpleName}(${outcome.error.message}) after ${outcome.elapsed}, " +
+            "${outcome.bytesBefore} bytes written, blocked for ${outcome.blockedFor}; cause: ${outcome.error.cause}"
 }

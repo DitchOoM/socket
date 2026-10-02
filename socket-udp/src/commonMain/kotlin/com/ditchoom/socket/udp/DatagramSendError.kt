@@ -52,12 +52,13 @@ package com.ditchoom.socket.udp
  *   `strerror` text, which is all the JDK leaves of them.
  * - [PortUnreachable] — `ECONNREFUSED` everywhere; `PortUnreachableException` on JVM/Android.
  * - [NotPermitted] — `EACCES`; `"Permission denied"` on JVM/Android.
- * - [SourceAddressUnavailable] — **the Linux io_uring backend only**, the one that reads
- *   `DatagramSendOptions.fromLocal`. Two of its reasons are decided before the syscall (a source in
- *   the wrong address family, an unscoped IPv6 link-local) and two after one failed (an address no
- *   interface holds, or a failure this backend could not attribute). Unconstructible on the other
- *   four *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect = false` never
- *   reads `fromLocal` at all, so it has nothing to refuse.
+ * - [SourceAddressUnavailable] — the backends that read `DatagramSendOptions.fromLocal`: **Linux
+ *   io_uring** and **Apple POSIX**, and in `:socket-quic-quiche` the JVM server's one-socket-per-address
+ *   composite ([SourceAddressRejection.NotBound]). Some reasons are decided before any syscall (a source
+ *   in the wrong address family, an unscoped IPv6 link-local on Linux, an IPv4 source Darwin's kernel
+ *   would not check) and the rest after one failed. Unconstructible on JVM/Android NIO, Node and
+ *   Network.framework *by design* — a backend advertising `DatagramCapabilities.sourceAddressSelect =
+ *   false` never reads `fromLocal` at all, so it has nothing to refuse.
  * - [WouldBlock] — `EAGAIN`, `EWOULDBLOCK`, `ENOBUFS`; on JVM/Android the send budget running out, and
  *   `"No buffer space available"`.
  * - [OsError] — every other errno on the three POSIX backends. **Never on JVM/Android or Node**: NIO
@@ -217,8 +218,9 @@ sealed interface SourceAddressRejection {
 
     /**
      * No interface on this host holds the named address, so the kernel could not build a route out of
-     * it. [errno] is what `sendmsg` reported — `ENETUNREACH` for IPv4, `EINVAL` for IPv6 on Linux —
-     * and is a diagnostic only: the member is the contract, the number is not.
+     * it. [errno] is what the kernel reported — `sendmsg`'s `ENETUNREACH` for IPv4 and `EINVAL` for
+     * IPv6 on Linux, `EADDRNOTAVAIL` on Darwin — and is a diagnostic only: the member is the contract,
+     * the number is not.
      *
      * Only stated when the backend positively established it. When it could not, the answer is
      * [Undetermined] rather than this one on the balance of probability.
@@ -244,6 +246,27 @@ sealed interface SourceAddressRejection {
         val probeErrno: Int,
     ) : SourceAddressRejection
 
+    /**
+     * The channel sends through sockets each bound to one local address, and none of them is bound to
+     * the named one. Nothing was sent.
+     *
+     * Such a channel pins a source by choosing the socket bound to it, so a source without a socket is
+     * one it cannot leave from. The host may or may not hold the address — one it gained after the
+     * channel was bound is held and still unserved — so this says only what the channel knows.
+     */
+    data object NotBound : SourceAddressRejection
+
+    /**
+     * The backend checks a named source itself before sending, because its kernel does not refuse one
+     * the host does not hold, and that check could not answer. [probeErrno] is why. Nothing was sent.
+     *
+     * The Darwin IPv4 path: a socket that has already sent to a destination sends from any
+     * `IP_PKTINFO` source without checking it, so the check is this library's.
+     */
+    data class Unverified(
+        val probeErrno: Int,
+    ) : SourceAddressRejection
+
     /** Human-readable rendering, for [DatagramSendError.describe]. Display only. */
     fun describe(): String =
         when (this) {
@@ -251,6 +274,8 @@ sealed interface SourceAddressRejection {
             UnscopedLinkLocal -> "an IPv6 link-local source needs the interface it is scoped to"
             is NotAssigned -> "no interface on this host holds it (errno=$errno)"
             is Undetermined -> "the send failed (errno=$sendErrno) and the source could not be checked (errno=$probeErrno)"
+            NotBound -> "no socket of this channel is bound to it"
+            is Unverified -> "it could not be checked before sending (errno=$probeErrno)"
         }
 }
 

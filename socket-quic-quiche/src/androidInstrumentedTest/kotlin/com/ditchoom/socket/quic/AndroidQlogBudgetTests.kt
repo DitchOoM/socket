@@ -16,6 +16,7 @@ class AndroidQlogBudgetTests : QlogBudgetTestSuite() {
             certChainPath = AndroidTestCerts.tlsConfig.certChainPath,
             privKeyPath = AndroidTestCerts.tlsConfig.privKeyPath,
             codec = SocketAddressCodec(hostOsSockAddrLayout()),
+            randomPin = loadQuicheRandomPin(),
         )
 
     override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQlogBudgetTests::class, block)

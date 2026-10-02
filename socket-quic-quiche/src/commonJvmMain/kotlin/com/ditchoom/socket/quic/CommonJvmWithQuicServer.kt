@@ -77,8 +77,9 @@ internal suspend fun buildJvmQuicServer(
         // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
-        // Not openServerChannel: a wildcard bind must answer from the address the client dialled.
-        val channel = binding.openReplySourcePinnedServerChannel(recvBufPool)
+        // A wildcard NIO socket cannot pin a reply's source, so it is served one socket per address.
+        val served = binding.openServerChannel(recvBufPool, SocketPerLocalAddress)
+        val channel = served.channel
         val localAddress = channel.localAddress
 
         val server =
@@ -86,6 +87,7 @@ internal suspend fun buildJvmQuicServer(
                 api = api,
                 config = config,
                 channel = channel,
+                replySourcePinning = served.pinning,
                 localAddress = localAddress,
                 codec = SocketAddressCodec(hostOsSockAddrLayout()),
                 bufferFactory = bufferFactory,
