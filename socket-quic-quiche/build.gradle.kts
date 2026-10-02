@@ -4590,15 +4590,6 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
             }
         },
     )
-    // Same testLogging the root project applies — re-stated here because that
-    // root-level configureEach doesn't cross project boundaries.
-    testLogging {
-        events("failed", "skipped")
-        showExceptions = true
-        showCauses = true
-        showStackTraces = true
-        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
-    }
 }
 // Compilation tasks that index commonTest sources also need the generated
 // file present before they run; without this they fail to resolve

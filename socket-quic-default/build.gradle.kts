@@ -135,16 +135,6 @@ tasks.withType<Test> {
     jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
 }
 
-tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
-    testLogging {
-        events("failed", "skipped")
-        showExceptions = true
-        showCauses = true
-        showStackTraces = true
-        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
-    }
-}
-
 android {
     compileSdk = 37
     defaultConfig {
