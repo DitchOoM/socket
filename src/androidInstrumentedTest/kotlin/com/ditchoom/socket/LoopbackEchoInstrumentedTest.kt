@@ -26,9 +26,10 @@ class LoopbackEchoInstrumentedTest {
                 val serverJob =
                     launch(Dispatchers.Default) {
                         acceptedClientFlow.collect { serverToClient ->
-                            val received = serverToClient.readString(deadline = 5.seconds)
-                            serverToClient.writeString(received, deadline = 5.seconds)
-                            serverToClient.close()
+                            serverToClient.closeAfter {
+                                val received = serverToClient.readString(deadline = 5.seconds)
+                                serverToClient.writeString(received, deadline = 5.seconds)
+                            }
                             serverDone.unlock()
                             return@collect
                         }
