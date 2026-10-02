@@ -79,7 +79,8 @@ private fun entries(
     info: List<String>,
     key: String,
 ): String =
-    info.firstOrNull { it.startsWith(key) }
+    info
+        .firstOrNull { it.startsWith(key) }
         ?.substringAfter(key)
         ?.trim()
         ?.removePrefix("0x")
