@@ -70,7 +70,7 @@ class IoUringIdleReleaseTests {
 
                     val result = withTimeout(10.seconds) { poll.await() }
                     assertTrue(
-                        result > 0 && (result and POLLIN.toInt()) != 0,
+                        result > 0 && (result and POLLIN) != 0,
                         "the poll must complete readable after the last socket's close, but returned $result " +
                             "(-ECANCELED is ${-ECANCELED}): the release stopped the loop under an operation " +
                             "still in flight",
