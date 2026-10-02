@@ -179,13 +179,14 @@ jobs:
 
       # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (both
       # arches) + the three iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
-      # simulator); prepareQuicheNativeLib makes the host-arch JNI shim for the JVM tests. Both skip cargo
-      # on a marker/cache hit.
+      # simulator); buildPublishedMacosQuicheNatives makes the JNI shim for BOTH macOS arches — the
+      # release injects these macos-*/lib dirs into the JVM jar, so a host-arch-only shim shipped
+      # macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0). All skip cargo on a marker/cache hit.
       - name: Build quiche Apple native libs
         run: >-
           ./gradlew
           :socket-quic-quiche:buildQuicheAppleStaticLibs
-          :socket-quic-quiche:prepareQuicheNativeLib
+          :socket-quic-quiche:buildPublishedMacosQuicheNatives
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # HARD check — the K/N link gates -force_load on each libquiche.a existing at configuration time, so
