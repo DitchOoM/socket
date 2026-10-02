@@ -23,7 +23,7 @@ inputs:
     default: "false"
   timeout:
     description: >-
-      Hard wall-clock budget for the download+install, as a timeout(1) duration. Exceeding it fails
+      Hard wall-clock budget for downloading the packages, as a timeout(1) duration. Exceeding it fails
       the step with a diagnostic naming the mirror, instead of silently eating the job's budget.
     required: false
     default: "8m"
@@ -231,7 +231,7 @@ runs:
           exit 1
         fi
         echo "Pre-downloading the full manifest (${#pkgs[@]} packages) so PR lanes can restore it."
-        sudo apt-get install -y --download-only \
+        sudo apt-get install -y --download-only -o DPkg::Lock::Timeout=120 \
           -o Acquire::Retries=3 \
           -o Acquire::http::Timeout=30 \
           -o Acquire::https::Timeout=30 \
@@ -266,7 +266,7 @@ runs:
       run: |
         set -euo pipefail
         echo "apt cache FULL HIT (.debs + index) for '${{ inputs.purpose }}' — installing with --no-download; mirror untouched."
-        sudo apt-get install --no-download -y ${{ inputs.packages }}
+        sudo apt-get install --no-download -y -o DPkg::Lock::Timeout=120 ${{ inputs.packages }}
 
     # Only reached if the fast path above actually ran and failed. Getting here means the cache
     # fully hit, so the conditional update step above was SKIPPED and the index on disk is the
@@ -293,21 +293,55 @@ runs:
         # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
         # and --foreground keeps apt attached to the job's TTY so its progress still streams.
         #
-        # The first attempt gets only `mirror-patience`. apt's timeouts are inactivity timeouts, so a
-        # mirror crawling at 70 KB/s is "healthy" to apt and used to hold the step for the whole
-        # budget before the failover ran (2026-10-01: 8 min on Azure, then 3 s on archive.ubuntu.com).
+        # The mirror is only involved in the DOWNLOAD, so only the download is budgeted against it:
+        # `--download-only` first, then the install from /var/cache/apt/archives with
+        # `--no-download`. A budget that could expire in the install phase killed apt-get and left
+        # its dpkg child running, holding the dpkg lock (2026-10-02: the 2m mirror-patience expired
+        # 4 s into the libc-bin trigger, and the failover's `dpkg --configure -a` died at once with
+        # "dpkg database lock was locked by another process"). A download cut short leaves no dpkg
+        # behind and nothing to repair: apt resumes the partial files on the next attempt.
+        #
+        # The first download attempt gets only `mirror-patience`. apt's timeouts are inactivity
+        # timeouts, so a mirror crawling at 70 KB/s is "healthy" to apt and used to hold the step for
+        # the whole budget before the failover ran (2026-10-01: 8 min on Azure, then 3 s on
+        # archive.ubuntu.com).
         secs() { case "$1" in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *s) echo "${1%s}" ;; *) echo "$1" ;; esac; }
         first_budget="${{ inputs.mirror-patience }}"
         if [ "$(secs "$first_budget")" -gt "$(secs "${{ inputs.timeout }}")" ]; then first_budget="${{ inputs.timeout }}"; fi
-        set +e
-        timeout --foreground "$first_budget" \
-          sudo apt-get install -y \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            ${{ inputs.packages }}
-        rc=$?
-        set -e
+
+        # An apt-get killed by `timeout` does not take its children with it; the next apt or dpkg
+        # call must not start while one of them still holds a lock. Waits, bounded, and names the
+        # holder if it never lets go. The runner's own apt-daily / unattended-upgrades can hold the
+        # dpkg lock at boot, so every install in this action carries DPkg::Lock::Timeout.
+        wait_for_apt_to_exit() {
+          local waited=0
+          while pgrep -x 'dpkg|apt-get|apt|http|https' >/dev/null; do
+            if [ "$waited" -ge "$(secs "${{ inputs.timeout }}")" ]; then
+              echo "::error::apt/dpkg processes still running ${waited}s after apt-get was stopped:"
+              ps -o pid,etime,args -C dpkg,apt-get,apt,http,https || true
+              exit 1
+            fi
+            sleep 1
+            waited=$((waited + 1))
+          done
+          if [ "$waited" -gt 0 ]; then echo "Waited ${waited}s for the stopped apt-get's children to exit."; fi
+        }
+
+        download() {
+          set +e
+          timeout --foreground "$1" \
+            sudo apt-get install -y --download-only \
+              -o DPkg::Lock::Timeout=120 \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              ${{ inputs.packages }}
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then wait_for_apt_to_exit; fi
+        }
+
+        download "$first_budget"
 
         # Budget blown -> fail over to the canonical archive and retry ONCE, exactly like
         # apt-safe-update's update path. A DEGRADED-but-alive Azure mirror is the case that gets
@@ -319,14 +353,8 @@ runs:
         # this, in which case the rewrite is an idempotent no-op and the retry simply resumes the
         # download — apt keeps completed .debs in /var/cache/apt/archives, so the second attempt
         # does not start from zero.
-        #
-        # The budget can expire after the download, inside dpkg's unpack (2026-10-01: the fetch took
-        # 5m58s of 6m and the kill landed 2 s into unpacking). That leaves dpkg marked interrupted,
-        # and every later apt-get refuses to run until `dpkg --configure -a` finishes the job — so
-        # the retry must repair dpkg first or it can only fail.
         if [ "$rc" -eq 124 ]; then
-          echo "::warning::apt-get install stalled past $first_budget for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
-          timeout --foreground "${{ inputs.timeout }}" sudo dpkg --configure -a
+          echo "::warning::apt-get download stalled past $first_budget for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
           if [ -e /etc/apt/apt-mirrors.txt ]; then
             printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
           fi
@@ -336,19 +364,11 @@ runs:
             fi
           done
           sudo apt-get update -o Acquire::Retries=3 || true
-          set +e
-          timeout --foreground "${{ inputs.timeout }}" \
-            sudo apt-get install -y \
-              -o Acquire::Retries=3 \
-              -o Acquire::http::Timeout=30 \
-              -o Acquire::https::Timeout=30 \
-              ${{ inputs.packages }}
-          rc=$?
-          set -e
+          download "${{ inputs.timeout }}"
         fi
 
         if [ "$rc" -eq 124 ]; then
-          echo "::error::apt-get install exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}' on BOTH the Azure mirror and archive.ubuntu.com."
+          echo "::error::apt-get download exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}' on BOTH the Azure mirror and archive.ubuntu.com."
           echo ""
           echo "This is almost certainly a wide Ubuntu-mirror event, NOT a problem with this PR — see #368."
           echo "Both recorded sightings collapsed from ~19 MB/s to ~40 KB/s part-way through the"
@@ -359,7 +379,11 @@ runs:
           echo "Re-running the job is the workaround; a warm .deb cache is the fix."
           exit 1
         fi
-        exit "$rc"
+        if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+        # Everything is local now; no mirror budget applies. Not wrapped in `timeout`: stopping
+        # dpkg part-way is the one thing that leaves the system broken.
+        sudo apt-get install -y --no-download -o DPkg::Lock::Timeout=120 ${{ inputs.packages }}
 
     - name: Stage apt package index for the cache (writer only)
       if: inputs.save == 'true'
