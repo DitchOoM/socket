@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -82,6 +83,58 @@ abstract class MigrationSimTestSuite {
                         closed,
                         "the server must end on the client's own NO_ERROR close, received " +
                             "${currentTime - sent}ms after it was sent — not on its idle timer",
+                    )
+                }
+            }
+        }
+
+    /**
+     * A FIN that arrives on a retransmission of bytes the reader has already consumed still ends the
+     * stream.
+     *
+     * The client writes its request and then its FIN in two packets. The server reads the request, but
+     * its ACK is lost, and so is the FIN-only packet; the client then retransmits both as one STREAM
+     * frame — offset 0, the whole request, FIN set. Every byte of that frame is a duplicate, and the FIN
+     * is the only new fact in it. A receiver that records the final size and then discards the frame as
+     * a duplicate holds a stream that has ended but that nobody can see end: nothing is left to read, so
+     * the stream is never reported readable, and each later FIN-only copy is discarded because the final
+     * size is already known. The handler waits on a request that never ends until the idle timeout.
+     */
+    @Test
+    fun aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 709_001L) {
+                    val link = pipe.paths().first().local
+                    // The server hears the client, the client hears nothing: the server's ACK of the
+                    // request is lost.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Open, PathReach.Dark)))
+                    val stream = client.openStream()
+                    stream.writeText("request")
+                    val accepted = server.acceptStream()
+                    var received = 0
+                    while (received < "request".length) {
+                        val r = withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                        val data = assertIs<ReadResult.Data>(r, "the request must arrive before the FIN is sent")
+                        received += data.buffer.remaining()
+                        data.buffer.freeIfNeeded()
+                    }
+                    // Now the FIN-only packet is lost too.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark)))
+                    stream.shutdownSend()
+                    delay(FIN_LOST_FOR)
+                    // The uplink heals first, so the client's next retransmission — request and FIN in one
+                    // frame, since it has seen no ACK for either — reaches the server before any ACK
+                    // reaches the client and shrinks it to the FIN alone.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Open, PathReach.Dark)))
+                    delay(FIN_LOST_FOR)
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+
+                    val ending = withTimeoutOrNull(FIN_ARRIVES_WITHIN) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                    assertEquals<ReadResult?>(
+                        ReadResult.End,
+                        ending,
+                        "the client's FIN must end the server's read once the link heals; traffic ${pipeTraffic()}",
                     )
                 }
             }
@@ -3174,6 +3227,15 @@ abstract class MigrationSimTestSuite {
          * the server's draining period (3 × PTO), with room — and far below the sim's 120 s idle timeout.
          */
         val CLOSE_REACHES_SERVER_WITHIN = 5.seconds
+
+        /**
+         * How long each phase of the FIN's loss lasts: several of the client's PTOs at the 60 ms path,
+         * so each phase carries at least one retransmission, and far short of the 120 s idle timeout.
+         */
+        val FIN_LOST_FOR = 3.seconds
+
+        /** Several PTOs at the 60 ms path once the link heals, and far below the 120 s idle timeout. */
+        val FIN_ARRIVES_WITHIN = 20.seconds
 
         /** A slow cellular path: 800 ms round trip. */
         val SLOW_PATH_ONE_WAY = 400.milliseconds
