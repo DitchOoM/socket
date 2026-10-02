@@ -50,10 +50,9 @@ class JvmExceptionSubtypeTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         serverReady.unlock()
                         serverClient.writeString("data")
-                        serverClient.close()
                     }
                 }
 

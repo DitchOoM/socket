@@ -52,9 +52,8 @@ class ResourceCleanupTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         client.writeString("hello")
-                        client.close()
                     }
                 }
 
@@ -89,7 +88,7 @@ class ResourceCleanupTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         // Just echo back data if received
                         try {
                             val data = client.readString(deadline = 500.milliseconds)
@@ -97,7 +96,6 @@ class ResourceCleanupTests {
                         } catch (_: Exception) {
                             // Client may close before sending
                         }
-                        client.close()
                     }
                 }
 
@@ -162,9 +160,8 @@ class ResourceCleanupTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         client.writeString("pong")
-                        client.close()
                     }
                 }
 
@@ -248,8 +245,9 @@ class ResourceCleanupTests {
                 launch(Dispatchers.Default) {
                     try {
                         serverFlow.collect { client ->
-                            client.writeString("hello")
-                            client.close()
+                            client.closeAfter {
+                                client.writeString("hello")
+                            }
                             firstClientHandled.complete(Unit)
 
                             // Cancel after first client

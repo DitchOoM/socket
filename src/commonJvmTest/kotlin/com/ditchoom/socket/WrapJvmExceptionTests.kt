@@ -235,10 +235,9 @@ class WrapJvmExceptionTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         clientConnected.unlock()
                         client.writeString("hello")
-                        client.close()
                     }
                 }
 

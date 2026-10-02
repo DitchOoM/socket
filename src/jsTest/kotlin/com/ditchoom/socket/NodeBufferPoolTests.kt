@@ -39,7 +39,7 @@ class NodeBufferPoolTests {
             val serverReady = Mutex(locked = true)
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         serverReady.unlock()
                         // Send distinct messages: each byte in message N is (N % 256)
                         repeat(messageCount) { i ->
@@ -48,7 +48,6 @@ class NodeBufferPoolTests {
                             buf.resetForRead()
                             client.write(buf, 5.seconds)
                         }
-                        client.close()
                     }
                 }
 
@@ -121,7 +120,7 @@ class NodeBufferPoolTests {
             val serverReady = Mutex(locked = true)
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         serverReady.unlock()
                         // Each message: 4-byte sequence number + fill byte pattern
                         repeat(messageCount) { i ->
@@ -136,7 +135,6 @@ class NodeBufferPoolTests {
                             buf.resetForRead()
                             client.write(buf, 5.seconds)
                         }
-                        client.close()
                     }
                 }
 

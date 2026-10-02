@@ -32,11 +32,10 @@ class DataIntegrityTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
-                        client.close()
                     }
                 }
 
@@ -87,7 +86,7 @@ class DataIntegrityTests {
 
         val serverJob =
             kotlinx.coroutines.CoroutineScope(Dispatchers.Default).launch {
-                serverFlow.collect { client ->
+                serverFlow.serveEach { client ->
                     val receivedBytes = mutableListOf<Byte>()
 
                     // Read until we have all the data
@@ -109,7 +108,6 @@ class DataIntegrityTests {
                     }
 
                     transferComplete.unlock()
-                    client.close()
                 }
             }
 
@@ -158,13 +156,14 @@ class DataIntegrityTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        // Read from client
-                        val received = client.readString(deadline = 5.seconds)
-                        serverReceivedCorrect = (received == clientToServerData)
+                        client.closeAfter {
+                            // Read from client
+                            val received = client.readString(deadline = 5.seconds)
+                            serverReceivedCorrect = (received == clientToServerData)
 
-                        // Send to client
-                        client.writeString(serverToClientData)
-                        client.close()
+                            // Send to client
+                            client.writeString(serverToClientData)
+                        }
                         testComplete.unlock()
                     }
                 }
@@ -208,7 +207,7 @@ class DataIntegrityTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         val sb = StringBuilder()
                         // Read until we have all the data or connection closes
                         // TCP may coalesce multiple writes into single reads
@@ -223,7 +222,6 @@ class DataIntegrityTests {
                         }
                         receivedData = sb.toString()
                         dataReceived.unlock()
-                        client.close()
                     }
                 }
 
@@ -306,11 +304,10 @@ class DataIntegrityTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
-                        client.close()
                     }
                 }
 
