@@ -79,6 +79,18 @@ class DeadlinesSurviveALostTimerThreadTests {
             )
         }
 
+    /**
+     * A `delay` whose timer fires before its coroutine has finished suspending does not hop threads: the
+     * continuation was resumed first, so the coroutine carries on, unsuspended, on the thread that called
+     * `delay`. On a loaded machine a 1 ms wait loses that race, and [SharedTimerLost] then sees the thread
+     * that constructed it instead of kotlinx's timer. [InlineFirstWait] makes the first wait end that way.
+     */
+    @Test
+    fun theAdversaryHoldsTheSharedTimerThreadWhenItsFirstWaitEndsWithoutSuspending() =
+        failIfStuck(WATCHDOG * 2, "the hold after an inline wait") {
+            SharedTimerLost(InlineFirstWait()).use { }
+        }
+
     @Test
     fun theIdleTimerEndsAHandshakeThePeerNeverAnswers() =
         connectToASilentPeer("the idle-timer connect", idleTimeout = SHORT, establishmentBound = 5.minutes) { failure ->
@@ -238,19 +250,29 @@ class DeadlinesSurviveALostTimerThreadTests {
      * Holds kotlinx's shared timer thread inside a timer callback until [close], so no timer queued on it
      * fires meanwhile. Fails construction unless the thread it holds is that thread.
      *
+     * A wait whose timer fires before its coroutine has finished suspending ends on the constructing thread,
+     * not the timer's, because the continuation was resumed before it suspended. That is a lost race, not a
+     * missing timer, so the hold waits again, up to [MAX_TIMER_WAITS] times.
+     *
      * The hold can never outlive the test or land on another thread: only a thread named as kotlinx's
      * shared timer parks, and its park is a JVM wait bounded by [HOLD_BOUND] as well as released by
      * [close]. Any construction failure releases it before throwing.
      */
-    private class SharedTimerLost : AutoCloseable {
+    private class SharedTimerLost(
+        private val timerWait: TimerWait = TimerWait { delay(1) },
+    ) : AutoCloseable {
         private val giveBack = CountDownLatch(1)
 
         init {
             val held = CompletableFuture<Thread>()
             // Unconfined: the delay resumes on the thread that fired it, which then blocks in giveBack.
             CoroutineScope(Dispatchers.Unconfined).launch {
-                delay(1)
-                val thread = Thread.currentThread()
+                var waits = 0
+                var thread: Thread
+                do {
+                    timerWait.await()
+                    thread = Thread.currentThread()
+                } while (!thread.name.startsWith(KOTLINX_SHARED_TIMER_THREAD) && ++waits < MAX_TIMER_WAITS)
                 held.complete(thread)
                 if (thread.name.startsWith(KOTLINX_SHARED_TIMER_THREAD)) {
                     giveBack.await(HOLD_BOUND.inWholeMilliseconds, TimeUnit.MILLISECONDS)
@@ -268,6 +290,23 @@ class DeadlinesSurviveALostTimerThreadTests {
         }
 
         override fun close() = giveBack.countDown()
+    }
+
+    /** One wait on kotlinx's shared timer, as [SharedTimerLost] performs it. */
+    private fun interface TimerWait {
+        suspend fun await()
+    }
+
+    /**
+     * Ends its first wait without suspending, as a `delay(1)` does when the timer fires before the suspension
+     * completes; every later wait is a real `delay(1)`.
+     */
+    private class InlineFirstWait : TimerWait {
+        private val waits = AtomicInteger()
+
+        override suspend fun await() {
+            if (waits.getAndIncrement() > 0) delay(1)
+        }
     }
 
     /** How an [UnstartableThreads] thread fails to start. */
@@ -323,6 +362,9 @@ class DeadlinesSurviveALostTimerThreadTests {
 
         /** The JVM-thread bound on each case: a working deadline ends it ~50x sooner. */
         val WATCHDOG = 15.seconds
+
+        /** How many waits [SharedTimerLost] makes before concluding kotlinx's timer is not the thread resuming them. */
+        const val MAX_TIMER_WAITS = 100
 
         /** The longest [SharedTimerLost] holds kotlinx's shared timer thread if nobody closes it. */
         val HOLD_BOUND = WATCHDOG * 2

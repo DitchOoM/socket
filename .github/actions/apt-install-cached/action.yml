@@ -23,10 +23,17 @@ inputs:
     default: "false"
   timeout:
     description: >-
-      Hard wall-clock budget for the download+install, as a timeout(1) duration. Exceeding it fails
+      Hard wall-clock budget for downloading the packages, as a timeout(1) duration. Exceeding it fails
       the step with a diagnostic naming the mirror, instead of silently eating the job's budget.
     required: false
     default: "8m"
+  mirror-patience:
+    description: >-
+      Budget for the first attempt, on the runner's default (Azure) mirror, before failing over to
+      archive.ubuntu.com. Short on purpose: a healthy mirror delivers a whole lane's packages in
+      seconds, and the failover keeps every .deb already fetched. Capped at `timeout`.
+    required: false
+    default: "2m"
 
 runs:
   using: composite
@@ -100,6 +107,13 @@ runs:
         # suffix so a -v1 entry from before this change is never misread as containing lists it
         # does not have.
         echo "value=apt-debs-${arch}-${image}-${manifest_hash}-v2" >>"$GITHUB_OUTPUT"
+        # Any image's entry, newest first. GitHub rolls a new runner image out over days, so the
+        # nightly warmer and a PR job routinely land on different images (2026-10-01: the warmer
+        # wrote 20260920.314.1 every night while PR lanes ran 20260927.320.1, and every lane missed).
+        # A fallback hit contributes its .debs ONLY: apt checks each against the fresh index's hash
+        # and re-downloads whatever changed, so an older image's .deb can cost a download but can
+        # never be installed wrongly. Its index is never seeded — that is the half that can mislead.
+        echo "fallback=apt-debs-${arch}-" >>"$GITHUB_OUTPUT"
         echo "staging=${RUNNER_TEMP}/apt-deb-cache" >>"$GITHUB_OUTPUT"
 
     # Restore-only for every caller but the warmer. This follows the single-writer discipline the
@@ -116,6 +130,9 @@ runs:
       with:
         path: ${{ steps.key.outputs.staging }}
         key: ${{ steps.key.outputs.value }}
+        # The writer restores its exact key only: what it stages is tomorrow's cache, and an older
+        # image's .debs seeded into it would be carried forward forever.
+        restore-keys: ${{ inputs.save != 'true' && steps.key.outputs.fallback || '' }}
 
     - name: Seed apt's archive + package index from the cache
       id: seed
@@ -129,7 +146,11 @@ runs:
         if [ -d "$staging" ] && compgen -G "$staging/*.deb" >/dev/null; then
           n=$(find "$staging" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
           mb=$(du -sm "$staging" | cut -f1)
-          echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
+          if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ]; then
+            echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
+          else
+            echo "::notice::apt .deb cache FALLBACK HIT from '${{ steps.restore.outputs.cache-matched-key }}' (another runner image) — pre-seeding ${n} packages (${mb} MB); a fresh index decides which of them still match"
+          fi
           sudo cp "$staging"/*.deb /var/cache/apt/archives/
           debs_present="true"
         else
@@ -158,6 +179,8 @@ runs:
         if [ "${{ inputs.save }}" = "true" ]; then
           echo "::notice::writer run — a fresh apt-get update follows in the next step; not seeding the cached index onto itself (see comment above)."
           lists_present="true"
+        elif [ "${{ steps.restore.outputs.cache-hit }}" != "true" ]; then
+          echo "::notice::apt package-index not seeded for '${{ inputs.purpose }}' — the cache entry is another runner image's; a fresh index will be fetched in the next step."
         elif [ -d "$staging/lists" ] && compgen -G "$staging/lists/*" >/dev/null; then
           n=$(find "$staging/lists" -maxdepth 1 -type f | wc -l | tr -d ' ')
           echo "::notice::apt package-index cache HIT — pre-seeding ${n} index files, no 'apt-get update' needed for the install below"
@@ -208,7 +231,7 @@ runs:
           exit 1
         fi
         echo "Pre-downloading the full manifest (${#pkgs[@]} packages) so PR lanes can restore it."
-        sudo apt-get install -y --download-only \
+        sudo apt-get install -y --download-only -o DPkg::Lock::Timeout=120 \
           -o Acquire::Retries=3 \
           -o Acquire::http::Timeout=30 \
           -o Acquire::https::Timeout=30 \
@@ -243,7 +266,7 @@ runs:
       run: |
         set -euo pipefail
         echo "apt cache FULL HIT (.debs + index) for '${{ inputs.purpose }}' — installing with --no-download; mirror untouched."
-        sudo apt-get install --no-download -y ${{ inputs.packages }}
+        sudo apt-get install --no-download -y -o DPkg::Lock::Timeout=120 ${{ inputs.packages }}
 
     # Only reached if the fast path above actually ran and failed. Getting here means the cache
     # fully hit, so the conditional update step above was SKIPPED and the index on disk is the
@@ -269,15 +292,56 @@ runs:
         # NOTE: `timeout --foreground`, not a bare `timeout`. Composite-action steps do not support
         # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
         # and --foreground keeps apt attached to the job's TTY so its progress still streams.
-        set +e
-        timeout --foreground "${{ inputs.timeout }}" \
-          sudo apt-get install -y \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            ${{ inputs.packages }}
-        rc=$?
-        set -e
+        #
+        # The mirror is only involved in the DOWNLOAD, so only the download is budgeted against it:
+        # `--download-only` first, then the install from /var/cache/apt/archives with
+        # `--no-download`. A budget that could expire in the install phase killed apt-get and left
+        # its dpkg child running, holding the dpkg lock (2026-10-02: the 2m mirror-patience expired
+        # 4 s into the libc-bin trigger, and the failover's `dpkg --configure -a` died at once with
+        # "dpkg database lock was locked by another process"). A download cut short leaves no dpkg
+        # behind and nothing to repair: apt resumes the partial files on the next attempt.
+        #
+        # The first download attempt gets only `mirror-patience`. apt's timeouts are inactivity
+        # timeouts, so a mirror crawling at 70 KB/s is "healthy" to apt and used to hold the step for
+        # the whole budget before the failover ran (2026-10-01: 8 min on Azure, then 3 s on
+        # archive.ubuntu.com).
+        secs() { case "$1" in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *s) echo "${1%s}" ;; *) echo "$1" ;; esac; }
+        first_budget="${{ inputs.mirror-patience }}"
+        if [ "$(secs "$first_budget")" -gt "$(secs "${{ inputs.timeout }}")" ]; then first_budget="${{ inputs.timeout }}"; fi
+
+        # An apt-get killed by `timeout` does not take its children with it; the next apt or dpkg
+        # call must not start while one of them still holds a lock. Waits, bounded, and names the
+        # holder if it never lets go. The runner's own apt-daily / unattended-upgrades can hold the
+        # dpkg lock at boot, so every install in this action carries DPkg::Lock::Timeout.
+        wait_for_apt_to_exit() {
+          local waited=0
+          while pgrep -x 'dpkg|apt-get|apt|http|https' >/dev/null; do
+            if [ "$waited" -ge "$(secs "${{ inputs.timeout }}")" ]; then
+              echo "::error::apt/dpkg processes still running ${waited}s after apt-get was stopped:"
+              ps -o pid,etime,args -C dpkg,apt-get,apt,http,https || true
+              exit 1
+            fi
+            sleep 1
+            waited=$((waited + 1))
+          done
+          if [ "$waited" -gt 0 ]; then echo "Waited ${waited}s for the stopped apt-get's children to exit."; fi
+        }
+
+        download() {
+          set +e
+          timeout --foreground "$1" \
+            sudo apt-get install -y --download-only \
+              -o DPkg::Lock::Timeout=120 \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              ${{ inputs.packages }}
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then wait_for_apt_to_exit; fi
+        }
+
+        download "$first_budget"
 
         # Budget blown -> fail over to the canonical archive and retry ONCE, exactly like
         # apt-safe-update's update path. A DEGRADED-but-alive Azure mirror is the case that gets
@@ -290,7 +354,7 @@ runs:
         # download — apt keeps completed .debs in /var/cache/apt/archives, so the second attempt
         # does not start from zero.
         if [ "$rc" -eq 124 ]; then
-          echo "::warning::apt-get install stalled past ${{ inputs.timeout }} for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
+          echo "::warning::apt-get download stalled past $first_budget for '${{ inputs.purpose }}' — failing over to archive.ubuntu.com and retrying once."
           if [ -e /etc/apt/apt-mirrors.txt ]; then
             printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
           fi
@@ -300,19 +364,11 @@ runs:
             fi
           done
           sudo apt-get update -o Acquire::Retries=3 || true
-          set +e
-          timeout --foreground "${{ inputs.timeout }}" \
-            sudo apt-get install -y \
-              -o Acquire::Retries=3 \
-              -o Acquire::http::Timeout=30 \
-              -o Acquire::https::Timeout=30 \
-              ${{ inputs.packages }}
-          rc=$?
-          set -e
+          download "${{ inputs.timeout }}"
         fi
 
         if [ "$rc" -eq 124 ]; then
-          echo "::error::apt-get install exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}' on BOTH the Azure mirror and archive.ubuntu.com."
+          echo "::error::apt-get download exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}' on BOTH the Azure mirror and archive.ubuntu.com."
           echo ""
           echo "This is almost certainly a wide Ubuntu-mirror event, NOT a problem with this PR — see #368."
           echo "Both recorded sightings collapsed from ~19 MB/s to ~40 KB/s part-way through the"
@@ -323,7 +379,11 @@ runs:
           echo "Re-running the job is the workaround; a warm .deb cache is the fix."
           exit 1
         fi
-        exit "$rc"
+        if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+        # Everything is local now; no mirror budget applies. Not wrapped in `timeout`: stopping
+        # dpkg part-way is the one thing that leaves the system broken.
+        sudo apt-get install -y --no-download -o DPkg::Lock::Timeout=120 ${{ inputs.packages }}
 
     - name: Stage apt package index for the cache (writer only)
       if: inputs.save == 'true'

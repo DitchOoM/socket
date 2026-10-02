@@ -93,7 +93,7 @@ class JvmCallerClockSimTests {
         val scheduler = TestCoroutineScheduler()
         val clock = SimClock(scheduler)
         // The exact wrapper QuicheDriver installs for a Virtual clock — steady-state calls auto-pin.
-        val api: QuicheApi = CallerClockQuicheApi(rawApi, clock)
+        val api: QuicheApi = CallerClockQuicheApi(rawApi, clock, QuicRole.Client)
 
         val peerAddr = InetSocketAddress("127.0.0.1", 4433)
         val localAddr = InetSocketAddress("127.0.0.1", 55555)

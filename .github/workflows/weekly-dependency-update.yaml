@@ -82,15 +82,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # `konan-linux-`, NOT `konan-${{ runner.os }}-`. runner.os is "Linux" (capital L) and the
-      # writer of the real entry — build-linux.yaml's `natives` job — uses the literal lowercase
+      # writer of the real entry — native-deps-freshness.yaml's `cache-warm` — uses the literal lowercase
       # `konan-linux-`. Cache keys are compared verbatim and restore-key prefixes do not cross the
       # two spellings, so this job had its own private, never-shared Konan lineage. (The cargo key
       # below is fine as-is: build-linux uses the same `cargo-${{ runner.os }}-` expression.)
       #
       # ⚠️ RESTORE-ONLY, and that is a consequence of the rename above. While this job wrote to its
       # own misspelled lineage it could not hurt anyone; pointing it at the shared `konan-linux-`
-      # key with a read-WRITE `actions/cache` would make it a SECOND writer of a key build-linux
-      # documents as single-writer. This is a host-only dependency-bump job that never runs a
+      # key with a read-WRITE `actions/cache` would make it a SECOND writer of a single-writer key
+      # (native-deps-freshness.yaml's `cache-warm` owns it). This is a host-only dependency-bump job that never runs a
       # Kotlin/Native link, so the ~/.konan it would upload is whatever partial toolchain a
       # configure happened to pull — and being first to claim the key would hand every real build
       # an incomplete tree. Read the shared entry, never publish over it.

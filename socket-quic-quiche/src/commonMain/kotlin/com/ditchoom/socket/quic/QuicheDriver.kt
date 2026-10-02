@@ -243,7 +243,7 @@ class QuicheDriver(
      * [DriverTime.Real], so the bare backend api is used unchanged and nothing is injected — zero cost.
      */
     private val api: QuicheApi =
-        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock) else rawApi
+        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi
 
     /**
      * The command channel — and the owner of every command in it. A command the channel accepted but
@@ -451,6 +451,21 @@ class QuicheDriver(
         readConnBytes(bufferFactory, asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
             ?.let { QuicWireConnectionId.Known(it) }
             ?: QuicWireConnectionId.Unavailable
+
+    /**
+     * How long this connection's ids go on meaning "this connection, just closed" once it has closed:
+     * RFC 9000 §10.2's draining period, three times the PTO. Measured on the loop, with the connection
+     * still alive, in [transitionToClosed] and again in [cleanup] — both before [commands] closes, so a
+     * caller that has seen the connection refuse a command reads a measured value. Before either, it is
+     * three times the PTO of a path with no RTT sample (RFC 9002 §6.2.2).
+     */
+    @kotlin.concurrent.Volatile
+    internal var drainingPeriod: Duration = INITIAL_PTO * DRAINING_PTO_MULTIPLIER
+        private set
+
+    private fun measureDrainingPeriod() {
+        api.connPathStats(conn, 0L)?.let { drainingPeriod = pto(it.rtt, it.rttvar) * DRAINING_PTO_MULTIPLIER }
+    }
 
     /**
      * Latch the identity on the loop, with the connection still alive: before [state] reads Closed
@@ -2368,6 +2383,7 @@ class QuicheDriver(
         // Before Closed is published: an observer of Closed reads identity from here, never from a
         // conn that cleanup() is about to free.
         latchIdentity()
+        measureDrainingPeriod()
         refreshSessionTicket()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
@@ -3462,6 +3478,7 @@ class QuicheDriver(
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         latchIdentity()
+        measureDrainingPeriod()
         wireIdScratch.freeNativeMemory()
         commands.close()
 
@@ -3792,6 +3809,9 @@ class QuicheDriver(
          * PTOs, so a very fast current path can never shrink the abandon timer below ~3 s.
          */
         private val INITIAL_PTO = K_INITIAL_RTT + maxOf((K_INITIAL_RTT / 2) * 4, K_GRANULARITY)
+
+        /** RFC 9000 §10.2: the closing and draining states last three times the PTO. */
+        private const val DRAINING_PTO_MULTIPLIER = 3
 
         /** RFC 9000 §8.2.4: "three times the larger of the current PTO or the PTO for the new path". */
         private const val PATH_VALIDATION_PTO_MULTIPLIER = 3

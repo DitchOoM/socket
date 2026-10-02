@@ -32,6 +32,26 @@ class IoUringSetupRetryTests {
         assertEquals(listOf(1_000, 2_000), slept, "backoff must double between passes")
     }
 
+    /**
+     * The refusal clears only when the kernel's deferred teardown of released rings returns their pages
+     * to the user's RLIMIT_MEMLOCK charge. Measured on kernel 6.18 at an 8 MB limit, three processes
+     * churning rings under full CPU load: up to 0.85 s from the first ENOMEM to a created ring.
+     */
+    @Test
+    fun anEnomemThatLastsAsLongAsTheKernelsDeferredTeardownIsWaitedOut() {
+        val clearsAfterMicros = 850_000L
+        var sleptMicros = 0L
+        val outcome =
+            setUpIoUring({ sleptMicros += it }) {
+                if (sleptMicros < clearsAfterMicros) -ENOMEM else 0
+            }
+        assertEquals(
+            RingSetup.Created,
+            outcome,
+            "an ENOMEM the kernel clears after ${clearsAfterMicros / 1_000} ms gave up after ${sleptMicros / 1_000} ms",
+        )
+    }
+
     @Test
     fun aNonEnomemRefusalIsNotRetried() {
         val slept = mutableListOf<Int>()
@@ -60,7 +80,11 @@ class IoUringSetupRetryTests {
         assertEquals(ENOMEM_SETUP_PASSES * IO_URING_SETUP_LADDER.size, calls)
         assertEquals(calls, refused.earlier.size + 1, "every refused attempt must be in the report")
         assertEquals(RefusedSetup(ENOMEM_SETUP_PASSES - 1, 0u, ENOMEM), refused.final)
-        assertEquals(listOf(1_000, 2_000, 4_000, 8_000), slept, "four waits, doubling: 15ms total")
+        assertEquals(
+            (0 until ENOMEM_SETUP_PASSES - 1).map { 1_000 shl it },
+            slept,
+            "one wait before each pass after the first, doubling",
+        )
     }
 
     /**

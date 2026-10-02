@@ -224,6 +224,9 @@ fun downloadQuicheSource(
     // fails loudly if a quiche bump adds an un-clocked time read. Simulation-only; production keeps the real
     // clock (nothing sets the thread-local).
     patchQuicheForCallerClock(sourceDir)
+    // Let a simulation drive quiche's own random draws (packet-number skipping, path-challenge data) from
+    // a seed, as the caller clock drives its time. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheForCallerEntropy(sourceDir)
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
@@ -249,8 +252,203 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
+    // Keep a stream's FIN queued until a frame carries it and owed until the peer acknowledges it, so a
+    // FIN written behind a retransmission is still sent and a send side is not complete before its FIN
+    // is delivered. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheFinIsSentUntilAcknowledged(sourceDir)
+    // Keep the FIN of a STREAM frame whose bytes the reader has already consumed, so a FIN that only
+    // ever arrives on such a retransmission still ends the stream. Idempotent, fails loudly on drift OR
+    // on an upstream fix. See the KDoc.
+    patchQuicheDuplicateDataFinIsKept(sourceDir)
+
+    // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
+    // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
+    // than trusting whatever a restore left behind.
+    sourceDir.resolve(quicheSourceDigestStamp).writeText(quichePatchDigest)
 
     return sourceDir
+}
+
+/** Untracked file in the prepared quiche tree naming the [quichePatchDigest] it was patched for. */
+val quicheSourceDigestStamp = ".socket-patch-digest"
+
+/**
+ * Make quiche's own random draws **caller-seedable**, the entropy half of the caller clock
+ * ([patchQuicheForCallerClock]). Without it a simulation is not a function of its seed: quiche skips a
+ * packet number at a random point in every congestion window (`PktNumSpace::arm_skip_counter`, its
+ * optimistic-ACK defence), the skip changes the peer's ACK ranges and therefore the size of every ACK
+ * that follows, and from there loss draws, timers and the whole run diverge. Measured: one seed of the
+ * migration sim left the wire differently on 11 of 12 runs, first at a 53- vs 55-byte ACK.
+ *
+ * Every draw quiche makes goes through `rand::rand_bytes`, so that one function changes: it reads a
+ * thread-local splitmix64 state when the calling thread has set one, else BoringSSL's `RAND_bytes`
+ * exactly as before. `CallerClockQuicheApi` pins a state before each connection call and clears it after,
+ * deriving it from the connection's seed and how many calls that connection has made — so the draws a
+ * connection sees depend on its own call sequence, not on which thread ran it or what another connection
+ * did in between.
+ * Production never sets it. TLS randomness is BoringSSL's own and is untouched: ciphertext still differs
+ * run to run, which changes no packet's size, timing or fate.
+ *
+ * Marker-guarded; the anchor is upstream's whole `rand_bytes`, so a quiche bump that changes it throws.
+ */
+fun patchQuicheForCallerEntropy(sourceDir: File) {
+    val marker = "socket-caller-entropy"
+    val randRs = sourceDir.resolve("quiche/src/rand.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!randRs.exists() || !ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    val anchor =
+        """
+        |pub fn rand_bytes(buf: &mut [u8]) {
+        |    unsafe {
+        |        RAND_bytes(buf.as_mut_ptr(), buf.len());
+        |    }
+        |}
+        """.trimMargin()
+    val randText = randRs.readText()
+    if (randText.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: upstream `rand_bytes` not found exactly once in quiche/src/rand.rs — a quiche bump " +
+                "changed how quiche draws randomness. Re-fit patchQuicheForCallerEntropy.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: a seeded splitmix64 stream when the calling thread has pinned one, else BoringSSL.
+        |thread_local! {
+        |    static SOCKET_RANDOM_STATE: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
+        |}
+        |
+        |pub(crate) fn set_thread_random_state(state: u64) {
+        |    SOCKET_RANDOM_STATE.with(|c| c.set(Some(state)));
+        |}
+        |
+        |pub(crate) fn clear_thread_random_state() {
+        |    SOCKET_RANDOM_STATE.with(|c| c.set(None));
+        |}
+        |
+        |fn socket_splitmix64(state: &mut u64) -> u64 {
+        |    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        |    let mut z = *state;
+        |    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        |    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        |    z ^ (z >> 31)
+        |}
+        |
+        |pub fn rand_bytes(buf: &mut [u8]) {
+        |    let seeded = SOCKET_RANDOM_STATE.with(|c| match c.get() {
+        |        Some(mut state) => {
+        |            for chunk in buf.chunks_mut(8) {
+        |                let word = socket_splitmix64(&mut state).to_le_bytes();
+        |                chunk.copy_from_slice(&word[..chunk.len()]);
+        |            }
+        |            c.set(Some(state));
+        |            true
+        |        },
+        |        None => false,
+        |    });
+        |    if !seeded {
+        |        unsafe {
+        |            RAND_bytes(buf.as_mut_ptr(), buf.len());
+        |        }
+        |    }
+        |}
+        """.trimMargin()
+    randRs.writeText(randText.replace(anchor, replacement))
+    val export =
+        """
+        |
+        |// $marker: pin / release this thread's seeded random stream (see rand.rs). Simulation-only.
+        |#[no_mangle]
+        |pub extern "C" fn quiche_set_thread_random_state(state: u64) {
+        |    crate::rand::set_thread_random_state(state);
+        |}
+        |
+        |#[no_mangle]
+        |pub extern "C" fn quiche_clear_thread_random_state() {
+        |    crate::rand::clear_thread_random_state();
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: caller-seedable rand_bytes")
+}
+
+/**
+ * Patch quiche's `RecvBuf::write` so a STREAM frame whose bytes have all been read already, but which
+ * carries the FIN, still delivers that FIN.
+ *
+ * **Why.** `write` records the final size from the frame first, then discards any non-empty frame
+ * ending at or below the read offset as a duplicate. When that frame is the first to carry the FIN,
+ * nothing is stored: `ready()` needs a buffer at the read offset, so the stream is never reported
+ * readable and `stream_recv` is never asked for the end it knows about. Every later FIN-only copy is
+ * then dropped by the "final size already known, empty buffer" early return. The stream has ended
+ * and its reader waits on it until the idle timeout.
+ *
+ * It takes two losses: the receiver's ACK of the data and the sender's FIN-only packet. The sender
+ * then declares both lost and retransmits them as one frame (offset 0, all the data, FIN set), every
+ * byte of which the reader already has. Reproduced deterministically by
+ * `MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
+ * a request that never ended on an 800 ms / 30 % loss sim path.
+ *
+ * The edit: such a frame is reduced to its empty FIN-carrying tail at the read offset — exactly the
+ * buffer a FIN-only frame would have produced, which the same branch already admits and stores.
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline): the marker
+ * returns early, and a moved or upstream-fixed anchor throws rather than silently no-opping.
+ */
+fun patchQuicheDuplicateDataFinIsKept(sourceDir: File) {
+    val recvBuf = sourceDir.resolve("quiche/src/stream/recv_buf.rs")
+    if (!recvBuf.exists()) return
+
+    val text = recvBuf.readText()
+    if (text.contains("socket-duplicate-data-fin-is-kept")) return // already patched
+
+    val anchor =
+        """
+        |        if self.off >= buf.max_off() {
+        |            // An exception is applied to empty range buffers, because an empty
+        |            // buffer's max offset matches the max offset of the recv buffer.
+        |            //
+        |            // By this point all spurious empty buffers should have already been
+        |            // discarded, so allowing empty buffers here should be safe.
+        |            if !buf.is_empty() {
+        |                return Ok(());
+        |            }
+        |        }
+        """.trimMargin()
+
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "socket-duplicate-data-fin-is-kept: RecvBuf::write's fully-duplicate branch was not found. A " +
+                "quiche bump moved or reshaped it — possibly fixing this upstream, which is the outcome we " +
+                "want. If a fully-duplicate frame carrying the FIN now leaves the stream readable at its end: " +
+                "DELETE this patch and its call site, and KEEP the regression guard " +
+                "MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
+                "Otherwise re-fit the anchor and re-verify with that guard before shipping.",
+        )
+    }
+
+    val replacement =
+        """
+        |        // socket-duplicate-data-fin-is-kept: a fully-duplicate frame that carries the FIN is
+        |        // reduced to its empty FIN tail at the read offset — the buffer a FIN-only frame makes,
+        |        // which this branch admits. Discarding it whole records the final size where nothing
+        |        // reports it: the stream is never readable again and later FIN-only copies are dropped
+        |        // because the final size is already known.
+        |        let buf = if self.off >= buf.max_off() && !buf.is_empty() {
+        |            if !buf.fin() {
+        |                return Ok(());
+        |            }
+        |
+        |            let mut buf = buf;
+        |            let len = buf.len();
+        |            buf.split_off(len)
+        |        } else {
+        |            buf
+        |        };
+        """.trimMargin()
+
+    recvBuf.writeText(text.replaceFirst(anchor, replacement))
 }
 
 /**
@@ -387,6 +585,138 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_stream_data_unacknowledged FFI export")
+}
+
+/**
+ * Keep a stream's FIN owed until the peer acknowledges it: queued for sending until a frame carries it,
+ * queued again when that frame is lost, and the send side complete only once it is acknowledged.
+ *
+ * quiche tracks a send side's data and leaves its FIN implicit, which loses the FIN two ways when it goes
+ * out on its own (written after the data was sent):
+ *
+ *  - **Never sent.** `send` drops a stream from its flushable queue once `Stream::is_flushable` is false,
+ *    and that counts only data. A FIN written while the stream is queued for a retransmission of an
+ *    earlier range does not queue it again; the retransmission goes out without the FIN (it ends
+ *    mid-stream), the stream leaves the queue, and the FIN is never sent.
+ *  - **Counted as delivered.** `SendBuf::is_complete` is `acked == 0..fin_off`, and acknowledging a
+ *    zero-length FIN frame adds nothing to `acked`, so the send side reads complete as soon as its data
+ *    is acknowledged. quiche then collects the stream, and its unsent or lost FIN with it, and
+ *    `quiche_conn_stream_data_unacknowledged` ([patchQuicheStreamDataUnacknowledgedFfi]) tells a
+ *    graceful close there is nothing left to wait for.
+ *
+ * Either way the peer reads the whole stream and never its end. Reproduced by
+ * `MigrationSimTestSuite.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
+ * `aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt`.
+ *
+ * The edits: `SendBuf` gains `socket_fin_sent` (set when `emit` puts the FIN on a frame, cleared when the
+ * ACK handler's loss arm sees a frame carrying it lost) and `socket_fin_acked` (set when the ACK handler
+ * sees a frame carrying it acknowledged); `reset` sets both, since a send side reset, stopped or shut down
+ * owes no FIN. `Stream::is_flushable` is also true while the FIN is owed with no data before it, and
+ * `is_complete` requires the acknowledgement. Marker-guarded and loud: a re-run returns, a moved anchor
+ * throws.
+ */
+fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
+    val marker = "socket-fin-sent-until-acknowledged"
+    val sendBufRs = sourceDir.resolve("quiche/src/stream/send_buf.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!sendBufRs.exists() || !streamRs.exists() || !libRs.exists()) return
+    if (sendBufRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump moved it. Re-fit patchQuicheFinIsSentUntilAcknowledged, or delete it if quiche now " +
+                    "keeps a stream's FIN queued until it is sent and counts the send side complete only once " +
+                    "the FIN is acknowledged.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        sendBufRs,
+        "    /// The error code received via STOP_SENDING.\n    error: Option<u64>,\n}\n",
+        "    /// The error code received via STOP_SENDING.\n    error: Option<u64>,\n\n" +
+            "    // $marker: a frame carrying the FIN was sent and not since declared lost.\n" +
+            "    socket_fin_sent: bool,\n\n" +
+            "    // $marker: the peer acknowledged a frame carrying the FIN.\n" +
+            "    socket_fin_acked: bool,\n}\n",
+    )
+    replaceOnce(
+        sendBufRs,
+        "impl<F: BufFactory> SendBuf<F> {\n",
+        "impl<F: BufFactory> SendBuf<F> {\n" +
+            "    // $marker: the peer acknowledged a frame that carried the FIN.\n" +
+            "    pub fn socket_ack_fin(&mut self) {\n        self.socket_fin_acked = true;\n    }\n\n" +
+            "    // $marker: a frame that carried the FIN was declared lost.\n" +
+            "    pub fn socket_fin_lost(&mut self) {\n        self.socket_fin_sent = false;\n    }\n\n" +
+            "    // $marker: the FIN is written, no data is waiting to go before it, and no frame carries it.\n" +
+            "    pub fn socket_fin_owed(&self) -> bool {\n" +
+            "        !self.socket_fin_sent && self.fin_off.is_some() && self.fin_off == Some(self.off_front())\n    }\n\n",
+    )
+    replaceOnce(
+        sendBufRs,
+        "        let fin = self.fin_off == Some(next_off);\n",
+        "        let fin = self.fin_off == Some(next_off);\n        if fin {\n            self.socket_fin_sent = true;\n        }\n",
+    )
+    replaceOnce(
+        sendBufRs,
+        "        self.fin_off = Some(unsent_off);\n",
+        "        self.fin_off = Some(unsent_off);\n        self.socket_fin_sent = true;\n        self.socket_fin_acked = true;\n",
+    )
+    replaceOnce(
+        sendBufRs,
+        "            if self.acked == (0..fin_off) {\n",
+        "            if self.acked == (0..fin_off) && self.socket_fin_acked {\n",
+    )
+    replaceOnce(
+        streamRs,
+        "            off_front < self.send.max_off()\n    }\n",
+        "            off_front < self.send.max_off() ||\n            // $marker\n            self.send.socket_fin_owed()\n    }\n",
+    )
+    replaceOnce(
+        libRs,
+        """
+        |                    frame::Frame::StreamHeader {
+        |                        stream_id,
+        |                        offset,
+        |                        length,
+        |                        ..
+        |                    } => {
+        |                        // Emit qlog before checking if the stream still exists.
+        """.trimMargin(),
+        """
+        |                    frame::Frame::StreamHeader {
+        |                        stream_id,
+        |                        offset,
+        |                        length,
+        |                        fin,
+        |                    } => {
+        |                        // Emit qlog before checking if the stream still exists.
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        "                        let dropped = stream.send.ack_and_drop(offset, length);\n",
+        "                        let dropped = stream.send.ack_and_drop(offset, length);\n" +
+            "                        // $marker\n" +
+            "                        if fin {\n                            stream.send.socket_ack_fin();\n                        }\n",
+    )
+    replaceOnce(
+        libRs,
+        "                        let retransmitted =\n                            stream.send.retransmit(offset, length);\n",
+        "                        let retransmitted =\n                            stream.send.retransmit(offset, length);\n" +
+            "                        // $marker\n" +
+            "                        if fin {\n                            stream.send.socket_fin_lost();\n                        }\n",
+    )
+    logger.lifecycle("Patched quiche source: a stream's FIN stays queued until sent and owed until acknowledged")
 }
 
 /**
@@ -2217,6 +2547,11 @@ fun createBuildJvmJniShimTask(
                     listOf(
                         "clang",
                         "-dynamiclib",
+                        // Explicit, so the shim for either arch builds on either host: the release's
+                        // macOS natives come from one arm64 runner, and without -arch an "x64" shim
+                        // there is an arm64 binary that cannot link the x86_64 libquiche.dylib.
+                        "-arch",
+                        if (arch == "x64") "x86_64" else "arm64",
                         "-O2",
                         // Keep the frame pointer so a JVM hs_err / core backtrace can unwind through
                         // the JNI shim reliably (the JVM's native stack walker doesn't use DWARF CFI).
@@ -2330,6 +2665,18 @@ val jvmJniShimLinuxX64 =
 val jvmJniShimLinuxArm64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
 
+// Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
+// The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
+// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 8-20 on an Intel
+// Mac could not load quiche. .github/scripts/verify-quiche-jvm-natives.sh gates the result.
+if (isMacOS) {
+    tasks.register("buildPublishedMacosQuicheNatives") {
+        group = "build"
+        description = "Build libquiche + the JNI shim for macos-arm64 and macos-x64 (the published macOS natives)"
+        dependsOn(jvmJniShimMacosArm64!!, jvmJniShimMacosX64!!)
+    }
+}
+
 // Unified entry point referenced by the handoff doc — builds every native lib
 // needed to exercise socket-quic on the current host's JVM (shared + JNI shim).
 tasks.register("prepareQuicheNativeLib") {
@@ -2346,6 +2693,25 @@ tasks.register("prepareQuicheNativeLib") {
         dependsOn(
             if (hostArch == "arm64") jvmJniShimLinuxArm64!! else jvmJniShimLinuxX64!!,
         )
+    }
+}
+
+// Reset and patch the quiche checkout under build/quiche, unconditionally, for a build that compiles
+// it outside the tasks above — CI's MinGW cross-build of the Windows JNI shim. The build tasks only
+// prepare the tree when they run, and a warm cache skips them, which left the cross-build compiling
+// whatever tree the cache restored: on PR #710 that was the tree patched for the commit before #709,
+// so the Windows DLL shipped without either FIN patch. Writes build/quiche-source.properties (outside
+// the cached directory, so it can only come from this run) naming the tree and its patch digest.
+tasks.register("prepareQuicheSource") {
+    group = "build"
+    description = "Reset and patch the quiche checkout under build/quiche; record its path and patch digest"
+    val buildDirProvider = quicheBuildDir
+    val record = layout.buildDirectory.file("quiche-source.properties")
+    outputs.upToDateWhen { false }
+    doLast {
+        val sourceDir = downloadQuicheSource(buildDirProvider.get().asFile, quicheVersion, quicheSha256)
+        record.get().asFile.writeText("dir=${sourceDir.absolutePath}\ndigest=$quichePatchDigest\n")
+        logger.lifecycle("Prepared quiche source ${sourceDir.absolutePath} (patch digest $quichePatchDigest)")
     }
 }
 
@@ -3676,6 +4042,21 @@ kotlin {
         compilations.create("java21") {
             compilerOptions.configure {
                 jvmTarget.set(JvmTarget.JVM_21)
+                // The FFM backend is part of this module, so it may see main's `internal` declarations —
+                // which is what keeps the deterministic-simulation seam (QuicheRandomPin) out of the
+                // public API. A friend path, not associateWith: that would depend on the jvm jar, which
+                // packs this compilation's own output (the multi-release jar) — a task cycle.
+                freeCompilerArgs.add(
+                    provider {
+                        "-Xfriend-paths=" +
+                            this@jvm
+                                .compilations
+                                .getByName("main")
+                                .output
+                                .classesDirs
+                                .joinToString(",") { it.absolutePath }
+                    },
+                )
             }
             defaultSourceSet {
                 kotlin.srcDir("src/jvm21Main/kotlin")

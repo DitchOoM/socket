@@ -115,7 +115,7 @@ internal class SharedQuicheServer(
     private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
 
     /** Connection-lifecycle bookkeeping shared with the platform build functions (see [ServerConnectionRegistry]). */
-    private val registry = ServerConnectionRegistry<ServerPathPair>(api)
+    private val registry = ServerConnectionRegistry<ServerPathPair>(api, tuning.clock)
 
     /**
      * PathKey→peer resolution for the egress channels (sendInfo.to → real send target, no address
@@ -162,8 +162,8 @@ internal class SharedQuicheServer(
      * A connection's recorder starts when its driver does, and the driver's channel wrap records every
      * datagram after that — so three things are structurally invisible to a per-connection trace: the
      * Initial that created the connection (fed to quiche in [acceptNewConnection] before the driver
-     * exists), a datagram `quiche_header_info` rejected, and a datagram routed to a driver that has
-     * already stopped. An empty server trace would therefore have three readings — nothing arrived,
+     * exists), a datagram `quiche_header_info` rejected, and a datagram for a connection that has
+     * already closed. An empty server trace would therefore have three readings — nothing arrived,
      * something arrived and was rejected, something arrived and was refused. This records those three
      * at the receive loop, typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so a report
      * says which.
@@ -368,8 +368,14 @@ internal class SharedQuicheServer(
                     val dcidLen = readNativeSizeT(dcidLenBuf)
                     val dcidKey = ConnectionIdKey.from(dcidBuf, offset = 0, length = dcidLen)
 
-                    val existingDriver = registry.driverForDcid(dcidKey)
-                    if (existingDriver != null) {
+                    val route = registry.routeFor(dcidKey)
+                    if (route is DcidRoute.RecentlyClosed) {
+                        serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
+                        recvBuf.freeNativeMemory()
+                        continue@loop
+                    }
+                    if (route is DcidRoute.Live) {
+                        val existingDriver = route.driver
                         // The per-source recv_info lets quiche see the real datagram origin so a migrated
                         // client's new source is recognised as a new path (passive migration). Hold an
                         // in-flight ref so the cache can't evict+free it while the driver has it queued.
@@ -410,9 +416,11 @@ internal class SharedQuicheServer(
                                 PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
                             )
                         if (existingDriver.commands.trySend(packet).isFailure) {
-                            serverCapture.record { it.error(ServerDatagramDrop.DriverGone(received, peer)) }
+                            // The connection closed before the handler's cleanup unrouted it: the same
+                            // late datagram RecentlyClosed names, one hop earlier.
+                            serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
                             packet.release(QuicheCmd.ReleaseDoor.Refused)
-                            // Remove ALL entries for this dead driver, not just the one we hit.
+                            // Retire ALL entries for this closed driver, not just the one we hit.
                             registry.deRouteDriver(existingDriver)
                         }
                     } else {
@@ -648,14 +656,14 @@ internal sealed interface AcceptOutcome {
 
 /**
  * A datagram the server's receive loop dequeued and could not hand to any connection — recorded into
- * the server-level trace (`ERROR` line), never thrown.
+ * the server-level trace, never thrown: as an `ERROR` line when it should not have arrived, and as a
+ * `DROP` line when it is an expected part of normal operation ([ForClosedConnection]).
  *
- * A `Throwable` because that is what the trace format's `ERROR` line carries: the **qualified** class
- * name plus a message, so the reason stays typed and retraceable (never a bare string), exactly as
- * every other recorded error in this module. The message names the datagram's size and source; the
- * subclass names which of the three exits it took. Together with the accept-time `DGRAM_IN` the
- * receive loop also records, they make an empty server trace mean one thing only: nothing was
- * dequeued from the socket at all.
+ * A `Throwable` because that is what those lines carry: the **qualified** class name plus a message, so
+ * the reason stays typed and retraceable (never a bare string), exactly as every other recorded error
+ * in this module. The message names the datagram's size and source; the subclass names which exit it
+ * took. Together with the accept-time `DGRAM_IN` the receive loop also records, they make an empty
+ * server trace mean one thing only: nothing was dequeued from the socket at all.
  */
 internal sealed class ServerDatagramDrop(
     message: String,
@@ -699,9 +707,13 @@ internal sealed class ServerDatagramDrop(
         peer: SocketAddress,
     ) : ServerDatagramDrop("$len B from $peer: an Initial for a new connection must arrive in a datagram of at least 1200 bytes")
 
-    /** The DCID routed to a connection whose driver has already stopped taking packets. */
-    class DriverGone(
+    /**
+     * The DCID belonged to a connection this server closed within its draining period: a packet the peer
+     * sent before it learned of the close, or its own CONNECTION_CLOSE crossing ours. An expected part of
+     * every close (RFC 9000 §10.2), so it is recorded as a `DROP`, never an `ERROR`.
+     */
+    class ForClosedConnection(
         len: Int,
         peer: SocketAddress,
-    ) : ServerDatagramDrop("$len B from $peer: routed to a connection whose driver has stopped")
+    ) : ServerDatagramDrop("$len B from $peer: for a connection this server closed within its draining period")
 }

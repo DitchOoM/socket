@@ -92,7 +92,8 @@ runs:
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with five parallel consumers a cache miss would have
     # all five racing to upload the same key — four of them losing, all five paying the upload. The
-    # `natives` job is the single writer for these keys.
+    # `natives` job is the single writer for the other keys; Konan's is native-deps-freshness.yaml's
+    # `cache-warm`, the one job that compiles Kotlin/Native for Linux in a scope that can write.
     - name: Restore Konan cache
       if: inputs.konan == 'true'
       uses: actions/cache/restore@v6

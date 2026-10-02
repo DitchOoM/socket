@@ -43,12 +43,21 @@ repo_hosts='(repo\.maven\.apache\.org|repo1\.maven\.org|plugins\.gradle\.org|plu
 transient+="|> ${repo_hosts}: (nodename nor servname provided, or not known|Temporary failure in name resolution|Name or service not known)"
 transient+="|UnknownHostException: ${repo_hosts}"
 backoff_unit="${GRADLE_RETRY_BACKOFF_SECONDS:-30}"
+# Gradle words the server's answer either on the request's own line ("Could not HEAD '…'. Received
+# status code 403 …") or, for an artifact download, on the line beneath it ("> Received status code 403
+# from server: Forbidden", job 110651316487). Fold the second form onto its request line so one
+# line-anchored pattern judges both.
+fold_status_lines() {
+  awk '/^[[:space:]]*> Received status code / { sub(/^[[:space:]]*> /, ""); line = line " " $0; next }
+       { if (NR > 1) print line; line = $0 }
+       END { if (NR > 0) print line }' "$1"
+}
 
 for i in $(seq 1 "$attempts"); do
   if ./gradlew "$@" 2>&1 | tee "$log"; then
     exit 0
   fi
-  if ! grep -qE "$transient" "$log"; then
+  if ! fold_status_lines "$log" | grep -qE "$transient"; then
     echo "::error::gradle failed for a non-transient reason — not retrying. See the output above."
     exit 1
   fi

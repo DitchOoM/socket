@@ -97,6 +97,17 @@ class MockQuicConnection(
         return stream to peerSide
     }
 
+    /** Close as the peer would, with [unread] still held for the application, as a real backend settles it. */
+    fun closeByPeerHolding(unread: QuicUnreadAtClose.Unread) {
+        _unreadAtClose.value = unread
+        _state.value = QuicConnectionState.Closed(QuicCloseReason.Graceful)
+    }
+
+    /** Publish what a closed connection still holds, as a read that returns a stream's last data or end does. */
+    fun publishUnread(unread: QuicUnreadAtClose) {
+        _unreadAtClose.value = unread
+    }
+
     /** Transition state (for testing state machine assertions). */
     fun transitionTo(newState: QuicConnectionState) {
         if (newState is QuicConnectionState.Closed) _unreadAtClose.value = QuicUnreadAtClose.AllRead
