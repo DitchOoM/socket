@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.EINVAL
 import platform.posix.ENOMEM
+import platform.posix.getpid
 import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -97,9 +98,12 @@ class IoUringSetupRetryTests {
             IoUringManager.cleanup()
             val real = IoUringManager.queueInit.value
             val attempts = AtomicInt(0)
-            IoUringManager.queueInit.value = { _, _ ->
-                attempts.incrementAndGet()
-                -ENOMEM
+            val oneSetupsBudget = ENOMEM_SETUP_PASSES * IO_URING_SETUP_LADDER.size
+            // Refuses exactly one setup's budget and then is the kernel again: the seam is process-wide, so
+            // a setup any other submitter starts before the `finally` below must still reach the kernel,
+            // and a failure of the fresh setup below then means the kernel refused, never this fake.
+            IoUringManager.queueInit.value = { ring, params ->
+                if (attempts.incrementAndGet() <= oneSetupsBudget) -ENOMEM else real(ring, params)
             }
             val failure =
                 try {
@@ -111,7 +115,7 @@ class IoUringSetupRetryTests {
                 } finally {
                     IoUringManager.queueInit.value = real
                 }
-            assertEquals(ENOMEM_SETUP_PASSES * IO_URING_SETUP_LADDER.size, attempts.value)
+            assertEquals(oneSetupsBudget, attempts.value, "only the failed setup may have called the refusing init")
             assertTrue(
                 failure.message.orEmpty().contains("errno=$ENOMEM"),
                 "the failure must name the errno: ${failure.message}",
@@ -122,6 +126,19 @@ class IoUringSetupRetryTests {
                     IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_nop(sqe) }
                 }
             assertEquals(0, result, "the next operation must run on a freshly set-up ring")
+            IoUringManager.cleanup()
+        }
+
+    /**
+     * The ENOMEM report names every process of this user holding io_uring rings, because ring memory is
+     * charged to a budget all of them share. This process's own ring must be among them, with its sizes.
+     */
+    @Test
+    fun theSetupFailureReportNamesThisProcesssRingWithItsSizes() =
+        runBlocking {
+            withTimeout(10.seconds) { IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_nop(sqe) } }
+            val report = ioUringRingsOfThisUser()
+            assertTrue(report.contains("(${getpid()})=sq1024/cq2048"), "this process's 1024-entry ring is missing: $report")
             IoUringManager.cleanup()
         }
 }

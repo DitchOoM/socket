@@ -22,6 +22,7 @@ import platform.posix.close
 import platform.posix.pipe
 import platform.posix.write
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -42,10 +43,8 @@ class IoUringIdleReleaseTests {
     fun theLastSocketsCloseLeavesAnOperationStillInFlightRunning() =
         runBlocking {
             IoUringManager.cleanup()
-            // Sockets other tests in this binary left open would keep this test's close from being the
-            // last one, so their count is set aside for the test and restored after it.
-            val others = IoUringManager.activeSockets
-            repeat(others) { IoUringManager.onSocketClosed() }
+            // Every other test closes what it opens, so this test's close is the last one.
+            assertEquals(0, IoUringManager.activeSockets, "a socket another test opened is still counted")
             memScoped {
                 val fds = allocArray<IntVar>(2)
                 check(pipe(fds) == 0) { "pipe() failed" }
@@ -79,7 +78,6 @@ class IoUringIdleReleaseTests {
                     close(readFd)
                     close(writeFd)
                     IoUringManager.cleanup()
-                    repeat(others) { IoUringManager.onSocketOpened() }
                 }
             }
         }
