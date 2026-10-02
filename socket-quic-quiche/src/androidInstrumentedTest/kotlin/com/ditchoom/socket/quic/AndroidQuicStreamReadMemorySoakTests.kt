@@ -81,11 +81,12 @@ class AndroidQuicStreamReadMemorySoakTests {
                                 val stream = openStream()
                                 val out = bufferFactory.allocate(PAYLOAD.length)
                                 try {
-                                    repeat(WARMUP_READS) { stream.echoRound(out) }
+                                    val warmUp = SoakPace("warm-up")
+                                    warmUp.measure { repeat(WARMUP_READS) { warmUp.round { stream.echoRound(out) } } }
                                     val before = settledNativeHeap()
 
                                     var echoed = 0L
-                                    val pace = SoakPace()
+                                    val pace = SoakPace("measured")
                                     pace.measure { repeat(READS) { echoed += pace.round { stream.echoRound(out) } } }
 
                                     val after = settledNativeHeap()
@@ -138,15 +139,28 @@ class AndroidQuicStreamReadMemorySoakTests {
      * How the measured rounds went, so a soak that runs out of time says whether it was slow throughout (a
      * high mean) or stuck once (one round holding most of the elapsed time), and at which round.
      */
-    private class SoakPace {
+    private class SoakPace(
+        private val phase: String,
+    ) {
         private val start = TimeSource.Monotonic.markNow()
         private var rounds = 0
         private var slowestRound = -1
         private var slowest = Duration.ZERO
 
+        /**
+         * Runs one round under a [StallDump]: a round still running at [STALL_DUMP_AFTER] — short of
+         * [OP_DEADLINE], so while it is still stuck — prints every thread's stack to logcat from a timer
+         * thread that needs no dispatcher. A round that ends disarms it, so a healthy soak prints nothing.
+         */
         suspend fun <T> round(block: suspend () -> T): T {
             val mark = TimeSource.Monotonic.markNow()
-            val value = block()
+            val dump = armStallDump(STALL_DUMP_AFTER, "the memory soak's $phase round $rounds")
+            val value =
+                try {
+                    block()
+                } finally {
+                    dump.disarm()
+                }
             val took = mark.elapsedNow()
             if (took > slowest) {
                 slowest = took
@@ -161,7 +175,7 @@ class AndroidQuicStreamReadMemorySoakTests {
             try {
                 block()
             } catch (e: Throwable) {
-                throw AssertionError("the soak stopped during round $rounds: $this", e)
+                throw AssertionError("the soak stopped during $phase round $rounds: $this", e)
             }
         }
 
@@ -196,6 +210,9 @@ class AndroidQuicStreamReadMemorySoakTests {
         const val MAX_GROWTH_BYTES = 24L * 1024L * 1024L
         const val SETTLE_MILLIS = 300L
         val OP_DEADLINE: Duration = 20.seconds
+
+        /** Longer than any healthy round by three orders of magnitude, and short of [OP_DEADLINE]. */
+        val STALL_DUMP_AFTER: Duration = 15.seconds
         val SOAK_BUDGET: Duration = 5.minutes
     }
 }
