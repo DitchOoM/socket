@@ -257,8 +257,16 @@ fun downloadQuicheSource(
     // is delivered. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheFinIsSentUntilAcknowledged(sourceDir)
 
+    // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
+    // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
+    // than trusting whatever a restore left behind.
+    sourceDir.resolve(quicheSourceDigestStamp).writeText(quichePatchDigest)
+
     return sourceDir
 }
+
+/** Untracked file in the prepared quiche tree naming the [quichePatchDigest] it was patched for. */
+val quicheSourceDigestStamp = ".socket-patch-digest"
 
 /**
  * Make quiche's own random draws **caller-seedable**, the entropy half of the caller clock
@@ -2586,6 +2594,25 @@ tasks.register("prepareQuicheNativeLib") {
         dependsOn(
             if (hostArch == "arm64") jvmJniShimLinuxArm64!! else jvmJniShimLinuxX64!!,
         )
+    }
+}
+
+// Reset and patch the quiche checkout under build/quiche, unconditionally, for a build that compiles
+// it outside the tasks above — CI's MinGW cross-build of the Windows JNI shim. The build tasks only
+// prepare the tree when they run, and a warm cache skips them, which left the cross-build compiling
+// whatever tree the cache restored: on PR #710 that was the tree patched for the commit before #709,
+// so the Windows DLL shipped without either FIN patch. Writes build/quiche-source.properties (outside
+// the cached directory, so it can only come from this run) naming the tree and its patch digest.
+tasks.register("prepareQuicheSource") {
+    group = "build"
+    description = "Reset and patch the quiche checkout under build/quiche; record its path and patch digest"
+    val buildDirProvider = quicheBuildDir
+    val record = layout.buildDirectory.file("quiche-source.properties")
+    outputs.upToDateWhen { false }
+    doLast {
+        val sourceDir = downloadQuicheSource(buildDirProvider.get().asFile, quicheVersion, quicheSha256)
+        record.get().asFile.writeText("dir=${sourceDir.absolutePath}\ndigest=$quichePatchDigest\n")
+        logger.lifecycle("Prepared quiche source ${sourceDir.absolutePath} (patch digest $quichePatchDigest)")
     }
 }
 
