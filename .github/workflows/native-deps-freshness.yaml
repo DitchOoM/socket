@@ -383,6 +383,17 @@ jobs:
         continue-on-error: true
         run: ./gradlew resolveAllDependencies --no-configuration-cache
 
+      # validate-artifacts.yaml resolves .ci/validate-resolution, a separate build whose plugin
+      # classpath (Kotlin's plugin alone) settles on older jars than the main build's, where other
+      # plugins win conflict resolution: kotlinx-coroutines-core-jvm 1.8.0 and
+      # error_prone_annotations 2.27.0 were in no cache, so every validation fetched them from Central
+      # (job 110651316487: 403 on both). Configuring that build resolves its classpath into the
+      # `gradle-linux-` entry this job saves; the properties are placeholders because `help` resolves
+      # none of socket's own artifacts.
+      - name: Warm the artifact-validation build's plugin classpath
+        continue-on-error: true
+        run: ./gradlew -p .ci/validate-resolution help -PsocketVersion=0.0.0 -PmavenRepoPath=/tmp/none --no-daemon
+
       - name: Report warmed artifacts
         if: always()
         run: |
