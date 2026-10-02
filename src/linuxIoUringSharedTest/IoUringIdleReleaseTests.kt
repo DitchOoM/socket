@@ -1,6 +1,7 @@
-package com.ditchoom.socket
+package com.ditchoom.socket.iouring
 
-import com.ditchoom.socket.linux.io_uring_prep_poll_add
+import com.ditchoom.socket.iouring.linux.io_uring_prep_nop
+import com.ditchoom.socket.iouring.linux.io_uring_prep_poll_add
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -10,6 +11,7 @@ import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -23,6 +25,8 @@ import platform.posix.pipe
 import platform.posix.write
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -30,7 +34,8 @@ import kotlin.time.Duration.Companion.seconds
  * The ring is released when the last socket closes, and that release must not end an operation that
  * is still in flight. A connect is not counted as a socket until it completes, so on CI a
  * `bidirectionalDataTransfer` connect failed with `ECANCELED` when the previous test's accepted socket
- * closed late, dropped the count to zero and stopped the loop under it.
+ * closed late, dropped the count to zero and stopped the loop under it. Both modules' rings run this
+ * manager, so both run this test.
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringIdleReleaseTests {
@@ -80,5 +85,39 @@ class IoUringIdleReleaseTests {
                     IoUringManager.cleanup()
                 }
             }
+        }
+
+    /**
+     * A caller that read a life just before it granted an idle release sends its operation after the
+     * loop's last drain: it never reached a ring, so it must run on the next life, not fail with
+     * `-ECANCELED` as an operation of a stopped life would.
+     */
+    @Test
+    fun anOperationSentAsALifeGrantsAnIdleReleaseRunsOnTheNextLife() =
+        runBlocking {
+            IoUringManager.cleanup()
+            assertEquals(0, IoUringManager.activeSockets, "a socket another test opened is still counted")
+            withTimeout(10.seconds) { IoUringManager.submitAndWait { sqe, _ -> io_uring_prep_nop(sqe) } }
+            val idle = assertIs<PollerState.Running>(IoUringManager.pollerState)
+            val late = CompletableDeferred<Int>()
+            IoUringManager.idleReleaseGranted.value = { life ->
+                life.queue.trySend(
+                    SubmissionRequest(IoUringManager.nextUserData(), late, null, SubmissionKind.Awaited) { sqe, _ ->
+                        io_uring_prep_nop(sqe)
+                    },
+                )
+            }
+            try {
+                IoUringManager.releaseIfIdle(idle)
+            } finally {
+                IoUringManager.idleReleaseGranted.value = { }
+            }
+            assertEquals(
+                0,
+                withTimeout(10.seconds) { late.await() },
+                "an operation sent into an idle-released life must run on the next life (-ECANCELED is ${-ECANCELED})",
+            )
+            assertNotSame<PollerState>(idle, IoUringManager.pollerState, "the operation must have started a new life")
+            IoUringManager.cleanup()
         }
 }

@@ -254,14 +254,19 @@ class DataIntegrityTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        clientConnected.unlock()
-                        // Send data in parts with delays
-                        client.writeString("PART1")
-                        kotlinx.coroutines.delay(50)
-                        client.writeString("PART2")
-                        kotlinx.coroutines.delay(50)
-                        client.writeString("PART3")
-                        client.close()
+                        // The reader can hold all three parts before the last write returns here, and the
+                        // test then cancels this job inside it: the close must not depend on that write.
+                        try {
+                            clientConnected.unlock()
+                            // Send data in parts with delays
+                            client.writeString("PART1")
+                            kotlinx.coroutines.delay(50)
+                            client.writeString("PART2")
+                            kotlinx.coroutines.delay(50)
+                            client.writeString("PART3")
+                        } finally {
+                            client.close()
+                        }
                     }
                 }
 

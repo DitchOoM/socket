@@ -108,12 +108,23 @@ fun KotlinNativeTarget.configureNwUdpCinterop() {
 //
 // Phase 2 shipped JVM + Android (NIO DatagramChannel). Phase 3 adds Linux io_uring + Apple
 // Network.framework native actuals. Node dgram and the QUIC cutover land in later phases.
-// io_uring ring setup: the one source in root's src/linuxIoUringShared, copied into this module's
-// package, because two klibs declaring the same internal name cannot link into one binary.
-val generateIoUringSetup by tasks.registering(Sync::class) {
-    from(rootProject.file("src/linuxIoUringShared"))
-    into(layout.buildDirectory.dir("generated/ioUringSetup/kotlin"))
-    filter { line -> if (line.startsWith("package ")) "package com.ditchoom.socket.udp" else line }
+// The io_uring engine: the one source in root's src/linuxIoUringShared (tests:
+// src/linuxIoUringSharedTest), copied into this module's package, because two klibs declaring the
+// same internal name cannot link into one binary. The package rewrite also selects this module's
+// cinterop.
+fun Sync.ioUringCopy(
+    source: String,
+    target: String,
+) {
+    from(rootProject.file(source))
+    into(layout.buildDirectory.dir(target))
+    filter { line -> line.replace("com.ditchoom.socket.iouring", "com.ditchoom.socket.udp") }
+}
+val generateIoUring by tasks.registering(Sync::class) {
+    ioUringCopy("src/linuxIoUringShared", "generated/ioUring/kotlin")
+}
+val generateIoUringTest by tasks.registering(Sync::class) {
+    ioUringCopy("src/linuxIoUringSharedTest", "generated/ioUringTest/kotlin")
 }
 
 kotlin {
@@ -246,7 +257,8 @@ kotlin {
         }
 
         if (linuxTargets) {
-            named("linuxMain") { kotlin.srcDir(generateIoUringSetup) }
+            named("linuxMain") { kotlin.srcDir(generateIoUring) }
+            named("linuxTest") { kotlin.srcDir(generateIoUringTest) }
         }
 
         val commonJvmTest by creating {

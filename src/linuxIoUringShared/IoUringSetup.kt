@@ -5,9 +5,6 @@ import kotlinx.cinterop.toKString
 import platform.posix.ENOMEM
 import platform.posix.strerror
 
-// The one ring-setup implementation for every module that owns an io_uring ring (root :socket and
-// :socket-udp). Each module's build copies it into its own package (the `package` line above is
-// rewritten), because two klibs declaring the same internal name cannot link into one binary.
 // The flag values are the kernel's `IORING_SETUP_*` ABI.
 private const val IORING_SETUP_COOP_TASKRUN = 0x100u
 private const val IORING_SETUP_SINGLE_ISSUER = 0x1000u
