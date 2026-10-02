@@ -874,6 +874,13 @@ kotlin.sourceSets.named("commonTest") {
     kotlin.srcDir(generateHarnessConfig.map { harnessGeneratedDir })
 }
 
+// Test helpers that commonTest AND androidInstrumentedTest both need. The Android plugin builds the
+// instrumented test outside the commonTest tree, so it cannot see commonTest's sources; a shared srcDir
+// keeps one internal copy, unpublished (socket-testkit is a published artifact, and these are not API).
+val acceptedSocketScopeDir = layout.projectDirectory.dir("src/acceptedSocketScope/kotlin")
+kotlin.sourceSets.named("commonTest") { kotlin.srcDir(acceptedSocketScopeDir) }
+kotlin.sourceSets.named("androidInstrumentedTest") { kotlin.srcDir(acceptedSocketScopeDir) }
+
 tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     dependsOn(generateHarnessConfig)
     // Gradle's console formatter walks an exception's cause chain but never its suppressed exceptions;
