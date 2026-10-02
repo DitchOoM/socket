@@ -44,6 +44,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 cachedReadBufferSize = getSocketReceiveBufferSize(value)
                 if (!wasOpen) {
                     IoUringManager.onSocketOpened()
+                    IoUringDiag.opened("accepted", this)
                 }
             }
         }
@@ -242,6 +243,7 @@ open class LinuxSocketWrapper : ClientSocket {
         }
         if (wasOpen) {
             IoUringManager.onSocketClosed()
+            IoUringDiag.closed("accepted", this)
         }
     }
 

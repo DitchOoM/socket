@@ -850,6 +850,7 @@ internal abstract class IoUringDatagramChannelCore(
     private fun releaseDescriptor() {
         close(fd)
         IoUringManager.onSocketClosed()
+        IoUringDiag.closed("udp", this)
     }
 
     /**

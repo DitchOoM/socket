@@ -119,6 +119,7 @@ class LinuxServerSocket(
 
                 // Track active socket for IoUringManager auto-cleanup
                 IoUringManager.onSocketOpened()
+                IoUringDiag.opened("server", this)
             } catch (e: Exception) {
                 // Clean up on bind/listen failure
                 listening.value = 0
@@ -241,6 +242,7 @@ class LinuxServerSocket(
         boundPort = -1
         if (wasOpen) {
             IoUringManager.onSocketClosed()
+            IoUringDiag.closed("server", this)
         }
     }
 }

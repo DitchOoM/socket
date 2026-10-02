@@ -83,6 +83,7 @@ class LinuxClientSocket(
             }
             // Track active socket for IoUringManager auto-cleanup
             IoUringManager.onSocketOpened()
+            IoUringDiag.opened("client", this)
         } catch (e: Exception) {
             closeInternal()
             throw e
@@ -638,6 +639,7 @@ class LinuxClientSocket(
         // Only decrement if the socket was actually open (avoid double-close underflow).
         if (wasOpen) {
             IoUringManager.onSocketClosed()
+            IoUringDiag.closed("client", this)
         }
     }
 

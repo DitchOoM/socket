@@ -80,7 +80,10 @@ actual object UdpSocket {
             ipv6 = local.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
             bufferFactory = bufferFactory,
-        ).also { IoUringManager.onSocketOpened() }
+        ).also {
+            IoUringManager.onSocketOpened()
+            IoUringDiag.opened("udp", it)
+        }
     }
 
     actual suspend fun connect(
@@ -130,7 +133,10 @@ actual object UdpSocket {
             ipv6 = peer.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
             bufferFactory = bufferFactory,
-        ).also { IoUringManager.onSocketOpened() }
+        ).also {
+            IoUringManager.onSocketOpened()
+            IoUringDiag.opened("udp", it)
+        }
     }
 
     actual suspend fun bindMulticast(
@@ -162,6 +168,7 @@ actual object UdpSocket {
                 bufferFactory = bufferFactory,
             )
         IoUringManager.onSocketOpened()
+        IoUringDiag.opened("udp-mcast", base)
         return MulticastIoUringDatagramChannel(ipv6 = v6, base = base)
     }
 
