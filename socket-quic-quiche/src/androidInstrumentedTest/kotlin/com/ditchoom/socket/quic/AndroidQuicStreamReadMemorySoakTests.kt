@@ -17,6 +17,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * The device-side guard for #538: **ART's native heap stays flat across thousands of QUIC stream
@@ -72,7 +73,11 @@ class AndroidQuicStreamReadMemorySoakTests {
                                 }
                             }
                         try {
-                            withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 15.seconds) {
+                            // The wrapper's `timeout` bounds connect + block + close together, so it must be
+                            // the soak's own budget. The 15 s default fired first here (2026-10-02, API 35),
+                            // while healthy lanes already took 6.6-11.8 s, and its bare "Timed out waiting
+                            // for 15000 ms" could not say whether the soak was slow or stuck.
+                            withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = SOAK_BUDGET) {
                                 val stream = openStream()
                                 val out = bufferFactory.allocate(PAYLOAD.length)
                                 try {
@@ -80,7 +85,8 @@ class AndroidQuicStreamReadMemorySoakTests {
                                     val before = settledNativeHeap()
 
                                     var echoed = 0L
-                                    repeat(READS) { echoed += stream.echoRound(out) }
+                                    val pace = SoakPace()
+                                    pace.measure { repeat(READS) { echoed += pace.round { stream.echoRound(out) } } }
 
                                     val after = settledNativeHeap()
                                     assertEquals(
@@ -91,7 +97,7 @@ class AndroidQuicStreamReadMemorySoakTests {
                                     val growth = after - before
                                     val report =
                                         "reads=$READS nativeHeap ${before}B -> ${after}B " +
-                                            "(+${growth}B, ${growth / READS}B/read), bound=${MAX_GROWTH_BYTES}B"
+                                            "(+${growth}B, ${growth / READS}B/read), bound=${MAX_GROWTH_BYTES}B, $pace"
                                     println("[538-soak-android] $report")
                                     assertTrue(
                                         growth <= MAX_GROWTH_BYTES,
@@ -126,6 +132,44 @@ class AndroidQuicStreamReadMemorySoakTests {
             Thread.sleep(SETTLE_MILLIS)
         }
         return Debug.getNativeHeapAllocatedSize()
+    }
+
+    /**
+     * How the measured rounds went, so a soak that runs out of time says whether it was slow throughout (a
+     * high mean) or stuck once (one round holding most of the elapsed time), and at which round.
+     */
+    private class SoakPace {
+        private val start = TimeSource.Monotonic.markNow()
+        private var rounds = 0
+        private var slowestRound = -1
+        private var slowest = Duration.ZERO
+
+        suspend fun <T> round(block: suspend () -> T): T {
+            val mark = TimeSource.Monotonic.markNow()
+            val value = block()
+            val took = mark.elapsedNow()
+            if (took > slowest) {
+                slowest = took
+                slowestRound = rounds
+            }
+            rounds++
+            return value
+        }
+
+        /** Runs [block]; anything it throws is rethrown with this pace attached, so a deadline names the round. */
+        suspend fun measure(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (e: Throwable) {
+                throw AssertionError("the soak stopped during round $rounds: $this", e)
+            }
+        }
+
+        override fun toString(): String {
+            val elapsed = start.elapsedNow()
+            val mean = if (rounds == 0) Duration.ZERO else elapsed / rounds
+            return "pace: $rounds rounds in $elapsed (mean $mean), slowest round #$slowestRound took $slowest"
+        }
     }
 
     /** One lock-step round trip; loops until the whole payload is back, so a split read cannot desync. */
