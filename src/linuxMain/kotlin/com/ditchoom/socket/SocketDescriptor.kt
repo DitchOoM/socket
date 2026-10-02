@@ -149,7 +149,7 @@ internal class SocketDescriptor(
     fun close() {
         if (!beginClosing()) return
         // After the bit is set: see [submit]. A lane with nothing prepared has nothing to cancel.
-        Lane.entries.forEach { lane -> IoUringManager.cancelOperation(inFlight[lane.ordinal].value) }
+        // MUTATION: no cancel on close
         if (exit()) release()
     }
 
