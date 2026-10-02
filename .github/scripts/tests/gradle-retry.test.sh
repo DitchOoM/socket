@@ -25,17 +25,21 @@ check() { # <name> <expected-exit> <expected-attempts> <actual-exit> <actual-att
   echo "ok: $name"; pass=$((pass + 1))
 }
 
-run() { # <failure-text-file> <attempts-that-fail> -> sets OUT/RC/N
-  local text="$1" failing="$2"
+run() { # <failure-text-file> <attempts-that-fail> [<gradle-command-name>] -> sets OUT/RC/N
+  local text="$1" failing="$2" cmd="${3:-gradlew}"
   local tmp; tmp="$(mktemp -d)"
-  cat >"$tmp/gradlew" <<EOF
+  cat >"$tmp/$cmd" <<EOF
 #!/usr/bin/env bash
 n=\$(cat "$tmp/n" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$tmp/n"
 if [ "\$n" -le $failing ]; then cat "$text"; exit 1; fi
 echo "BUILD SUCCESSFUL"
 EOF
-  chmod +x "$tmp/gradlew"
-  OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
+  chmod +x "$tmp/$cmd"
+  if [ "$cmd" = gradlew ]; then
+    OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
+  else
+    OUT="$(cd "$tmp" && PATH="$tmp:$PATH" GRADLE_RETRY_COMMAND="$cmd" RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 bash "$script" help 2>&1)"
+  fi
   RC=$?
   N="$(cat "$tmp/n")"
   rm -rf "$tmp"
@@ -98,6 +102,28 @@ Execution failed for task ':jvmTest'.
 > There were failing tests.
 EOF
 
+# Verbatim from job 110651316487 (Gradle 9.8.0, validate-artifacts), timestamps stripped: an artifact
+# download whose 403 Gradle prints on the line BELOW its request.
+cat >"$fixtures/central-403-split" <<'EOF'
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+A problem occurred configuring root project 'validate-resolution'.
+> Could not resolve all artifacts for configuration 'classpath'.
+   > Could not download kotlinx-coroutines-core-jvm-1.8.0.jar (org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.0)
+      > Could not get resource 'https://plugins.gradle.org/m2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.8.0/kotlinx-coroutines-core-jvm-1.8.0.jar'.
+         > Could not HEAD 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.8.0/kotlinx-coroutines-core-jvm-1.8.0.jar'.
+            > Received status code 403 from server: Forbidden
+   > Could not download error_prone_annotations-2.27.0.jar (com.google.errorprone:error_prone_annotations:2.27.0)
+      > Could not get resource 'https://plugins.gradle.org/m2/com/google/errorprone/error_prone_annotations/2.27.0/error_prone_annotations-2.27.0.jar'.
+         > Could not GET 'https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotations/2.27.0/error_prone_annotations-2.27.0.jar'.
+            > Received status code 403 from server: Forbidden
+EOF
+
+# The same split form from a repository that is not Central: a real answer.
+sed 's#https://repo\.maven\.apache\.org/maven2#https://maven.pkg.github.com/o/r#g' \
+  "$fixtures/central-403-split" >"$fixtures/other-403-split"
+
 # Verbatim from run 36266351401 (job 108472720254): a genuine test failure.
 cat >"$fixtures/test-failure" <<'EOF'
 14 tests completed, 1 failed
@@ -122,6 +148,15 @@ check "a 403 from another repository is not retried" 1 1 "$RC" "$N" "$OUT" "non-
 
 run "$fixtures/test-failure" 1
 check "a failing test is not retried and keeps its output" 1 1 "$RC" "$N" "$OUT" "There were failing tests"
+
+run "$fixtures/central-403-split" 1
+check "a Central 403 printed beneath its request is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
+
+run "$fixtures/other-403-split" 1
+check "a split-form 403 from another repository is not retried" 1 1 "$RC" "$N" "$OUT" "non-transient"
+
+run "$fixtures/central-403-split" 1 fake-gradle
+check "GRADLE_RETRY_COMMAND runs the named Gradle and still retries" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
 
 run "$fixtures/central-dns-macos" 1
 check "a Central name-resolution failure (macOS) is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
