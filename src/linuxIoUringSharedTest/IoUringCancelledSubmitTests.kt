@@ -33,7 +33,7 @@ import kotlin.time.Duration.Companion.seconds
 @OptIn(ExperimentalForeignApi::class)
 class IoUringCancelledSubmitTests {
     @Test
-    fun aCancelledSubmitReturnsOnlyOnceItsOperationHasEnded() =
+    fun aCancelledSubmitReturnsOnlyOnceItsOperationHasEnded(): Unit =
         runBlocking {
             memScoped {
                 val fds = allocArray<IntVar>(2)
