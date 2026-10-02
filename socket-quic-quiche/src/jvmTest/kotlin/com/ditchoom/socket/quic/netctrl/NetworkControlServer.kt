@@ -153,12 +153,9 @@ class NetworkControlServer(
 
     private fun dispatch(command: NetCtrlCommand): NetCtrlResponse =
         when (command) {
-            is NetCtrlCommand.BlockUdp ->
-                applying("iptables -A OUTPUT -p udp -j DROP")
-                    .alsoTrackingOnSuccess("iptables -D OUTPUT -p udp -j DROP")
-            is NetCtrlCommand.UnblockUdp ->
-                applying("iptables -D OUTPUT -p udp -j DROP")
-                    .alsoUntrackingOnSuccess("iptables -D OUTPUT -p udp -j DROP")
+            is NetCtrlCommand.BlockUdp -> blockUdp(command.uid)
+            is NetCtrlCommand.UnblockUdp -> unblockUdp()
+            is NetCtrlCommand.QueryUdpDrops -> udpDrops()
             is NetCtrlCommand.AddLatency ->
                 onEgressInterface { dev ->
                     applying("tc qdisc add dev $dev root netem delay ${command.ms}ms")
@@ -248,6 +245,73 @@ class NetworkControlServer(
             is EgressInterface.Named -> block(iface.name)
             is EgressInterface.Undiscoverable -> NetCtrlResponse.Error(iface.detail)
         }
+
+    /**
+     * Drop [uid]'s UDP in both families, from a chain of our own hooked **first** in `OUTPUT`.
+     *
+     * The rule this replaces (`iptables -A OUTPUT -p udp -j DROP`) covered IPv4 only and had no counter
+     * anyone read, so whether it dropped the app's datagrams was never observed (#702). Position 1
+     * keeps the verdict independent of whatever the platform's `oem_out`/`fw_OUTPUT`/`bw_OUTPUT`
+     * chains do, `ip6tables` covers a harness reached over IPv6, and the owner match scopes the counter
+     * [udpDrops] reports to the app's own datagrams.
+     */
+    private fun blockUdp(uid: Int): NetCtrlResponse {
+        for (family in UDP_BLOCK_FAMILIES) {
+            val applied =
+                applying(
+                    "$family -w -N $UDP_BLOCK_CHAIN",
+                    "$family -w -A $UDP_BLOCK_CHAIN -p udp -m owner --uid-owner $uid -j DROP",
+                    "$family -w -I OUTPUT 1 -j $UDP_BLOCK_CHAIN",
+                )
+            if (applied !is NetCtrlResponse.Ok) return applied
+            // Tracked reversed so cleanup, which runs newest first, unhooks, then flushes, then deletes.
+            udpBlockUndo(family).reversed().forEach(::track)
+        }
+        return NetCtrlResponse.Ok()
+    }
+
+    private fun unblockUdp(): NetCtrlResponse {
+        for (family in UDP_BLOCK_FAMILIES) {
+            val undo = udpBlockUndo(family)
+            val removed = applying(*undo.toTypedArray())
+            if (removed !is NetCtrlResponse.Ok) return removed
+            undo.forEach(::untrack)
+        }
+        return NetCtrlResponse.Ok()
+    }
+
+    private fun udpBlockUndo(family: String): List<String> =
+        listOf(
+            "$family -w -D OUTPUT -j $UDP_BLOCK_CHAIN",
+            "$family -w -F $UDP_BLOCK_CHAIN",
+            "$family -w -X $UDP_BLOCK_CHAIN",
+        )
+
+    /** The block's DROP counters per family, with both `OUTPUT` chains as the evidence behind them. */
+    private fun udpDrops(): NetCtrlResponse {
+        val packets = mutableListOf<Long>()
+        val chains = StringBuilder()
+        for (family in UDP_BLOCK_FAMILIES) {
+            val counted =
+                when (val outcome = shell.run("$family -w -L $UDP_BLOCK_CHAIN -v -n -x")) {
+                    is ShellOutcome.Failed ->
+                        return NetCtrlResponse.Error(
+                            "`$family -L $UDP_BLOCK_CHAIN` failed (exit ${outcome.exitCode}): ${outcome.output}",
+                        )
+                    is ShellOutcome.Ran ->
+                        parseDropPackets(outcome.output)
+                            ?: return NetCtrlResponse.Error("no DROP rule in `$family -L $UDP_BLOCK_CHAIN`: ${outcome.output}")
+                }
+            packets += counted
+            val output =
+                when (val outcome = shell.run("$family -w -L OUTPUT -v -n -x --line-numbers")) {
+                    is ShellOutcome.Ran -> outcome.output
+                    is ShellOutcome.Failed -> "`$family -L OUTPUT` failed (exit ${outcome.exitCode}): ${outcome.output}"
+                }
+            chains.append("[$family OUTPUT]\n").append(output).append('\n')
+        }
+        return NetCtrlResponse.UdpDrops(packets[0], packets[1], chains.toString().take(MAX_CHAIN_LISTING))
+    }
 
     /** Record the undo for a modification that actually applied — and only then. */
     private fun NetCtrlResponse.alsoTrackingOnSuccess(reverseCommand: String): NetCtrlResponse =
@@ -409,6 +473,25 @@ class NetworkControlServer(
                 }.firstOrNull()
 
         private val WHITESPACE = Regex("\\s+")
+
+        private const val UDP_BLOCK_CHAIN = "netctrl_udp"
+        private val UDP_BLOCK_FAMILIES = listOf("iptables", "ip6tables")
+
+        /** Bounds the listing so a response stays small whatever the device prints. */
+        private const val MAX_CHAIN_LISTING = 6000
+
+        /**
+         * The packet count of the DROP rule in `iptables -L <chain> -v -n -x` output: the first column
+         * of the line whose target column is `DROP`. Null when there is no such line, which the caller
+         * answers as an error naming the listing.
+         */
+        internal fun parseDropPackets(listing: String): Long? =
+            listing
+                .lineSequence()
+                .map { it.trim().split(WHITESPACE) }
+                .firstOrNull { it.size > 2 && it[2] == "DROP" }
+                ?.first()
+                ?.toLongOrNull()
     }
 }
 

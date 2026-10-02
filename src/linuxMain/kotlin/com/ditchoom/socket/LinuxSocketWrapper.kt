@@ -35,18 +35,15 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     protected val readBufferSource: ReadBufferSource by lazy { ReadBufferSource(config) }
 
-    internal var sockfd: Int = -1
-        set(value) {
-            val wasOpen = field >= 0
-            field = value
-            // Cache the socket's receive buffer size when fd is set
-            if (value >= 0) {
-                cachedReadBufferSize = getSocketReceiveBufferSize(value)
-                if (!wasOpen) {
-                    IoUringManager.onSocketOpened()
-                }
-            }
-        }
+    private val descriptor = SocketDescriptor()
+
+    internal val sockfd: Int get() = descriptor.value
+
+    /** Makes an accepted connection's descriptor this socket's. */
+    internal fun adopt(fd: Int) {
+        descriptor.adopt(fd)
+        cachedReadBufferSize = getSocketReceiveBufferSize(fd)
+    }
 
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
@@ -235,14 +232,7 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun closeInternal() {
-        val wasOpen = sockfd >= 0
-        if (sockfd >= 0) {
-            closeSocket(sockfd)
-            sockfd = -1
-        }
-        if (wasOpen) {
-            IoUringManager.onSocketClosed()
-        }
+        descriptor.release()
     }
 
     override suspend fun close() {

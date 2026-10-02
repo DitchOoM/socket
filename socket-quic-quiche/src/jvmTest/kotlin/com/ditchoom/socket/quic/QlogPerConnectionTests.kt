@@ -13,6 +13,7 @@ import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -57,13 +58,23 @@ class QlogPerConnectionTests {
     /**
      * Two client connections, one after the other — the second connects after the first's
      * `quiche_conn` has been freed, the shape of every reconnect on a walk. Returns their session ids.
+     *
+     * Each dials one address, so each is exactly one quiche connection. A name with two addresses
+     * (`localhost` is ::1 and 127.0.0.1) races them, and a candidate that loses after it started is a
+     * quiche connection too, with its own qlog: a first handshake slower than the 250 ms stagger on
+     * Windows CI made three.
      */
     private suspend fun twoConsecutiveConnections(clientOptions: QuicOptions): List<String> =
         withTimeout(60.seconds) {
             withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
                 val accepting = launch(Dispatchers.IO) { connections { } }
                 try {
-                    List(2) { withQuicConnection("localhost", port, clientOptions, timeout = 10.seconds) { identity.session.hex } }
+                    List(2) {
+                        withQuicConnection(QuicPeer.Named(LOOPBACK, port), clientOptions, timeout = 10.seconds) { race ->
+                            assertIs<QuicCandidateRace.Unopposed>(race, "one address, one quiche connection: $race")
+                            identity.session.hex
+                        }
+                    }
                 } finally {
                     accepting.cancel()
                 }
@@ -168,6 +179,7 @@ class QlogPerConnectionTests {
     }
 
     private companion object {
+        const val LOOPBACK = "127.0.0.1"
         const val QLOG_DIR_PROPERTY = "quic.qlog.dir"
         const val CLIENT_VANTAGE = "\"vantage_point\":{\"type\":\"client\"}"
         const val PARAMETERS_SET = "quic:parameters_set"

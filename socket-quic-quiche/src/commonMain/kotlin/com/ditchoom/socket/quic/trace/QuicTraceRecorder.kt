@@ -214,6 +214,11 @@ class QuicTraceRecorder(
         record(TraceEvent.Error(now(), error::class.qualifiedName ?: "Throwable", error.message ?: ""))
     }
 
+    /** A datagram dropped on purpose, for [reason] — an expected disposition, never a failure. */
+    fun drop(reason: Throwable) {
+        record(TraceEvent.Drop(now(), reason::class.qualifiedName ?: "Throwable", reason.message ?: ""))
+    }
+
     /** Record a typed QUIC close reason (ERROR) — the sealed class's **qualified** name + [QuicError.describe]. */
     fun closeError(error: QuicError) {
         record(TraceEvent.Error(now(), error::class.qualifiedName ?: "QuicError", error.describe()))

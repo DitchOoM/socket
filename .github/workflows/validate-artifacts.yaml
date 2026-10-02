@@ -233,9 +233,14 @@ jobs:
       - name: Checkout validation project
         uses: actions/checkout@v7
         with:
+          # The wrapper too, so validation runs the Gradle this project pins, not the runner's own.
           sparse-checkout: |
             .ci/validate-resolution
+            .github/scripts/gradle-retry.sh
             gradle/libs.versions.toml
+            gradle/wrapper/
+            /gradlew
+            .github/scripts/verify-quiche-jvm-natives.sh
           sparse-checkout-cone-mode: false
 
       - name: Set up JDK 21
@@ -266,9 +271,19 @@ jobs:
           restore-keys: |
             gradle-linux-
 
+      # Read-only: the wrapper's pinned distribution, as the nightly warmer saves it.
+      - name: Restore Gradle wrapper distribution (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # Under gradle-retry.sh: this resolves from Maven Central, whose edge sometimes answers 403 for
+      # public artifacts (job 110651316487: the plugin classpath's coroutines + error_prone jars). A
+      # retry repeats the same resolution, so what is validated does not change.
       - name: Validate with Gradle resolution
         run: |
-          gradle -p .ci/validate-resolution resolveAll \
+          .github/scripts/gradle-retry.sh -p .ci/validate-resolution resolveAll \
             -PsocketVersion=${{ env.RESOLVED_VERSION }} \
             -PmavenRepoPath=/tmp/maven-local \
             --no-daemon
@@ -391,24 +406,14 @@ jobs:
           fi
 
           # ── 5. socket-quic-quiche JVM JAR native libs ──
-          # windows-x64 is intentionally NOT listed: no Windows quiche JNI
-          # native is currently built into the publish pipeline (the
-          # nativeLibsByPlatform map in socket-quic-quiche/build.gradle.kts excludes
-          # windows-*). Tracked in TODO.md \"Windows quiche JNI native\".
+          # Every published platform's libquiche AND JNI shim, each built for its CPU. A per-platform
+          # directory check passed 4.19.0-4.21.0 while macos-x64 lacked libquiche_jni.dylib.
           QUIC_JAR="$MERGED/socket-quic-quiche-jvm/${version}/socket-quic-quiche-jvm-${version}.jar"
           if [ -f "$QUIC_JAR" ]; then
-            echo "socket-quic-quiche JVM JAR found"
-            for platform in linux-x64 linux-arm64 macos-arm64 macos-x64; do
-              LIB_PATTERN="META-INF/native/$platform/"
-              if unzip -l "$QUIC_JAR" | grep -q "$LIB_PATTERN"; then
-                echo "  native OK: $platform"
-              else
-                echo "  FAIL: missing native libs for $platform"
-                FAILED=true
-              fi
-            done
+            .github/scripts/verify-quiche-jvm-natives.sh "$QUIC_JAR" || FAILED=true
           else
-            echo "INFO: socket-quic-quiche JVM JAR not found (expected if not published)"
+            echo "FAIL: socket-quic-quiche JVM JAR not found at $QUIC_JAR"
+            FAILED=true
           fi
 
           # ── 6. Signing coverage — detect uncovered file types ──

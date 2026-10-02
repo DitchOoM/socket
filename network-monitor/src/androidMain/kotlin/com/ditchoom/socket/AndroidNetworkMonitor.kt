@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkRequest
 import android.os.Build
@@ -80,6 +81,13 @@ class AndroidNetworkMonitor(
 
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    /**
+     * The addresses of the network [state] names, from its `LinkProperties`. Written before the state
+     * naming that network, so a link's addresses are here no later than the state naming it.
+     */
+    private val _linkAddresses = MutableStateFlow<LinkAddresses>(LinkAddresses.Reported(emptyMap()))
+    override val linkAddresses: StateFlow<LinkAddresses> = _linkAddresses.asStateFlow()
 
     /**
      * Whether this monitor tracks the process's **default** network rather than every network matching
@@ -170,6 +178,15 @@ class AndroidNetworkMonitor(
                 publishLinkQuality(caps)
             }
 
+            override fun onLinkPropertiesChanged(
+                network: Network,
+                linkProperties: LinkProperties,
+            ) {
+                // An address added to or removed from the network already named; its identity is unchanged.
+                if (network != currentNetwork) return
+                _linkAddresses.value = androidLinkAddresses(_state.value.networkId, linkProperties.addressLiterals())
+            }
+
             override fun onBlockedStatusChanged(
                 network: Network,
                 blocked: Boolean,
@@ -227,6 +244,7 @@ class AndroidNetworkMonitor(
     private fun clear() {
         currentNetwork = null
         currentCaps = null
+        _linkAddresses.value = LinkAddresses.Reported(emptyMap())
         observationRelay.record(NetworkState.Offline)
         // No link, no measurement — never let a dead link's last reading linger as if it were current.
         _linkQuality.value = LinkQuality.Unavailable
@@ -278,6 +296,9 @@ class AndroidNetworkMonitor(
                 // seed-then-callback-authoritative contract the constructor already documents.
                 blockedForApp = blockedForApp && network == blockedNetwork,
             )
+        // Before the state is published, which the caller does with the value returned.
+        _linkAddresses.value =
+            androidLinkAddresses(folded.networkId, connectivityManager.getLinkProperties(network)?.addressLiterals().orEmpty())
         return folded
     }
 
@@ -447,6 +468,22 @@ internal fun androidNetworkId(
         }
     return NetworkId.Link(kind, handle)
 }
+
+/** The addresses of [LinkProperties], as the numeric literals the platform prints. */
+private fun LinkProperties.addressLiterals(): List<String> = linkAddresses.mapNotNull { it.address.hostAddress }
+
+/** A view holding the one network the monitor names, [id], carrying [addresses]. */
+internal fun androidLinkAddresses(
+    id: NetworkId,
+    addresses: List<String>,
+): LinkAddresses =
+    LinkAddresses.Reported(
+        when (id) {
+            NetworkId.Unidentified -> emptyMap()
+            is NetworkId.KindOnly, is NetworkId.Link ->
+                mapOf(id to numericAddressesOf(addresses))
+        },
+    )
 
 /**
  * Pure mapper from `NetworkCapabilities.getSignalStrength()` to a [LinkQuality] (unit-testable without

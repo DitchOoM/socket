@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -88,6 +89,58 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A FIN that arrives on a retransmission of bytes the reader has already consumed still ends the
+     * stream.
+     *
+     * The client writes its request and then its FIN in two packets. The server reads the request, but
+     * its ACK is lost, and so is the FIN-only packet; the client then retransmits both as one STREAM
+     * frame — offset 0, the whole request, FIN set. Every byte of that frame is a duplicate, and the FIN
+     * is the only new fact in it. A receiver that records the final size and then discards the frame as
+     * a duplicate holds a stream that has ended but that nobody can see end: nothing is left to read, so
+     * the stream is never reported readable, and each later FIN-only copy is discarded because the final
+     * size is already known. The handler waits on a request that never ends until the idle timeout.
+     */
+    @Test
+    fun aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 709_001L) {
+                    val link = pipe.paths().first().local
+                    // The server hears the client, the client hears nothing: the server's ACK of the
+                    // request is lost.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Open, PathReach.Dark)))
+                    val stream = client.openStream()
+                    stream.writeText("request")
+                    val accepted = server.acceptStream()
+                    var received = 0
+                    while (received < "request".length) {
+                        val r = withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                        val data = assertIs<ReadResult.Data>(r, "the request must arrive before the FIN is sent")
+                        received += data.buffer.remaining()
+                        data.buffer.freeIfNeeded()
+                    }
+                    // Now the FIN-only packet is lost too.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark)))
+                    stream.shutdownSend()
+                    delay(FIN_LOST_FOR)
+                    // The uplink heals first, so the client's next retransmission — request and FIN in one
+                    // frame, since it has seen no ACK for either — reaches the server before any ACK
+                    // reaches the client and shrinks it to the FIN alone.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Open, PathReach.Dark)))
+                    delay(FIN_LOST_FOR)
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+
+                    val ending = withTimeoutOrNull(FIN_ARRIVES_WITHIN) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                    assertEquals<ReadResult?>(
+                        ReadResult.End,
+                        ending,
+                        "the client's FIN must end the server's read once the link heals; traffic ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
+
+    /**
      * A server handler that writes its reply and returns at once must not close the connection over that
      * reply. After the handler returns, the server's close waits — [lingerBeforeClose], the shipped
      * default — and on a slow, lossy path the reply takes longer to be acknowledged than any fixed wait.
@@ -100,59 +153,209 @@ abstract class MigrationSimTestSuite {
     fun aReplyIsDeliveredWholeWhenTheServerHandlerReturnsRightAfterWritingIt() =
         runTest {
             wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 671_101L,
-                    primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
-                ) {
-                    val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
-                    client.launch {
-                        val stream = server.acceptStream()
-                        while (stream
-                                .read(
-                                    IDLE_TIMEOUT_IN_THE_FIELD,
-                                ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
-                        ) {
-                            Unit
-                        }
-                        val out = BufferFactory.network().allocate(reply.length)
-                        out.writeString(reply, Charset.UTF8)
-                        out.resetForRead()
-                        stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
-                        out.freeNativeMemory()
-                        stream.close()
-                        // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
-                        serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
-                        server.close()
-                    }
-                    val received = StringBuilder()
-                    val outcome =
-                        runCatching {
-                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
-                                val stream = openStream()
-                                stream.writeText("request")
-                                stream.shutdownSend()
-                                state.first { it is QuicConnectionState.Closed }
-                                while (true) {
-                                    when (val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)) {
-                                        is ReadResult.Data -> {
-                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                            r.buffer.freeIfNeeded()
-                                        }
-                                        ReadResult.End, ReadResult.Reset -> break
-                                    }
-                                }
-                            }
-                        }
+                val read = readAReplyAfterTheServerClosed(seed = 671_101L)
+                assertEquals(
+                    read.expected,
+                    read.received,
+                    "the server closed over its own reply: the client got ${read.received} of ${read.expected} " +
+                        "bytes, then ${read.ending}, traffic ${read.traffic}",
+                )
+                assertEquals(ReplyEnding.Fin, read.ending, "the reply arrived whole; it must also end, traffic ${read.traffic}")
+            }
+        }
+
+    /**
+     * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
+     * the shape of a handler that writes and then closes — quiche could lose it: by counting the send side
+     * complete once the data was acknowledged (and collecting the stream with the FIN unsent or lost, while
+     * the server's close stopped waiting), or by dropping the stream from its send queue behind a
+     * retransmission with the FIN never sent ([aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent]
+     * stages that one). Either way the client read the whole reply and then the connection's close, never
+     * the end of the stream.
+     *
+     * Each seed is one fixed run — quiche's own random draws follow it ([theSameSeedCrossesTheWireIdenticallyEveryRun]).
+     * These are the seeds among 0..199 on this 800 ms, 30 %-loss path that read the whole reply and never
+     * its end without `patchQuicheFinIsSentUntilAcknowledged`, every run; with it, each ends with the FIN.
+     */
+    @Test
+    fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
+        runTest {
+            wrapTestBody {
+                for (seed in FIN_LOST_WITHOUT_THE_PATCH_SEEDS) {
+                    val read = readAReplyAfterTheServerClosed(seed)
                     assertEquals(
-                        reply.length,
-                        received.length,
-                        "the server closed over its own reply: the client got ${received.length} of ${reply.length} " +
-                            "bytes (${outcome.exceptionOrNull() ?: "then a clean end"}), traffic ${pipeTraffic()}",
+                        ReplyEnding.Fin,
+                        read.ending,
+                        "seed $seed: the client read ${read.received} of ${read.expected} bytes and then not the " +
+                            "stream's end, traffic ${read.traffic}",
                     )
+                    assertEquals(read.expected, read.received, "seed $seed: the reply must arrive whole")
                 }
             }
         }
+
+    /**
+     * A FIN written after a stream's last bytes were sent, while an earlier range of it waits to be
+     * retransmitted, is still sent.
+     *
+     * quiche drops a stream from its send queue once nothing it holds is flushable, and counted only data:
+     * the stream was already queued for the retransmission, so the FIN did not queue it again, the
+     * retransmission went out without the FIN (it ends mid-stream), and the stream left the queue with the
+     * FIN never sent. The peer read the whole reply and never its end; a server closing once its writes are
+     * acknowledged waited for a FIN it would never send. The sim's reply-after-close scenario reached this
+     * order at random (seed 12, about one run in ten); here it is staged.
+     */
+    @Test
+    fun aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.settle()
+                    assertEquals(7, pair.streamSend(pair.client, stream, "request", fin = true))
+                    pair.settle()
+                    assertEquals(7 to true, pair.readAll(pair.server, stream))
+
+                    // The reply goes out in several datagrams, its last bytes included, without the FIN.
+                    val reply = "reply;".repeat(STAGED_REPLY_BYTES / 6)
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val flight = pair.sends(pair.server)
+                    assertTrue(flight.size >= 4, "the reply must span at least four datagrams to stage a loss, was ${flight.size}")
+                    // The first is lost; the client acknowledges the rest, which declares it lost: its
+                    // range now waits to be retransmitted.
+                    pair.deliver(flight.drop(1), pair.client)
+                    pair.deliver(pair.sends(pair.client), pair.server)
+                    // The handler closes the stream now.
+                    assertEquals(0, pair.streamSend(pair.server, stream, "", fin = true))
+                    pair.settle()
+
+                    assertEquals(
+                        reply.length to true,
+                        pair.readAll(pair.client, stream),
+                        "the client must read the whole reply and its end",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
+     * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
+     * datagrams at the same virtual instants every time. Runs [readAReplyAfterTheServerClosed]
+     * [DETERMINISM_RUNS] times on one seed and requires every run's wire log to match the first, line for
+     * line, and every run to end the same way.
+     */
+    @Test
+    fun theSameSeedCrossesTheWireIdenticallyEveryRun() {
+        val reads =
+            (1..DETERMINISM_RUNS).map {
+                lateinit var read: ReplyRead
+                runTest { wrapTestBody { read = readAReplyAfterTheServerClosed(seed = DETERMINISM_SEED) } }
+                read
+            }
+        val first = reads.first().wire
+        reads.forEachIndexed { run, read ->
+            val log = read.wire
+            val diverged =
+                first.indices.firstOrNull { it >= log.size || first[it] != log[it] } ?: if (log.size != first.size) first.size else null
+            assertEquals(
+                null,
+                diverged,
+                "run ${run + 1} of seed $DETERMINISM_SEED left the wire differently from run 1 at datagram $diverged:\n" +
+                    "run 1: ${diverged?.let { first.subList(maxOf(0, it - 3), minOf(first.size, it + 3)) }}\n" +
+                    "run ${run + 1}: ${diverged?.let { log.subList(maxOf(0, it - 3), minOf(log.size, it + 3)) }}",
+            )
+            assertEquals(reads.first().received, read.received, "run ${run + 1} of seed $DETERMINISM_SEED read a different amount")
+            assertEquals(reads.first().ending::class, read.ending::class, "run ${run + 1} of seed $DETERMINISM_SEED ended differently")
+        }
+    }
+
+    /** How a client's read of the reply in [readAReplyAfterTheServerClosed] ended. */
+    private sealed interface ReplyEnding {
+        /** The stream's FIN: the reply ended. */
+        data object Fin : ReplyEnding
+
+        /** The server reset the stream. */
+        data object Reset : ReplyEnding
+
+        /** The read, or the block it ran in, ended with [cause] — the connection's close, without the stream's end. */
+        data class Failed(
+            val cause: Throwable,
+        ) : ReplyEnding
+    }
+
+    private class ReplyRead(
+        val expected: Int,
+        val received: Int,
+        val ending: ReplyEnding,
+        val traffic: String,
+        /** Every datagram the link was offered, in order — see [MultiPathPipe.wireLog]. */
+        val wire: List<String>,
+    )
+
+    /**
+     * A server handler on a slow, lossy path reads a request, writes a reply several congestion windows
+     * long, closes the stream and returns; its connection then closes as [SharedQuicheServer] closes it.
+     * The client reads the reply only after the connection has closed.
+     */
+    private suspend fun readAReplyAfterTheServerClosed(seed: Long): ReplyRead =
+        withMigrationSim(
+            simEnv(),
+            seed = seed,
+            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+        ) {
+            val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
+            client.launch {
+                val stream = server.acceptStream()
+                while (stream
+                        .read(
+                            IDLE_TIMEOUT_IN_THE_FIELD,
+                        ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                ) {
+                    Unit
+                }
+                val out = BufferFactory.network().allocate(reply.length)
+                out.writeString(reply, Charset.UTF8)
+                out.resetForRead()
+                stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                out.freeNativeMemory()
+                stream.close()
+                // The handler has returned: the server's close, exactly as SharedQuicheServer runs it.
+                serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                server.close()
+            }
+            var received = 0
+            val ending =
+                try {
+                    client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                        val stream = openStream()
+                        stream.writeText("request")
+                        stream.shutdownSend()
+                        state.first { it is QuicConnectionState.Closed }
+                        stream.readToItsEnding { received += it }
+                    }
+                } catch (e: QuicCloseException) {
+                    ReplyEnding.Failed(e)
+                }
+            ReplyRead(expected = reply.length, received = received, ending = ending, traffic = pipeTraffic(), wire = pipe.wireLog())
+        }
+
+    /** Read this stream until it ends, passing each chunk's size to [onData]; how it ended. */
+    private suspend fun QuicByteStream.readToItsEnding(onData: (Int) -> Unit): ReplyEnding {
+        while (true) {
+            when (val r = read(IDLE_TIMEOUT_IN_THE_FIELD)) {
+                is ReadResult.Data -> {
+                    onData(r.buffer.remaining())
+                    r.buffer.freeIfNeeded()
+                }
+                ReadResult.End -> return ReplyEnding.Fin
+                ReadResult.Reset -> return ReplyEnding.Reset
+            }
+        }
+    }
 
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
@@ -1230,6 +1433,79 @@ abstract class MigrationSimTestSuite {
                                 "attempts=${client.attempts}, spares=${clientAvailableDcids()}",
                         )
                         assertEquals("still", stream.echo("still"), "the connection must still carry data on the second Wi-Fi")
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * **A data-plane move lands on the link that carries its address, not the one the monitor names** —
+     * the 2026-09-26 iPhone walk. Cellular stays up beside Wi-Fi and the monitor reports both links'
+     * addresses while it names Wi-Fi. The Wi-Fi path goes dark with the platform's default route
+     * already on cellular, so the data-plane move's fresh socket binds cellular's address; the monitor
+     * names cellular only while that move validates. The connection is already on cellular, so the link
+     * change is no handoff. Moving again spent a spare connection id and a path validation on the walk,
+     * to land on a new port of the same link.
+     */
+    @Test
+    fun aDataPlaneMoveOntoALinkTheMonitorNamesOnlyAfterwardsIsTheOnlyMove() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            monitor.setLinkAddresses(mapOf(WIFI to listOf(SIM_LINK_HOST), CELLULAR to listOf(SIM_OTHER_LINK_HOST)))
+            val recorded = mutableListOf<TraceEvent>()
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 926_2010L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            trace = QuicTraceCapture({ event -> recorded += event }),
+                        ),
+                    serverQuicOptions = walkPeerOptions(),
+                    // The default route is already on cellular: every fresh socket binds its address.
+                    probeHost = { SIM_OTHER_LINK_HOST },
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"), "the connection must be healthy on Wi-Fi before the handoff")
+                        awaitWalkPeerPool()
+
+                        val primary = pipe.paths().first()
+                        pipe.impair(primary.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
+                        // Data in flight on the dark path is what lets the connection notice it is dark.
+                        val after = client.async { stream.echo("after") }
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (pipe.paths().size < 2) delay(1.milliseconds)
+                        }
+                        assertTrue(client.attempts.isEmpty(), "precondition: the move must still be validating: ${client.attempts}")
+                        monitor.setNetworkId(CELLULAR) // named while the move validates, as on the walk
+
+                        assertEquals("after", after.await(), "the connection never re-homed: ${client.attempts}")
+                        // Long enough for the queued link change, its backoff and a second path validation.
+                        delay(QUEUED_TRIGGER_SETTLE)
+
+                        val migrations = recorded.filterIsInstance<TraceEvent.Migration>()
+                        assertEquals(
+                            listOf(TraceMigrationTrigger.PathStoppedAnswering to TraceMigrationOutcome.Succeeded),
+                            migrations.map { it.trigger to it.outcome },
+                            "the data-plane move bound $SIM_OTHER_LINK_HOST, which the monitor reports on $CELLULAR, " +
+                                "and the monitor naming $CELLULAR must find the connection already there. " +
+                                "attempts=${client.attempts}, spares=${clientAvailableDcids()}",
+                        )
+                        assertEquals(
+                            SIM_OTHER_LINK_HOST,
+                            (client.attempts.single() as MigrationResult.Succeeded).localEndpoint.host,
+                            "precondition: the move must have landed on cellular's address",
+                        )
+                        assertEquals("still", stream.echo("still"), "the connection must still carry data on cellular")
                         stream.close()
                     } finally {
                         serverJob.cancel()
@@ -3025,11 +3301,31 @@ abstract class MigrationSimTestSuite {
          */
         val CLOSE_REACHES_SERVER_WITHIN = 5.seconds
 
+        /**
+         * How long each phase of the FIN's loss lasts: several of the client's PTOs at the 60 ms path,
+         * so each phase carries at least one retransmission, and far short of the 120 s idle timeout.
+         */
+        val FIN_LOST_FOR = 3.seconds
+
+        /** Several PTOs at the 60 ms path once the link heals, and far below the 120 s idle timeout. */
+        val FIN_ARRIVES_WITHIN = 20.seconds
+
         /** A slow cellular path: 800 ms round trip. */
         val SLOW_PATH_ONE_WAY = 400.milliseconds
 
         /** Loss on it, so the reply needs retransmissions to arrive whole. */
         const val SLOW_PATH_LOSS = 0.3
+
+        /** Enough repeats that a run-to-run divergence shows up; each is well under a second of wall. */
+        const val DETERMINISM_RUNS = 6
+
+        const val DETERMINISM_SEED = 671_101L
+
+        /** Measured: the seeds whose reply loses its FIN when quiche is built without the FIN patch. */
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(30L, 71L, 107L, 124L)
+
+        /** A reply of a handful of datagrams, inside the initial congestion window. */
+        const val STAGED_REPLY_BYTES = 6000
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024

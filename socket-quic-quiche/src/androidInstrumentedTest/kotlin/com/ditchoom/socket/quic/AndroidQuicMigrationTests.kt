@@ -12,12 +12,17 @@ import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -104,32 +109,74 @@ class AndroidQuicMigrationTests {
         block: suspend QuicScope.() -> R,
     ): R = withQuicConnection(server.host, server.port, options, timeout = 15.seconds, block = block)
 
+    /**
+     * Each UDP-block test asserts its premise before its conclusion: the block dropped this app's
+     * datagrams (the host's DROP counter moved, and what was sent during it went unanswered). Without
+     * that, a block that never reached the app's traffic passes every one of these tests on a healthy
+     * network (#702).
+     */
+    private fun assertTheBlockDroppedTheAppsDatagrams() {
+        val drops = control.udpDrops()
+        if (drops.ipv4Packets + drops.ipv6Packets == 0L) {
+            fail("the UDP block dropped none of this app's datagrams, so the test would run on a healthy network.\n${drops.outputChains}")
+        }
+    }
+
+    private suspend fun QuicByteStream.send(payload: String) {
+        val out = BufferFactory.Default.allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, 5.seconds)
+    }
+
+    private suspend fun QuicByteStream.receive(deadline: Duration): ScopedRead<String> =
+        read(deadline) {
+            it.readString(it.remaining(), Charset.UTF8)
+        }
+
+    private suspend fun QuicByteStream.assertEchoes(payload: String) {
+        send(payload)
+        assertEquals(ScopedRead.Data(payload), receive(5.seconds))
+    }
+
+    /** Nothing may come back while the block holds: the echo of what was sent during it is dropped. */
+    private suspend fun QuicByteStream.assertNothingArrivesFor(window: Duration) {
+        val arrived = withTimeoutOrNull(window) { receive(window * 10) }
+        if (arrived != null) fail("the peer answered through the UDP block: $arrived")
+    }
+
     @Test
     fun connectionSurvivesTemporaryNetworkLoss() =
         runBlocking(Dispatchers.IO) {
-            withServerConnection {
+            // Keep-alive PINGs are what the block drops here; the connection must outlive them.
+            withServerConnection(testQuicOptions.copy(keepAliveInterval = 500.milliseconds)) {
+                val stream = openStream()
+                stream.assertEchoes("before")
                 control.blockUdp()
-                delay(2.seconds)
+                stream.assertNothingArrivesFor(2.seconds)
+                assertTheBlockDroppedTheAppsDatagrams()
                 control.unblockUdp()
-                delay(1.seconds)
-                // If we're still inside the block, connection survived
+                stream.assertEchoes("after")
             }
         }
 
     @Test
     fun connectionTimesOutOnProlongedLoss() =
         runBlocking(Dispatchers.IO) {
-            val options = testQuicOptions.copy(idleTimeout = 3.seconds)
-            try {
-                withServerConnection(options) {
-                    control.blockUdp()
-                    delay(5.seconds)
-                    control.unblockUdp()
-                    delay(1.seconds)
+            // Keep-alive would hold an unimpaired connection open indefinitely, so an idle-out is the block's doing.
+            val options = testQuicOptions.copy(idleTimeout = 3.seconds, keepAliveInterval = 500.milliseconds)
+            val closed =
+                assertFailsWith<QuicCloseException> {
+                    withServerConnection(options) {
+                        val stream = openStream()
+                        stream.assertEchoes("before")
+                        control.blockUdp()
+                        stream.send("during")
+                        fail("the echo of a write made during the block arrived: ${stream.receive(30.seconds)}")
+                    }
                 }
-            } catch (_: Throwable) {
-                // Expected: connection timed out and block was cancelled
-            }
+            assertTheBlockDroppedTheAppsDatagrams()
+            assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.closeReason)
         }
 
     @Test
@@ -137,22 +184,14 @@ class AndroidQuicMigrationTests {
         runBlocking(Dispatchers.IO) {
             withServerConnection {
                 val stream = openStream()
-
-                val buf1 = BufferFactory.Default.allocate(5)
-                buf1.writeString("part1", Charset.UTF8)
-                buf1.resetForRead()
-                stream.write(buf1, 5.seconds)
-
+                stream.assertEchoes("part1")
                 control.blockUdp()
-                delay(1.seconds)
+                stream.send("part2")
+                stream.assertNothingArrivesFor(1.seconds)
+                assertTheBlockDroppedTheAppsDatagrams()
                 control.unblockUdp()
-                delay(1.seconds)
-
-                val buf2 = BufferFactory.Default.allocate(5)
-                buf2.writeString("part2", Charset.UTF8)
-                buf2.resetForRead()
-                stream.write(buf2, 5.seconds)
-
+                // Retransmission carries part2 once the block lifts, and its echo arrives.
+                assertEquals(ScopedRead.Data("part2"), stream.receive(10.seconds))
                 stream.close()
             }
         }

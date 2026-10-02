@@ -303,15 +303,17 @@ class IoUringManagerTests {
     fun cleanupCancelsPendingOperations() =
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
-            var acceptedClient: ClientSocket? = null
 
             val serverJob =
                 launch {
                     try {
                         server.bind(0, "127.0.0.1").collect { client ->
-                            acceptedClient = client
-                            // Don't respond - keep connection open
-                            delay(30.seconds)
+                            try {
+                                // Don't respond - keep connection open
+                                delay(30.seconds)
+                            } finally {
+                                client.close()
+                            }
                         }
                     } catch (e: Exception) {
                         // Expected
@@ -355,6 +357,7 @@ class IoUringManagerTests {
                 readException != null || !client.isOpen,
                 "Pending read should have been interrupted by cleanup",
             )
+            client.close()
         }
 
     /**
@@ -375,7 +378,13 @@ class IoUringManagerTests {
                     try {
                         // Accept and hold the connection open without ever sending — the client's
                         // read must time out (and be kernel-cancelled), not receive data.
-                        server.bind(0, "127.0.0.1").collect { delay(30.seconds) }
+                        server.bind(0, "127.0.0.1").collect { accepted ->
+                            try {
+                                delay(30.seconds)
+                            } finally {
+                                accepted.close()
+                            }
+                        }
                     } catch (e: Exception) {
                         // Server closed
                     }

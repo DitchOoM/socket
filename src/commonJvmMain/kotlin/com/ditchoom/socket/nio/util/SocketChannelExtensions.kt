@@ -4,15 +4,15 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.lang.Math.random
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.SocketAddress
 import java.nio.ByteBuffer
+import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
 import java.nio.channels.NetworkChannel
 import java.nio.channels.ReadableByteChannel
@@ -27,7 +27,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 
 suspend fun openSocketChannel(remote: SocketAddress? = null) =
     suspendCoroutine<SocketChannel> {
@@ -60,61 +59,80 @@ fun SocketChannel.remoteAddressOrNull(): SocketAddress? =
         null
     }
 
+/**
+ * Suspends until this channel is ready for [ops] on [selector], for at most [timeout]: a
+ * [SocketTimeoutException] at the deadline, a [SocketClosedException] if the socket closes first.
+ * Cancelling the caller ends the wait.
+ */
 suspend fun AbstractSelectableChannel.suspendUntilReady(
     selector: Selector,
     ops: Int,
     timeout: Duration,
 ) {
-    val random = random()
-    suspendCancellableCoroutine<Double> { cont ->
-        // Wake the selector when cancelled so the blocking select() returns
-        cont.invokeOnCancellation {
-            try {
-                selector.wakeup()
-            } catch (_: Exception) {
-                // Selector may already be closed
-            }
+    val key =
+        try {
+            register(selector, ops)
+        } catch (e: ClosedSelectorException) {
+            throw SocketClosedException.General("Socket closed", e)
+        } catch (e: CancelledKeyException) {
+            throw SocketClosedException.General("Socket closed", e)
         }
-        val key =
-            try {
-                register(selector, ops, WrappedContinuation(cont, random))
-            } catch (e: ClosedSelectorException) {
-                cont.resumeWithException(SocketClosedException.General("Socket closed", e))
-                return@suspendCancellableCoroutine
-            }
-        runBlocking {
-            selector.select(key, random, timeout)
-        }
-    }
+    selector.awaitSelected(key, timeout)
+    if (!key.isValid) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
 }
 
+/**
+ * Waits up to [timeout] for [selectionKey] itself to be selected, then resumes its continuation.
+ *
+ * Only this key ends the wait: another key on the same selector (a concurrent read's or write's, a
+ * connect race's other candidate) being ready does not. The wait ends typed — [SocketTimeoutException]
+ * at [timeout], [SocketClosedException] when the selector or the key's channel closes under it.
+ */
 suspend fun Selector.select(
     selectionKey: SelectionKey,
     attachment: Any,
     timeout: Duration,
 ) {
-    val startTime = System.currentTimeMillis()
-    val selectedCount = aSelect(timeout)
-    if (selectedCount == 0) {
-        throw SocketTimeoutException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
+    awaitSelected(selectionKey, timeout)
+    val cont = selectionKey.attachment() as WrappedContinuation<*>
+    if (cont.attachment != attachment) {
+        throw IllegalStateException("Continuation attachment was mutated!")
     }
-    while (isOpen && timeout - (System.currentTimeMillis() - startTime).milliseconds > 0.milliseconds) {
-        if (selectedKeys().remove(selectionKey)) {
-            val cont = selectionKey.attachment() as WrappedContinuation<*>
-            if (cont.attachment != attachment) {
-                throw IllegalStateException("Continuation attachment was mutated!")
+    if (selectionKey.isValid) {
+        cont.resume()
+    } else {
+        throw SocketClosedException.General("Socket closed while waiting for it to be ready")
+    }
+}
+
+/**
+ * Polls this selector until [key] is among its selected keys, for at most [timeout]. Throws
+ * [SocketTimeoutException] at the deadline, and [SocketClosedException] once the selector closes or
+ * [key]'s channel does, since neither can ever select it.
+ */
+private suspend fun Selector.awaitSelected(
+    key: SelectionKey,
+    timeout: Duration,
+) {
+    withTimeoutOrNull(timeout) { pollUntilSelected(key) }
+        ?: throw SocketTimeoutException("Selector timed out after waiting $timeout for ${key.interestOpsOrClosed()}")
+}
+
+private suspend fun Selector.pollUntilSelected(key: SelectionKey): SelectionKey =
+    withContext(Dispatchers.IO.limitedParallelism(1)) {
+        try {
+            while (!selectedKeys().remove(key)) {
+                ensureActive()
+                if (!key.isValid) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
+                selectNow()
             }
-            if (selectionKey.isValid) {
-                cont.resume()
-            } else {
-                cont.cancel()
-            }
-            return
+            key
+        } catch (closed: ClosedSelectorException) {
+            throw SocketClosedException.General("Socket closed while waiting for it to be ready", closed)
         }
     }
 
-    throw CancellationException("Failed to find selector in time")
-}
+private fun SelectionKey.interestOpsOrClosed(): String = if (isValid) "interest ops ${interestOps()}" else "a closed channel"
 
 suspend fun SocketChannel.aConnect(
     remote: SocketAddress,

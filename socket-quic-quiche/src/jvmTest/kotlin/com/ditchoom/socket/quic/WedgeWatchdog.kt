@@ -16,20 +16,30 @@ import kotlin.time.Duration
  *
  * The bound is a JVM wait on that thread's result, not a coroutine timer, so it holds when every
  * coroutine deadline in the process has stopped firing — a wedge a `withTimeout` budget cannot report,
- * because it is one of the deadlines that stopped. The failure carries the body thread's stack and
- * whether kotlinx's shared timer thread exists at that moment.
+ * because it is one of the deadlines that stopped.
  */
 internal fun <T> failIfWedged(
     budget: Duration,
     label: String,
     context: CoroutineContext = EmptyCoroutineContext,
     body: suspend CoroutineScope.() -> T,
+): T = failIfStuck(budget, label) { runBlocking(context, body) }
+
+/**
+ * Runs [body] on a daemon thread of its own and fails if it has neither returned nor thrown within
+ * [budget]. The bound is a plain JVM wait, so it needs no coroutine timer to fire. The failure carries
+ * the body thread's stack, whether kotlinx's shared timer thread exists, and every thread's stack.
+ */
+internal fun <T> failIfStuck(
+    budget: Duration,
+    label: String,
+    body: () -> T,
 ): T {
     val outcome = CompletableFuture<T>()
     val runner =
         Thread({
             try {
-                outcome.complete(runBlocking(context, body))
+                outcome.complete(body())
             } catch (failure: Throwable) {
                 outcome.completeExceptionally(failure)
             }
@@ -43,16 +53,22 @@ internal fun <T> failIfWedged(
         throw failed.cause ?: failed
     } catch (_: TimeoutException) {
         val stack = runner.stackTrace.joinToString("\n    at ")
-        val sharedTimer = Thread.getAllStackTraces().keys.filter { it.name.startsWith(KOTLINX_SHARED_TIMER_THREAD) }
+        val threads = Thread.getAllStackTraces()
+        val sharedTimer = threads.keys.filter { it.name.startsWith(KOTLINX_SHARED_TIMER_THREAD) }
         runner.interrupt()
         throw AssertionError(
             "$label made no progress and no deadline ended it within $budget: every bounded operation " +
                 "inside it stayed unbounded. kotlinx's shared timer thread: " +
                 (if (sharedTimer.isEmpty()) "absent" else sharedTimer.joinToString { "${it.state}" }) +
-                ". The body's thread:\n    at $stack",
+                ". The body's thread:\n    at $stack\nEvery thread:\n" + threads.describe(),
         )
     }
 }
+
+private fun Map<Thread, Array<StackTraceElement>>.describe(): String =
+    entries.joinToString("\n") { (thread, frames) ->
+        "\"${thread.name}\" ${thread.state}" + frames.take(25).joinToString("") { "\n    at $it" }
+    }
 
 /**
  * The name of the thread kotlinx.coroutines fires timers on for a dispatcher that has no timer of its

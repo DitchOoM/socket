@@ -20,7 +20,8 @@ import kotlin.coroutines.coroutineContext
 class LinuxServerSocket(
     private val config: TransportConfig = TransportConfig(),
 ) : ServerSocket {
-    private var serverFd: Int = -1
+    private val descriptor = SocketDescriptor()
+    private val serverFd: Int get() = descriptor.value
     private var boundPort: Int = -1
 
     // Atomic flag for thread-safe listening state checks across coroutines
@@ -43,7 +44,7 @@ class LinuxServerSocket(
             val useIPv6 = isIPv6Host || host == null || host == "::" || host == "0.0.0.0"
 
             // Create socket (prefer IPv6 for dual-stack support)
-            serverFd =
+            val fd =
                 if (useIPv6 && !isIPv6Host && (host == null || host == "0.0.0.0")) {
                     // Use IPv6 dual-stack socket to accept both IPv4 and IPv6
                     socket(AF_INET6, SOCK_STREAM, 0)
@@ -52,7 +53,8 @@ class LinuxServerSocket(
                 } else {
                     socket(AF_INET, SOCK_STREAM, 0)
                 }
-            checkSocketResult(serverFd, "socket")
+            checkSocketResult(fd, "socket")
+            descriptor.adopt(fd)
 
             try {
                 // Set socket options
@@ -116,16 +118,10 @@ class LinuxServerSocket(
                 checkSocketResult(listenResult, "listen")
 
                 listening.value = 1
-
-                // Track active socket for IoUringManager auto-cleanup
-                IoUringManager.onSocketOpened()
             } catch (e: Exception) {
                 // Clean up on bind/listen failure
                 listening.value = 0
-                if (serverFd >= 0) {
-                    closeSocket(serverFd)
-                    serverFd = -1
-                }
+                descriptor.release()
                 throw e
             }
         }
@@ -175,7 +171,7 @@ class LinuxServerSocket(
                     // accepted sockets obey the same read/write policy + buffer factory as clients.
                     val wrapper = LinuxSocketWrapper()
                     wrapper.configure(config)
-                    wrapper.sockfd = result
+                    wrapper.adopt(result)
                     wrapper
                 }
                 else -> {
@@ -233,14 +229,7 @@ class LinuxServerSocket(
         cancelPendingAccept()
 
         listening.value = 0
-        val wasOpen = serverFd >= 0
-        if (serverFd >= 0) {
-            closeSocket(serverFd)
-            serverFd = -1
-        }
+        descriptor.release()
         boundPort = -1
-        if (wasOpen) {
-            IoUringManager.onSocketClosed()
-        }
     }
 }

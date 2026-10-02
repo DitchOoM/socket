@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.pool.BufferPool
@@ -10,50 +11,38 @@ import com.ditchoom.socket.udp.UdpBindException
 import com.ditchoom.socket.udp.UdpSocket
 
 /**
- * Bind the server's UDP channel so its replies carry the address the client dialled.
+ * The JVM's answer to a wildcard socket that cannot pin its replies: one socket per local address on
+ * one port, composed by [PerLocalAddressServerChannel]. NIO exposes no ancillary data, so no JVM socket
+ * reports a datagram's destination or names a reply's source; a socket bound to an address is the only
+ * way to leave from it, and the kernel enforces that.
  *
- * Three cases, and only the last one does anything unusual:
+ * The wildcard socket is closed first, because the members bind the port it holds. A wildcard of one
+ * family (`0.0.0.0`) is served on that family's addresses only. The wildcard is kept, and reported as
+ * [ReplySourcePinning.PlatformChooses], when there is nothing to compose: no address could be
+ * enumerated (an isolated container with every interface down), or every enumerated one left the host
+ * before it could be bound. A server that starts is worth more than one that refuses to on a host
+ * with one address.
  *
- *  - **A shared port** ([QuicPortBinding.Shared]) — the demultiplexer owns the socket and chose how
- *    to bind it. Not ours to change.
- *  - **An explicit host** — already pinned, by the bind itself. A bound socket cannot send from
- *    another address, so there is nothing to fix.
- *  - **The wildcard** — the defective case. The kernel picks each reply's source and the choice
- *    differs per OS; see [PerLocalAddressServerChannel] for the measurements.
- *
- * ## Why this is not chosen by capability
- *
- * [com.ditchoom.buffer.flow.DatagramCapabilities.sourceAddressSelect] is the flag that would let a
- * backend with `IP_PKTINFO` take a one-socket path instead. It is deliberately **not** consulted
- * here: no JVM backend has cmsg — NIO cannot express `IP_PKTINFO` — so the flag can only ever be
- * false on this platform and the composite is the whole answer.
- *
- * ## Cost, stated plainly
- *
- * The composite puts a coroutine hand-off on the server's receive path — one rendezvous per
- * datagram, because N sockets have to be multiplexed and the channel interface offers no shared
- * selector. That is the price of not having `IP_PKTINFO` on this platform.
+ * The composite puts a coroutine hand-off on the server's receive path — one rendezvous per datagram,
+ * because N sockets have to be multiplexed and the channel interface offers no shared selector.
  */
-internal suspend fun QuicPortBinding.openReplySourcePinnedServerChannel(recvBufPool: BufferPool): AddressedDatagramChannel {
-    if (this !is QuicPortBinding.Own || host != null) return openServerChannel(recvBufPool)
-
-    val addresses = enumerateLocalUnicastAddresses().distinct()
-    // Nothing to enumerate (an isolated container with every interface down) leaves the wildcard as
-    // the only thing that can be bound. It is the defective behaviour, but a server that refuses to
-    // start is worse than one whose replies may pick the wrong source on a host that has one address.
-    if (addresses.isEmpty()) return openServerChannel(recvBufPool)
-
-    return when (val bind = bindEachAddress(addresses, port) { host, port -> bindServerMember(host, port, recvBufPool) }) {
-        is SharedPortBind.Bound -> PerLocalAddressServerChannel.of(bind.members)
-        // Every enumerated address left the host before it could be bound: the same position as an
-        // empty enumeration, answered the same way.
-        is SharedPortBind.NoAddressAvailable -> openServerChannel(recvBufPool)
+internal val SocketPerLocalAddress =
+    UnpinnedWildcard { wildcard, binding, recvBufPool ->
+        val ipv4Only = wildcard.localAddress.family == AddressFamily.IPv4
+        val addresses = enumerateLocalUnicastAddresses().distinct().filter { !ipv4Only || ':' !in it }
+        if (addresses.isEmpty()) return@UnpinnedWildcard ServerChannel(wildcard, ReplySourcePinning.PlatformChooses)
+        wildcard.close()
+        when (val bind = bindEachAddress(addresses, binding.port) { host, port -> bindServerMember(host, port, recvBufPool) }) {
+            is SharedPortBind.Bound ->
+                ServerChannel(PerLocalAddressServerChannel.of(bind.members), ReplySourcePinning.SocketPerAddress)
+            is SharedPortBind.NoAddressAvailable ->
+                ServerChannel(binding.bindServerSocket(recvBufPool), ReplySourcePinning.PlatformChooses)
+        }
     }
-}
 
 /**
  * One member of the composite: a socket on one local address, staging each datagram at the QUIC
- * datagram size exactly as [openServerChannel]'s single socket does — not at the 64 KB UDP ceiling,
+ * datagram size exactly as [bindServerSocket]'s single socket does — not at the 64 KB UDP ceiling,
  * which would make every buffer the receive pool hands out and keeps that size.
  */
 internal suspend fun bindServerMember(

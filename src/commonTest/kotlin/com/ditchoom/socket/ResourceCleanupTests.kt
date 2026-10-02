@@ -280,9 +280,12 @@ class ResourceCleanupTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        // Don't respond - let client timeout
-                        delay(60000)
-                        client.close()
+                        try {
+                            // Don't respond - let client timeout
+                            delay(60000)
+                        } finally {
+                            client.close()
+                        }
                     }
                 }
 
@@ -315,8 +318,11 @@ class ResourceCleanupTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        delay(60000)
-                        client.close()
+                        try {
+                            delay(60000)
+                        } finally {
+                            client.close()
+                        }
                     }
                 }
 

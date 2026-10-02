@@ -3,10 +3,13 @@ package com.ditchoom.socket
 import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 actual typealias TestRunResult = Unit
@@ -17,6 +20,7 @@ internal actual fun runTestNoTimeSkipping(
     block: suspend CoroutineScope.() -> Unit,
 ): TestRunResult =
     runBlocking {
+        val socketsBefore = IoUringManager.activeSockets
         try {
             withTimeout(timeout) {
                 withContext(Dispatchers.Default.limitedParallelism(count)) {
@@ -36,7 +40,29 @@ internal actual fun runTestNoTimeSkipping(
             // the exception, not stdout. The original stays as the cause.
             throw AssertionError("${t::class.simpleName}: ${t.message}\n${IoUringManager.diagnosticSnapshot()}", t)
         }
+        assertSocketCountReturnsTo(socketsBefore)
     }
+
+/**
+ * Every socket a test opens it closes, and every close uncounts exactly what an open counted: the ring is
+ * released on the last close, so a count that drifts either way means a ring that is never released or one
+ * released under live sockets. A close may finish on another dispatcher just after the body returns, so the
+ * count is given [SOCKET_COUNT_SETTLE] to come back before the test fails naming the drift.
+ */
+internal suspend fun assertSocketCountReturnsTo(before: Int) {
+    val settled = withTimeoutOrNull(SOCKET_COUNT_SETTLE) { while (IoUringManager.activeSockets != before) delay(10) }
+    if (settled != null) return
+    val after = IoUringManager.activeSockets
+    val drift =
+        if (after > before) {
+            "left ${after - before} socket(s) counted open"
+        } else {
+            "uncounted ${before - after} socket(s) it never counted"
+        }
+    throw AssertionError("this test $drift (io_uring active sockets before=$before after=$after)")
+}
+
+private val SOCKET_COUNT_SETTLE = 2.seconds
 
 actual fun supportsIPv6(): Boolean = true // Linux supports IPv6
 

@@ -48,15 +48,22 @@ import kotlin.test.assertTrue
  * Allocate and free one struct at a time, [CYCLES] times, recording the native address each cycle
  * returns, and count how many are **distinct**:
  *
- * - a `free` that releases memory lets the next same-size allocation have the block straight back, so
- *   the distinct count collapses to a handful;
+ * - a `free` that releases memory returns the block to the allocator's free pool, so every later
+ *   allocation draws from that pool and the distinct count is bounded by the pool's size, however
+ *   many cycles run;
  * - a `free` that releases nothing forces every cycle to be handed fresh memory, so the distinct
  *   count is exactly [CYCLES] — it cannot be anything else, because no address is ever available.
  *
+ * The pool is not always one block. glibc and macOS hand the just-freed block straight back; the
+ * Windows low-fragmentation heap randomizes which free slot of a size bucket it returns, so it walks
+ * a bucket's worth of addresses before repeating one:
  * ```
  * FFM before the fix (Arena.ofAuto):  200 distinct of 200
- * FFM after / JNI:                      1 distinct of 200
+ * FFM after / JNI, macOS + Linux:       1 distinct of 200
+ * JNI, Windows (LFH):                 101 distinct of 200
  * ```
+ * That is why [CYCLES] is large: a healthy count stops growing at the bucket size while a broken one
+ * grows with every cycle, so more cycles only widen the gap between them.
  *
  * Address recycling is a property of the platform allocator, not of anything in this repository, so
  * no stub, delegate or counter can satisfy it — and the test stays true if a backend's implementation
@@ -151,8 +158,8 @@ class RecvSendInfoReleaseTest {
             "$what memory is never released (#397): $CYCLES allocate/free cycles on " +
                 "${api::class.simpleName} produced $distinct distinct native addresses (expected " +
                 "<= $RECYCLE_THRESHOLD). Each cycle frees its handle before allocating the next, so a " +
-                "free that released anything would let the allocator hand the same block back almost " +
-                "every time. $distinct distinct addresses means the frees released nothing and every " +
+                "free that released anything would bound the distinct count by the allocator's free " +
+                "pool. $distinct distinct addresses means the frees released nothing and every " +
                 "cycle was given fresh memory — a long-running server accumulates one $what per " +
                 "connection (plus one per migration, per #395) for as long as the process runs. " +
                 "First 4 addresses: " + addresses.take(4).joinToString { "0x${it.toString(16)}" },
@@ -167,10 +174,10 @@ class RecvSendInfoReleaseTest {
 
     private companion object {
         /**
-         * Enough cycles that "every allocation was fresh" is unmistakable and a handful of distinct
-         * addresses is clearly not noise, while staying instant (measured: sub-millisecond).
+         * Enough cycles that a randomizing allocator has long since exhausted its bucket and started
+         * repeating addresses, while staying instant.
          */
-        const val CYCLES = 200
+        const val CYCLES = 2000
 
         /** Half of [CYCLES]: far above any measured healthy value, and exactly unreachable when broken. */
         const val RECYCLE_THRESHOLD = CYCLES / 2

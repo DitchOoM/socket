@@ -92,7 +92,8 @@ runs:
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with five parallel consumers a cache miss would have
     # all five racing to upload the same key — four of them losing, all five paying the upload. The
-    # `natives` job is the single writer for these keys.
+    # `natives` job is the single writer for the other keys; Konan's is native-deps-freshness.yaml's
+    # `cache-warm`, the one job that compiles Kotlin/Native for Linux in a scope that can write.
     - name: Restore Konan cache
       if: inputs.konan == 'true'
       uses: actions/cache/restore@v6
@@ -102,12 +103,30 @@ runs:
         restore-keys: konan-linux-
 
     - name: Restore Gradle build outputs
+      id: restore_gradle_caches
       uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/caches
         key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
         restore-keys: |
           gradle-linux-
+
+    # Retried once when no key matched: an aborted download leaves ~/.gradle/caches empty with the
+    # step green. See apple-quiche-env for the run that showed it.
+    - name: Retry the Gradle build outputs restore
+      id: restore_gradle_caches_retry
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.gradle/caches
+        key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-linux-
+
+    - name: Surface a cold Gradle cache
+      if: steps.restore_gradle_caches.outputs.cache-matched-key == '' && steps.restore_gradle_caches_retry.outputs.cache-matched-key == ''
+      shell: bash
+      run: echo "::warning::~/.gradle/caches restored nothing (twice); this job resolves its whole dependency graph from the repositories."
 
     - name: Restore Gradle wrapper distribution
       uses: actions/cache/restore@v6

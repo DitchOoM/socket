@@ -34,12 +34,25 @@ private class PendingOperation(
     var cancelRequested: Boolean = false,
 )
 
+/** Whether a caller waits on a submission's result. */
+internal enum class SubmissionKind {
+    /** A caller suspends on its deferred. */
+    Awaited,
+
+    /**
+     * Nobody waits: a cancel aimed at an operation already submitted. It can only act on an operation in
+     * flight in the life it was sent to, or queued ahead of it.
+     */
+    FireAndForget,
+}
+
 /** An operation for the event loop to put on the ring, sent from any thread. */
 @OptIn(ExperimentalForeignApi::class)
 internal class SubmissionRequest(
     val userData: Long,
     val deferred: CompletableDeferred<Int>,
     val deadline: TimeSource.Monotonic.ValueTimeMark?,
+    val kind: SubmissionKind,
     val prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
 )
 
@@ -63,8 +76,53 @@ internal sealed interface PollerState {
         /** Completed once this life's loop has released the ring, the eventfd and every waiter. */
         val ended = CompletableDeferred<Unit>()
 
+        /** A last-socket close's request that this life release its ring if idle. */
+        val idleRelease = AtomicReference<IdleReleaseSlot>(IdleReleaseSlot.None)
+
         override fun toString(): String = "Running"
     }
+}
+
+/** A life's answer to an idle-release request. */
+internal enum class IdleRelease {
+    /** Nothing was in flight and no socket was open: the life ended and released its ring. */
+    Released,
+
+    /** An operation was in flight or a socket was open: the life keeps running. */
+    Refused,
+}
+
+/** A life's slot for an idle-release request. */
+internal sealed interface IdleReleaseSlot {
+    /** No request is waiting. */
+    data object None : IdleReleaseSlot
+
+    /** A request waits for the loop's [answer]. */
+    class Asked(
+        val answer: CompletableDeferred<IdleRelease>,
+    ) : IdleReleaseSlot
+
+    /** The life has ended; a request now would find no loop to answer it. */
+    data object Ended : IdleReleaseSlot
+}
+
+/**
+ * How a life's loop ended, which decides what its end owes the submissions it leaves behind.
+ *
+ * Never held in a `var` read in `finally`: Kotlin/Native smart-cast such a read to the variable's
+ * initial type even after the loop reassigned it, and the cast then threw ClassCastException.
+ */
+private sealed interface LoopExit {
+    /** Stopped, or its ring was refused: whatever is queued or in flight fails. */
+    data object Stopped : LoopExit
+
+    /**
+     * It released an idle ring: nothing was in flight, so nothing fails, and anything queued after the
+     * decision belongs to the next life.
+     */
+    class Idle(
+        val answer: CompletableDeferred<IdleRelease>,
+    ) : LoopExit
 }
 
 /** user_data reserved for the eventfd wakeup poll's CQEs. */
@@ -78,8 +136,9 @@ private const val EVENTFD_USER_DATA = 0L
  *   loop when it is sleeping in `io_uring_wait_cqe_timeout`.
  * - The loop's life is a [PollerState] advanced by compare-and-set: no lock anywhere, on the hot path
  *   or on start and stop.
- * - The last socket to close stops the loop, which releases the ring; the next operation starts a new
- *   one. The worker thread is kept for the process lifetime.
+ * - The last socket to close asks the loop to release the ring if it is idle (see [releaseIfIdle]); the
+ *   next operation starts a new one. [cleanup] stops it unconditionally. The worker thread is kept for
+ *   the process lifetime.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal object IoUringManager {
@@ -94,8 +153,11 @@ internal object IoUringManager {
     /** user_data source; starts at 1 because 0 is [EVENTFD_USER_DATA]. */
     private val nextUserDataCounter = AtomicLong(1L)
 
-    /** Open sockets. The last close stops the loop so the ring is released. */
+    /** Open sockets. The last close asks the loop to release the ring once it is idle. */
     private val activeSocketCount = AtomicInt(0)
+
+    /** Sockets currently counted as open; the last one's close releases the ring. */
+    internal val activeSockets: Int get() = activeSocketCount.value
 
     private val state = AtomicReference<PollerState>(PollerState.Idle)
 
@@ -114,12 +176,30 @@ internal object IoUringManager {
         activeSocketCount.incrementAndGet()
     }
 
-    /** Called when a socket is closed; the last close stops the loop and releases the ring. */
+    /** Called when a socket is closed; the last close asks the loop to release the ring if idle. */
     fun onSocketClosed() {
         if (activeSocketCount.decrementAndGet() <= 0) {
             // Back to 0 after a double close's underflow.
             activeSocketCount.compareAndSet(-1, 0)
-            cleanup()
+            releaseIfIdle(state.value)
+        }
+    }
+
+    /**
+     * Asks [observed], the life the last close saw, to release its ring if it is idle, and blocks until it
+     * answers. Unlike [stop], this never fails an operation: only the loop knows what is in flight — a
+     * connect is not counted as a socket until it completes, and a socket can open after the count reached
+     * zero — so an operation in flight or a socket open makes it refuse and keep running, and a later last
+     * close asks again.
+     */
+    internal fun releaseIfIdle(observed: PollerState) {
+        if (observed !is PollerState.Running || activeSocketCount.value > 0) return
+        val answer = CompletableDeferred<IdleRelease>()
+        // A request already waiting is answered for both; an ended life has nothing to release.
+        if (!observed.idleRelease.compareAndSet(IdleReleaseSlot.None, IdleReleaseSlot.Asked(answer))) return
+        writeWakeup()
+        if (runBlocking { answer.await() } == IdleRelease.Released) {
+            runBlocking { observed.ended.await() }
         }
     }
 
@@ -154,6 +234,13 @@ internal object IoUringManager {
         AtomicReference<QueueInit> { ring, params ->
             io_uring_queue_init_params(queueDepth.toUInt(), ring, params)
         }
+
+    /**
+     * Runs on the event loop thread the moment a life has granted an idle release, before its queue
+     * closes. A test uses it to send into that window, as a caller that read the life just before the
+     * state moved off it would.
+     */
+    internal val idleReleaseGranted = AtomicReference<(PollerState.Running) -> Unit> { }
 
     /** This manager's state plus the host's, for a failure report. Failure path only. */
     internal fun diagnosticSnapshot(): String =
@@ -310,19 +397,43 @@ internal object IoUringManager {
     }
 
     /**
-     * Ends [life]: the state moves off it unless it already has, its queue closes, and every
-     * submission still queued for it is handed to [fail].
+     * Ends [life]: the state moves off it unless it already has, its idle-release slot closes (answering
+     * a request still waiting with [IdleRelease.Released], since the life ends either way), its queue
+     * closes, and every submission still queued for it is handed to [fail].
      */
     private inline fun endLife(
         life: PollerState.Running,
         fail: (CompletableDeferred<Int>) -> Unit,
     ) {
-        state.compareAndSet(life, PollerState.Idle)
-        life.queue.close()
+        closeLife(life)
         while (true) {
             val request = life.queue.tryReceive().getOrNull() ?: break
             fail(request.deferred)
         }
+    }
+
+    private fun closeLife(life: PollerState.Running) {
+        state.compareAndSet(life, PollerState.Idle)
+        when (val asked = life.idleRelease.getAndSet(IdleReleaseSlot.Ended)) {
+            is IdleReleaseSlot.Asked -> asked.answer.complete(IdleRelease.Released)
+            IdleReleaseSlot.None, IdleReleaseSlot.Ended -> Unit
+        }
+        life.queue.close()
+    }
+
+    /**
+     * Ends [life] after it released an idle ring. A submission still queued was sent by a caller that
+     * read [life] before the state moved off it, after the loop's last drain: it never reached a ring,
+     * so it is handed, in order, to the next life instead of failing. A batch with no awaited operation
+     * still waited on is dropped: its fire-and-forget cancels can only aim at operations in flight here —
+     * there are none — or queued ahead of them, and forwarding it would start a ring for nothing.
+     */
+    private fun endIdleLife(life: PollerState.Running) {
+        closeLife(life)
+        val leftover = ArrayList<SubmissionRequest>()
+        while (true) leftover += life.queue.tryReceive().getOrNull() ?: break
+        if (leftover.none { it.kind == SubmissionKind.Awaited && !it.deferred.isCompleted }) return
+        leftover.forEach(::enqueue)
     }
 
     /** Time until the earliest live deadline, or [DEFAULT_POLL_TIMEOUT]. On the event loop thread. */
@@ -430,8 +541,29 @@ internal object IoUringManager {
         val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
         val ts = nativeHeap.alloc<__kernel_timespec>()
 
+        val exit = AtomicReference<LoopExit>(LoopExit.Stopped)
         try {
             while (state.value === life) {
+                // 0. A last-socket close asked this life to release its ring if idle. What is queued
+                //    now was sent before the question, so it is taken in before the answer.
+                when (val asked = life.idleRelease.getAndSet(IdleReleaseSlot.None)) {
+                    IdleReleaseSlot.None, IdleReleaseSlot.Ended -> Unit
+                    is IdleReleaseSlot.Asked -> {
+                        if (drainSubmissionChannel(ring, life.queue, pendingOps)) {
+                            io_uring_submit(ring)
+                        }
+                        if (pendingOps.isEmpty() &&
+                            activeSocketCount.value == 0 &&
+                            state.compareAndSet(life, PollerState.Idle)
+                        ) {
+                            exit.value = LoopExit.Idle(asked.answer)
+                            idleReleaseGranted.value(life)
+                            break
+                        }
+                        asked.answer.complete(IdleRelease.Refused)
+                    }
+                }
+
                 // 1. Mark sleeping BEFORE the drain: a submission that lands after the drain sees the
                 //    flag and writes the eventfd, which wakes step 4.
                 pollerSleeping.value = 1
@@ -503,6 +635,7 @@ internal object IoUringManager {
             nativeHeap.free(ts)
             nativeHeap.free(cqePtr)
 
+            // Empty on an idle exit: the release was granted only with nothing in flight.
             pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
             pendingOps.clear()
 
@@ -518,7 +651,13 @@ internal object IoUringManager {
                 ringsReleased.incrementAndGet()
             }
 
-            endLife(life) { it.complete(-ECANCELED) }
+            when (val ended = exit.value) {
+                LoopExit.Stopped -> endLife(life) { it.complete(-ECANCELED) }
+                is LoopExit.Idle -> {
+                    endIdleLife(life)
+                    ended.answer.complete(IdleRelease.Released)
+                }
+            }
         }
     }
 
@@ -541,7 +680,7 @@ internal object IoUringManager {
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
-        enqueue(SubmissionRequest(userData, deferred, deadline, prepareOp))
+        enqueue(SubmissionRequest(userData, deferred, deadline, SubmissionKind.Awaited, prepareOp))
         return awaitCompletion(userData, deferred)
     }
 
@@ -563,7 +702,7 @@ internal object IoUringManager {
         prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit,
     ): Int {
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
-        enqueue(SubmissionRequest(userData, deferred, deadline) { sqe, _ -> prepareOp(sqe) })
+        enqueue(SubmissionRequest(userData, deferred, deadline, SubmissionKind.Awaited) { sqe, _ -> prepareOp(sqe) })
         return awaitCompletion(userData, deferred)
     }
 
@@ -600,7 +739,11 @@ internal object IoUringManager {
     fun submitNoWaitUnsafe(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
         val life = state.value
         if (life !is PollerState.Running) return
-        life.queue.trySend(SubmissionRequest(nextUserData(), CompletableDeferred(), null) { sqe, _ -> prepareOp(sqe) })
+        life.queue.trySend(
+            SubmissionRequest(nextUserData(), CompletableDeferred(), null, SubmissionKind.FireAndForget) { sqe, _ ->
+                prepareOp(sqe)
+            },
+        )
         wakePoller()
     }
 
@@ -619,8 +762,9 @@ internal object IoUringManager {
     }
 
     /**
-     * Stops the running loop and blocks until it has released the ring and the eventfd; queued and
-     * in-flight operations complete with `-ECANCELED`. The next operation starts a new loop. The
+     * Stops the running loop whatever it holds, and blocks until it has released the ring and the eventfd;
+     * queued and in-flight operations complete with `-ECANCELED`. A last-socket close uses
+     * [releaseIfIdle] instead, which never fails an operation. The next operation starts a new loop. The
      * worker thread is kept: closing its dispatcher blocks until the worker's own park expires, and an
      * idle worker does not keep the process alive.
      */
