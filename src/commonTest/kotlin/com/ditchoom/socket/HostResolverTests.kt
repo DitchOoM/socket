@@ -80,9 +80,8 @@ class HostResolverTests {
             val accepted = server.bind(host = "127.0.0.1")
             val serverJob =
                 launch(Dispatchers.Default) {
-                    accepted.collect { client ->
+                    accepted.serveEach { client ->
                         client.writeString(client.readString())
-                        client.close()
                     }
                 }
             val config =

@@ -38,7 +38,7 @@ class PartialBufferWriteTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         while (collected.size < 14) {
                             val buf = serverClient.readBuffer(5.seconds)
                             val remaining = buf.remaining()
@@ -48,7 +48,6 @@ class PartialBufferWriteTests {
                             collected += tmp
                         }
                         dataReady.unlock()
-                        serverClient.close()
                     }
                 }
 
@@ -94,7 +93,7 @@ class PartialBufferWriteTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         while (collected.size < 7) {
                             val buf = serverClient.readBuffer(5.seconds)
                             val remaining = buf.remaining()
@@ -104,7 +103,6 @@ class PartialBufferWriteTests {
                             collected += tmp
                         }
                         dataReady.unlock()
-                        serverClient.close()
                     }
                 }
 

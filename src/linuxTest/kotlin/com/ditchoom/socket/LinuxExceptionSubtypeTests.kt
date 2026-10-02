@@ -46,10 +46,9 @@ class LinuxExceptionSubtypeTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         serverReady.unlock()
                         serverClient.writeString("data")
-                        serverClient.close()
                     }
                 }
 
@@ -83,9 +82,8 @@ class LinuxExceptionSubtypeTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         clientConnected.unlock()
-                        client.close()
                     }
                 }
 

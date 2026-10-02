@@ -69,10 +69,9 @@ class WrapNodeErrorTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         serverReady.unlock()
                         serverClient.writeString("hi")
-                        serverClient.close()
                     }
                 }
 
@@ -108,9 +107,8 @@ class WrapNodeErrorTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         clientConnected.unlock()
-                        client.close()
                     }
                 }
 

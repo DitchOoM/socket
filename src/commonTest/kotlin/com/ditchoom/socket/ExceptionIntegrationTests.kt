@@ -81,10 +81,9 @@ class ExceptionIntegrationTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
+                    serverFlow.serveEach { serverClient ->
                         serverReady.unlock()
                         serverClient.writeString("hello")
-                        serverClient.close()
                     }
                 }
 

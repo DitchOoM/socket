@@ -168,11 +168,10 @@ class ErrorHandlingTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         clientConnected.unlock()
                         // Send some data then close
                         client.writeString("hello")
-                        client.close()
                     }
                 }
 
@@ -283,10 +282,9 @@ class ErrorHandlingTests {
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
+                    serverFlow.serveEach { client ->
                         receivedData = client.readString(deadline = 1.seconds)
                         dataReceived.unlock()
-                        client.close()
                     }
                 }
 

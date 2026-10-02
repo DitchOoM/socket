@@ -131,10 +131,11 @@ class SimpleSocketTests {
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
                         launch {
-                            val s = serverToClient.readString()
-                            val indexReceived = s.toInt()
-                            serverToClient.writeString("ack $indexReceived")
-                            serverToClient.close()
+                            serverToClient.closeAfter {
+                                val s = serverToClient.readString()
+                                val indexReceived = s.toInt()
+                                serverToClient.writeString("ack $indexReceived")
+                            }
                             countMutex.withLock {
                                 clientsHandled++
                                 if (clientsHandled >= clientCount) {
@@ -168,13 +169,14 @@ class SimpleSocketTests {
             val flow = server.bind()
             launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
-                    acceptedSocket = serverToClient
-                    val buffer = serverToClient.readBuffer(1.seconds)
-                    val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
-                    assertEquals(text, dataReceivedFromClient)
-                    serverToClientPort = serverToClient.localPort()
-                    assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
-                    serverToClient.close()
+                    serverToClient.closeAfter {
+                        acceptedSocket = serverToClient
+                        val buffer = serverToClient.readBuffer(1.seconds)
+                        val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
+                        assertEquals(text, dataReceivedFromClient)
+                        serverToClientPort = serverToClient.localPort()
+                        assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                    }
                     serverToClientMutex.unlock()
                 }
             }
@@ -202,11 +204,12 @@ class SimpleSocketTests {
             val acceptedClientFlow = server.bind()
             launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
-                    acceptedSocket = serverToClient
-                    serverToClientPort = serverToClient.localPort()
-                    assertTrue { serverToClientPort > 0 }
-                    serverToClient.writeString(text, Charset.UTF8, 5.seconds)
-                    serverToClient.close()
+                    serverToClient.closeAfter {
+                        acceptedSocket = serverToClient
+                        serverToClientPort = serverToClient.localPort()
+                        assertTrue { serverToClientPort > 0 }
+                        serverToClient.writeString(text, Charset.UTF8, 5.seconds)
+                    }
                     serverToClientMutex.unlock()
                     return@collect
                 }
@@ -242,13 +245,14 @@ class SimpleSocketTests {
         val acceptedClientFlow = server.bind()
         launch(Dispatchers.Default) {
             acceptedClientFlow.collect { serverToClient ->
-                acceptedSocket = serverToClient
-                serverToClientPort = serverToClient.localPort()
-                assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
-                serverToClient.writeString(text, Charset.UTF8, 1.seconds)
-                delay(5)
-                serverToClient.writeString(text2, Charset.UTF8, 1.seconds)
-                serverToClient.close()
+                serverToClient.closeAfter {
+                    acceptedSocket = serverToClient
+                    serverToClientPort = serverToClient.localPort()
+                    assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                    serverToClient.writeString(text, Charset.UTF8, 1.seconds)
+                    delay(5)
+                    serverToClient.writeString(text2, Charset.UTF8, 1.seconds)
+                }
                 serverToClientMutex.unlock()
                 return@collect
             }
@@ -322,8 +326,7 @@ class IPv6SocketTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        val received = serverToClient.readString()
-                        serverToClient.close()
+                        val received = serverToClient.closeAfter { serverToClient.readString() }
                         serverReceived.complete(received)
                     }
                 }
@@ -356,8 +359,7 @@ class IPv6SocketTests {
                 launch(Dispatchers.Default) {
                     val signals = handled.iterator()
                     acceptedClientFlow.collect { serverToClient ->
-                        val received = serverToClient.readString()
-                        serverToClient.close()
+                        val received = serverToClient.closeAfter { serverToClient.readString() }
                         if (!signals.hasNext()) fail("the server accepted a third client; the test opens only two")
                         signals.next().complete(received)
                     }

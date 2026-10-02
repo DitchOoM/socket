@@ -98,8 +98,7 @@ class IoUringManagerTests {
             val serverJob =
                 launch {
                     try {
-                        serverFlow.collect { client ->
-                            client.close()
+                        serverFlow.serveEach { client ->
                         }
                     } catch (e: Exception) {
                         // Expected when server closes
@@ -204,9 +203,8 @@ class IoUringManagerTests {
             val serverJob =
                 launch {
                     try {
-                        server.bind(0, "127.0.0.1").collect { client ->
+                        server.bind(0, "127.0.0.1").serveEach { client ->
                             // Immediately close accepted connections
-                            client.close()
                         }
                     } catch (e: Exception) {
                         // Server closed
@@ -259,10 +257,9 @@ class IoUringManagerTests {
                 val serverJob =
                     launch {
                         try {
-                            server.bind(0, "127.0.0.1").collect { client ->
+                            server.bind(0, "127.0.0.1").serveEach { client ->
                                 val data = client.readBuffer(5.seconds)
                                 client.write(data, 5.seconds)
-                                client.close()
                             }
                         } catch (e: Exception) {
                             // Server closed
