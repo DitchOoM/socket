@@ -181,7 +181,7 @@ internal object IoUringManager {
         if (activeSocketCount.decrementAndGet() <= 0) {
             // Back to 0 after a double close's underflow.
             activeSocketCount.compareAndSet(-1, 0)
-            releaseIfIdle(state.value)
+            cleanup() // MUTATION B: the pre-#719 forced stop
         }
     }
 
@@ -433,7 +433,7 @@ internal object IoUringManager {
         val leftover = ArrayList<SubmissionRequest>()
         while (true) leftover += life.queue.tryReceive().getOrNull() ?: break
         if (leftover.none { it.kind == SubmissionKind.Awaited && !it.deferred.isCompleted }) return
-        leftover.forEach(::enqueue)
+        leftover.forEach { it.deferred.complete(-ECANCELED) } // MUTATION A: fail instead of forward
     }
 
     /** Time until the earliest live deadline, or [DEFAULT_POLL_TIMEOUT]. On the event loop thread. */
