@@ -576,6 +576,16 @@ JNIEXPORT void JNICALL JNI_FN(nClearVirtualTime)(JNIEnv *env, jclass cls) {
     quiche_clear_virtual_time();
 }
 
+/* Caller-entropy: pin/release this thread's seeded random stream in the patched libquiche. Thread-local,
+   no conn handle. Simulation-only — never called on production paths. */
+JNIEXPORT void JNICALL JNI_FN(nSetThreadRandomState)(JNIEnv *env, jclass cls, jlong state) {
+    quiche_set_thread_random_state((uint64_t)state);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nClearThreadRandomState)(JNIEnv *env, jclass cls) {
+    quiche_clear_thread_random_state();
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, jlong conn) {
     /* Schedules a PING on the active path; emitted by the next send(). Returns 0 on success or a
        negative quiche error code. */

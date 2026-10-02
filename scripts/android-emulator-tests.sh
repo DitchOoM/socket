@@ -44,6 +44,52 @@ LOGCAT_FILE="emulator-diagnostics/logcat-api${API_LEVEL}.txt"
 adb logcat -v threadtime > "$LOGCAT_FILE" &
 LOGCAT_PID=$!
 
+# NO TEST RUNS ON AN EMULATOR WITHOUT A NETWORK
+# ---------------------------------------------
+# Every suite here needs the device's network, and one of them asserts on it directly. An emulator
+# can finish booting and never attach one: run 36919027096 booted cold, its netsim Wi-Fi and its
+# modem never brought a network up in the 2.5 minutes before the tests, and the first suite failed
+# `defaultReportsTheEmulatorsNetworkState` — an environment fault reported as a library defect.
+# So the device must report an active default network first. If it does not within the budget, its
+# radios are cycled once (`svc wifi`/`svc data`, which re-attach a network within seconds); if it
+# still has none, no test runs and the step fails as what it is, with the device's own connectivity
+# and Wi-Fi state captured beside the logcat.
+NETWORK_BUDGET_S="${EMULATOR_NETWORK_BUDGET_S:-60}"
+NETWORK_FILE="emulator-diagnostics/no-network-api${API_LEVEL}.txt"
+
+# 0 once `dumpsys connectivity` names an active default network, 1 if none within $1 seconds.
+await_default_network() {
+  local deadline=$((SECONDS + $1))
+  until adb shell dumpsys connectivity 2>/dev/null | grep -qE '^Active default network: [0-9]+'; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+NETWORK_READY=1
+if ! await_default_network "$NETWORK_BUDGET_S"; then
+  echo "::warning::emulator (API ${API_LEVEL}) had no active default network ${NETWORK_BUDGET_S}s after boot — cycling Wi-Fi and mobile data once"
+  adb shell svc wifi disable || true
+  adb shell svc data disable || true
+  sleep 2
+  adb shell svc wifi enable || true
+  adb shell svc data enable || true
+  if ! await_default_network "$NETWORK_BUDGET_S"; then
+    NETWORK_READY=0
+    {
+      echo "Emulator (API ${API_LEVEL}) never attached a network: none ${NETWORK_BUDGET_S}s after boot, none ${NETWORK_BUDGET_S}s after cycling Wi-Fi and mobile data."
+      echo "--- dumpsys connectivity ---"
+      adb shell dumpsys connectivity 2>&1 | sed -n '1,120p' || true
+      echo "--- dumpsys wifi (head) ---"
+      adb shell dumpsys wifi 2>&1 | sed -n '1,80p' || true
+    } >"$NETWORK_FILE"
+    echo "::error title=Emulator has no network (API ${API_LEVEL})::No test ran: the emulator never attached a network, before or after cycling its radios. This is the emulator, not a test result. Capture: ${NETWORK_FILE}"
+  fi
+fi
+echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectivity 2>/dev/null | grep -E '^Active default network' || echo 'unknown')"
+
 # There is no `adb reverse tcp:<quic port>` here: QUIC is UDP and adb reverse only handles TCP.
 # This lane runs on an EMULATOR, which is the one device kind with a built-in `10.0.2.2` alias for
 # the host's loopback, so it can address the docker-published quic-echo container directly. That
@@ -63,38 +109,41 @@ LOGCAT_PID=$!
 # airplane-mode. This is issue #72 Task 1 — the docker quic-echo stays up for the connect + migration
 # tests. Run as a separate Gradle invocation so its detached host JVM is alive before
 # connectedAndroidTest starts.
-./gradlew :socket-quic-quiche:startNetworkControlServer
+TEST_EXIT=1
+if [ "$NETWORK_READY" = "1" ]; then
+  ./gradlew :socket-quic-quiche:startNetworkControlServer
 
-NET_CTRL_PORT_FILE=socket-quic-quiche/build/network-control-server.port
-NET_CTRL_PORT=$(cat "$NET_CTRL_PORT_FILE" 2>/dev/null || true)
-if [ -z "$NET_CTRL_PORT" ]; then
-  echo "::error::startNetworkControlServer recorded no port at $NET_CTRL_PORT_FILE" >&2
-  exit 1
+  NET_CTRL_PORT_FILE=socket-quic-quiche/build/network-control-server.port
+  NET_CTRL_PORT=$(cat "$NET_CTRL_PORT_FILE" 2>/dev/null || true)
+  if [ -z "$NET_CTRL_PORT" ]; then
+    echo "::error::startNetworkControlServer recorded no port at $NET_CTRL_PORT_FILE" >&2
+    exit 1
+  fi
+  echo "Network control server reachable from the device at 127.0.0.1:$NET_CTRL_PORT (adb reverse tcp)"
+
+  # An instrumented test process is forked from zygote and inherits the DEVICE's environment, so a
+  # SOCKET_REQUIRE_ALL_TESTS set on this runner never reaches it. Forward it as an instrumentation
+  # argument — the one channel that crosses — so the skip gate can actually fire on this lane if it is
+  # ever switched on. (Unset today: this lane's skips are still being inventoried, not gated.)
+  REQUIRE_ALL_ARG=""
+  if [ -n "${SOCKET_REQUIRE_ALL_TESTS:-}" ]; then
+    REQUIRE_ALL_ARG="-Pandroid.testInstrumentationRunnerArguments.SOCKET_REQUIRE_ALL_TESTS=${SOCKET_REQUIRE_ALL_TESTS}"
+  fi
+
+  # Keep going past a test failure so the logcat dump below still happens: the emulator is torn down
+  # at the end of this script, so a later workflow step cannot reach it. The test outcome is
+  # preserved in TEST_EXIT and re-raised as this script's status.
+  set +e
+  ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
+    -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
+    -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
+    -Pandroid.testInstrumentationRunnerArguments.netCtrlPort="$NET_CTRL_PORT" \
+    ${REQUIRE_ALL_ARG}
+  TEST_EXIT=$?
+  set -e
+
+  ./gradlew :socket-quic-quiche:stopNetworkControlServer || true
 fi
-echo "Network control server reachable from the device at 127.0.0.1:$NET_CTRL_PORT (adb reverse tcp)"
-
-# An instrumented test process is forked from zygote and inherits the DEVICE's environment, so a
-# SOCKET_REQUIRE_ALL_TESTS set on this runner never reaches it. Forward it as an instrumentation
-# argument — the one channel that crosses — so the skip gate can actually fire on this lane if it is
-# ever switched on. (Unset today: this lane's skips are still being inventoried, not gated.)
-REQUIRE_ALL_ARG=""
-if [ -n "${SOCKET_REQUIRE_ALL_TESTS:-}" ]; then
-  REQUIRE_ALL_ARG="-Pandroid.testInstrumentationRunnerArguments.SOCKET_REQUIRE_ALL_TESTS=${SOCKET_REQUIRE_ALL_TESTS}"
-fi
-
-# Keep going past a test failure so the logcat dump below still happens: the emulator is torn down
-# at the end of this script, so a later workflow step cannot reach it. The test outcome is
-# preserved in TEST_EXIT and re-raised as this script's status.
-set +e
-./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
-  -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
-  -Pandroid.testInstrumentationRunnerArguments.netCtrlPort="$NET_CTRL_PORT" \
-  ${REQUIRE_ALL_ARG}
-TEST_EXIT=$?
-set -e
-
-./gradlew :socket-quic-quiche:stopNetworkControlServer || true
 
 # Stop the streamer and let it flush before anything reads the file.
 kill "$LOGCAT_PID" 2>/dev/null || true

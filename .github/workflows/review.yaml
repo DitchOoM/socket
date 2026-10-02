@@ -264,9 +264,8 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
-      # RESTORE-ONLY, and `konan-macos-` — see the identical note on the `docs` job below. This
-      # job's `needs: [validate]` puts it after build-apple's `natives`, so the current run's entry
-      # is already there to restore.
+      # RESTORE-ONLY, and `konan-macos-` — see the identical note on the `docs` job below. The entry
+      # is written on main by native-deps-freshness.yaml's `cache-warm-apple`.
       - name: Restore Konan cache
         uses: actions/cache/restore@v6
         with:
@@ -531,8 +530,9 @@ jobs:
       # No `cache: gradle` — setup-java's gradle cache stored the whole ~/.gradle/caches tree under
       # `setup-java-macOS-arm64-gradle-*` (measured 1375MB + a 133MB wrapper entry, per PR ref) that
       # is byte-for-byte the same directory build-apple.yaml already caches. The read-only restore
-      # below replaces it with zero new bytes and a WARMER tree: `gradle-macos-kn-*` is written by
-      # the widest K/N test shard and actually contains build-cache-1 klib output.
+      # below replaces it with zero new bytes and a WARMER tree: `gradle-macos-kn-*` is written after
+      # a K/N compile of every module (native-deps-freshness.yaml's `cache-warm-apple`) and actually
+      # contains build-cache-1 klib output.
       - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
@@ -547,11 +547,11 @@ jobs:
             gradle-macos-kn-
             gradle-macos-
       # RESTORE-ONLY, and `konan-macos-` (lowercase literal), not `konan-${{ runner.os }}-`.
-      # runner.os is "macOS", and the writer of the real entry — build-apple.yaml's `natives` job —
-      # uses the lowercase literal. Keys compare verbatim and restore-key prefixes do not cross the
-      # two spellings, so this job was writing its own 434MB duplicate of a Konan distribution that
-      # already existed under the other name, once per ref. Read-only because `natives` is the
-      # single writer for this key.
+      # runner.os is "macOS", and the writer of the real entry — native-deps-freshness.yaml's
+      # `cache-warm-apple` — uses the lowercase literal. Keys compare verbatim
+      # and restore-key prefixes do not cross the two spellings, so this job was writing its own
+      # 434MB duplicate of a Konan distribution under the other name, once per ref. Read-only
+      # because that shard is the single writer for this key.
       - name: Restore Konan cache
         uses: actions/cache/restore@v6
         with:

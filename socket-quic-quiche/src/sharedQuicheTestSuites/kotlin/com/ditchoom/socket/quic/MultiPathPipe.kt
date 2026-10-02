@@ -199,6 +199,15 @@ internal class MultiPathPipe(
     private val rng = Random(seed)
     private val lock = SynchronizedObject()
 
+    /**
+     * Every datagram offered to the link, in the order it was offered: the sim's clock, who sent it, its
+     * size, and what the link did with it. Two runs of one seed must produce the same list — this is
+     * what a determinism check compares.
+     */
+    private val wire = ArrayList<String>()
+
+    fun wireLog(): List<String> = synchronized(lock) { wire.toList() }
+
     /** One datagram as the server sees it: the payload plus the client local address that sent them. */
     internal class ServerDatagram(
         val datagram: PipeDatagram,
@@ -373,6 +382,7 @@ internal class MultiPathPipe(
                 }
             if (dark) {
                 // No RNG draws: flipping a blackhole must not shift the seeded sequence around it.
+                wire += "${now().inWholeMicroseconds} $origin $len dark"
                 path.stats.blackholed++
                 return
             }
@@ -383,12 +393,14 @@ internal class MultiPathPipe(
                 }
             if (oversized) {
                 // Same no-draw discipline as the dark branch, and for the same reason.
+                wire += "${now().inWholeMicroseconds} $origin $len oversized"
                 path.stats.oversized++
                 return
             }
             val lossRoll = rng.nextDouble()
             val jitterFraction = rng.nextDouble()
             if (lossRoll < impairment.loss) {
+                wire += "${now().inWholeMicroseconds} $origin $len lost"
                 path.stats.dropped++
                 return
             }
@@ -398,6 +410,7 @@ internal class MultiPathPipe(
                     PathReach.Open, PathReach.Dark, is PathReach.DarkUntil -> Duration.ZERO
                 }
             delay = maxOf(held, withheld) + impairment.latency + impairment.jitter * jitterFraction
+            wire += "${now().inWholeMicroseconds} $origin $len +${delay.inWholeMicroseconds}"
         }
         // Captured only now: a dropped or blackholed datagram allocates nothing, which keeps the ledger
         // counting real deliveries and the seeded sequence independent of allocation.

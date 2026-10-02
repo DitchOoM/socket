@@ -5,6 +5,8 @@ package com.ditchoom.socket.quic.sim
 import com.ditchoom.socket.quic.DriverClock
 import com.ditchoom.socket.quic.DriverTime
 import com.ditchoom.socket.quic.QuicheCmd
+import com.ditchoom.socket.quic.QuicheEntropy
+import com.ditchoom.socket.quic.QuicheEntropySource
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.selects.SelectBuilder
 import kotlinx.coroutines.selects.onTimeout
@@ -40,7 +42,14 @@ import kotlin.time.TimeMark
  */
 internal class SimClock(
     private val scheduler: TestCoroutineScheduler,
-) : DriverClock {
+    /**
+     * Where quiche's own random draws come from. A sim over a real libquiche passes
+     * [QuicheEntropy.Seeded] so a run is a function of its seed; a sim over a test double has no
+     * libquiche to seed.
+     */
+    private val entropy: QuicheEntropy = QuicheEntropy.Os,
+) : DriverClock,
+    QuicheEntropySource {
     override fun markNow(): TimeMark {
         val origin = scheduler.currentTime
         return object : TimeMark {
@@ -73,4 +82,6 @@ internal class SimClock(
      * nanosecond delta.
      */
     override fun quicheTime(): DriverTime = DriverTime.Virtual(scheduler.currentTime * 1_000_000L)
+
+    override fun quicheEntropy(): QuicheEntropy = entropy
 }
