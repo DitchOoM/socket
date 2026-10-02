@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.writeString
 import com.ditchoom.socket.linux.io_uring_prep_nop
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -279,8 +280,7 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
                 memScoped {
                     val fds = allocArray<IntVar>(2)
                     check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0) { "socketpair failed: errno $errno" }
-                    check(dup2(fds[0], number) == number) { "dup2 onto $number failed: errno $errno" }
-                    close(fds[0])
+                    moveOnto(fds[0], number)
                     val mark = MARK.encodeToByteArray()
                     check(send(fds[1], mark.refTo(0), mark.size.convert(), 0) == mark.size.toLong())
                     return Impostor(number, fds[1])
@@ -323,8 +323,7 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
                     check(bind(listener, addr.ptr.reinterpret<sockaddr>(), sizeOf<sockaddr_in>().convert()) == 0)
                     check(listen(listener, 4) == 0)
                     fcntl(listener, F_SETFL, O_NONBLOCK)
-                    check(dup2(listener, number) == number) { "dup2 onto $number failed: errno $errno" }
-                    close(listener)
+                    moveOnto(listener, number)
                     addr.sin_port = htons(getLocalPort(number).toUShort())
                     val client = socket(AF_INET, SOCK_STREAM, 0)
                     check(connect(client, addr.ptr.reinterpret<sockaddr>(), sizeOf<sockaddr_in>().convert()) == 0) {
@@ -340,6 +339,19 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
         const val MARK = "another connection's bytes"
         const val LEAKED = "a closed client's bytes"
         const val DESCRIPTOR_SCAN = 4096
+
+        /**
+         * Puts [fd] at [number]. A new descriptor takes the lowest free number, which is often [number] itself;
+         * closing the original then would close the only copy.
+         */
+        fun moveOnto(
+            fd: Int,
+            number: Int,
+        ) {
+            if (fd == number) return
+            check(dup2(fd, number) == number) { "dup2 onto $number failed: errno $errno" }
+            close(fd)
+        }
 
         fun reused(
             impostor: Impostor?,
