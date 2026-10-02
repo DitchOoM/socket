@@ -1,11 +1,15 @@
 package com.ditchoom.socket.quic
 
 import android.os.Debug
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -17,6 +21,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /**
@@ -56,7 +61,7 @@ class AndroidQuicStreamReadMemorySoakTests {
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(AndroidQuicStreamReadMemorySoakTests::class) {
                 withTimeout(SOAK_BUDGET) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions.tracedInto(serverTraffic)) {
                         val serverJob =
                             launch(Dispatchers.IO) {
                                 connections {
@@ -77,7 +82,7 @@ class AndroidQuicStreamReadMemorySoakTests {
                             // the soak's own budget. The 15 s default fired first here (2026-10-02, API 35),
                             // while healthy lanes already took 6.6-11.8 s, and its bare "Timed out waiting
                             // for 15000 ms" could not say whether the soak was slow or stuck.
-                            withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = SOAK_BUDGET) {
+                            withQuicConnection("127.0.0.1", port, testQuicOptions.tracedInto(clientTraffic), timeout = SOAK_BUDGET) {
                                 val stream = openStream()
                                 val out = bufferFactory.allocate(PAYLOAD.length)
                                 try {
@@ -139,10 +144,11 @@ class AndroidQuicStreamReadMemorySoakTests {
      * How the measured rounds went, so a soak that runs out of time says whether it was slow throughout (a
      * high mean) or stuck once (one round holding most of the elapsed time), and at which round.
      */
-    private class SoakPace(
+    private inner class SoakPace(
         private val phase: String,
     ) {
         private val start = TimeSource.Monotonic.markNow()
+        private var roundStartedAt = TimeSource.Monotonic.markNow()
         private var rounds = 0
         private var slowestRound = -1
         private var slowest = Duration.ZERO
@@ -154,6 +160,7 @@ class AndroidQuicStreamReadMemorySoakTests {
          */
         suspend fun <T> round(block: suspend () -> T): T {
             val mark = TimeSource.Monotonic.markNow()
+            roundStartedAt = mark
             val dump = armStallDump(STALL_DUMP_AFTER, "the memory soak's $phase round $rounds")
             val value =
                 try {
@@ -175,6 +182,9 @@ class AndroidQuicStreamReadMemorySoakTests {
             try {
                 block()
             } catch (e: Throwable) {
+                val since = roundStartedAt.elapsedNow()
+                clientTraffic.print("the client's", since)
+                serverTraffic.print("the server's", since)
                 throw AssertionError("the soak stopped during $phase round $rounds: $this", e)
             }
         }
@@ -203,7 +213,47 @@ class AndroidQuicStreamReadMemorySoakTests {
         return received
     }
 
+    private val clientTraffic = RecentTraffic()
+    private val serverTraffic = RecentTraffic()
+
+    private fun QuicOptions.tracedInto(traffic: RecentTraffic) = copy(trace = QuicTraceCapture(traffic))
+
+    /**
+     * The last [CAPACITY] trace events of one side of the soak's connection, printed when a round stops.
+     *
+     * A stalled round's thread dump shows every worker idle in `poll`, which cannot say whether the request
+     * never left the client, reached the server and was never read, or was read and its echo never left.
+     * Each side's datagrams in and out, timed against the stalled round's start, answer that directly.
+     * Events are kept as they arrive and only formatted when printed, so a healthy soak pays one append per
+     * datagram.
+     */
+    private class RecentTraffic : TraceSink {
+        private val events = ArrayDeque<Pair<TimeMark, TraceEvent>>()
+
+        override fun emit(event: TraceEvent) {
+            val at = TimeSource.Monotonic.markNow()
+            synchronized(events) {
+                events.addLast(at to event)
+                if (events.size > CAPACITY) events.removeFirst()
+            }
+        }
+
+        fun print(
+            side: String,
+            roundStartedAgo: Duration,
+        ) {
+            val recent = synchronized(events) { events.toList() }
+            Log.i(TRACE_TAG, "$side last ${recent.size} trace events; the stalled round started $roundStartedAgo ago")
+            recent.forEach { (at, event) -> Log.i(TRACE_TAG, "$side ${at.elapsedNow()} ago: $event") }
+        }
+
+        private companion object {
+            const val CAPACITY = 200
+        }
+    }
+
     private companion object {
+        const val TRACE_TAG = "MemorySoakTraffic"
         const val PAYLOAD = "probe-538;"
         const val WARMUP_READS = 200
         const val READS = 1500
