@@ -173,14 +173,15 @@ abstract class MigrationSimTestSuite {
      * stages that one). Either way the client read the whole reply and then the connection's close, never
      * the end of the stream.
      *
-     * The seeds are the ones on this 800 ms, 30 %-loss path where that happened; the order inside each run
-     * still depends on thread timing, so this is the end-to-end witness, not the deterministic one.
+     * Each seed is one fixed run — quiche's own random draws follow it ([theSameSeedCrossesTheWireIdenticallyEveryRun]).
+     * These are the seeds among 0..199 on this 800 ms, 30 %-loss path that read the whole reply and never
+     * its end without `patchQuicheFinIsSentUntilAcknowledged`, every run; with it, each ends with the FIN.
      */
     @Test
     fun aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt() =
         runTest {
             wrapTestBody {
-                for (seed in listOf(12L, 22L, 30L)) {
+                for (seed in FIN_LOST_WITHOUT_THE_PATCH_SEEDS) {
                     val read = readAReplyAfterTheServerClosed(seed)
                     assertEquals(
                         ReplyEnding.Fin,
@@ -240,6 +241,38 @@ abstract class MigrationSimTestSuite {
             }
         }
 
+    /**
+     * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
+     * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
+     * datagrams at the same virtual instants every time. Runs [readAReplyAfterTheServerClosed]
+     * [DETERMINISM_RUNS] times on one seed and requires every run's wire log to match the first, line for
+     * line, and every run to end the same way.
+     */
+    @Test
+    fun theSameSeedCrossesTheWireIdenticallyEveryRun() {
+        val reads =
+            (1..DETERMINISM_RUNS).map {
+                lateinit var read: ReplyRead
+                runTest { wrapTestBody { read = readAReplyAfterTheServerClosed(seed = DETERMINISM_SEED) } }
+                read
+            }
+        val first = reads.first().wire
+        reads.forEachIndexed { run, read ->
+            val log = read.wire
+            val diverged =
+                first.indices.firstOrNull { it >= log.size || first[it] != log[it] } ?: if (log.size != first.size) first.size else null
+            assertEquals(
+                null,
+                diverged,
+                "run ${run + 1} of seed $DETERMINISM_SEED left the wire differently from run 1 at datagram $diverged:\n" +
+                    "run 1: ${diverged?.let { first.subList(maxOf(0, it - 3), minOf(first.size, it + 3)) }}\n" +
+                    "run ${run + 1}: ${diverged?.let { log.subList(maxOf(0, it - 3), minOf(log.size, it + 3)) }}",
+            )
+            assertEquals(reads.first().received, read.received, "run ${run + 1} of seed $DETERMINISM_SEED read a different amount")
+            assertEquals(reads.first().ending::class, read.ending::class, "run ${run + 1} of seed $DETERMINISM_SEED ended differently")
+        }
+    }
+
     /** How a client's read of the reply in [readAReplyAfterTheServerClosed] ended. */
     private sealed interface ReplyEnding {
         /** The stream's FIN: the reply ended. */
@@ -259,6 +292,8 @@ abstract class MigrationSimTestSuite {
         val received: Int,
         val ending: ReplyEnding,
         val traffic: String,
+        /** Every datagram the link was offered, in order — see [MultiPathPipe.wireLog]. */
+        val wire: List<String>,
     )
 
     /**
@@ -305,7 +340,7 @@ abstract class MigrationSimTestSuite {
                 } catch (e: QuicCloseException) {
                     ReplyEnding.Failed(e)
                 }
-            ReplyRead(expected = reply.length, received = received, ending = ending, traffic = pipeTraffic())
+            ReplyRead(expected = reply.length, received = received, ending = ending, traffic = pipeTraffic(), wire = pipe.wireLog())
         }
 
     /** Read this stream until it ends, passing each chunk's size to [onData]; how it ended. */
@@ -3207,6 +3242,14 @@ abstract class MigrationSimTestSuite {
 
         /** Loss on it, so the reply needs retransmissions to arrive whole. */
         const val SLOW_PATH_LOSS = 0.3
+
+        /** Enough repeats that a run-to-run divergence shows up; each is well under a second of wall. */
+        const val DETERMINISM_RUNS = 6
+
+        const val DETERMINISM_SEED = 671_101L
+
+        /** Measured: the seeds whose reply loses its FIN when quiche is built without the FIN patch. */
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(30L, 71L, 107L, 124L)
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000

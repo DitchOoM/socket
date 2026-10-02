@@ -1299,6 +1299,12 @@ void quiche_h3_conn_free(quiche_h3_conn *conn);
 void quiche_set_virtual_time_nanos(uint64_t nanos);
 void quiche_clear_virtual_time(void);
 
+// socket-caller-entropy: pin / release this thread's seeded random stream, so a simulation's quiche draws (packet-number skips, path-challenge data) follow its seed. Backed by the
+// marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheForCallerEntropy).
+// Simulation-only; unset in production.
+void quiche_set_thread_random_state(uint64_t state);
+void quiche_clear_thread_random_state(void);
+
 // socket-early-data-reason: BoringSSL's ssl_early_data_reason_t for the connection — why 0-RTT was
 // accepted or not (0 until the handshake has progressed far enough to know). quiche's Rust API has it
 // (`Connection::early_data_reason`) and its C API does not; the export is added by the marker-guarded

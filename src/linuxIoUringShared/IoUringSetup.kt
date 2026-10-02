@@ -22,10 +22,13 @@ internal val IO_URING_SETUP_LADDER: List<UInt> =
         0u,
     )
 
-/** Passes over [IO_URING_SETUP_LADDER] while the kernel answers ENOMEM. */
-internal const val ENOMEM_SETUP_PASSES = 5
+/**
+ * Passes over [IO_URING_SETUP_LADDER] while the kernel answers ENOMEM: eleven doubling waits, 2.047 s in
+ * all — more than twice the longest refusal measured (see [setUpIoUring]).
+ */
+internal const val ENOMEM_SETUP_PASSES = 12
 
-/** The wait before the second pass, doubling before each later one: four waits, 15 ms in all. */
+/** The wait before the second pass, doubling before each later one. */
 internal const val ENOMEM_BACKOFF_BASE_MICROS = 1_000
 
 /** One `io_uring_setup` the kernel refused. */
@@ -59,9 +62,14 @@ internal sealed interface RingSetup {
  * flags, answering `>= 0` or `-errno`), walking [IO_URING_SETUP_LADDER] and retrying the whole ladder
  * with a doubling [sleepMicros] while the kernel answers ENOMEM.
  *
- * ENOMEM here is a race with the asynchronous teardown of rings already released, not an exhausted
- * machine: the ring ledger reads `created == released, live = 0` when it happens, and only waiting
- * clears it. Any other errno is a lasting answer about this host and ends setup at once.
+ * ENOMEM here is the user's RLIMIT_MEMLOCK, not an exhausted machine: the kernel charges every ring's
+ * pages to the user (`io_create_region` → `__io_account_mem`) and returns them only when it frees the
+ * ring's context, asynchronously, after the fd is closed. The charge is per user, so every process of
+ * that user — sibling test binaries, the other module's ring — draws on the same budget. Measured on
+ * kernel 6.18 at an 8 MB limit: one process churning rings waits up to 36 ms for a refusal to clear,
+ * three churning under full CPU load up to 0.85 s, and with the limit lifted none is ever refused. The
+ * ring ledger reads `created == released, live = 0` when it happens, so only waiting clears it. Any
+ * other errno is a lasting answer about this host and ends setup at once.
  */
 internal fun setUpIoUring(
     sleepMicros: (Int) -> Unit,

@@ -20,5 +20,6 @@ class AppleMigrationSimTests : MigrationSimTestSuite() {
             certChainPath = AppleTestCerts.tlsConfig.certChainPath,
             privKeyPath = AppleTestCerts.tlsConfig.privKeyPath,
             codec = SocketAddressCodec(appleSockAddrLayout),
+            randomPin = CinteropQuicheApi,
         )
 }
