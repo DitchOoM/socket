@@ -6,7 +6,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlin.concurrent.AtomicInt
-import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -21,14 +20,10 @@ class LinuxServerSocket(
     private val config: TransportConfig = TransportConfig(),
 ) : ServerSocket {
     private val descriptor = SocketDescriptor()
-    private val serverFd: Int get() = descriptor.value
     private var boundPort: Int = -1
 
     // Atomic flag for thread-safe listening state checks across coroutines
     private val listening = AtomicInt(0) // 0 = not listening, 1 = listening
-
-    // Unique user_data for accept operations to enable cancellation
-    private val pendingAcceptUserData = AtomicLong(0L)
 
     override suspend fun bind(
         port: Int,
@@ -56,6 +51,29 @@ class LinuxServerSocket(
             checkSocketResult(fd, "socket")
             descriptor.adopt(fd)
 
+            descriptor.withOpenNow { serverFd -> setUp(serverFd, effectivePort, host, useIPv6, backlog) }
+        }
+
+        // Return a flow that accepts connections using io_uring
+        return flow {
+            while (coroutineContext.isActive && listening.value == 1) {
+                val clientSocket = acceptWithIoUring()
+                if (clientSocket != null) {
+                    emit(clientSocket)
+                }
+            }
+        }
+    }
+
+    /** Options, bind and listen on the adopted [serverFd]; a failure closes the socket. */
+    private fun setUp(
+        serverFd: Int,
+        effectivePort: Int,
+        host: String?,
+        useIPv6: Boolean,
+        backlog: Int,
+    ) {
+        memScoped {
             try {
                 // Set socket options
                 setReuseAddr(serverFd)
@@ -121,49 +139,38 @@ class LinuxServerSocket(
             } catch (e: Exception) {
                 // Clean up on bind/listen failure
                 listening.value = 0
-                descriptor.release()
+                descriptor.close()
                 throw e
-            }
-        }
-
-        // Return a flow that accepts connections using io_uring
-        return flow {
-            while (coroutineContext.isActive && listening.value == 1) {
-                val clientSocket = acceptWithIoUring()
-                if (clientSocket != null) {
-                    emit(clientSocket)
-                }
             }
         }
     }
 
     private suspend fun acceptWithIoUring(): ClientSocket? {
-        if (serverFd < 0 || listening.value == 0) return null
+        if (listening.value == 0) return null
+        return try {
+            descriptor.withOpen(::acceptOn)
+        } catch (_: SocketClosedException) {
+            // Closed before this accept named the descriptor.
+            listening.value = 0
+            null
+        }
+    }
 
+    private suspend fun acceptOn(serverFd: Int): ClientSocket? {
         // Allocate storage that persists through the async operation
         val clientAddr = nativeHeap.alloc<sockaddr_storage>()
         val clientAddrLen = nativeHeap.alloc<socklen_tVar>()
         clientAddrLen.value = sizeOf<sockaddr_storage>().convert()
 
         try {
-            val fd = serverFd
             val addrPtr = clientAddr.ptr.reinterpret<sockaddr>()
             val addrLenPtr = clientAddrLen.ptr
 
-            // Register operation FIRST to get userData for cancellation
-            // This fixes the race condition where cancel could miss the accept
-            val (userData, deferred) = IoUringManager.registerOperation(timeout = null)
-
-            // Store userData BEFORE submission so cancel can find it
-            pendingAcceptUserData.value = userData
-
-            // Now submit the accept operation
+            // A close cancels this accept once the poller has prepared it, and refuses it before then.
             val result =
-                IoUringManager.submitRegistered(userData, deferred) { sqe ->
-                    io_uring_prep_accept(sqe, fd, addrPtr, addrLenPtr, 0)
+                descriptor.submit(serverFd, SocketDescriptor.Lane.Read, timeout = null) { sqe, open ->
+                    io_uring_prep_accept(sqe, open, addrPtr, addrLenPtr, 0)
                 }
-
-            pendingAcceptUserData.value = 0L
 
             return when {
                 result >= 0 -> {
@@ -204,32 +211,14 @@ class LinuxServerSocket(
         }
     }
 
-    override fun isListening(): Boolean = listening.value == 1 && serverFd >= 0
+    override fun isListening(): Boolean = listening.value == 1 && descriptor.isOpen
 
     override fun port(): Int = boundPort
 
-    /**
-     * Cancel pending accept operation using io_uring async cancel.
-     * This is a suspend function since it submits to io_uring.
-     */
-    private suspend fun cancelPendingAccept() {
-        val userData = pendingAcceptUserData.value
-        if (userData == 0L) return
-
-        // Fire-and-forget cancel
-        IoUringManager.submitNoWait { sqe ->
-            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-        }
-    }
-
+    /** Stops listening and cancels a pending accept; the last one out closes the descriptor. */
     override suspend fun close() {
-        if (listening.value == 0 && serverFd < 0) return
-
-        // Cancel any pending accept operation using io_uring async cancel
-        cancelPendingAccept()
-
         listening.value = 0
-        descriptor.release()
+        descriptor.close()
         boundPort = -1
     }
 }

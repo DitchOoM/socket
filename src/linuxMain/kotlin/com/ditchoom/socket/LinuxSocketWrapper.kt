@@ -37,12 +37,10 @@ open class LinuxSocketWrapper : ClientSocket {
 
     private val descriptor = SocketDescriptor()
 
-    internal val sockfd: Int get() = descriptor.value
-
     /** Makes an accepted connection's descriptor this socket's. */
     internal fun adopt(fd: Int) {
         descriptor.adopt(fd)
-        cachedReadBufferSize = getSocketReceiveBufferSize(fd)
+        cachedReadBufferSize = descriptor.withOpenNow(::getSocketReceiveBufferSize)
     }
 
     /**
@@ -52,7 +50,7 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
-    override val isOpen: Boolean get() = sockfd >= 0
+    override val isOpen: Boolean get() = descriptor.isOpen
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
 
@@ -63,15 +61,18 @@ open class LinuxSocketWrapper : ClientSocket {
         this.config = config
     }
 
-    override suspend fun localPort(): Int = getLocalPort(sockfd)
+    override suspend fun localPort(): Int = descriptor.withOpenNowOr(-1, ::getLocalPort)
 
-    override suspend fun remotePort(): Int = getRemotePort(sockfd)
+    override suspend fun remotePort(): Int = descriptor.withOpenNowOr(-1, ::getRemotePort)
 
     override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
 
-    private suspend fun readRaw(deadline: Duration): ReadBuffer {
-        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
+    private suspend fun readRaw(deadline: Duration): ReadBuffer = descriptor.withOpen { fd -> readOpen(fd, deadline) }
 
+    private suspend fun readOpen(
+        fd: Int,
+        deadline: Duration,
+    ): ReadBuffer {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
@@ -82,7 +83,7 @@ open class LinuxSocketWrapper : ClientSocket {
             val nativeAccess = buffer.nativeMemoryAccess
             if (nativeAccess != null) {
                 val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-                val bytesRead = readWithIoUring(ptr, bufferSize, deadline)
+                val bytesRead = readWithIoUring(fd, ptr, bufferSize, deadline)
 
                 return when {
                     bytesRead > 0 -> {
@@ -106,7 +107,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 val array = managedAccess.backingArray
                 val bytesRead =
                     array.usePinned { pinned ->
-                        readWithIoUring(pinned.addressOf(0), bufferSize, deadline)
+                        readWithIoUring(fd, pinned.addressOf(0), bufferSize, deadline)
                     }
 
                 return when {
@@ -134,17 +135,14 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private suspend fun readWithIoUring(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Int {
-        val fd = sockfd
-        val result =
-            IoUringManager.submitAndWait(timeout) { sqe, _ ->
-                io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
-            }
-        return result
-    }
+    ): Int =
+        descriptor.submit(fd, SocketDescriptor.Lane.Read, timeout) { sqe, open ->
+            io_uring_prep_recv(sqe, open, ptr, size.convert(), 0)
+        }
 
     private fun handleReadError(errorCode: Int): Nothing {
         val ex = mapErrnoToException(errorCode, "recv")
@@ -155,9 +153,13 @@ open class LinuxSocketWrapper : ClientSocket {
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten {
-        if (sockfd < 0) return BytesWritten(-1)
+    ): BytesWritten = descriptor.withOpen { fd -> writeOpen(fd, buffer, deadline) }
 
+    private suspend fun writeOpen(
+        fd: Int,
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten {
         val remaining = buffer.remaining()
         if (remaining == 0) return BytesWritten(0)
 
@@ -167,7 +169,7 @@ open class LinuxSocketWrapper : ClientSocket {
             val ptr =
                 (nativeAccess.nativeAddress + buffer.position())
                     .toCPointer<ByteVar>()!!
-            val bytesSent = writeWithIoUring(ptr, remaining, deadline)
+            val bytesSent = writeWithIoUring(fd, ptr, remaining, deadline)
             return when {
                 bytesSent >= 0 -> {
                     buffer.position(buffer.position() + bytesSent)
@@ -183,7 +185,7 @@ open class LinuxSocketWrapper : ClientSocket {
             val array = managedAccess.backingArray
             val offset = managedAccess.arrayOffset + buffer.position()
             return array.usePinned { pinned ->
-                val bytesSent = writeWithIoUring(pinned.addressOf(offset), remaining, deadline)
+                val bytesSent = writeWithIoUring(fd, pinned.addressOf(offset), remaining, deadline)
                 when {
                     bytesSent >= 0 -> {
                         buffer.position(buffer.position() + bytesSent)
@@ -198,17 +200,14 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private suspend fun writeWithIoUring(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Int {
-        val fd = sockfd
-        val result =
-            IoUringManager.submitAndWait(timeout) { sqe, _ ->
-                io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
-            }
-        return result
-    }
+    ): Int =
+        descriptor.submit(fd, SocketDescriptor.Lane.Write, timeout) { sqe, open ->
+            io_uring_prep_send(sqe, open, ptr, size.convert(), 0)
+        }
 
     private fun handleWriteError(errorCode: Int): Nothing {
         val ex = mapErrnoToException(errorCode, "send")
@@ -231,8 +230,9 @@ open class LinuxSocketWrapper : ClientSocket {
         return cachedReadBufferSize
     }
 
+    /** Refuses further reads and writes and cancels any parked one; the last one out closes the descriptor. */
     private fun closeInternal() {
-        descriptor.release()
+        descriptor.close()
     }
 
     override suspend fun close() {
