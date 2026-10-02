@@ -7,7 +7,13 @@ import kotlin.native.identityHashCode
 // shows which [ RUN ] block opened a socket that was never closed.
 @OptIn(ExperimentalNativeApi::class)
 internal object IoUringDiag {
-    fun opened(kind: String, owner: Any) = println("IOURING-DIAG open ${owner.identityHashCode()} $kind")
+    fun opened(
+        kind: String,
+        owner: Any,
+    ) = println("IOURING-DIAG open ${owner.identityHashCode()} $kind")
 
-    fun closed(kind: String, owner: Any) = println("IOURING-DIAG close ${owner.identityHashCode()} $kind")
+    fun closed(
+        kind: String,
+        owner: Any,
+    ) = println("IOURING-DIAG close ${owner.identityHashCode()} $kind")
 }
