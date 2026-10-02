@@ -65,6 +65,7 @@ internal val HOST_REPORT_SECTIONS: List<HostReportSection> =
         HostReportSection("/proc/meminfo") { procLines("/proc/meminfo", listOf("MemAvailable", "Committed_AS", "Mlocked")) },
         HostReportSection("open fds") { openFdCount() },
         HostReportSection("io_uring rings of this user") { ioUringRingsOfThisUser() },
+        HostReportSection("io_uring rings of this user") { ioUringRingsOfThisUser() },
         HostReportSection("/proc/sys/kernel/io_uring_disabled") { procFirstLine("/proc/sys/kernel/io_uring_disabled") },
     )
 
