@@ -27,27 +27,46 @@ import platform.posix.utsname
  * Every line is best-effort and says so when a source is unreadable, so a sandbox without `/proc`
  * degrades to a shorter report rather than a second failure inside the first.
  */
-@OptIn(ExperimentalForeignApi::class)
 internal fun ioUringHostReport(): String =
     buildString {
-        memScoped {
-            val u = alloc<utsname>()
-            if (uname(u.ptr) == 0) {
-                appendLine("  kernel: ${u.release.toKString()} (${u.version.toKString()}) ${u.machine.toKString()}")
-            } else {
-                appendLine("  kernel: uname failed")
+        for (section in HOST_REPORT_SECTIONS) appendLine("  ${section.label}: ${section.read()}")
+    }.trimEnd()
+
+/** One line of [ioUringHostReport]: what it is called, and how to read it now. */
+internal class HostReportSection(
+    val label: String,
+    val read: () -> String,
+)
+
+/**
+ * The report's lines, in order. Declared as data, one entry per section, so a repeated section is a
+ * repeated label that IoUringHostReportTests rejects — not a stray `appendLine` an edit or a merge can
+ * duplicate unnoticed.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal val HOST_REPORT_SECTIONS: List<HostReportSection> =
+    listOf(
+        HostReportSection("kernel") {
+            memScoped {
+                val u = alloc<utsname>()
+                if (uname(u.ptr) == 0) {
+                    "${u.release.toKString()} (${u.version.toKString()}) ${u.machine.toKString()}"
+                } else {
+                    "uname failed"
+                }
             }
-        }
+        },
         // /proc/self/limits rather than getrlimit(2): Kotlin/Native's posix bindings for Linux do not
         // expose sys/resource.h, and the text file carries the same soft/hard pair.
-        appendLine("  /proc/self/limits: " + procLines("/proc/self/limits", listOf("Max locked memory", "Max open files")))
-        appendLine("  /proc/self/status: " + procLines("/proc/self/status", listOf("VmLck", "VmRSS", "VmSize", "Threads", "FDSize")))
-        appendLine("  /proc/meminfo: " + procLines("/proc/meminfo", listOf("MemAvailable", "Committed_AS", "Mlocked")))
-        appendLine("  open fds: ${openFdCount()}")
-        appendLine("  io_uring rings of this user: ${ioUringRingsOfThisUser()}")
-        appendLine("  io_uring rings of this user: ${ioUringRingsOfThisUser()}")
-        appendLine("  /proc/sys/kernel/io_uring_disabled: " + procFirstLine("/proc/sys/kernel/io_uring_disabled"))
-    }.trimEnd()
+        HostReportSection("/proc/self/limits") { procLines("/proc/self/limits", listOf("Max locked memory", "Max open files")) },
+        HostReportSection("/proc/self/status") {
+            procLines("/proc/self/status", listOf("VmLck", "VmRSS", "VmSize", "Threads", "FDSize"))
+        },
+        HostReportSection("/proc/meminfo") { procLines("/proc/meminfo", listOf("MemAvailable", "Committed_AS", "Mlocked")) },
+        HostReportSection("open fds") { openFdCount() },
+        HostReportSection("io_uring rings of this user") { ioUringRingsOfThisUser() },
+        HostReportSection("/proc/sys/kernel/io_uring_disabled") { procFirstLine("/proc/sys/kernel/io_uring_disabled") },
+    )
 
 /** The rows of a `/proc` text file that start with one of [keys], whitespace-collapsed, or why it could not be read. */
 @OptIn(ExperimentalForeignApi::class)
