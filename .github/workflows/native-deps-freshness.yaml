@@ -232,19 +232,20 @@ jobs:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
-      # ⚠️ `konan-linux-*` is starved the same way and is deliberately NOT warmed here. It is not
-      # main-gated in build-linux.yaml — plain actions/cache@v6, so PR runs write it, but only into
-      # their own `refs/pull/N/merge` scope: unreadable by any other PR, unreadable by main, and
-      # deleted by purge-pr-caches.yaml when the PR closes. Main's only writer is merged.yaml,
-      # denied as above, so the store holds zero `konan-linux-*` entries and every Linux job
-      # re-downloads the Kotlin/Native toolchain.
-      # Adding a `Cache Konan` step to THIS job would make it worse, not better: the two ./gradlew
-      # invocations below build only Rust/C targets (liburing, quiche) and never compile
-      # Kotlin/Native, so ~/.konan would be empty or partial at post-job. Cache entries are
-      # immutable per key, and build-linux.yaml's konan step is the full actions/cache@v6 — an
-      # exact primary-key hit makes it skip its own save, so one empty warm would pin the empty
-      # entry until gradle/libs.versions.toml next changes. Fixing it properly means giving this
-      # job a real K/N compile to populate the toolchain first; tracked separately.
+      # `konan-linux-*`'s single writer. Starved the same way as the Gradle keys: build-linux's
+      # `natives` never compiles Kotlin/Native, so its save always skipped, and merged.yaml cannot
+      # write caches — the store held zero `konan-linux-*` entries and every Linux job downloaded
+      # the K/N toolchain and its LLVM/sysroot dependencies. Restored here, topped up by a real K/N
+      # Linux compile further down, and saved explicitly only if that compile succeeded: a save
+      # after a failed or skipped compile could pin an empty or partial ~/.konan under an immutable
+      # key until gradle/libs.versions.toml next changes. An exact hit skips both.
+      - name: Restore Konan (K/N toolchain)
+        id: restore_konan
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
 
       # ---- Cache entries mirrored EXACTLY from build-linux.yaml ----
       - name: Cache BoringSSL x64
@@ -357,6 +358,27 @@ jobs:
           :socket-quic-quiche:buildQuicheSharedLinuxX64
           :socket-quic-quiche:buildQuicheSharedLinuxArm64
           --no-configuration-cache
+
+      # Populates ~/.konan with everything a Linux K/N build needs: the distribution plus each
+      # target's LLVM/gcc-sysroot dependencies, which K/N fetches per target on first use (CI logs
+      # show both the aarch64 and x86_64 gcc-8.3.0 sysroots being downloaded), hence both targets.
+      # The liburing builds above are what these compilations' cinterops link against.
+      - name: Compile Kotlin/Native for Linux x64 + arm64 (fills ~/.konan)
+        id: kn_compile
+        if: steps.restore_konan.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: ./gradlew :compileKotlinLinuxX64 :compileKotlinLinuxArm64 --no-configuration-cache
+
+      - name: Save Konan (K/N toolchain)
+        if: steps.kn_compile.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Report a Konan warm that could not run
+        if: steps.kn_compile.outcome == 'failure'
+        run: echo "::warning::The Kotlin/Native Linux compile failed, so konan-linux-* was NOT saved; every Linux K/N job downloads the toolchain until it succeeds."
 
       # ── Warm the Kotlin dependency graph, not just the natives (issue #427) ─────────────────
       #
