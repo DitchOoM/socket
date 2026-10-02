@@ -11,7 +11,6 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
-import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.TimeSource
@@ -28,8 +27,7 @@ class LinuxClientSocket(
     /** The injected transport configuration, supplied at `allocate(config)` time. */
     private val config: TransportConfig = TransportConfig(),
 ) : ClientToServerSocket {
-    private val descriptor = SocketDescriptor()
-    private val sockfd: Int get() = descriptor.value
+    private val descriptor = SocketDescriptor(teardown = { freeTls() })
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
     private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
@@ -41,24 +39,15 @@ class LinuxClientSocket(
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
-    /**
-     * user_data of the recv currently parked in io_uring, or 0 when no read is in flight.
-     * Set on the event loop thread once the recv SQE is prepared (see [readWithIoUring])
-     * so a concurrent [close] can cancel it; cleared when the read returns. Lets close()
-     * promptly complete a parked recv with -ECANCELED instead of waiting out its timeout
-     * (issue #83).
-     */
-    private val pendingReadUserData = AtomicLong(0L)
-
-    override val isOpen: Boolean get() = sockfd >= 0
+    override val isOpen: Boolean get() = descriptor.isOpen
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
 
     override val writePolicy: WritePolicy get() = config.writePolicy
 
-    override suspend fun localPort(): Int = getLocalPort(sockfd)
+    override suspend fun localPort(): Int = descriptor.withOpenNowOr(-1, ::getLocalPort)
 
-    override suspend fun remotePort(): Int = getRemotePort(sockfd)
+    override suspend fun remotePort(): Int = descriptor.withOpenNowOr(-1, ::getRemotePort)
 
     override suspend fun open(
         port: Int,
@@ -79,9 +68,9 @@ class LinuxClientSocket(
                 ) { candidate -> connectCandidate(candidate, port, timeout) },
             )
             // Cache the socket's receive buffer size for efficient read operations
-            cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
+            cachedReadBufferSize = descriptor.withOpenNow(::getSocketReceiveBufferSize)
             if (tlsConfig != null) {
-                initTls(host, timeout)
+                descriptor.withOpen { fd -> initTls(fd, host, timeout) }
             }
         } catch (e: Exception) {
             closeInternal()
@@ -142,6 +131,7 @@ class LinuxClientSocket(
     }
 
     private suspend fun initTls(
+        fd: Int,
         hostname: String,
         timeout: Duration,
     ) {
@@ -202,17 +192,20 @@ class LinuxClientSocket(
         }
 
         // Attach socket to SSL
-        SSL_set_fd(ssl, sockfd)
+        SSL_set_fd(ssl, fd)
 
         // Perform non-blocking handshake using io_uring for polling
-        performTlsHandshake(timeout)
+        performTlsHandshake(fd, timeout)
     }
 
     /**
      * Non-blocking TLS handshake using io_uring poll.
      * Loops on SSL_connect() handling WANT_READ/WANT_WRITE with io_uring polling.
      */
-    private suspend fun performTlsHandshake(timeout: Duration) {
+    private suspend fun performTlsHandshake(
+        fd: Int,
+        timeout: Duration,
+    ) {
         val mark = TimeSource.Monotonic.markNow()
 
         while (true) {
@@ -230,7 +223,7 @@ class LinuxClientSocket(
                     if (remaining.isNegative()) {
                         throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
                     }
-                    waitForPoll(POLLIN.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Read, POLLIN.toShort(), remaining)
                 }
                 SSL_ERROR_WANT_WRITE -> {
                     // Wait for socket to be writable
@@ -238,7 +231,7 @@ class LinuxClientSocket(
                     if (remaining.isNegative()) {
                         throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
                     }
-                    waitForPoll(POLLOUT.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Read, POLLOUT.toShort(), remaining)
                 }
                 else -> {
                     val errorStr = getOpenSSLError()
@@ -252,13 +245,14 @@ class LinuxClientSocket(
      * Wait for socket to be ready for read or write using io_uring poll.
      */
     private suspend fun waitForPoll(
+        fd: Int,
+        lane: SocketDescriptor.Lane,
         events: Short,
         timeout: Duration,
     ) {
-        val fd = sockfd
         val result =
-            IoUringManager.submitAndWait(timeout) { sqe, _ ->
-                io_uring_prep_poll_add(sqe, fd, events.toUInt())
+            descriptor.submit(fd, lane, timeout) { sqe, open ->
+                io_uring_prep_poll_add(sqe, open, events.toUInt())
             }
 
         if (result < 0) {
@@ -266,15 +260,20 @@ class LinuxClientSocket(
             if (errorCode == ETIME || errorCode == ETIMEDOUT) {
                 throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
             }
+            // A close cancels a parked poll: the socket is closed, not its handshake failed.
+            if (errorCode == ECANCELED || errorCode == EBADF) throw SocketClosedException.General("Socket is closed")
             throw SSLHandshakeFailedException(Exception("Poll failed: ${strerror(errorCode)?.toKString()}"))
         }
     }
 
     override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
 
-    private suspend fun readRaw(deadline: Duration): ReadBuffer {
-        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
+    private suspend fun readRaw(deadline: Duration): ReadBuffer = descriptor.withOpen { fd -> readOpen(fd, deadline) }
 
+    private suspend fun readOpen(
+        fd: Int,
+        deadline: Duration,
+    ): ReadBuffer {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
@@ -288,10 +287,10 @@ class LinuxClientSocket(
                 val bytesRead =
                     if (ssl != null) {
                         // TLS read with polling for non-blocking socket
-                        sslRead(ptr, bufferSize, deadline)
+                        sslRead(fd, ptr, bufferSize, deadline)
                     } else {
                         // io_uring async read
-                        readWithIoUring(ptr, bufferSize, deadline)
+                        readWithIoUring(fd, ptr, bufferSize, deadline)
                     }
 
                 return when {
@@ -322,9 +321,9 @@ class LinuxClientSocket(
                     array.usePinned { pinned ->
                         val ptr = pinned.addressOf(0)
                         if (ssl != null) {
-                            sslRead(ptr, bufferSize, deadline)
+                            sslRead(fd, ptr, bufferSize, deadline)
                         } else {
-                            readWithIoUring(ptr, bufferSize, deadline)
+                            readWithIoUring(fd, ptr, bufferSize, deadline)
                         }
                     }
 
@@ -361,6 +360,7 @@ class LinuxClientSocket(
      * Handles WANT_READ/WANT_WRITE by polling until data is available.
      */
     private suspend fun sslRead(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
@@ -379,14 +379,14 @@ class LinuxClientSocket(
                     if (remaining.isNegative()) {
                         return -1 // Will trigger timeout error
                     }
-                    waitForPoll(POLLIN.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Read, POLLIN.toShort(), remaining)
                 }
                 SSL_ERROR_WANT_WRITE -> {
                     val remaining = timeout - mark.elapsedNow()
                     if (remaining.isNegative()) {
                         return -1
                     }
-                    waitForPoll(POLLOUT.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Read, POLLOUT.toShort(), remaining)
                 }
                 else -> return result // Other error, let caller handle
             }
@@ -394,25 +394,14 @@ class LinuxClientSocket(
     }
 
     private suspend fun readWithIoUring(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Int {
-        val fd = sockfd
-        // Register the userData up front so close() can cancel this recv by id. Mark
-        // it parked inside prepareOp — which runs on the event loop thread AFTER the
-        // recv is registered in pendingOps — so a concurrent close() can never enqueue
-        // its cancel ahead of this recv in the FIFO submission channel. (issue #83)
-        val (userData, deferred) = IoUringManager.registerOperation()
-        return try {
-            IoUringManager.submitRegistered(userData, deferred, timeout) { sqe ->
-                io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
-                pendingReadUserData.value = userData
-            }
-        } finally {
-            pendingReadUserData.compareAndSet(userData, 0L)
+    ): Int =
+        descriptor.submit(fd, SocketDescriptor.Lane.Read, timeout) { sqe, open ->
+            io_uring_prep_recv(sqe, open, ptr, size.convert(), 0)
         }
-    }
 
     private fun handleSslReadError(
         result: Int,
@@ -442,9 +431,13 @@ class LinuxClientSocket(
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten {
-        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
+    ): BytesWritten = descriptor.withOpen { fd -> writeOpen(fd, buffer, deadline) }
 
+    private suspend fun writeOpen(
+        fd: Int,
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten {
         val remaining = buffer.remaining()
         if (remaining == 0) return BytesWritten(0)
 
@@ -454,9 +447,9 @@ class LinuxClientSocket(
             val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, remaining, deadline).toLong()
+                    sslWrite(fd, ptr, remaining, deadline).toLong()
                 } else {
-                    writeWithIoUring(ptr, remaining, deadline).toLong()
+                    writeWithIoUring(fd, ptr, remaining, deadline).toLong()
                 }
             return BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
         }
@@ -470,9 +463,9 @@ class LinuxClientSocket(
                 val ptr = pinned.addressOf(offset)
                 val bytesSent =
                     if (ssl != null) {
-                        sslWrite(ptr, remaining, deadline).toLong()
+                        sslWrite(fd, ptr, remaining, deadline).toLong()
                     } else {
-                        writeWithIoUring(ptr, remaining, deadline).toLong()
+                        writeWithIoUring(fd, ptr, remaining, deadline).toLong()
                     }
                 BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
             }
@@ -495,9 +488,9 @@ class LinuxClientSocket(
                     .toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, remaining, deadline).toLong()
+                    sslWrite(fd, ptr, remaining, deadline).toLong()
                 } else {
-                    writeWithIoUring(ptr, remaining, deadline).toLong()
+                    writeWithIoUring(fd, ptr, remaining, deadline).toLong()
                 }
             return BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
         } finally {
@@ -531,21 +524,21 @@ class LinuxClientSocket(
         }
 
     private suspend fun writeWithIoUring(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Int {
-        val fd = sockfd
-        return IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
+    ): Int =
+        descriptor.submit(fd, SocketDescriptor.Lane.Write, timeout) { sqe, open ->
+            io_uring_prep_send(sqe, open, ptr, size.convert(), 0)
         }
-    }
 
     /**
      * SSL write with io_uring polling for non-blocking sockets.
      * Handles WANT_READ/WANT_WRITE by polling until socket is ready.
      */
     private suspend fun sslWrite(
+        fd: Int,
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
@@ -563,14 +556,14 @@ class LinuxClientSocket(
                     if (remaining.isNegative()) {
                         return -1 // Will trigger timeout error
                     }
-                    waitForPoll(POLLIN.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Write, POLLIN.toShort(), remaining)
                 }
                 SSL_ERROR_WANT_WRITE -> {
                     val remaining = timeout - mark.elapsedNow()
                     if (remaining.isNegative()) {
                         return -1
                     }
-                    waitForPoll(POLLOUT.toShort(), remaining)
+                    waitForPoll(fd, SocketDescriptor.Lane.Write, POLLOUT.toShort(), remaining)
                 }
                 else -> return result // Other error, let caller handle
             }
@@ -613,25 +606,25 @@ class LinuxClientSocket(
         return cachedReadBufferSize
     }
 
+    /**
+     * Refuses further reads and writes and cancels any parked one at once — closing the descriptor alone
+     * does not wake a parked recv on Linux ARM64 (issue #83). The descriptor, and the TLS state with it,
+     * goes when the last read or write still inside lets go of it.
+     */
     private fun closeInternal() {
-        // Promptly cancel a concurrently-parked recv so it returns -ECANCELED (→
-        // SocketClosedException) instead of waiting out its full timeout. Closing the
-        // fd alone is not prompt on Linux ARM64 (issue #83). Submit the cancel before
-        // closing the fd; it targets the recv by user_data, so it is correct regardless
-        // of fd state. A same-coroutine close (read already returned) sees 0 here.
-        IoUringManager.cancelOperation(pendingReadUserData.getAndSet(0L))
-        // Only the closer that takes the descriptor tears TLS down: two racing closes would otherwise
-        // free the same SSL twice.
-        descriptor.release {
-            ssl?.let {
-                SSL_shutdown(it)
-                SSL_free(it)
-                ssl = null
-            }
-            sslCtx?.let {
-                SSL_CTX_free(it)
-                sslCtx = null
-            }
+        descriptor.close()
+    }
+
+    /** Run by [descriptor] exactly once, while the descriptor is open and no read or write is using it. */
+    private fun freeTls() {
+        ssl?.let {
+            SSL_shutdown(it)
+            SSL_free(it)
+            ssl = null
+        }
+        sslCtx?.let {
+            SSL_CTX_free(it)
+            sslCtx = null
         }
     }
 
@@ -644,5 +637,5 @@ class LinuxClientSocket(
      * in flight. Lets a deterministic test wait until a read is observably parked before
      * racing close() against it (issue #83) instead of guessing with a fixed delay.
      */
-    internal fun parkedReadUserDataForTest(): Long = pendingReadUserData.value
+    internal fun parkedReadUserDataForTest(): Long = descriptor.inFlight(SocketDescriptor.Lane.Read)
 }
