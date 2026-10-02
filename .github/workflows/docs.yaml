@@ -56,9 +56,9 @@ jobs:
         with:
           cache-disabled: true
 
-      # Zero new bytes: reads the entry build-apple.yaml's K/N shard already writes. `gradle-macos-kn-*`
-      # is the warmest of the three (it holds build-cache-1 klib output); `gradle-macos-` is the
-      # `natives`-written fallback.
+      # Zero new bytes: reads the entry native-deps-freshness.yaml's `cache-warm-apple` already writes.
+      # `gradle-macos-kn-*` is the warmest (it holds build-cache-1 klib output); `gradle-macos-` is the
+      # fallback.
       - name: Restore Gradle build outputs (read-only)
         uses: actions/cache/restore@v6
         with:

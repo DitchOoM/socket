@@ -396,14 +396,20 @@ jobs:
           echo "=== Linux x64 + arm64 libquiche.so/.a (gradle) ==="
           gradle_required buildQuicheSharedLinux :socket-quic-quiche:buildQuicheSharedLinuxX64 :socket-quic-quiche:buildQuicheSharedLinuxArm64 --no-configuration-cache
 
-          # The Windows cross-build below runs cargo directly against the (patched) quiche checkout the
-          # Gradle build keeps under build/quiche; the clone is for a warm-cache run where Gradle
-          # skipped everything and the cargo-target cache did not carry the source.
-          QUICHE_DIR=$(find socket-quic-quiche/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
-          if [ -z "$QUICHE_DIR" ]; then
-            QUICHE_DIR="/tmp/quiche-src"
-            git clone --recursive --depth 1 --branch "$QUICHE_VER" \
-              https://github.com/cloudflare/quiche.git "$QUICHE_DIR"
+          # The Windows cross-build below runs cargo directly against the quiche checkout under
+          # build/quiche. That tree is cached with a prefix fallback, and the Gradle builds above only
+          # re-patch it when they run, which a warm marker cache skips: on #710 the cross-build
+          # compiled the tree patched for the commit before #709 and shipped a DLL with neither FIN
+          # patch. So the tree is prepared here every run, and the build refuses a tree whose stamp
+          # does not name the patch set this commit's build script applies. There is no pristine
+          # fallback: an unpatched quiche is never a valid input.
+          gradle_required prepareQuicheSource :socket-quic-quiche:prepareQuicheSource --no-configuration-cache
+          SOURCE_RECORD=socket-quic-quiche/build/quiche-source.properties
+          QUICHE_DIR=$(sed -n 's/^dir=//p' "$SOURCE_RECORD")
+          QUICHE_DIGEST=$(sed -n 's/^digest=//p' "$SOURCE_RECORD")
+          if [ -z "$QUICHE_DIGEST" ] || [ "$(cat "$QUICHE_DIR/.socket-patch-digest" 2>/dev/null)" != "$QUICHE_DIGEST" ]; then
+            echo "::error title=natives: unprepared quiche source::$QUICHE_DIR is not stamped with this commit's patch digest '$QUICHE_DIGEST' — the Windows DLL would ship without this commit's quiche patches."
+            exit 1
           fi
 
           # Links one Linux JNI shim THIN against the sibling libquiche.so the REQUIRED shared build just
