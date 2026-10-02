@@ -224,6 +224,9 @@ fun downloadQuicheSource(
     // fails loudly if a quiche bump adds an un-clocked time read. Simulation-only; production keeps the real
     // clock (nothing sets the thread-local).
     patchQuicheForCallerClock(sourceDir)
+    // Let a simulation drive quiche's own random draws (packet-number skipping, path-challenge data) from
+    // a seed, as the caller clock drives its time. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheForCallerEntropy(sourceDir)
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
@@ -255,6 +258,107 @@ fun downloadQuicheSource(
     patchQuicheFinIsSentUntilAcknowledged(sourceDir)
 
     return sourceDir
+}
+
+/**
+ * Make quiche's own random draws **caller-seedable**, the entropy half of the caller clock
+ * ([patchQuicheForCallerClock]). Without it a simulation is not a function of its seed: quiche skips a
+ * packet number at a random point in every congestion window (`PktNumSpace::arm_skip_counter`, its
+ * optimistic-ACK defence), the skip changes the peer's ACK ranges and therefore the size of every ACK
+ * that follows, and from there loss draws, timers and the whole run diverge. Measured: one seed of the
+ * migration sim left the wire differently on 11 of 12 runs, first at a 53- vs 55-byte ACK.
+ *
+ * Every draw quiche makes goes through `rand::rand_bytes`, so that one function changes: it reads a
+ * thread-local splitmix64 state when the calling thread has set one, else BoringSSL's `RAND_bytes`
+ * exactly as before. `CallerClockQuicheApi` pins a state before each connection call and clears it after,
+ * deriving it from the connection's seed and how many calls that connection has made — so the draws a
+ * connection sees depend on its own call sequence, not on which thread ran it or what another connection
+ * did in between.
+ * Production never sets it. TLS randomness is BoringSSL's own and is untouched: ciphertext still differs
+ * run to run, which changes no packet's size, timing or fate.
+ *
+ * Marker-guarded; the anchor is upstream's whole `rand_bytes`, so a quiche bump that changes it throws.
+ */
+fun patchQuicheForCallerEntropy(sourceDir: File) {
+    val marker = "socket-caller-entropy"
+    val randRs = sourceDir.resolve("quiche/src/rand.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!randRs.exists() || !ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    val anchor =
+        """
+        |pub fn rand_bytes(buf: &mut [u8]) {
+        |    unsafe {
+        |        RAND_bytes(buf.as_mut_ptr(), buf.len());
+        |    }
+        |}
+        """.trimMargin()
+    val randText = randRs.readText()
+    if (randText.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: upstream `rand_bytes` not found exactly once in quiche/src/rand.rs — a quiche bump " +
+                "changed how quiche draws randomness. Re-fit patchQuicheForCallerEntropy.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: a seeded splitmix64 stream when the calling thread has pinned one, else BoringSSL.
+        |thread_local! {
+        |    static SOCKET_RANDOM_STATE: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
+        |}
+        |
+        |pub(crate) fn set_thread_random_state(state: u64) {
+        |    SOCKET_RANDOM_STATE.with(|c| c.set(Some(state)));
+        |}
+        |
+        |pub(crate) fn clear_thread_random_state() {
+        |    SOCKET_RANDOM_STATE.with(|c| c.set(None));
+        |}
+        |
+        |fn socket_splitmix64(state: &mut u64) -> u64 {
+        |    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        |    let mut z = *state;
+        |    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        |    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        |    z ^ (z >> 31)
+        |}
+        |
+        |pub fn rand_bytes(buf: &mut [u8]) {
+        |    let seeded = SOCKET_RANDOM_STATE.with(|c| match c.get() {
+        |        Some(mut state) => {
+        |            for chunk in buf.chunks_mut(8) {
+        |                let word = socket_splitmix64(&mut state).to_le_bytes();
+        |                chunk.copy_from_slice(&word[..chunk.len()]);
+        |            }
+        |            c.set(Some(state));
+        |            true
+        |        },
+        |        None => false,
+        |    });
+        |    if !seeded {
+        |        unsafe {
+        |            RAND_bytes(buf.as_mut_ptr(), buf.len());
+        |        }
+        |    }
+        |}
+        """.trimMargin()
+    randRs.writeText(randText.replace(anchor, replacement))
+    val export =
+        """
+        |
+        |// $marker: pin / release this thread's seeded random stream (see rand.rs). Simulation-only.
+        |#[no_mangle]
+        |pub extern "C" fn quiche_set_thread_random_state(state: u64) {
+        |    crate::rand::set_thread_random_state(state);
+        |}
+        |
+        |#[no_mangle]
+        |pub extern "C" fn quiche_clear_thread_random_state() {
+        |    crate::rand::clear_thread_random_state();
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: caller-seedable rand_bytes")
 }
 
 /**
@@ -3812,6 +3916,21 @@ kotlin {
         compilations.create("java21") {
             compilerOptions.configure {
                 jvmTarget.set(JvmTarget.JVM_21)
+                // The FFM backend is part of this module, so it may see main's `internal` declarations —
+                // which is what keeps the deterministic-simulation seam (QuicheRandomPin) out of the
+                // public API. A friend path, not associateWith: that would depend on the jvm jar, which
+                // packs this compilation's own output (the multi-release jar) — a task cycle.
+                freeCompilerArgs.add(
+                    provider {
+                        "-Xfriend-paths=" +
+                            this@jvm
+                                .compilations
+                                .getByName("main")
+                                .output
+                                .classesDirs
+                                .joinToString(",") { it.absolutePath }
+                    },
+                )
             }
             defaultSourceSet {
                 kotlin.srcDir("src/jvm21Main/kotlin")
