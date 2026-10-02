@@ -2353,6 +2353,11 @@ fun createBuildJvmJniShimTask(
                     listOf(
                         "clang",
                         "-dynamiclib",
+                        // Explicit, so the shim for either arch builds on either host: the release's
+                        // macOS natives come from one arm64 runner, and without -arch an "x64" shim
+                        // there is an arm64 binary that cannot link the x86_64 libquiche.dylib.
+                        "-arch",
+                        if (arch == "x64") "x86_64" else "arm64",
                         "-O2",
                         // Keep the frame pointer so a JVM hs_err / core backtrace can unwind through
                         // the JNI shim reliably (the JVM's native stack walker doesn't use DWARF CFI).
@@ -2465,6 +2470,18 @@ val jvmJniShimLinuxX64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "x64", buildQuicheSharedLinuxX64!!) else null
 val jvmJniShimLinuxArm64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
+
+// Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
+// The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
+// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 8-20 on an Intel
+// Mac could not load quiche. .github/scripts/verify-quiche-jvm-natives.sh gates the result.
+if (isMacOS) {
+    tasks.register("buildPublishedMacosQuicheNatives") {
+        group = "build"
+        description = "Build libquiche + the JNI shim for macos-arm64 and macos-x64 (the published macOS natives)"
+        dependsOn(jvmJniShimMacosArm64!!, jvmJniShimMacosX64!!)
+    }
+}
 
 // Unified entry point referenced by the handoff doc — builds every native lib
 // needed to exercise socket-quic on the current host's JVM (shared + JNI shim).
