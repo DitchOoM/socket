@@ -102,15 +102,13 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
             withConnection { client, _ ->
                 val number = descriptorOf(local = client.localPort(), peer = client.remotePort())
                 val hold = PollerHold.engage()
-                val impostor: Impostor?
-                val write =
+                val (impostor, write) =
                     try {
                         val write =
                             async(Dispatchers.Default) { runCatching { client.writeString(LEAKED, deadline = 10.seconds) } }
                         awaitQueuedBehindTheHold()
                         client.close()
-                        impostor = Impostor.takeIfFree(number)
-                        write
+                        Impostor.takeIfFree(number) to write
                     } finally {
                         hold.release()
                     }
@@ -141,14 +139,12 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
             val number = listenerDescriptorOf(server.port())
             val emitted = Channel<ClientSocket>(Channel.UNLIMITED)
             val hold = PollerHold.engage()
-            val other: OtherListener?
-            val collector =
+            val (other, collector) =
                 try {
                     val collector = launch(Dispatchers.Default) { connections.collect { emitted.send(it) } }
                     awaitQueuedBehindTheHold()
                     server.close()
-                    other = OtherListener.takeIfFree(number)
-                    collector
+                    OtherListener.takeIfFree(number) to collector
                 } finally {
                     hold.release()
                 }
@@ -176,14 +172,12 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
         close: suspend () -> Unit,
     ) {
         val hold = PollerHold.engage()
-        val impostor: Impostor?
-        val pending =
+        val (impostor, pending) =
             try {
                 val pending = async(Dispatchers.Default) { read() }
                 awaitQueuedBehindTheHold()
                 close()
-                impostor = Impostor.takeIfFree(number)
-                pending
+                Impostor.takeIfFree(number) to pending
             } finally {
                 hold.release()
             }
@@ -325,7 +319,7 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
                     memset(addr.ptr, 0, sizeOf<sockaddr_in>().convert())
                     addr.sin_family = AF_INET.convert()
                     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK.convert())
-                    addr.sin_port = htons(0u)
+                    addr.sin_port = htons(0.convert())
                     check(bind(listener, addr.ptr.reinterpret<sockaddr>(), sizeOf<sockaddr_in>().convert()) == 0)
                     check(listen(listener, 4) == 0)
                     fcntl(listener, F_SETFL, O_NONBLOCK)
