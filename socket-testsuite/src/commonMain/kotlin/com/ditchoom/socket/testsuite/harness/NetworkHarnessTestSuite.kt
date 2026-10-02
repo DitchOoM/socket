@@ -81,34 +81,45 @@ abstract class NetworkHarnessTestSuite {
         }
 
     /**
-     * An `impaired(latency = 200 ms)` round-trip is measurably slower than direct.
-     * The latency toxic adds a fixed 200 ms to every downstream chunk, so asserting
-     * `>= 150 ms` is conservative (immune to scheduler noise) without being vacuous
-     * — the direct round-trip on loopback completes in single-digit milliseconds.
+     * An `impaired(latency = 200 ms)` round-trip is measurably slower than direct: the median impaired
+     * round-trip exceeds the median direct one by at least [MIN_ADDED_LATENCY] of the configured 200 ms.
+     *
+     * Each path is warmed with one unmeasured round-trip first, then measured over [LATENCY_ROUNDS]. A
+     * single cold sample is not a measurement of the toxic: the first round-trip of a run pays for the
+     * first connect, JIT and the harness's own warm-up, and on CI it once took 425 ms direct against
+     * 248 ms impaired-and-warm. The difference of medians is immune to that one outlier and to scheduler
+     * noise, and it names what the toxic adds rather than comparing two unrelated absolute times.
      */
     @Test
     fun impairedLatencyRoundTripMeasurablySlower() =
-        runQuicTest(timeout = 30.seconds) {
+        runQuicTest(timeout = 60.seconds) {
             val ran =
                 withNetworkHarness {
-                    val direct = measureTime { echoRoundTrip(echo(), "w6-direct") }
-                    var impairedElapsed: Duration = Duration.ZERO
-                    impaired(latency = 200.milliseconds) { proxy ->
-                        impairedElapsed = measureTime { echoRoundTrip(proxy, "w6-impaired") }
+                    val endpoint = echo()
+                    echoRoundTrip(endpoint, "w6-direct-warmup")
+                    val direct = roundTrips { echoRoundTrip(endpoint, "w6-direct") }
+                    var impaired = emptyList<Duration>()
+                    impaired(latency = IMPAIRED_LATENCY) { proxy ->
+                        echoRoundTrip(proxy, "w6-impaired-warmup")
+                        impaired = roundTrips { echoRoundTrip(proxy, "w6-impaired") }
                     }
-                    println("[NetworkHarnessTestSuite] direct=$direct impaired=$impairedElapsed")
+                    val added = impaired.median() - direct.median()
+                    val measured =
+                        "median direct=${direct.median()} impaired=${impaired.median()} over " +
+                            "$LATENCY_ROUNDS round-trips each (direct=$direct, impaired=$impaired)"
+                    println("[NetworkHarnessTestSuite] added=$added; $measured")
                     assertTrue(
-                        impairedElapsed >= 150.milliseconds,
-                        "impaired(latency=200ms) round-trip took $impairedElapsed — expected >= 150ms " +
-                            "(direct took $direct)",
-                    )
-                    assertTrue(
-                        impairedElapsed > direct,
-                        "impaired round-trip ($impairedElapsed) not slower than direct ($direct)",
+                        added >= MIN_ADDED_LATENCY,
+                        "impaired(latency=$IMPAIRED_LATENCY) added only $added to a round-trip, expected at " +
+                            "least $MIN_ADDED_LATENCY; $measured",
                     )
                 }
             if (!ran) println("[NetworkHarnessTestSuite] harness down — impairedLatencyRoundTrip skipped")
         }
+
+    private suspend fun roundTrips(roundTrip: suspend () -> Unit): List<Duration> = List(LATENCY_ROUNDS) { measureTime { roundTrip() } }
+
+    private fun List<Duration>.median(): Duration = sorted()[size / 2]
 
     /**
      * Skip semantics are deterministic regardless of stack state: pointing at a port
@@ -343,3 +354,12 @@ abstract class NetworkHarnessTestSuite {
             if (!ran) println("[NetworkHarnessTestSuite] harness down — blackholeAccessor test skipped")
         }
 }
+
+/** The latency toxic [NetworkHarnessTestSuite.impairedLatencyRoundTripMeasurablySlower] configures. */
+private val IMPAIRED_LATENCY = 200.milliseconds
+
+/** Three quarters of [IMPAIRED_LATENCY]: what the toxic must at least add, with room for scheduler noise. */
+private val MIN_ADDED_LATENCY = IMPAIRED_LATENCY * 3 / 4
+
+/** Round-trips measured per path; odd, so the median is one sample. */
+private const val LATENCY_ROUNDS = 5

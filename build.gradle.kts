@@ -916,16 +916,22 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
             }
         },
     )
-    // Surface assertion messages and exception traces in the gradle test
-    // output. Default `events("failed")` only logs "FAILED" + the top-frame
-    // class name (e.g. `AssertionError at Assert.java:89`) which makes CI
-    // failures un-actionable without downloading the HTML report.
-    testLogging {
-        events("failed", "skipped")
-        showExceptions = true
-        showCauses = true
-        showStackTraces = true
-        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+}
+
+// Every module's test failures print their assertion message and trace. Gradle's default SHORT format logs
+// only "FAILED" + the exception's class and top frame (`AssertionError at Assert.java:89`), dropping the
+// message, so a CI failure is un-actionable without downloading the report. Applied to every project: a
+// root-level configureEach does not cross project boundaries, and socket-testsuite's latency failure
+// printed bare for exactly that reason.
+allprojects {
+    tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+        testLogging {
+            events("failed", "skipped")
+            showExceptions = true
+            showCauses = true
+            showStackTraces = true
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 }
 
