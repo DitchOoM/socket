@@ -974,7 +974,7 @@ jobs:
             :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
             :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
             :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
-            -PquicEchoAllArches=true \
+            -PquicEchoAllArches=true --continue \
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           kill "$WD" 2>/dev/null || true
