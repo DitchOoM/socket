@@ -47,8 +47,14 @@ fun runQuicTest(
     // recovery round-trip) pass a larger [timeout]. The +15s margin is itself
     // scaled so teardown on a slow runner can't trip runTest before our backstop.
     return runTest(timeout = deadline + 15.seconds.scaled) {
-        withContext(Dispatchers.Default) {
-            withTimeout(deadline) { block() }
+        // Dumped just before the deadline cancels the wait, so a timeout names what it was stuck on.
+        val stall = armStallDump(deadline - minOf(1.seconds, deadline / 10), "runQuicTest deadline $deadline is due")
+        try {
+            withContext(Dispatchers.Default) {
+                withTimeout(deadline) { block() }
+            }
+        } finally {
+            stall.disarm()
         }
     }
 }
