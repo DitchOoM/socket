@@ -376,6 +376,59 @@ class CertificateHashPinningException(
 }
 
 /**
+ * A QUIC server's certificate chain was not trusted, for [rejection]: the platform trust store refused it
+ * (the iOS system store), or the connection's `ServerCertVerifier` did. Thrown by a client connect before
+ * the connection is handed to the caller; the connection is already closed. A subtype of
+ * [SSLSocketException], so it is caught with every other TLS failure.
+ */
+class ServerCertificateRejectedException(
+    val rejection: ServerCertificateRejection,
+    cause: Throwable? = null,
+) : SSLSocketException(rejection.description, cause) {
+    override val reason: ConnectionFailureReason get() = ConnectionFailureReason.TlsBadCertificate
+}
+
+/** Why [ServerCertificateRejectedException] was thrown. */
+sealed interface ServerCertificateRejection {
+    val description: String
+
+    /** The server presented no certificate on a connection that was not resumed. */
+    data object NoPeerCertificate : ServerCertificateRejection {
+        override val description get() = "The server presented no certificate"
+    }
+
+    /** One certificate in the chain was larger than the [maxBytes] this client reads. Fail-closed. */
+    data class CertificateTooLarge(
+        val sizeBytes: Int,
+        val maxBytes: Int,
+    ) : ServerCertificateRejection {
+        override val description get() = "A server certificate ($sizeBytes bytes) exceeds the $maxBytes-byte limit"
+    }
+
+    /** The chain was longer than the [maxCertificates] this client reads. Fail-closed. */
+    data class ChainTooLong(
+        val maxCertificates: Int,
+    ) : ServerCertificateRejection {
+        override val description get() = "The server's certificate chain is longer than $maxCertificates certificates"
+    }
+
+    /** The platform trust store refused the chain for [serverName]; [detail] is the platform's own account. */
+    data class UntrustedBySystem(
+        val serverName: String,
+        val detail: String,
+    ) : ServerCertificateRejection {
+        override val description get() = "The system trust store does not trust the certificate for $serverName: $detail"
+    }
+
+    /** The connection's `ServerCertVerifier` (`QuicOptions.serverCertVerifier`) rejected the chain. */
+    data class RejectedByVerifier(
+        val reason: String,
+    ) : ServerCertificateRejection {
+        override val description get() = "The server certificate verifier rejected the chain: $reason"
+    }
+}
+
+/**
  * Why [CertificateHashPinningException] rejected the peer. Sealed so each case carries case-specific data
  * and callers can branch exhaustively; new cases extend the hierarchy where they need to.
  */

@@ -2127,7 +2127,11 @@ class QuicheDriver(
                 try {
                     cmd.result.complete(
                         try {
-                            api.connPeerCert(conn, cmd.buf.address, cmd.bufLen)
+                            when (val position = cmd.position) {
+                                PeerCertPosition.Leaf -> api.connPeerCert(conn, cmd.buf.address, cmd.bufLen)
+                                is PeerCertPosition.InChain ->
+                                    api.connPeerCertChainAt(conn, position.index, cmd.buf.address, cmd.bufLen)
+                            }
                         } finally {
                             cmd.buf.endBorrow()
                         },
