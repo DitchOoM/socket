@@ -208,11 +208,6 @@ interface QuicheApi {
     ): StreamSendResult
 
     /**
-     * Shut down one [direction] of [streamId] with application error code [err]
-     * (`quiche_conn_stream_shutdown`): [direction] 0 = read (sends STOP_SENDING), 1 = write (sends
-     * RESET_STREAM). Returns 0 on success or a negative quiche error code.
-     */
-    /**
      * Bytes [streamId] can take right now (`quiche_conn_stream_capacity`): > 0 when a write would be
      * accepted, 0 when flow control is full, negative quiche error when the stream can no longer be written
      * (finished, stopped, reset). The driver asks this only of streams whose last write was refused, so a
@@ -223,6 +218,11 @@ interface QuicheApi {
         streamId: QuicStreamId,
     ): Long
 
+    /**
+     * Shut down one [direction] of [streamId] with application error code [err]
+     * (`quiche_conn_stream_shutdown`): [direction] 0 = read (sends STOP_SENDING), 1 = write (sends
+     * RESET_STREAM). Returns 0 on success or a negative quiche error code.
+     */
     fun connStreamShutdown(
         conn: QuicheConn,
         streamId: QuicStreamId,
