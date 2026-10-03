@@ -182,6 +182,10 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN, ADDRESS),
         )
     }
+    private val hStreamCapacity by lazy {
+        // ssize_t quiche_conn_stream_capacity(conn, uint64 stream_id)
+        downcall("quiche_conn_stream_capacity", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG))
+    }
     private val hStreamShutdown by lazy {
         // int quiche_conn_stream_shutdown(conn, uint64 stream_id, enum quiche_shutdown direction, uint64 err)
         downcall(
@@ -641,6 +645,11 @@ class FfmQuicheApi private constructor(
                 }
             StreamSendResult(result, errorCode)
         }
+
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = hStreamCapacity.invokeExact(seg(conn.handle), streamId.id) as Long
 
     override fun connStreamShutdown(
         conn: QuicheConn,
@@ -1335,12 +1344,17 @@ class FfmQuicheApi private constructor(
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null
-        return Arena.ofConfined().use { arena ->
-            val streamIdOut = arena.allocate(JAVA_LONG)
-            val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
-            if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
-        }
+        val streamIdOut = streamIdScratch.get()
+        val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
+        return if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
     }
+
+    /**
+     * The out-parameter [streamIterNext] writes into, one per thread. The driver walks the readable streams
+     * after every command, one call per stream; a confined Arena per call made that walk's cost mostly
+     * native allocate and free (a fifth of a 64-stream profile). Per thread, so no two calls ever share it.
+     */
+    private val streamIdScratch: ThreadLocal<MemorySegment> = ThreadLocal.withInitial { Arena.ofAuto().allocate(JAVA_LONG) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {
         if (!iter.isExhausted) hStreamIterFree.invokeExact(seg(iter.handle))

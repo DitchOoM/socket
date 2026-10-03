@@ -79,6 +79,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_set_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
+import com.ditchoom.socket.quic.quiche.quiche_conn_stream_capacity
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_data_unacknowledged
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
@@ -395,6 +396,11 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
             return StreamSendResult(result, peerCode)
         }
     }
+
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = quiche_conn_stream_capacity(conn.handle.toCPointer()!!, streamId.id.convert()).convert()
 
     override fun connStreamShutdown(
         conn: QuicheConn,

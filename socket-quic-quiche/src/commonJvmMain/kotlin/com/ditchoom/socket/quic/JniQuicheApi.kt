@@ -265,6 +265,11 @@ object JniQuicheApi : QuicheApi {
         err: Long,
     ): Int = nConnStreamShutdown(conn.handle, streamId.id, direction, err)
 
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = nConnStreamCapacity(conn.handle, streamId.id)
+
     override fun connPeerCert(
         conn: QuicheConn,
         buf: Long,
@@ -873,6 +878,13 @@ object JniQuicheApi : QuicheApi {
         fin: Boolean,
         errorOut: Long,
     ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamCapacity(
+        conn: Long,
+        streamId: Long,
+    ): Long
 
     @FastNative
     @JvmStatic

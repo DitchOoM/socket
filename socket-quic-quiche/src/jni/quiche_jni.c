@@ -286,6 +286,12 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamSend)(
     return result;
 }
 
+/* Bytes the stream can take now: > 0 writable, 0 flow-control full, < 0 quiche error (no longer writable). */
+JNIEXPORT jlong JNICALL JNI_FN(nConnStreamCapacity)(
+    JNIEnv *env, jclass cls, jlong conn, jlong stream_id) {
+    return (jlong)quiche_conn_stream_capacity((quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id);
+}
+
 /* Shut down one direction of a stream with an application error code:
    direction 0 = QUICHE_SHUTDOWN_READ (STOP_SENDING), 1 = QUICHE_SHUTDOWN_WRITE (RESET_STREAM). */
 JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
