@@ -1,0 +1,145 @@
+name: QUIC benchmark
+
+# Nightly QUIC performance numbers, so a regression is seen the night it lands instead of in a user's
+# app. QuicBenchmark (socket-quic-quiche jvmTest) runs an in-process loopback server and client through
+# four workloads: bulk throughput, 64-stream throughput, request/response latency (p50/p99) and
+# handshake rate. It runs twice: on clean loopback, and under `tc netem` (delay + loss) so loss
+# recovery and congestion control are in the measurement too.
+#
+# Each run is compared with the last successful run on main. A metric more than THRESHOLD_PCT worse is
+# a warning, never a failure: hosted runners are noisy neighbours, and one bad night is a reason to
+# look, not proof. A sustained drop across nights is the signal.
+
+on:
+  schedule:
+    # 08:07 UTC, clear of flake-sweep (06:41), quic-interop (07:23) and native-deps-freshness (09:17).
+    - cron: "7 8 * * *"
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: "Workload scale (1 = full: 256 MB bulk, 64 x 4 MB streams, 2000 round trips, 200 handshakes)"
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+  actions: read # borrows natives and reads the previous run's results
+
+concurrency:
+  group: quic-bench
+  cancel-in-progress: false
+
+env:
+  ORG_GRADLE_PROJECT_version: "0.0.0-bench"
+  THRESHOLD_PCT: "15"
+  NETEM: "delay 10ms 2ms loss 0.5%"
+
+jobs:
+  bench:
+    name: "QUIC benchmark"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find a quiche natives artifact to borrow
+        id: natives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=quiche-linux-natives-full&per_page=100" \
+                  --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
+          if [ -z "$RID" ]; then
+            echo "::error::No unexpired quiche-linux-natives-full artifact exists. Run build-linux once, then retry."
+            exit 1
+          fi
+          echo "run-id=$RID" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ steps.natives.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Build the benchmark jar
+        run: ./gradlew :socket-quic-quiche:quicEchoJar -PlinuxTargets=false --no-configuration-cache
+
+      - name: Run on clean loopback
+        env:
+          QUIC_BENCH_SCALE: ${{ inputs.scale || '1' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bench
+          echo "nproc=$(nproc) load=$(uptime | sed 's/.*average[s]*://')"
+          java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED \
+            -cp test-harness/quic-echo/quic-echo.jar com.ditchoom.socket.quic.QuicBenchmarkKt \
+            test-harness/quic-echo/testcerts/cert.crt test-harness/quic-echo/testcerts/cert.key \
+            /tmp/bench/loopback.json loopback
+
+      # A tenth of the clean workload: every round trip now costs ~20 ms, so the full one would not
+      # finish inside the job.
+      - name: Run under netem
+        env:
+          SCALE: ${{ inputs.scale || '1' }}
+        run: |
+          set -euo pipefail
+          export QUIC_BENCH_SCALE=$(python3 -c "print(float('$SCALE') * 0.1)")
+          sudo tc qdisc add dev lo root netem $NETEM
+          trap 'sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
+          java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED \
+            -cp test-harness/quic-echo/quic-echo.jar com.ditchoom.socket.quic.QuicBenchmarkKt \
+            test-harness/quic-echo/testcerts/cert.crt test-harness/quic-echo/testcerts/cert.key \
+            /tmp/bench/netem.json netem
+
+      - name: Fetch the last main run's results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/baseline
+          RID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow quic-bench.yaml --branch main --status success \
+                  --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RID" ]; then
+            gh run download "$RID" --repo "$GITHUB_REPOSITORY" -n quic-bench -D /tmp/baseline \
+              && echo "baseline: run $RID" || echo "baseline run $RID has no quic-bench artifact"
+          else
+            echo "no previous successful run on main; this run becomes the first baseline"
+          fi
+
+      - name: Compare and summarise
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          threshold = float(os.environ["THRESHOLD_PCT"])
+          # Higher is better for rates, lower for latencies.
+          higher_better = lambda k: not k.endswith("_us")
+          lines = ["## QUIC benchmark", ""]
+          for label in ("loopback", "netem"):
+              cur = json.load(open(f"/tmp/bench/{label}.json"))["results"]
+              base_path = f"/tmp/baseline/{label}.json"
+              base = json.load(open(base_path))["results"] if os.path.exists(base_path) else {}
+              lines += [f"### {label}" + (f" (netem: {os.environ['NETEM']})" if label == "netem" else ""), "",
+                        "| Metric | Tonight | Last main | Change |", "|---|---|---|---|"]
+              for k, v in cur.items():
+                  b = base.get(k)
+                  if b:
+                      pct = (v - b) / b * 100
+                      worse = -pct if higher_better(k) else pct
+                      flag = " ⚠️" if worse > threshold else ""
+                      if worse > threshold:
+                          print(f"::warning title=QUIC benchmark regression::{label} {k}: {b} -> {v} ({pct:+.1f}%)")
+                      lines.append(f"| {k} | {v} | {b} | {pct:+.1f}%{flag} |")
+                  else:
+                      lines.append(f"| {k} | {v} | – | – |")
+              lines.append("")
+          lines.append(f"⚠️ = more than {threshold:.0f}% worse than the last main run. Warnings only; hosted runners are noisy.")
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(lines) + "\n")
+          EOF
+
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: quic-bench
+          path: /tmp/bench
+          retention-days: 90
