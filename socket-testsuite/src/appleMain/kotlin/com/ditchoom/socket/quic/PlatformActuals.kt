@@ -15,9 +15,9 @@ actual fun isKotlinNative(): Boolean = true
 // simulators are not: KGP runs them via `simctl spawn --standalone`, outside launchd_sim's network
 // services. See quicHarnessAvailability's docstring (issue #81).
 //
-// `QUIC_SIM_BOOTED` is still honoured so a booted-mode lane would work the moment one exists, but
-// nothing in the build or in CI sets it today — the caller reports the skip through `recordSkip`
-// precisely because it fires on every simulator run, and used to do so invisibly.
+// `QUIC_SIM_BOOTED=1` marks a booted-mode run: the root build sets it (with `standalone = false`) when a
+// lane exports IOS_SIMULATOR_BOOTED_UDID, which build-apple.yaml's iOS shard does. The tvOS/watchOS
+// shards still run standalone and still report the skip through `recordSkip`.
 actual fun quicHarnessAvailability(): QuicHarnessAvailability {
     if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) return QuicHarnessAvailability.Available
     if (getenv("QUIC_SIM_BOOTED")?.toKString() == "1") return QuicHarnessAvailability.Available
@@ -25,7 +25,7 @@ actual fun quicHarnessAvailability(): QuicHarnessAvailability {
         SkipReason.SimulatorLacksNetworkServices(
             "${kotlin.native.Platform.osFamily} simulator launched by KGP via `simctl spawn --standalone`, " +
                 "which runs outside launchd_sim; set QUIC_SIM_BOOTED=1 on a lane that boots a simulator " +
-                "and runs with standalone=false (no such lane exists yet — issue #81)",
+                "and runs with standalone=false (the root build does this when IOS_SIMULATOR_BOOTED_UDID is set)",
         ),
     )
 }

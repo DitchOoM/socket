@@ -382,8 +382,13 @@ jobs:
           - name: "macOS x64 (all other modules)"
             tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
             requireAllTests: "1"
+          # Booted, not standalone (#359/#81): the shard boots an iPhone simulator first and the
+          # tests spawn into it, so the network daemons the WebTransport and QUIC-harness suites
+          # need are reachable. requireAllTests stays off until this shard's skip inventory has been
+          # read from a run and comes back zero, which is the issue's own "Done when".
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
+            bootSimulator: "1"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
           # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
           # cleanly and what remains is mostly compile time, which parallelises well.
@@ -410,6 +415,24 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
         id: quiche_env
+
+      # Picks the newest available iPhone, boots it and waits for boot to finish; the root build
+      # reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it (standalone = false).
+      - name: Boot an iOS simulator
+        if: ${{ matrix.shard.bootSimulator == '1' }}
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          if [ -z "$UDID" ]; then
+            echo "::error::no available iPhone simulator to boot"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          xcrun simctl boot "$UDID" || true # already booted is fine
+          xcrun simctl bootstatus "$UDID" -b
+          echo "booted $(xcrun simctl list devices | grep "$UDID")"
+          echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Run ${{ matrix.shard.name }}
         env:

@@ -284,11 +284,11 @@ expect fun isKotlinNative(): Boolean
  * daemons (nehelper / nw services) a connection needs are unreachable. Raw-socket TCP doesn't need
  * them, which is why the rest of the Apple suite passes and hides this.
  *
- * The fix would be to run the iOS-simulator test task with `standalone = false` against a
- * pre-booted simulator. ⚠️ **That booted mode is not implemented**: nothing in the build or in CI
- * sets `QUIC_SIM_BOOTED=1`, so every Apple simulator lane reports this skip. macOS K/N (no
- * simulator, real network stack) returns [QuicHarnessAvailability.Available] and validates the
- * QUIC client.
+ * The fix is to run the iOS-simulator test task with `standalone = false` against a pre-booted
+ * simulator: the root build does that, and sets `QUIC_SIM_BOOTED=1`, when the lane exports
+ * `IOS_SIMULATOR_BOOTED_UDID` (build-apple.yaml's iOS shard). tvOS/watchOS still run standalone and
+ * report this skip. macOS K/N (no simulator, real network stack) returns
+ * [QuicHarnessAvailability.Available] and validates the QUIC client.
  */
 expect fun quicHarnessAvailability(): QuicHarnessAvailability
 
