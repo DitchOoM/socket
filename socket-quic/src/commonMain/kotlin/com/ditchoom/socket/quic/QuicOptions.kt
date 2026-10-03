@@ -311,8 +311,8 @@ data class QuicOptions(
      *
      * Empty (the default) verifies against the default roots: the JVM trust store (`cacerts`, or
      * `AndroidCAStore` on Android), the system CA bundle on Linux, `/etc/ssl/cert.pem` on macOS, and
-     * a bundled Mozilla root set on iOS. The Apple keychain is never consulted, so MDM-installed
-     * roots are not trusted.
+     * on iOS/tvOS/watchOS the device's own trust store through Security.framework (MDM and user roots,
+     * OS revocation) — or the bundled Mozilla roots, if [appleTrustSource] asks for them.
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
     /**
@@ -421,6 +421,20 @@ data class QuicOptions(
      * not migrate on their own.
      */
     val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
+    /**
+     * **Client-side**: a verifier consulted with the server's whole certificate chain after the handshake
+     * and before the connection is handed to the caller (#186). Additive: with [verifyPeer] on it sees
+     * only a chain the platform already validated, so it can narrow trust (pin a key, require an
+     * intermediate) but never widen it. See [ServerCertVerifier]. A rejection throws
+     * [com.ditchoom.socket.ServerCertificateRejectedException]. Ignored for the server role.
+     */
+    val serverCertVerifier: ServerCertVerifier? = null,
+    /**
+     * **Client-side, iOS/tvOS/watchOS**: where the trust anchors come from when [verifyPeer] is on and
+     * [trustedCaCertificatesPem] pins none. Defaults to the device's own trust store
+     * ([AppleTrustSource.SystemTrustStore], via Security.framework). Ignored on every other platform.
+     */
+    val appleTrustSource: AppleTrustSource = AppleTrustSource.SystemTrustStore,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

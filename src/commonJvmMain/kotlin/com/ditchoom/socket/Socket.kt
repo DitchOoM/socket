@@ -1,17 +1,15 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.nio.NioClientSocket
+import com.ditchoom.socket.nio.NioServerSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 
 actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToServerSocket =
-    if (useAsyncChannels) {
-        try {
-            AsyncClientSocket(config)
-        } catch (t: Throwable) {
-            // It's possible Android OS version is too old to support AsyncSocketChannel
-            NioClientSocket(useNioBlocking, config)
-        }
+    // Without NIO2 (Android < 26) the async client cannot open: constructing one succeeds, and the
+    // missing AsynchronousSocketChannel only surfaces from open(). So the choice is made here, up front.
+    if (useAsyncChannels && nio2Available) {
+        AsyncClientSocket(config)
     } else {
         NioClientSocket(useNioBlocking, config)
     }
@@ -38,4 +36,14 @@ actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToSer
 var useAsyncChannels = true
 var useNioBlocking = false
 
-actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket = AsyncServerSocket(config)
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket =
+    if (nio2Available) AsyncServerSocket(config) else NioServerSocket(config)
+
+/**
+ * Whether this runtime has NIO2's asynchronous channels. Every JVM does; Android only from API 26, so on
+ * API 23-25 both the client and the server socket fall back to plain NIO.
+ * Probed by name so nothing here links against a class the runtime may not have.
+ */
+internal val nio2Available: Boolean by lazy {
+    runCatching { Class.forName("java.nio.channels.AsynchronousServerSocketChannel") }.isSuccess
+}

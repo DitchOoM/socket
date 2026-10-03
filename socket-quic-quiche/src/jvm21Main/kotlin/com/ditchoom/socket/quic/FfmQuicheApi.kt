@@ -264,6 +264,11 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
     }
 
+    private val hConnPeerCertChainAt by lazy {
+        // void quiche_conn_peer_cert_chain_at(conn, size_t index, const uint8_t **out, size_t *out_len) — patched-in export
+        downcall("quiche_conn_peer_cert_chain_at", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS, ADDRESS))
+    }
+
     private val hConnApplicationProto by lazy {
         // void quiche_conn_application_proto(conn, const uint8_t **out, size_t *out_len)
         downcall("quiche_conn_application_proto", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
@@ -662,6 +667,28 @@ class FfmQuicheApi private constructor(
             }
             len
         }
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        if (index < 0) return 0
+        return Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
+            hConnPeerCertChainAt.invokeExact(seg(conn.handle), index.toLong(), outPtr, outLen)
+            val len = outLen.get(JAVA_LONG, 0).toInt()
+            if (len <= 0) return@use 0
+            // Same snprintf-style contract as connPeerCert: copy only when it fits.
+            if (len <= bufLen) {
+                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
+                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+            }
+            len
+        }
+    }
 
     override fun connApplicationProto(
         conn: QuicheConn,

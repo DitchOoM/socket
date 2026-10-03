@@ -252,6 +252,10 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
+    // Export the peer's certificate chain (quiche's C API has only the leaf), for verifiers outside
+    // BoringSSL: SecTrust on iOS and a consumer's ServerCertVerifier (#186). Idempotent, fails loudly on
+    // drift OR on an upstream export. See the KDoc.
+    patchQuichePeerCertChainFfi(sourceDir)
     // Keep a stream's FIN queued until a frame carries it and owed until the peer acknowledges it, so a
     // FIN written behind a retransmission is still sent and a send side is not complete before its FIN
     // is delivered. Idempotent, fails loudly on drift. See the KDoc.
@@ -494,6 +498,62 @@ fun patchQuicheEarlyDataReasonFfi(sourceDir: File) {
         """.trimMargin()
     ffiRs.appendText("\n" + export + "\n")
     logger.lifecycle("Patched quiche source: quiche_conn_early_data_reason FFI export")
+}
+
+/**
+ * Export `quiche_conn_peer_cert_chain_at`: the peer's certificate chain, one DER certificate per index,
+ * leaf first, as the peer sent it (#186).
+ *
+ * quiche's Rust API has `Connection::peer_cert_chain` and its C API exports only the leaf
+ * (`quiche_conn_peer_cert`). The chain is what a verifier outside BoringSSL needs: Security.framework's
+ * SecTrust on iOS evaluates a leaf plus its intermediates against the OS trust store, and a consumer's
+ * own verifier may pin an intermediate. One index-addressed export rather than a length and an
+ * accessor, so a binding reads until the length comes back 0 and cannot disagree with itself about
+ * how long the chain is. The bytes are conn-owned, valid while the connection is, like the leaf's.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the chain itself throws, telling you to delete this patch.
+ */
+fun patchQuichePeerCertChainFfi(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-peer-cert-chain"
+    if (text.contains(marker)) return
+    if (text.contains("fn quiche_conn_peer_cert_chain")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports a peer certificate chain — upstream added it. DELETE " +
+                "patchQuichePeerCertChainFfi and its call site, and check the upstream signature against " +
+                "libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "pub extern \"C\" fn quiche_conn_peer_cert("
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "$marker: `$anchor` not found in quiche/src/ffi.rs — a quiche bump moved the peer-certificate FFI. " +
+                "Re-fit patchQuichePeerCertChainFfi next to it.",
+        )
+    }
+    val export =
+        """
+        |
+        |// $marker: the peer's certificate at `index` of its chain (0 = leaf), or out_len = 0 past the end.
+        |#[no_mangle]
+        |pub extern "C" fn quiche_conn_peer_cert_chain_at(
+        |    conn: &Connection, index: size_t, out: &mut *const u8, out_len: &mut size_t,
+        |) {
+        |    match conn.peer_cert_chain().and_then(|chain| chain.get(index).copied()) {
+        |        Some(cert) => {
+        |            *out = cert.as_ptr();
+        |            *out_len = cert.len();
+        |        },
+        |
+        |        None => *out_len = 0,
+        |    }
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: quiche_conn_peer_cert_chain_at FFI export")
 }
 
 /**
@@ -3662,6 +3722,28 @@ afterEvaluate {
             certDir.resolve("cert.crt").copyTo(outDir.resolve("cert.crt"), overwrite = true)
             certDir.resolve("cert.key").copyTo(outDir.resolve("cert.key"), overwrite = true)
         }
+    }
+
+    // --- quic-interop-runner endpoint (test-harness/quic-interop, .github/workflows/quic-interop.yaml) ---
+    // The echo fat jar already carries every class and native the endpoint needs (QuicInteropEndpoint
+    // lives in jvmTest beside QuicEchoTestServer), so this repackages it with the endpoint as Main-Class
+    // rather than restating the fat-jar recipe.
+    val quicEchoJar = tasks.named<Jar>("quicEchoJar")
+    tasks.register<Jar>("quicInteropJar") {
+        group = "build"
+        description =
+            "Runnable jar of QuicInteropEndpoint for the quic-interop-runner image. Output: test-harness/quic-interop/quic-interop.jar"
+        dependsOn(quicEchoJar)
+        archiveBaseName.set("quic-interop")
+        archiveVersion.set("")
+        destinationDirectory.set(rootProject.projectDir.resolve("test-harness/quic-interop"))
+        manifest {
+            attributes(
+                "Main-Class" to "com.ditchoom.socket.quic.QuicInteropEndpointKt",
+                "Multi-Release" to "true",
+            )
+        }
+        from(quicEchoJar.flatMap { it.archiveFile }.map { zipTree(it) }) { exclude("META-INF/MANIFEST.MF") }
     }
 
     // --- Network control server for migration tests ---

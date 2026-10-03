@@ -292,6 +292,16 @@ internal class StubQuicheApi : QuicheApi {
         bufLen: Int,
     ) = peerCertLen
 
+    /** Lengths [connPeerCertChainAt] reports, leaf first; past the end it reports 0. Never writes, as above. */
+    @Volatile var peerCertChainLens: List<Int> = emptyList()
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ) = peerCertChainLens.getOrElse(index) { 0 }
+
     override fun connPeerError(conn: QuicheConn): QuicError? = peerError
 
     override fun connLocalError(conn: QuicheConn): QuicError? = localError

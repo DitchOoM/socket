@@ -387,6 +387,22 @@ interface QuicheApi {
     ): Int
 
     /**
+     * Copy certificate [index] of the peer's chain (`quiche_conn_peer_cert_chain_at`, a patched-in export;
+     * 0 = the leaf [connPeerCert] reads, then its intermediates in the order the peer sent them) into the
+     * native buffer at [buf]. Same snprintf-style contract as [connPeerCert]; `0` also means [index] is
+     * past the end of the chain, so a caller reads from 0 until it gets 0. The chain is what a verifier
+     * outside BoringSSL needs (SecTrust on iOS, a [ServerCertVerifier]) — #186.
+     *
+     * quiche is single-threaded — call this only from the driver loop (via [QuicheCmd.PeerCertChainAt]).
+     */
+    fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
      * Copy the negotiated ALPN protocol (`quiche_conn_application_proto`) into the native buffer at
      * [buf] (capacity [bufLen] bytes). Same snprintf-style contract as [connPeerCert]:
      * - `0` — no protocol negotiated yet (handshake not far enough along), or the backend does not

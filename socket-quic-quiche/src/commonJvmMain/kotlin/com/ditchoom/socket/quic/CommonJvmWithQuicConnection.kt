@@ -301,6 +301,18 @@ internal suspend fun buildJvmQuicConnection(
             parseLeafFields = ::parsePinnedLeafFieldsJvm,
             now = tuning.wallClock(),
         )
+        // The caller's ServerCertVerifier (#186). No system store here: BoringSSL already validated the
+        // chain against the JVM/Android anchors in the handshake.
+        verifyServerCertificateChain(
+            serverName,
+            resumed = quicConnection.resumption is QuicResumptionOutcome.Resumed,
+            systemTrust = null,
+            verifier = quicOptions.serverCertVerifier,
+            bufferFactory,
+            readChainDer = quicConnection::readPeerCertChainDer,
+            closeConnection = { quicConnection.close() },
+            now = tuning.wallClock(),
+        )
         return quicConnection
     } finally {
         // Exhaustive on purpose: every stage has to state what it owes, so one added later cannot

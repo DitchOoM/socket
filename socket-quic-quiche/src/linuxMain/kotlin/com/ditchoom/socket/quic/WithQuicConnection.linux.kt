@@ -283,6 +283,18 @@ internal suspend fun buildLinuxQuicConnection(
                 parseLeafFields = ::parsePinnedLeafFieldsLinux,
                 now = tuning.wallClock(),
             )
+            // The caller's ServerCertVerifier (#186). No system store here: BoringSSL already validated
+            // the chain against the system CA bundle in the handshake.
+            verifyServerCertificateChain(
+                serverName,
+                resumed = quicConn.resumption is QuicResumptionOutcome.Resumed,
+                systemTrust = null,
+                verifier = quicOptions.serverCertVerifier,
+                bufferFactory,
+                readChainDer = quicConn::readPeerCertChainDer,
+                closeConnection = { quicConn.close() },
+                now = tuning.wallClock(),
+            )
             quicConn
         }
     } finally {
@@ -394,6 +406,13 @@ internal class LinuxQuicConnection(
         der: PlatformBuffer,
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
+
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf (#186). */
+    suspend fun readPeerCertChainDer(
+        index: Int,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int = readPeerCertDerThroughDriver(driver, der, capacity, PeerCertPosition.InChain(index))
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
