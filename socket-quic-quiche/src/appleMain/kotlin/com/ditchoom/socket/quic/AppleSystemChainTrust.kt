@@ -4,8 +4,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
@@ -14,6 +12,8 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.set
 import kotlinx.cinterop.value
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import platform.CoreFoundation.CFArrayAppendValue
 import platform.CoreFoundation.CFArrayCreateMutable
 import platform.CoreFoundation.CFDataCreate
