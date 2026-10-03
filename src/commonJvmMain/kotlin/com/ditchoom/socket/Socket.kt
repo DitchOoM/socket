@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.nio.NioClientSocket
+import com.ditchoom.socket.nio.NioServerSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 
@@ -38,4 +39,14 @@ actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToSer
 var useAsyncChannels = true
 var useNioBlocking = false
 
-actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket = AsyncServerSocket(config)
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket =
+    if (nio2Available) AsyncServerSocket(config) else NioServerSocket(config)
+
+/**
+ * Whether this runtime has NIO2's asynchronous channels. Every JVM does; Android only from API 26, so on
+ * API 23-25 a server socket falls back to [NioServerSocket] (the client already falls back on its own).
+ * Probed by name so nothing here links against a class the runtime may not have.
+ */
+internal val nio2Available: Boolean by lazy {
+    runCatching { Class.forName("java.nio.channels.AsynchronousServerSocketChannel") }.isSuccess
+}
