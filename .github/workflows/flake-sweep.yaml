@@ -1,0 +1,143 @@
+name: Nightly flake sweep
+
+# Runs the suites with a history of flaking, many times each, every night, against `main`.
+#
+# flake-hunt.yaml answers "how often does THIS suite fail on THIS ref" when someone thinks to ask.
+# Nothing asked on a schedule, so a suite that started flaking was first seen as a red PR lane and
+# re-run, and a fix was judged by a handful of green PR runs. This sweep keeps a standing failure
+# rate per suite: a rate that rises names the night it rose, and a fix's claim is checked by the
+# nights that follow it rather than by one lucky PR.
+#
+# It never fails on a flake — like flake-hunt, finding one is the point. It reports rates to the run
+# summary and keeps them in one tracking issue (edited in place, never a comment per night).
+#
+# Every suite here runs on the JVM over loopback, with no Docker harness, so a leg measures the suite
+# and not the harness. Suites whose flake lives only on Apple or Linux native (#367, #292's linuxX64
+# leg) are not here: they need their own runners and natives.
+
+on:
+  schedule:
+    # 06:41 UTC: off the top of the hour, and clear of native-deps-freshness (09:17 daily) and
+    # weekly-dependency-update (Sunday 03:15), which share the runner pool and native caches.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Iterations per suite"
+        required: true
+        default: "20"
+
+permissions:
+  contents: read
+  actions: read # flake-hunt borrows the newest quiche-linux-natives-full artifact
+  issues: write # the tracking issue
+
+concurrency:
+  group: flake-sweep
+  cancel-in-progress: false
+
+# One job per suite rather than a matrix: a matrix of reusable-workflow calls exposes the outputs of
+# only one leg, and the summary needs every leg's rate.
+jobs:
+  failed-probe-cid:
+    name: "#583 failed-probe CID"
+    uses: ./.github/workflows/flake-hunt.yaml
+    with:
+      ref: main
+      iterations: ${{ inputs.iterations || '20' }}
+      gradle_task: ":socket-quic-quiche:jvmTest"
+      test_filter: "com.ditchoom.socket.quic.JvmFailedProbeConnectionIdTests"
+
+  local-server:
+    name: "#356 local server echo"
+    uses: ./.github/workflows/flake-hunt.yaml
+    with:
+      ref: main
+      iterations: ${{ inputs.iterations || '20' }}
+      gradle_task: ":socket-quic-quiche:jvmTest"
+      test_filter: "com.ditchoom.socket.quic.QuicLocalServerTests"
+
+  migration-sim:
+    name: "Migration simulator"
+    uses: ./.github/workflows/flake-hunt.yaml
+    with:
+      ref: main
+      iterations: ${{ inputs.iterations || '20' }}
+      gradle_task: ":socket-quic-quiche:jvmTest"
+      test_filter: "com.ditchoom.socket.quic.JvmMigrationSimTests"
+
+  http3-loopback:
+    name: "#450 HTTP/3 loopback"
+    uses: ./.github/workflows/flake-hunt.yaml
+    with:
+      ref: main
+      iterations: ${{ inputs.iterations || '20' }}
+      gradle_task: ":socket-http3:jvmTest"
+      test_filter: "com.ditchoom.socket.http3.JvmHttp3LoopbackTest"
+
+  webtransport:
+    name: "#292/#367 WebTransport"
+    uses: ./.github/workflows/flake-hunt.yaml
+    with:
+      ref: main
+      iterations: ${{ inputs.iterations || '20' }}
+      gradle_task: ":socket-webtransport:jvmTest"
+      test_filter: "com.ditchoom.socket.webtransport.JvmWebTransportTest"
+
+  summary:
+    name: "Rates"
+    needs: [failed-probe-cid, local-server, migration-sim, http3-loopback, webtransport]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tabulate and update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # suite|result|fails|total, one per line. A leg that died before its loop has no counts, and
+          # says so rather than reading as 0/0.
+          LEGS: |
+            JvmFailedProbeConnectionIdTests (#583)|${{ needs.failed-probe-cid.result }}|${{ needs.failed-probe-cid.outputs.fails }}|${{ needs.failed-probe-cid.outputs.total }}
+            QuicLocalServerTests (#356)|${{ needs.local-server.result }}|${{ needs.local-server.outputs.fails }}|${{ needs.local-server.outputs.total }}
+            JvmMigrationSimTests|${{ needs.migration-sim.result }}|${{ needs.migration-sim.outputs.fails }}|${{ needs.migration-sim.outputs.total }}
+            JvmHttp3LoopbackTest (#450)|${{ needs.http3-loopback.result }}|${{ needs.http3-loopback.outputs.fails }}|${{ needs.http3-loopback.outputs.total }}
+            JvmWebTransportTest (#292/#367)|${{ needs.webtransport.result }}|${{ needs.webtransport.outputs.fails }}|${{ needs.webtransport.outputs.total }}
+        run: |
+          set -euo pipefail
+          TODAY=$(date -u +%Y-%m-%d)
+          ROWS=""
+          while IFS='|' read -r suite result fails total; do
+            [ -z "$suite" ] && continue
+            if [ -z "$total" ]; then
+              rate="no result (leg ${result})"
+            else
+              rate="${fails}/${total}"
+            fi
+            ROWS="${ROWS}| ${suite} | ${rate} |"$'\n'
+          done <<< "$LEGS"
+
+          TABLE="| Suite | Failed iterations |"$'\n'"|---|---|"$'\n'"${ROWS}"
+          {
+            echo "## Nightly flake sweep — ${TODAY}"
+            echo
+            printf '%s' "$TABLE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # One issue holds the history: newest night first, the last 30 nights kept.
+          TITLE="Nightly flake sweep: failure rates"
+          NUM=$(gh issue list --state open --search "\"${TITLE}\" in:title" --json number,title \
+                  --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -1)
+          SECTION="### ${TODAY} — [run](${RUN_URL})"$'\n\n'"${TABLE}"
+          MARK='<!-- flake-sweep-history -->'
+          if [ -z "$NUM" ]; then
+            BODY="Maintained by \`.github/workflows/flake-sweep.yaml\`. Each night runs every suite below repeatedly against \`main\`; a rate that rises names the night it rose."$'\n\n'"${MARK}"$'\n\n'"${SECTION}"
+            gh issue create --title "$TITLE" --body "$BODY"
+          else
+            OLD=$(gh issue view "$NUM" --json body --jq .body)
+            HEAD="${OLD%%${MARK}*}"
+            HISTORY="${OLD#*${MARK}}"
+            # Keep the 29 newest previous nights.
+            KEPT=$(printf '%s' "$HISTORY" | awk -v max=29 '/^### /{n++} n>=1 && n<=max')
+            gh issue edit "$NUM" --body "${HEAD}${MARK}"$'\n\n'"${SECTION}"$'\n\n'"${KEPT}"
+          fi

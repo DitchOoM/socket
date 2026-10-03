@@ -18,6 +18,21 @@ name: Flake hunt
 # A treatment arm at 0/25 proves nothing unless the control arm reproduced.
 
 on:
+  # flake-sweep.yaml calls this once per suite every night; a dispatch is the manual two-arm hunt.
+  workflow_call:
+    inputs:
+      ref: { type: string, required: true }
+      iterations: { type: string, required: true }
+      gradle_task: { type: string, required: true }
+      test_filter: { type: string, required: true }
+      extra_load: { type: string, required: false, default: "0" }
+    outputs:
+      fails:
+        description: "Iterations that failed"
+        value: ${{ jobs.hunt.outputs.fails }}
+      total:
+        description: "Iterations run"
+        value: ${{ jobs.hunt.outputs.total }}
   workflow_dispatch:
     inputs:
       ref:
@@ -44,7 +59,8 @@ on:
 concurrency:
   # Keyed on the ref so a control and a treatment arm can run at the same time, but a second
   # launch against the same arm replaces the first rather than competing with it for the runner.
-  group: flake-hunt-${{ inputs.ref }}
+  # The suite is part of the key so the nightly sweep's legs, all on one ref, do not cancel each other.
+  group: flake-hunt-${{ inputs.ref }}-${{ inputs.gradle_task }}-${{ inputs.test_filter }}
   cancel-in-progress: true
 
 jobs:
@@ -52,6 +68,9 @@ jobs:
     name: "${{ inputs.iterations }}x ${{ inputs.test_filter }} @ ${{ inputs.ref }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    outputs:
+      fails: ${{ steps.hunt.outputs.fails }}
+      total: ${{ steps.hunt.outputs.total }}
     env:
       # linux-quiche-env and build.gradle.kts both refuse a CI build with no version. Nothing here is
       # published, so any pinned value will do.
@@ -198,10 +217,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::${{ inputs.ref }} — ${F}/${N} iterations failed"
 
+      # One run of flake-sweep.yaml uploads from several legs that share a run id, so the suite is in
+      # the name; artifact names may not carry ':', '/', '*' and friends, which tasks and filters do.
+      - name: Name the failure evidence
+        id: evidence
+        if: ${{ !cancelled() && steps.hunt.outputs.fails != '0' }}
+        run: echo "slug=$(printf '%s' '${{ inputs.test_filter }}' | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_OUTPUT"
+
       - name: Upload failure evidence
         if: ${{ !cancelled() && steps.hunt.outputs.fails != '0' }}
         uses: actions/upload-artifact@v7
         with:
-          name: flake-failures-${{ github.run_id }}
+          name: flake-failures-${{ github.run_id }}-${{ steps.evidence.outputs.slug }}
           path: /tmp/flake-failures
           if-no-files-found: warn
