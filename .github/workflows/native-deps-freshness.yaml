@@ -20,12 +20,9 @@ name: "Native Deps Freshness + Cache Warm"
 #      restores. That turns the first PR of the day into a warm-cache hit
 #      instead of a ~10-15 min cold from-source rebuild.
 #
-# This COMPLEMENTS weekly-dependency-update.yaml (#114), which owns the Gradle/
-# Maven side: the coupled Kotlin/KSP/AGP/wrappers toolchain + the Gradle wrapper,
-# AND the actual coordinated *bump* + validated PR for quiche/liburing. This
-# workflow is the lightweight daily radar (surface-only, no PR) plus the cache
-# priming — deliberately NOT a second bump path, so the two never race to open
-# competing PRs against the same version catalog.
+# Dependabot owns the Gradle/Maven side (.github/dependabot.yml). The native deps
+# are invisible to it, so this workflow is their daily radar (surface-only, no PR)
+# plus the cache priming; a native bump is done by hand from the issue it opens.
 # ---------------------------------------------------------------------------
 
 on:
@@ -35,8 +32,6 @@ on:
     #     at :00, and Actions explicitly warns high-load slots get delayed).
     #   - 09:17 UTC == ~01:17 US-Pacific / ~04:17 US-Eastern — the Americas are
     #     asleep, so hosted-runner contention is low.
-    #   - Clear of weekly-dependency-update.yaml's Sunday 03:15 UTC slot, so the
-    #     two never contend for the shared native caches / runner pool on Sundays.
     - cron: "17 9 * * *"
   workflow_dispatch: {}
 
@@ -135,7 +130,7 @@ jobs:
           The following from-source native dependencies pinned in \`gradle/libs.versions.toml\` are behind their latest upstream release:
 
           ${findings}
-          These are surfaced, not auto-bumped. The coordinated bump + validated PR is handled by \`weekly-dependency-update.yaml\` (#114) — remember \`liburing\` is SHA256-verified so its \`liburingSha256\` must be recomputed on bump.
+          These are surfaced, not auto-bumped: bump them by hand in a PR, which the full matrix validates. \`liburing\` is SHA256-verified, so its \`liburingSha256\` must be recomputed on bump.
 
           _Last checked: $(date -u '+%Y-%m-%d %H:%M UTC'). This issue is updated in place daily while updates remain available, and auto-closes once both deps are current._
           EOF

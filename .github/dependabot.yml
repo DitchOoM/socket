@@ -1,12 +1,10 @@
-# Dependabot keeps GitHub Actions and the independently-versioned Gradle
-# libraries current. The pieces it CANNOT handle are deliberately left to the
-# weekly Claude agent (.github/workflows/weekly-dependency-update.yaml):
-#   - the tightly-coupled toolchain (Kotlin, KSP, kotlin-wrappers, AGP) that
-#     must move in lockstep and needs a real build to validate;
-#   - the Gradle wrapper, which Dependabot cannot update;
-#   - the native deps built from source (quiche/BoringSSL, liburing), which are
-#     plain version strings in gradle/libs.versions.toml, not Maven modules, so
-#     Dependabot never sees them at all.
+# Dependabot keeps GitHub Actions and the Gradle libraries current, the Gradle
+# wrapper included. The Kotlin toolchain (Kotlin, KSP, kotlin-wrappers) moves as
+# one grouped PR so a Kotlin bump never lands without its matching KSP, and the
+# full PR matrix validates it. The native deps built from source (quiche/BoringSSL,
+# liburing) are plain version strings in gradle/libs.versions.toml, not Maven
+# modules, so Dependabot never sees them: native-deps-freshness.yaml surfaces
+# those daily as an issue, and they are bumped by hand.
 version: 2
 updates:
   - package-ecosystem: "gradle"
@@ -18,16 +16,19 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-    # Coordinated, build-validated toolchain bumps are owned by the weekly
-    # Claude agent. Kotlin / KSP / kotlin-wrappers must move in lock step (a
-    # lone Kotlin bump breaks KSP), and AGP majors need a build to verify.
+    # AGP majors change the Android build model and are taken by hand.
     ignore:
-      - dependency-name: "org.jetbrains.kotlin:*"
-      - dependency-name: "org.jetbrains.kotlin.*"
-      - dependency-name: "com.google.devtools.ksp*"
-      - dependency-name: "org.jetbrains.kotlin-wrappers:*"
       - dependency-name: "com.android.*"
+        update-types: ["version-update:semver-major"]
     groups:
+      kotlin-toolchain:
+        # Kotlin, KSP and kotlin-wrappers in one PR: a Kotlin release and the KSP
+        # build that supports it must land together.
+        patterns:
+          - "org.jetbrains.kotlin:*"
+          - "org.jetbrains.kotlin.*"
+          - "com.google.devtools.ksp*"
+          - "org.jetbrains.kotlin-wrappers:*"
       gradle-minor-patch:
         # One PR for all non-major bumps to keep noise down; majors stay separate.
         applies-to: version-updates
