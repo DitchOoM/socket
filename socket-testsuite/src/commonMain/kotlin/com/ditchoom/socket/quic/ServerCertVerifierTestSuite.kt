@@ -39,16 +39,19 @@ abstract class ServerCertVerifierTestSuite {
     /** The text of `two-cert-chain.crt`. */
     abstract fun twoCertificateChainPem(): String
 
+    // Split by markers rather than a regex: DOT_MATCHES_ALL is JVM-only, and this compiles for every target.
     private fun expectedChainDer(): List<ReadBuffer> =
-        Regex("-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", RegexOption.DOT_MATCHES_ALL)
-            .findAll(twoCertificateChainPem())
-            .map { match ->
-                val der = Base64.Mime.decode(match.groupValues[1].filterNot { it.isWhitespace() }) // ByteArray — test code
+        twoCertificateChainPem()
+            .split("-----BEGIN CERTIFICATE-----")
+            .drop(1)
+            .map { block ->
+                val base64 = block.substringBefore("-----END CERTIFICATE-----").filterNot { it.isWhitespace() }
+                val der = Base64.Mime.decode(base64) // ByteArray — test code
                 BufferFactory.deterministic().allocate(der.size).apply {
                     der.forEach { writeByte(it) }
                     resetForRead()
                 }
-            }.toList()
+            }
 
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
