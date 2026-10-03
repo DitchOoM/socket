@@ -271,6 +271,13 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
     ): Int = nConnPeerCert(conn.handle, buf, bufLen)
 
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnPeerCertChainAt(conn.handle, index, buf, bufLen)
+
     override fun connApplicationProto(
         conn: QuicheConn,
         buf: Long,
@@ -880,6 +887,15 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic
     private external fun nConnPeerCert(
         conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnPeerCertChainAt(
+        conn: Long,
+        index: Int,
         buf: Long,
         bufLen: Int,
     ): Int

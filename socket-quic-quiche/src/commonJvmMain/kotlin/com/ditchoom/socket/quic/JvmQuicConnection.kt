@@ -102,6 +102,13 @@ internal class JvmQuicConnection(
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
 
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf (#186). */
+    internal suspend fun readPeerCertChainDer(
+        index: Int,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int = readPeerCertDerThroughDriver(driver, der, capacity, PeerCertPosition.InChain(index))
+
     override suspend fun acceptStream(): QuicByteStream = driver.acceptIncomingStream()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
