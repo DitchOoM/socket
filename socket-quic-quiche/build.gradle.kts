@@ -3664,6 +3664,28 @@ afterEvaluate {
         }
     }
 
+    // --- quic-interop-runner endpoint (test-harness/quic-interop, .github/workflows/quic-interop.yaml) ---
+    // The echo fat jar already carries every class and native the endpoint needs (QuicInteropEndpoint
+    // lives in jvmTest beside QuicEchoTestServer), so this repackages it with the endpoint as Main-Class
+    // rather than restating the fat-jar recipe.
+    val quicEchoJar = tasks.named<Jar>("quicEchoJar")
+    tasks.register<Jar>("quicInteropJar") {
+        group = "build"
+        description =
+            "Runnable jar of QuicInteropEndpoint for the quic-interop-runner image. Output: test-harness/quic-interop/quic-interop.jar"
+        dependsOn(quicEchoJar)
+        archiveBaseName.set("quic-interop")
+        archiveVersion.set("")
+        destinationDirectory.set(rootProject.projectDir.resolve("test-harness/quic-interop"))
+        manifest {
+            attributes(
+                "Main-Class" to "com.ditchoom.socket.quic.QuicInteropEndpointKt",
+                "Multi-Release" to "true",
+            )
+        }
+        from(quicEchoJar.flatMap { it.archiveFile }.map { zipTree(it) }) { exclude("META-INF/MANIFEST.MF") }
+    }
+
     // --- Network control server for migration tests ---
     val netCtrlPidFile =
         layout.buildDirectory
