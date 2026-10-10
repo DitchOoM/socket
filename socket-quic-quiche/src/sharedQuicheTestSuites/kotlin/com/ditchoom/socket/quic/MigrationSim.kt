@@ -186,6 +186,25 @@ internal class MigrationSimScope(
             }
         }
 
+    /** Diagnostic: quiche's server-side path table — index, validation state, active flag. */
+    suspend fun serverPathTable(): String =
+        serverDriver.read("serverPathTable") { api, conn ->
+            val n = api.connStats(conn)?.pathsCount ?: 0L
+            (0 until n).joinToString(" ") { idx ->
+                val st = api.connPathStats(conn, idx)
+                "[$idx state=${st?.validationState} active=${st?.active} sent=${st?.sent} lost=${st?.lost}]"
+            }
+        }
+
+    /** Diagnostic: how many spare destination CIDs (client-issued) the server holds. */
+    suspend fun serverAvailableDcids(): Long = serverDriver.read("serverAvailableDcids") { api, conn -> api.connAvailableDcids(conn) }
+
+    /** How many paths quiche's client-side path table holds. */
+    suspend fun clientPathCount(): Long = clientDriver.read("clientPathCount") { api, conn -> api.connStats(conn)?.pathsCount ?: 0L }
+
+    /** Ports of the client endpoints whose socket is still bound, in open order. */
+    fun boundClientPorts(): List<Int> = pipe.paths().filter { it.socket == SimSocket.Open }.map { it.local.port }
+
     /**
      * One read of the client's **active** path — the counters the shipped silence trigger actually
      * folds into its run.

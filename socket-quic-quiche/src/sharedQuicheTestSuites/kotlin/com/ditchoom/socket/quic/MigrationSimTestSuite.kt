@@ -440,6 +440,144 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * The driver-level twin of [streamDataInFlightOnAnEvictedPathIsStillDelivered]: the connection moves
+     * off a path that went dark with stream data in flight, then probes dead links until quiche evicts
+     * that path. The old path's port stays bound exactly as long as quiche holds the path — released at
+     * the eviction, not before — and the server reads every byte.
+     */
+    @Test
+    fun aPathEvictedWithDataInFlightReleasesItsPortAtTheEvictionAndLosesNoData() =
+        runTest {
+            var probesReachTheServer = true
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 748_001L,
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = DEFAULT_PATH_LATENCY,
+                            reach = LinkReach(if (probesReachTheServer) PathReach.Open else PathReach.Dark),
+                        )
+                    },
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    val oldPort =
+                        pipe
+                            .paths()
+                            .first()
+                            .local.port
+                    val payload = (0 until IN_FLIGHT_CHUNKS).joinToString("") { "chunk-${it.toString().padStart(3, '0')};" }
+                    val received = StringBuilder()
+                    val reader =
+                        client.launch {
+                            val accepted = server.acceptStream()
+                            while (received.length < payload.length) {
+                                val data = assertIs<ReadResult.Data>(accepted.read(IDLE_TIMEOUT_IN_THE_FIELD))
+                                received.append(data.buffer.readString(data.buffer.remaining(), Charset.UTF8))
+                                data.buffer.freeIfNeeded()
+                            }
+                        }
+                    pipe.impair(
+                        pipe.paths().first().local,
+                        PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark)),
+                    )
+                    client.openStream().writeText(payload)
+
+                    assertIs<MigrationResult.Succeeded>(withTimeout(120.seconds) { migrate().await() })
+                    assertPortsMatchQuichePaths("after the move off the dark path")
+                    assertTrue(oldPort in boundClientPorts(), "the old path's port was released while quiche still holds it")
+
+                    probesReachTheServer = false
+                    var attempts = 0
+                    while (oldPort in boundClientPorts() && attempts < FAILED_ATTEMPTS + 1) {
+                        val pathsBefore = clientPathCount()
+                        withTimeout(120.seconds) { migrate().await() }
+                        attempts++
+                        assertPortsMatchQuichePaths("after dead-link probe $attempts")
+                        if (oldPort !in boundClientPorts()) {
+                            assertEquals(
+                                pathsBefore,
+                                clientPathCount(),
+                                "the old path's port was released by a probe that did not evict a path (table ${clientPathTable()})",
+                            )
+                        }
+                    }
+                    assertTrue(
+                        oldPort !in boundClientPorts(),
+                        "quiche never evicted the old path in $attempts probes: ${clientPathTable()}",
+                    )
+
+                    withTimeout(DELIVERY_BOUND) { reader.join() }
+                    assertEquals(payload, received.toString(), "the server must read every byte written before the old path went dark")
+                }
+            }
+        }
+
+    /**
+     * The driver-level twin of [lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath]: twice, a
+     * held uplink delivers a run of probes' challenges, and the retirements behind them, after the client
+     * has given up on those probes — as the walk's two bursts did. A probe on a healthy link must still
+     * move the connection, and every abandoned probe's port stays bound exactly as long as quiche holds
+     * its path.
+     */
+    @Test
+    fun probesAbandonedBehindAHeldUplinkLeaveTheServerRoomForTheNextMove() =
+        runTest {
+            var probeReach = LinkReach.Open
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 748_002L,
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = probeReach) },
+                ) {
+                    val primary = pipe.paths().first().local
+                    awaitSpareDcids(count = SPARE_POOL)
+                    repeat(HELD_BURSTS) { burst ->
+                        val release = currentTime.milliseconds + LATE_PROBE_HOLD
+                        // The server's answers find the client long gone: nothing comes back on these links.
+                        probeReach = LinkReach(PathReach.HeldUntil(release), PathReach.Dark)
+                        // The active path's uplink holds too, and releases just after the probes': the
+                        // retirements reach the server behind the late challenges.
+                        pipe.impair(
+                            primary,
+                            PathImpairment(
+                                latency = DEFAULT_PATH_LATENCY,
+                                reach = LinkReach(PathReach.HeldUntil(release + DEFAULT_PATH_LATENCY), PathReach.Open),
+                            ),
+                        )
+                        repeat(PROBES_PER_BURST) { attempt ->
+                            val result = withTimeout(120.seconds) { migrate().await() }
+                            assertTrue(result is MigrationResult.Unmoved, "burst ${burst + 1} probe ${attempt + 1} reported $result")
+                            assertPortsMatchQuichePaths("after burst ${burst + 1} probe ${attempt + 1}")
+                        }
+                        assertTrue(currentTime.milliseconds < release, "burst ${burst + 1} outlasted its hold, so nothing arrived late")
+                        delay(release - currentTime.milliseconds + SETTLE_AFTER_RELEASE)
+                        pipe.impair(primary, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+                        awaitSpareDcids(count = PROBES_PER_BURST.toLong())
+                    }
+
+                    probeReach = LinkReach.Open
+                    val moved = withTimeout(120.seconds) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(
+                        moved,
+                        "a probe on a healthy link after the late challenges reported $moved; server ${serverPathTable()}, " +
+                            "client ${clientPathTable()}, server spare ids ${serverAvailableDcids()}",
+                    )
+                    assertPortsMatchQuichePaths("after the move")
+                }
+            }
+        }
+
+    /** Every bound client port names a path quiche holds, and every path quiche holds has a bound port. */
+    private suspend fun MigrationSimScope.assertPortsMatchQuichePaths(moment: String) {
+        assertEquals(
+            clientPathCount(),
+            boundClientPorts().size.toLong(),
+            "$moment: bound client ports ${boundClientPorts()} against quiche's table ${clientPathTable()}",
+        )
+    }
+
+    /**
      * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
      * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
      * datagrams at the same virtual instants every time. Runs [readAReplyAfterTheServerClosed]
@@ -3603,6 +3741,18 @@ abstract class MigrationSimTestSuite {
 
         /** Clock step between those rounds. */
         val SETTLE_STEP = 250.milliseconds
+
+        /** Runs of late probes in [probesAbandonedBehindAHeldUplinkLeaveTheServerRoomForTheNextMove]. */
+        const val HELD_BURSTS = 2
+
+        /** Probes per run: two runs leave more late paths than the server's spare ids. */
+        const val PROBES_PER_BURST = 4
+
+        /** How long each run's uplink holds: inside the walk's 12–47 s, past the run's last abandon. */
+        val LATE_PROBE_HOLD = 40.seconds
+
+        /** How long after a run's hold releases the sim runs before the next step. */
+        val SETTLE_AFTER_RELEASE = 5.seconds
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
