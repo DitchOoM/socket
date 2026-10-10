@@ -4,6 +4,7 @@ import com.ditchoom.socket.linux.io_uring_prep_nop
 import com.ditchoom.socket.linux.io_uring_sqe
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -71,10 +72,21 @@ internal class SocketDescriptor(
         try {
             return block(fd)
         } finally {
-            // The release ends in [IoUringManager.onSocketClosed], which may block on the poller; a caller the
-            // poller resumed would wait on itself. NonCancellable: cancellation is the usual reason control is
-            // here, and a skipped release would leak the descriptor.
-            if (exit()) withContext(NonCancellable + Dispatchers.Default) { release() }
+            if (exit()) releaseOffThisThread()
+        }
+    }
+
+    /**
+     * [release] on another thread: it ends in [IoUringManager.onSocketClosed], which may block on the poller, and
+     * a caller the poller resumed would wait on itself. NonCancellable: cancellation is the usual reason control
+     * is here, and a skipped release would leak the descriptor. The release runs to completion either way, so the
+     * only [CancellationException] the way back can raise is the caller's own, which its next suspension raises
+     * again; raising it here would discard what [withOpen]'s block returned, such as an accepted socket.
+     */
+    private suspend fun releaseOffThisThread() {
+        try {
+            withContext(NonCancellable + Dispatchers.Default) { release() }
+        } catch (_: CancellationException) {
         }
     }
 
@@ -106,11 +118,13 @@ internal class SocketDescriptor(
      * Submits one operation on [fd] — the descriptor this caller holds through [withOpen] — and suspends
      * until it completes. The poller prepares it only if closing has not begun; otherwise it prepares a no-op
      * and this throws [SocketClosedException], so the operation never names the descriptor after [close].
+     * [abandoned] receives the result of an operation whose caller was cancelled, as [IoUringManager.submitAndWait].
      */
     suspend fun submit(
         fd: Int,
         lane: Lane,
         timeout: Duration?,
+        abandoned: (result: Int) -> Unit = {},
         prepare: (sqe: CPointer<io_uring_sqe>, fd: Int) -> Unit,
     ): Int {
         val slot = inFlight[lane.ordinal]
@@ -118,7 +132,11 @@ internal class SocketDescriptor(
         val refused = AtomicInt(0)
         val result =
             try {
-                IoUringManager.submitAndWait(timeout) { sqe, userData ->
+                IoUringManager.submitAndWait(
+                    timeout,
+                    // A refused operation's 0 is the no-op's, not a result of the operation.
+                    abandoned = { result -> if (refused.value == 0) abandoned(result) },
+                ) { sqe, userData ->
                     // Publish, then check: [close] sets the bit, then reads the slot. Each side writes before it
                     // reads, so at least one sees the other — this prepares a no-op, or [close] cancels this
                     // user_data, which it enqueues behind the SQE being prepared now.
