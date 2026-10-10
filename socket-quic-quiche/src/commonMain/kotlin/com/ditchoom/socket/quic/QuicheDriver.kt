@@ -1815,6 +1815,8 @@ class QuicheDriver(
                         keepAlive = Deadline.from(keepAliveRemaining),
                         probe = Deadline.from(probeRemaining),
                     )
+                loopWait = armed
+                loopWaitArmedAt = clock.markNow()
                 val wait =
                     when (armed) {
                         NextWake.NoTimer -> null
@@ -3659,6 +3661,89 @@ class QuicheDriver(
         } catch (_: ClosedSendChannelException) {
             QuicStatsSnapshot(null, null)
         }
+
+    /** The wake [run] armed for its current wait, and when; read only by [stallSnapshot]. */
+    private var loopWait: NextWake = NextWake.NoTimer
+
+    private var loopWaitArmedAt: TimeMark = clock.markNow()
+
+    /**
+     * This driver as its loop saw it when the request arrived: see [DriverStallSnapshot]. Read on the loop
+     * before the request's own wake runs, so a wakeup the loop owed is still owed in the answer.
+     */
+    internal suspend fun stallSnapshot(): Inspected<DriverStallSnapshot> = inspect { api, conn -> readStallSnapshot(api, conn) }
+
+    private fun readStallSnapshot(
+        api: QuicheApi,
+        conn: QuicheConn,
+    ): DriverStallSnapshot {
+        fun ids(iter: QuicheStreamIter): List<Long> {
+            if (iter.isExhausted) return emptyList()
+            return try {
+                generateSequence { api.streamIterNext(iter)?.id }.toList()
+            } finally {
+                api.streamIterFree(iter)
+            }
+        }
+
+        fun signal(channel: Channel<Unit>): WakeSignal = if (channel.isEmpty) WakeSignal.Spent else WakeSignal.Buffered
+        val wait = loopWait
+        return DriverStallSnapshot(
+            role = role,
+            state = _state.value,
+            loopWake =
+                when (wait) {
+                    NextWake.NoTimer -> LoopWake.Untimed
+                    is NextWake.Armed ->
+                        LoopWake.Timed(
+                            kind =
+                                when (wait.wake) {
+                                    is Wake.ProbeAbandon -> WakeKind.ProbeAbandon
+                                    is Wake.KeepAlive -> WakeKind.KeepAlive
+                                    is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
+                                    is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
+                                },
+                            wait = wait.wake.remaining,
+                            armedAgo = loopWaitArmedAt.elapsedNow(),
+                        )
+                },
+            quicheTimer = api.connTimeout(conn)?.let { QuicheTimer.Due(it) } ?: QuicheTimer.Unarmed,
+            readable = ids(api.connReadable(conn)),
+            writable = ids(api.connWritable(conn)),
+            sentStreamData =
+                if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged,
+            stats = api.connStats(conn),
+            activePath = api.connPathStats(conn, 0L),
+            streams =
+                streams.values.map { slot ->
+                    StreamWake(
+                        id = slot.id.id,
+                        read = slot.readState.load(),
+                        end = slot.end,
+                        drainedChunks = if (slot.pendingData.isEmpty) ChunkQueue.Empty else ChunkQueue.Holding,
+                        readWake = signal(slot.dataSignal),
+                        writeWake = signal(slot.writableSignal),
+                    )
+                },
+            paths =
+                paths.values.map { entry ->
+                    PathView(
+                        key = entry.key,
+                        egress =
+                            when (entry.egress) {
+                                PathEgress.Open -> PathEgressKind.Open
+                                is PathEgress.Stalled -> PathEgressKind.Stalled
+                                PathEgress.Shut -> PathEgressKind.Shut
+                            },
+                        reader =
+                            when (val job = entry.readerJob) {
+                                null -> PathReader.None
+                                else -> if (job.isActive) PathReader.Running else PathReader.Ended
+                            },
+                    )
+                },
+        )
+    }
 
     /**
      * Run [read] against this connection on the driver loop and hand back its answer — the way for code

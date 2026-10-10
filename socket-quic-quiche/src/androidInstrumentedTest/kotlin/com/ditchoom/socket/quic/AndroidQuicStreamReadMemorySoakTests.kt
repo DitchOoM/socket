@@ -14,8 +14,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -65,6 +71,7 @@ class AndroidQuicStreamReadMemorySoakTests {
                         val serverJob =
                             launch(Dispatchers.IO) {
                                 connections {
+                                    serverDriver.set(DriverSeen.Seen((this as QuicheBackedConnection).quicheDriver))
                                     val stream = acceptStream()
                                     try {
                                         while (true) {
@@ -83,6 +90,7 @@ class AndroidQuicStreamReadMemorySoakTests {
                             // while healthy lanes already took 6.6-11.8 s, and its bare "Timed out waiting
                             // for 15000 ms" could not say whether the soak was slow or stuck.
                             withQuicConnection("127.0.0.1", port, testQuicOptions.tracedInto(clientTraffic), timeout = SOAK_BUDGET) {
+                                clientDriver.set(DriverSeen.Seen((this as QuicheBackedConnection).quicheDriver))
                                 val stream = openStream()
                                 val out = bufferFactory.allocate(PAYLOAD.length)
                                 try {
@@ -154,21 +162,39 @@ class AndroidQuicStreamReadMemorySoakTests {
         private var slowest = Duration.ZERO
 
         /**
-         * Runs one round under a [StallDump]: a round still running at [STALL_DUMP_AFTER] — short of
-         * [OP_DEADLINE], so while it is still stuck — prints every thread's stack to logcat from a timer
-         * thread that needs no dispatcher. A round that ends disarms it, so a healthy soak prints nothing.
+         * Runs one round under a [StallDump] and a stall snapshot: a round still running at
+         * [STALL_DUMP_AFTER] — short of [OP_DEADLINE], so while it is still stuck — prints every thread's
+         * stack to logcat from a timer thread that needs no dispatcher, and at [STALL_SNAPSHOT_AFTER] each
+         * side's recent traffic and its driver's [DriverStallSnapshot]. A round that ends disarms both, so
+         * a healthy soak prints nothing.
+         *
+         * Asking a driver for its snapshot is itself a command, and every command ends with the loop
+         * waking its readers and flushing its sends. A round that was waiting on a wakeup the loop owed
+         * therefore finishes right after the snapshot; it fails anyway, because it was stuck.
          */
         suspend fun <T> round(block: suspend () -> T): T {
             val mark = TimeSource.Monotonic.markNow()
             roundStartedAt = mark
-            val dump = armStallDump(STALL_DUMP_AFTER, "the memory soak's $phase round $rounds")
+            val label = "the memory soak's $phase round $rounds"
+            val dump = armStallDump(STALL_DUMP_AFTER, label)
+            val snapshot =
+                StallSnapshotTimer.schedule({
+                    printStallSnapshot(label, mark)
+                }, STALL_SNAPSHOT_AFTER.inWholeMilliseconds, TimeUnit.MILLISECONDS)
             val value =
                 try {
                     block()
                 } finally {
+                    snapshot.cancel(false)
                     dump.disarm()
                 }
             val took = mark.elapsedNow()
+            if (took >= STALL_DUMP_AFTER) {
+                throw AssertionError(
+                    "$label took $took and finished only after its stall dump; " +
+                        "the $TRACE_TAG lines in logcat name the state it was stuck in",
+                )
+            }
             if (took > slowest) {
                 slowest = took
                 slowestRound = rounds
@@ -215,6 +241,49 @@ class AndroidQuicStreamReadMemorySoakTests {
 
     private val clientTraffic = RecentTraffic()
     private val serverTraffic = RecentTraffic()
+    private val clientDriver = AtomicReference<DriverSeen>(DriverSeen.NotYet)
+    private val serverDriver = AtomicReference<DriverSeen>(DriverSeen.NotYet)
+
+    /** A side's driver, once the soak's connection has reached that side's block. */
+    private sealed interface DriverSeen {
+        data object NotYet : DriverSeen
+
+        data class Seen(
+            val driver: QuicheDriver,
+        ) : DriverSeen
+    }
+
+    /**
+     * Prints, while the round is still stuck, each side's recent traffic and then its driver's
+     * [DriverStallSnapshot]: whether quiche holds the round's bytes, whether the reader that should take
+     * them has a wake waiting, which deadline the loop was sleeping on, and whether any path stopped
+     * sending or receiving. Runs on the snapshot timer's own thread. A driver that does not answer within
+     * [SNAPSHOT_ANSWER_BOUND] is reported as such: its loop is not taking commands.
+     */
+    private fun printStallSnapshot(
+        label: String,
+        roundStarted: TimeMark,
+    ) {
+        val since = roundStarted.elapsedNow()
+        Log.i(TRACE_TAG, "STALL-SNAPSHOT $label, $since into the round")
+        clientTraffic.print("the client's", since)
+        serverTraffic.print("the server's", since)
+        for ((side, seen) in listOf("the server's" to serverDriver.get(), "the client's" to clientDriver.get())) {
+            val answer =
+                when (seen) {
+                    DriverSeen.NotYet -> "no driver: the connection never reached this side's block"
+                    is DriverSeen.Seen ->
+                        runBlocking {
+                            when (val read = withTimeoutOrNull(SNAPSHOT_ANSWER_BOUND) { seen.driver.stallSnapshot() }) {
+                                null -> "no answer within $SNAPSHOT_ANSWER_BOUND: its loop is not taking commands"
+                                Inspected.ConnectionGone -> "its connection is already gone"
+                                is Inspected.Read -> read.value.toString()
+                            }
+                        }
+                }
+            Log.i(TRACE_TAG, "$side driver, answered ${roundStarted.elapsedNow()} into the round: $answer")
+        }
+    }
 
     private fun QuicOptions.tracedInto(traffic: RecentTraffic) = copy(trace = QuicTraceCapture(traffic))
 
@@ -223,28 +292,34 @@ class AndroidQuicStreamReadMemorySoakTests {
      *
      * A stalled round's thread dump shows every worker idle in `poll`, which cannot say whether the request
      * never left the client, reached the server and was never read, or was read and its echo never left.
-     * Each side's datagrams in and out, timed against the stalled round's start, answer that directly.
-     * Events are kept as they arrive and only formatted when printed, so a healthy soak pays one append per
-     * datagram.
+     * Each side's datagrams, timed against the stalled round's start, answer that directly. The server's
+     * ring holds its sends only — its arrivals land on the shared socket, not the connection's channel —
+     * and its [DriverStallSnapshot]'s packet counts stand in for them.
+     * Events are kept raw in a fixed ring, claimed by one atomic increment, and only formatted when
+     * printed, so a healthy soak pays one slot write per datagram and no lock.
      */
     private class RecentTraffic : TraceSink {
-        private val events = ArrayDeque<Pair<TimeMark, TraceEvent>>()
+        private class Stamped(
+            val at: TimeMark,
+            val event: TraceEvent,
+        )
+
+        private val slots = AtomicReferenceArray<Stamped>(CAPACITY)
+        private val written = AtomicLong(0)
 
         override fun emit(event: TraceEvent) {
-            val at = TimeSource.Monotonic.markNow()
-            synchronized(events) {
-                events.addLast(at to event)
-                if (events.size > CAPACITY) events.removeFirst()
-            }
+            val stamped = Stamped(TimeSource.Monotonic.markNow(), event)
+            slots.set((written.getAndIncrement() % CAPACITY).toInt(), stamped)
         }
 
         fun print(
             side: String,
             roundStartedAgo: Duration,
         ) {
-            val recent = synchronized(events) { events.toList() }
-            Log.i(TRACE_TAG, "$side last ${recent.size} trace events; the stalled round started $roundStartedAgo ago")
-            recent.forEach { (at, event) -> Log.i(TRACE_TAG, "$side ${at.elapsedNow()} ago: $event") }
+            val end = written.get()
+            val recent = (maxOf(0L, end - CAPACITY) until end).mapNotNull { slots.get((it % CAPACITY).toInt()) }
+            Log.i(TRACE_TAG, "$side last ${recent.size} of $end trace events; the stalled round started $roundStartedAgo ago")
+            recent.forEach { Log.i(TRACE_TAG, "$side ${it.at.elapsedNow()} ago: ${it.event}") }
         }
 
         private companion object {
@@ -263,6 +338,17 @@ class AndroidQuicStreamReadMemorySoakTests {
 
         /** Longer than any healthy round by three orders of magnitude, and short of [OP_DEADLINE]. */
         val STALL_DUMP_AFTER: Duration = 15.seconds
+
+        /** After the thread dump, so the dump shows the stall before the snapshot's own command can end it. */
+        val STALL_SNAPSHOT_AFTER: Duration = 16.seconds
+
+        val SNAPSHOT_ANSWER_BOUND: Duration = 2.seconds
+
+        /** One daemon thread for every pending snapshot, so none depends on a dispatcher. */
+        val StallSnapshotTimer =
+            ScheduledThreadPoolExecutor(1) { task -> Thread(task, "soak-stall-snapshot").apply { isDaemon = true } }.apply {
+                removeOnCancelPolicy = true
+            }
         val SOAK_BUDGET: Duration = 5.minutes
     }
 }
