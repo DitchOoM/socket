@@ -166,11 +166,8 @@ abstract class FailedProbeConnectionIdTestSuite {
                         val recovered = migrateAllowingReplenishRoundTrip()
                         assertTrue(
                             recovered is MigrationResult.Succeeded,
-                            "after $FAILED_ATTEMPTS unanswered probes the connection can no longer migrate " +
-                                "at all: $recovered. Each failed probe consumed a destination CID that was " +
-                                "never retired, so quiche's spare pool is permanently empty and the peer has " +
-                                "no reason to issue more — one bad handoff on real cellular disables " +
-                                "migration for the life of the connection (#447)",
+                            "after $FAILED_ATTEMPTS unanswered probes the recovery migration reported $recovered: " +
+                                recoveryFailureMeaning(recovered),
                         )
                         assertEquals(
                             "after",
@@ -204,6 +201,22 @@ abstract class FailedProbeConnectionIdTestSuite {
         }
         return result
     }
+
+    /** What a failed recovery says about the connection — only an empty pool is this suite's defect. */
+    private fun recoveryFailureMeaning(result: MigrationResult): String =
+        when (result) {
+            MigrationResult.Unmoved.Failed.NoSpareConnectionId ->
+                "each failed probe consumed a destination CID that was never retired, so quiche's spare pool " +
+                    "is permanently empty and the peer has no reason to issue more (#447)"
+            is MigrationResult.Unmoved.Failed.ProbeRejected ->
+                when (result.code) {
+                    QUICHE_ERR_INVALID_STATE ->
+                        "the probe's 4-tuple names a path quiche still holds without a CID — a released port " +
+                            "handed back twice in a row, which the driver's single rebind does not absorb"
+                    else -> "quiche refused the probe with code ${result.code}"
+                }
+            else -> "not a CID-pool failure; see the result"
+        }
 
     private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else NO_DATA
 

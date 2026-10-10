@@ -69,7 +69,7 @@ internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
-private const val CLIENT_PORT_BASE = 42100
+internal const val CLIENT_PORT_BASE = 42100
 
 /** The local address the primary path, and by default every probe path, is bound on. */
 internal const val SIM_LINK_HOST = "127.0.0.1"
@@ -382,6 +382,8 @@ internal class PipeUdpChannelFactory(
      * synchronous in effect, which is what the pre-#556 `InetSocketAddress` constructor was.
      */
     private val localAddresses: Map<String, Map<Int, SocketAddress>>,
+    /** The port a request for any port binds, by 1-based open index — the sim's ephemeral allocator. */
+    private val ephemeralPort: (Int) -> Int = { CLIENT_PORT_BASE + it },
     override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable,
 ) : UdpChannelFactory {
     private val paths = mutableListOf<SocketAddress>()
@@ -393,7 +395,7 @@ internal class PipeUdpChannelFactory(
         localPort: Int,
     ): NewPath {
         val index = paths.size + 1 // +1: the primary was opened by the harness, not through here
-        val port = if (localPort != 0) localPort else CLIENT_PORT_BASE + index
+        val port = if (localPort != 0) localPort else ephemeralPort(index)
         val host = localHost ?: hostFor()
         val local =
             localAddresses[host]?.get(port)
@@ -508,6 +510,20 @@ internal class CidAuditQuicheApi(
         delegate.connNewScid(conn, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut).also {
             newScidCalls++
         }
+
+    /** Every `quiche_conn_probe_path`, in order: the local endpoint probed and what quiche answered. */
+    val probeCalls = mutableListOf<Pair<PathKey, ProbeOutcome>>()
+
+    override fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): ProbeOutcome =
+        delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen).also {
+            probeCalls += delegate.decodePathKey(localAddr) to it
+        }
 }
 
 /**
@@ -606,6 +622,11 @@ internal suspend fun <R> withMigrationSim(
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     probeHost: () -> String = { SIM_LINK_HOST },
+    /**
+     * The port each probe socket binds, by 1-based probe index. A fresh port per open by default; a
+     * scenario hands back a port it has seen closed to model a kernel reusing a released ephemeral port.
+     */
+    probePort: (Int) -> Int = { CLIENT_PORT_BASE + it },
     quicOptions: QuicOptions = migrationSimOptions(),
     serverQuicOptions: QuicOptions = quicOptions,
     establishTimeout: Duration = 60.seconds,
@@ -650,7 +671,7 @@ internal suspend fun <R> withMigrationSim(
         val now: () -> Duration = if (scheduler == null) ({ wallOrigin.elapsedNow() }) else ({ scheduler.currentTime.milliseconds })
         val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger, now)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
-        val factory = PipeUdpChannelFactory(pipe, probeImpairment, probeHost, clientAddresses)
+        val factory = PipeUdpChannelFactory(pipe, probeImpairment, probeHost, clientAddresses, probePort)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)
