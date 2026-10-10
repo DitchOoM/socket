@@ -228,8 +228,15 @@ internal class QuichePairByHand private constructor(
     /** The client retires the destination connection ID with sequence number [seq]. */
     fun retireDcid(seq: Long): Int = at { api.connRetireDcid(client, seq) }
 
-    /** Spare destination connection IDs the client holds. */
-    fun spareDcids(): Long = at { api.connAvailableDcids(client) }
+    /** Spare destination connection IDs [conn] holds. */
+    fun spareDcids(conn: QuicheConn): Long = at { api.connAvailableDcids(conn) }
+
+    /** How [conn] has ended: open, or the error it closed with. */
+    fun closed(conn: QuicheConn): String =
+        if (!at { api.connIsClosed(conn) }) "open" else "local=${at { api.connLocalError(conn) }} peer=${at { api.connPeerError(conn) }}"
+
+    /** Source connection IDs [conn] may still issue to its peer. */
+    fun scidsLeft(conn: QuicheConn): Long = at { api.connScidsLeft(conn) }
 
     /** How many paths [conn]'s path table holds. */
     fun pathCount(conn: QuicheConn): Long = at { api.connStats(conn)?.pathsCount } ?: 0L

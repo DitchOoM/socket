@@ -287,7 +287,7 @@ abstract class MigrationSimTestSuite {
                     pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
                     pair.issueSpareCids(pair.server)
                     pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
-                    assertEquals(SPARE_POOL, pair.spareDcids(), "the spare pool must be full before the old path goes dark")
+                    assertEquals(SPARE_POOL, pair.spareDcids(pair.client), "the spare pool must be full before the old path goes dark")
                     assertEquals(SPARE_POOL, pair.pathCount(pair.client), "abandoned probes must fill the table to one short of the limit")
 
                     // The old path goes dark both ways with data in flight on it.
@@ -340,6 +340,98 @@ abstract class MigrationSimTestSuite {
                             "(the in-flight data is offsets ${prefix.length}..${expected.length - 1}, sent once in $sentOnOld " +
                             "datagrams on the old path, endpoint $oldPath). Client path table before the evicting probe: " +
                             "$tableBeforeEviction; after: ${pair.pathTable(pair.client)}; client path events $events",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * Probes the client abandoned before their PATH_CHALLENGEs reached the server do not leave the server
+     * unable to admit a new path.
+     *
+     * The 2026-09-26 iPhone walk: a held cellular uplink delivered challenges 6–9 s after the client had
+     * given up on their probes at 3 s and retired the IDs it probed with. The server created a path for
+     * each, linked one of the client's spare IDs to it to answer, and kept both forever: the paths failed
+     * validation and lost their source IDs, but held their destination IDs, so none was `unused()`. With
+     * the table full, the server dropped every datagram from a new 4-tuple — 1,710 probes over 29 h.
+     */
+    @Test
+    fun lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val active = 0
+                    val abandoned = 1..SPARE_POOL.toInt()
+                    val healthy = SPARE_POOL.toInt() + 1
+
+                    fun replenish() {
+                        pair.issueSpareCids(pair.server)
+                        pair.issueSpareCids(pair.client)
+                    }
+
+                    fun on(vararg endpoints: Int): (QuichePairByHand.Datagram) -> Boolean = { it.clientEndpoint in endpoints }
+
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+                    replenish()
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+
+                    // Each probe's challenges are held on its uplink; the client gives up on it and
+                    // retires the id it probed with, as the driver does.
+                    val seqs = abandoned.map { assertIs<ProbeOutcome.Probed>(pair.probe(it), "probe from endpoint $it").dcidSeq }
+                    val late = mutableListOf<QuichePairByHand.Datagram>()
+                    var probing = Duration.ZERO
+                    while (probing < PROBE_ABANDONED_AFTER) {
+                        val (held, prompt) = pair.sends(pair.client).partition { it.clientEndpoint in abandoned }
+                        late += held
+                        pair.elapse(DEFAULT_PATH_LATENCY)
+                        pair.deliver(prompt, pair.server)
+                        val answers = pair.sends(pair.server)
+                        pair.elapse(DEFAULT_PATH_LATENCY)
+                        pair.deliver(answers, pair.client)
+                        probing += DEFAULT_PATH_LATENCY * 2
+                    }
+                    seqs.forEach { assertEquals(0, pair.retireDcid(it)) }
+                    val retirements = pair.sends(pair.client)
+
+                    // The uplink releases: the late challenges first, then the retirements behind them. The
+                    // server's answers go to sockets the client has closed.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(late, pair.server)
+                    val pathsAfterLateChallenges = pair.pathCount(pair.server)
+                    val answers = pair.sends(pair.server).filter(on(active))
+                    pair.deliver(retirements, pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(answers, pair.client)
+                    repeat(SETTLE_ROUNDS) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+                        replenish()
+                        pair.elapse(SETTLE_STEP)
+                    }
+                    val serverTableBefore = pair.pathTable(pair.server)
+
+                    // A probe from a healthy new 4-tuple.
+                    val probe = pair.probe(healthy)
+                    var events = emptyList<String>()
+                    var waited = Duration.ZERO
+                    while ("Validated(endpoint $healthy)" !in events && waited < DELIVERY_BOUND) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(active, healthy))
+                        replenish()
+                        events = events + pair.pathEvents(pair.client)
+                        pair.elapse(DELIVERY_STEP)
+                        waited += DELIVERY_STEP
+                    }
+                    assertTrue(
+                        "Validated(endpoint $healthy)" in events,
+                        "a probe from a healthy new 4-tuple must validate within $DELIVERY_BOUND " +
+                            "(probe ${probe::class.simpleName}); the late challenges left the server " +
+                            "$pathsAfterLateChallenges paths; server path table before the probe $serverTableBefore, " +
+                            "after ${pair.pathTable(pair.server)}; spare ids held: server ${pair.spareDcids(pair.server)}, " +
+                            "client ${pair.spareDcids(pair.client)}; ids left to issue: server ${pair.scidsLeft(pair.server)}, " +
+                            "client ${pair.scidsLeft(pair.client)}; server ${pair.closed(pair.server)}, " +
+                            "client ${pair.closed(pair.client)}; client path events $events",
                     )
                 } finally {
                     pair.close()
@@ -3502,6 +3594,15 @@ abstract class MigrationSimTestSuite {
 
         /** Clock step between exchanges while waiting for that. */
         val DELIVERY_STEP = 250.milliseconds
+
+        /** When the driver gives up on an unanswered probe: the 3 s abandon the walk's client ran. */
+        val PROBE_ABANDONED_AFTER = 3.seconds
+
+        /** Rounds the active path carries traffic after the late challenges, long enough for the server's own validations to fail. */
+        const val SETTLE_ROUNDS = 40
+
+        /** Clock step between those rounds. */
+        val SETTLE_STEP = 250.milliseconds
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024

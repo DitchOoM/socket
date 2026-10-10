@@ -242,6 +242,10 @@ fun downloadQuicheSource(
     // with data in flight cannot leave a permanent hole in a stream. Idempotent, fails loudly on drift.
     // See the KDoc.
     patchQuicheEvictedPathFramesRequeued(sourceDir)
+    // Let a server retire the connection id of a path its peer abandoned, so late probes cannot fill the
+    // path table and refuse every new 4-tuple for the rest of the connection. Idempotent, fails loudly on
+    // drift. See the KDoc.
+    patchQuicheServerReleasesAbandonedPaths(sourceDir)
     // Make a packet whose DCID quiche has already retired a DROP instead of a fatal InvalidState, so a
     // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
     // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -1477,6 +1481,131 @@ fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
         """.trimMargin(),
     )
     logger.lifecycle("Patched quiche source: an evicted path's outstanding frames are requeued, not dropped")
+}
+
+/**
+ * Make a server retire the connection ID of a path its peer has abandoned, so that path becomes
+ * evictable and the peer gets the ID's slot back.
+ *
+ * A client probe whose PATH_CHALLENGE reaches the server after the client gave up on it — a held
+ * cellular uplink delivers them seconds late — still creates a server path, and the server links one of
+ * the client's spare connection IDs to it to answer. The client never answers the server's own
+ * challenge, so the path fails validation, and it retires the server ID it probed with. Neither
+ * releases anything: quiche's RETIRE_CONNECTION_ID handler only clears the path's source ID ("We do not
+ * remove unused paths now"), `on_failed_validation` keeps the destination ID, and
+ * [patchQuicheRetireDcidNoRelink] retires a server path's ID only when the peer migrates off it. The
+ * path is never `unused()`, so it is never evicted, and the client's ID is never returned. About
+ * `active_conn_id_limit - 1` such probes fill the table: `make_room_for_new_path` answers `Done` for
+ * every new 4-tuple and `recv` drops the datagram before any qlog event, so the connection can never
+ * migrate again and neither end can see why. Seen on the 2026-09-26 iPhone walk: 1,710 of 1,710 probes
+ * dropped over 29 h.
+ *
+ * The edits, server-only (a client's driver retires the paths it abandons itself):
+ *  - `Path::socket_abandoned_by_peer`: not the designated-active path, not validated, no challenge
+ *    left to answer, and either its source ID was retired by the peer or its validation failed.
+ *  - `Connection::socket_release_abandoned_paths` retires the destination ID of every such path, which
+ *    sends RETIRE_CONNECTION_ID (the peer issues a replacement) and leaves the path `unused()`. It runs
+ *    after every received packet's frames and after every timeout.
+ *  - The DCID refill loop skips such paths, or it would hand the retired slot straight back.
+ * A new challenge on the path's 4-tuple (a NAT reusing the port) makes it answerable again.
+ *
+ * Reproduced by `MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath`.
+ * Applied after [patchQuicheRetireDcidNoRelink], whose refill filter it extends. Marker-guarded and loud:
+ * a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheServerReleasesAbandonedPaths(sourceDir: File) {
+    val marker = "socket-server-releases-abandoned-paths"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val pathRs = sourceDir.resolve("quiche/src/path.rs")
+    if (!libRs.exists() || !pathRs.exists()) return
+    if (pathRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump or a change to patchQuicheRetireDcidNoRelink moved it. Re-fit " +
+                    "patchQuicheServerReleasesAbandonedPaths, or delete it if quiche now releases a path its peer " +
+                    "abandoned. Either way keep " +
+                    "MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        pathRs,
+        "    /// Returns whether the path is unused.\n",
+        """
+        |    // $marker: a path the peer has given up on — not the designated-active
+        |    // path, never validated, no challenge left to answer, and either the
+        |    // peer retired the ID it reached us with or our validation failed.
+        |    pub fn socket_abandoned_by_peer(&self) -> bool {
+        |        !self.active &&
+        |            !self.validated() &&
+        |            self.received_challenges.is_empty() &&
+        |            (self.active_scid_seq.is_none() || self.validation_failed())
+        |    }
+        |
+        |    /// Returns whether the path is unused.
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        "                p.active_dcid_seq.is_none() &&\n" +
+            "                    (p.socket_designated_active() || p.probing_required())\n",
+        "                p.active_dcid_seq.is_none() &&\n" +
+            "                    // $marker\n" +
+            "                    !(self.is_server && p.socket_abandoned_by_peer()) &&\n" +
+            "                    (p.socket_designated_active() || p.probing_required())\n",
+    )
+    replaceOnce(
+        libRs,
+        "        // Now that we processed all the frames, if there is a path that has no\n",
+        "        // $marker\n        self.socket_release_abandoned_paths();\n\n" +
+            "        // Now that we processed all the frames, if there is a path that has no\n",
+    )
+    replaceOnce(
+        libRs,
+        "        self.paths.notify_failed_validations();\n",
+        "        self.paths.notify_failed_validations();\n\n" +
+            "        // $marker\n        self.socket_release_abandoned_paths();\n",
+    )
+    replaceOnce(
+        libRs,
+        "    /// Processes path-specific events.\n",
+        """
+        |    // $marker: a server retires the destination ID of every path its peer
+        |    // abandoned, which returns the ID to the peer and leaves the path
+        |    // evictable. Best-effort per path: a refusal leaves that one pinned.
+        |    fn socket_release_abandoned_paths(&mut self) {
+        |        if !self.is_server {
+        |            return;
+        |        }
+        |
+        |        let abandoned: Vec<u64> = self
+        |            .paths
+        |            .iter()
+        |            .filter(|(_, p)| p.socket_abandoned_by_peer())
+        |            .filter_map(|(_, p)| p.active_dcid_seq)
+        |            .collect();
+        |
+        |        for seq in abandoned {
+        |            let _ = self.retire_dcid(seq);
+        |        }
+        |    }
+        |
+        |    /// Processes path-specific events.
+        |
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: a server retires the connection id of a path its peer abandoned")
 }
 
 /**
