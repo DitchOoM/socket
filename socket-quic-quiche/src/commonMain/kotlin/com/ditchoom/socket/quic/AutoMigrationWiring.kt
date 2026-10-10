@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.AddressOwner
 import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.NumericAddress
 import com.ditchoom.socket.ParsedAddress
 import com.ditchoom.socket.canRouteOffLink
@@ -13,14 +14,22 @@ import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
@@ -166,29 +175,150 @@ private fun Attachment.isNewsComparedTo(
     }
 
 /**
- * Why the reactor woke. Two sources, one sequential collector — see [wireAutoMigration]'s "two
- * triggers, one lane".
+ * Why the reactor woke. Three sources, one sequential collector — see [wireAutoMigration]'s "one lane".
  *
- * Neither case carries the fact that produced it, deliberately. An emission can sit in the merge
- * behind a migration that takes seconds, so a payload here would be a snapshot of a world that has
- * moved on — and acting on it is how a queue of flaps becomes a queue of migrations. These are
- * wake-ups; the facts are re-read from [NetworkMonitor.observedLink] and [PathLiveness] at the moment
- * of use.
+ * No case carries the fact that produced it, deliberately. An emission can sit in the merge behind a
+ * migration that takes seconds, so a payload here would be a snapshot of a world that has moved on —
+ * and acting on it is how a queue of flaps becomes a queue of migrations. These are wake-ups; the
+ * facts are re-read from [NetworkMonitor.observedLink] and [PathLiveness] at the moment of use.
  */
 internal sealed interface MigrationTrigger {
+    /** A wake that asks to move off the path the connection is on. */
+    sealed interface Handoff : MigrationTrigger
+
     /** The platform named a different link (the control plane). */
-    data object LinkChanged : MigrationTrigger
+    data object LinkChanged : Handoff
 
     /** The path we are on stopped answering, whatever the platform says about it (the data plane). */
-    data object PathStoppedAnswering : MigrationTrigger
+    data object PathStoppedAnswering : Handoff
+
+    /**
+     * The [StandbyReturn] schedule [armed] came due. [armed] is not a fact to act on: it names the
+     * schedule that set this wake, so a wake that a later move has already replaced is dropped instead
+     * of being read against the schedule now standing.
+     */
+    class StandbyReturnDue(
+        val armed: StandbyReturn,
+    ) : MigrationTrigger
 }
+
+/**
+ * Where the connection stands with the move back from the standby link to the platform's default
+ * link. Written only by the reactor's collector; each value arms its own wake ([standbyReturnWakes]).
+ */
+internal sealed interface StandbyReturn {
+    /** Not on the standby link, or on it while the platform names it as its default. Nothing is armed. */
+    data object Idle : StandbyReturn
+
+    /**
+     * On the standby link [standby] while the platform names another link as its default. The default
+     * route is asked again [wait] after this state is entered, and sooner — from the first step — if
+     * the platform reports anything other than [osNet], what it reported when this state was entered.
+     * [step] counts the return probes this schedule has already spent.
+     */
+    data class ParkedOnStandby(
+        val standby: NetworkId,
+        val step: Int,
+        val osNet: OsNetReading,
+    ) : StandbyReturn {
+        val wait: Duration get() = returnProbeWait(step)
+    }
+
+    /**
+     * Back on the default link, for less than [RETURN_HOLD_DOWN]. A move onto the standby link before
+     * that is a flap: the link could not hold the connection, so the next schedule starts at [resumeAt]
+     * rather than at its first step.
+     */
+    data class Returned(
+        val resumeAt: Int,
+    ) : StandbyReturn
+}
+
+/** Everything the platform reports, as one comparable value: a change in any of it is a change. */
+internal data class OsNetReading(
+    val state: NetworkState,
+    val addresses: LinkAddresses,
+)
+
+private val NetworkMonitor.osNet: OsNetReading get() = OsNetReading(state.value, linkAddresses.value)
+
+/**
+ * How long a [StandbyReturn.ParkedOnStandby] at [step] waits before asking the default route: 1s,
+ * doubling to [RETURN_PROBE_CEILING]. The first ask is prompt because the common case is a blip of a
+ * few seconds. An ask that fails costs a PATH_CHALLENGE run on the default link and leaves the standby
+ * path untouched.
+ */
+private fun returnProbeWait(step: Int): Duration =
+    minOf(FIRST_RETURN_PROBE * (1 shl step.coerceAtMost(BACKOFF_SHIFT_CAP)), RETURN_PROBE_CEILING)
+
+private val FIRST_RETURN_PROBE = 1.seconds
+
+/** Ceiling on [returnProbeWait]: a default link that stays dark is asked about once a minute, for as long as it is named. */
+private val RETURN_PROBE_CEILING = 60.seconds
+
+/** How long a return must hold before a move back onto the standby link stops counting as a flap. */
+internal val RETURN_HOLD_DOWN = 60.seconds
+
+/** A schedule that a move onto the standby link [standby], with the platform reporting [osNet], starts. */
+private fun StandbyReturn.parkedOn(
+    standby: NetworkId,
+    osNet: OsNetReading,
+): StandbyReturn.ParkedOnStandby =
+    StandbyReturn.ParkedOnStandby(
+        standby,
+        step =
+            when (this) {
+                StandbyReturn.Idle -> 0
+                is StandbyReturn.Returned -> resumeAt
+                is StandbyReturn.ParkedOnStandby -> step
+            },
+        osNet = osNet,
+    )
+
+/**
+ * This schedule, given where the connection now is ([attachedTo]) and what the platform names
+ * ([named]). Parking ends when the connection leaves the standby link, or when the platform names the
+ * standby link itself: it is then the default, and a later default is a [MigrationTrigger.LinkChanged].
+ */
+private fun StandbyReturn.reconciled(
+    attachedTo: Attachment,
+    named: ObservedLink,
+    addresses: LinkAddresses,
+): StandbyReturn =
+    when (this) {
+        StandbyReturn.Idle, is StandbyReturn.Returned -> this
+        is StandbyReturn.ParkedOnStandby ->
+            if (attachedTo.isAlready(standby, addresses) && named != ObservedLink.Link(standby)) this else StandbyReturn.Idle
+    }
+
+/**
+ * The wake each [StandbyReturn] arms, re-armed whenever the collector publishes a new one: a parked
+ * schedule's wait or a platform change, whichever comes first, and the end of a return's hold-down.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+private fun StateFlow<StandbyReturn>.standbyReturnWakes(osNet: Flow<OsNetReading>): Flow<MigrationTrigger> =
+    flatMapLatest { armed ->
+        when (armed) {
+            StandbyReturn.Idle -> emptyFlow()
+            is StandbyReturn.ParkedOnStandby -> merge(after(armed.wait), osNet.filter { it != armed.osNet }.map { })
+            is StandbyReturn.Returned -> after(RETURN_HOLD_DOWN)
+        }.take(1).map { MigrationTrigger.StandbyReturnDue(armed) }
+    }
+
+private fun after(wait: Duration): Flow<Unit> =
+    flow {
+        delay(wait)
+        emit(Unit)
+    }
 
 /**
  * Under [MigrationPolicy.Automatic], launch a child of [connection] that watches for the two events
  * that mean this connection should move — [monitor]'s identity-keyed path changes, and [pathLiveness]
  * reporting that the path we are on has stopped answering — and actively migrates
  * ([QuicScope.migrate] to [MigrationTarget.FreshLocalEndpoint], a fresh platform-chosen local endpoint)
- * on each. The collector is a child of the connection scope, so it stops when the connection closes.
+ * on each. While the connection is on a [standby] link, it also asks its way back to the platform's
+ * default link ("A standby link" below). The collector is a child of the connection scope, so it stops
+ * when the connection closes.
  *
  * ## The pipeline, line by line — the reasoning is the load-bearing part
  *
@@ -219,7 +349,7 @@ internal sealed interface MigrationTrigger {
  * leaves the attachment alone and is re-attempted in place, because the emission that would otherwise be
  * the next new information **never arrives** (see [retryableWithoutNewInformation]).
  *
- * ## Two triggers, one lane
+ * ## One lane
  *
  * The control-plane signal is not always right, and when it is wrong it is wrong for a long time: a
  * real Wi-Fi→cellular handoff can spend over ten seconds on a path carrying nothing while
@@ -228,8 +358,8 @@ internal sealed interface MigrationTrigger {
  * [PathLiveness] is the second one, and [SilenceThreshold.isMetBy] carries the argument for why it
  * cannot declare a healthy path dead.
  *
- * The two sources are `merge`d into a **single sequential collector** rather than given a coroutine
- * each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is
+ * The sources — these two, and the standby-return schedule — are `merge`d into a **single sequential
+ * collector** rather than given a coroutine each. That is not a style choice: `migrate()` suspends for the whole path move, and one collector is
  * what makes "one migration at a time" a property of the shape instead of a lock. Two collectors would
  * race each other into [MigrationResult.Unmoved.Failed.AlreadyInProgress] and then both retry.
  *
@@ -255,6 +385,16 @@ internal sealed interface MigrationTrigger {
  * attempt is pinned to it instead ([routeFor]), and a success attaches the reactor to it. When the
  * platform later names that link as its default, the control-plane trigger finds the connection
  * already there and does not move it again.
+ *
+ * The move is temporary. A link that went silent for a few seconds usually comes back, and the
+ * platform, which never stopped naming it, reports nothing when it does, so neither trigger would
+ * ever fire again: the connection would stay on the standby link until that link failed too. While
+ * the connection is on the standby link and the platform names another link, the reactor is
+ * [StandbyReturn.ParkedOnStandby] and asks the default route on its own schedule
+ * ([returnProbeWait]: 1s, doubling to a minute), migrating back as soon as a probe validates. A
+ * probe that fails leaves the connection where it is, on a path that works. Anything the platform
+ * reports restarts the schedule. A return the default link cannot hold for [RETURN_HOLD_DOWN] is a
+ * flap, and the schedule that follows it starts where the last one left off.
  *
  * ## Where a success lands
  *
@@ -333,19 +473,9 @@ internal fun wireAutoMigration(
     if (monitor === NetworkMonitor.AlwaysAvailable) return
     connection.launch(CoroutineName("quic-client/auto-migration")) {
         var attachedTo: Attachment = Attachment.AwaitingBaseline
-        merge(
-            monitor.state
-                .filter { it.canRouteOffLink }
-                .map { it.networkId }
-                .filter { it != NetworkId.Unidentified }
-                .distinctUntilChanged()
-                .map { MigrationTrigger.LinkChanged },
-            pathLiveness
-                .filter { it is PathLiveness.Silent }
-                .map { MigrationTrigger.PathStoppedAnswering },
-        ).collect { trigger ->
-            // A move that landed on an address no link claimed is on whichever link claims it now.
-            attachedTo = attachedTo.resolvedBy(monitor.linkAddresses.value)
+        val standbyReturn = MutableStateFlow<StandbyReturn>(StandbyReturn.Idle)
+
+        suspend fun handOff(trigger: MigrationTrigger.Handoff) {
             // The link this attempt is predicated on, which is what makes a backoff stale: the link being
             // moved onto, or for a data-plane trigger the link we were already told we are on. Where a
             // success lands is the route's to say ([Route.landedOn]), never this.
@@ -356,14 +486,14 @@ internal fun wireAutoMigration(
                         when (val now = monitor.observedLink) {
                             // Nothing routable to move onto any more — the link that woke us has been
                             // withdrawn while we were busy. Not a handoff, and not a baseline either.
-                            ObservedLink.None -> return@collect
+                            ObservedLink.None -> return
                             is ObservedLink.Link -> {
                                 if (attachedTo == Attachment.AwaitingBaseline) {
                                     // The first identified link is the connect-time baseline.
                                     attachedTo = Attachment.On(now.id)
-                                    return@collect
+                                    return
                                 }
-                                if (attachedTo.isAlready(now.id, monitor.linkAddresses.value)) return@collect // already there
+                                if (attachedTo.isAlready(now.id, monitor.linkAddresses.value)) return // already there
                                 Attachment.On(now.id)
                             }
                         }
@@ -371,8 +501,8 @@ internal fun wireAutoMigration(
 
                     MigrationTrigger.PathStoppedAnswering -> {
                         // Re-read: this emission may have been queued behind a migration that has
-                        // since answered the very question it is asking. See "two triggers, one lane".
-                        if (pathLiveness.value !is PathLiveness.Silent) return@collect
+                        // since answered the very question it is asking. See "one lane".
+                        if (pathLiveness.value !is PathLiveness.Silent) return
                         attachedTo
                     }
                 }
@@ -385,30 +515,106 @@ internal fun wireAutoMigration(
                         is Route.DefaultRoute -> connection.migrate(MigrationTarget.FreshLocalEndpoint)
                         is Route.Standby -> route.ready.migrate()
                     }
-                // One site, so no outcome can be added that forgets to record itself.
+                // One site per kind of attempt, so no outcome can be added that forgets to record itself.
                 capture.record { it.migrationAttempt(trigger, attempt, result) }
                 when (result) {
                     is MigrationResult.Succeeded -> {
                         attachedTo = route.landedOn(attachedTo, result.localEndpoint, monitor.linkAddresses.value)
-                        return@collect
+                        when (route) {
+                            is Route.Standby -> standbyReturn.value = standbyReturn.value.parkedOn(route.ready.id, monitor.osNet)
+                            is Route.DefaultRoute -> Unit
+                        }
+                        return
                     }
 
                     is MigrationResult.Unmoved.Impossible -> {
                         cancel()
-                        return@collect
+                        return
                     }
 
                     // Not this time — and do NOT claim the link we failed to reach. Whether "not
                     // this time" is worth saying again is the leaf's own answer, never a default.
                     is MigrationResult.Unmoved.Failed -> {
-                        if (!result.retryableWithoutNewInformation()) return@collect
+                        if (!result.retryableWithoutNewInformation()) return
                         when (awaitRetrySlot(trigger, monitor, pathLiveness, standby, premise, backoffBeforeAttempt(attempt))) {
                             RetrySlot.Retry -> attempt++
-                            RetrySlot.Abandon -> return@collect
+                            RetrySlot.Abandon -> return
                         }
                     }
                 }
             }
+        }
+
+        suspend fun stepReturn(trigger: MigrationTrigger.StandbyReturnDue) {
+            when (val armed = trigger.armed) {
+                StandbyReturn.Idle -> Unit
+                // The return held through its hold-down: the next move onto the standby link is no flap.
+                is StandbyReturn.Returned -> standbyReturn.value = StandbyReturn.Idle
+                is StandbyReturn.ParkedOnStandby -> {
+                    val osNet = monitor.osNet
+                    // The platform reported a change: whatever it was, the default link is worth asking
+                    // about soon again, so the schedule starts over.
+                    if (osNet != armed.osNet) {
+                        standbyReturn.value = armed.copy(step = 0, osNet = osNet)
+                        return
+                    }
+                    val named =
+                        when (val now = monitor.observedLink) {
+                            // Nothing named to go back to; ask again later.
+                            ObservedLink.None -> {
+                                standbyReturn.value = armed.copy(step = armed.step + 1)
+                                return
+                            }
+                            is ObservedLink.Link -> now
+                        }
+                    val route = Route.DefaultRoute(named)
+                    val result = connection.migrate(MigrationTarget.FreshLocalEndpoint)
+                    capture.record { it.migrationAttempt(trigger, armed.step + 1, result) }
+                    standbyReturn.value =
+                        when (result) {
+                            is MigrationResult.Succeeded -> {
+                                attachedTo = route.landedOn(attachedTo, result.localEndpoint, monitor.linkAddresses.value)
+                                if (attachedTo.isAlready(armed.standby, monitor.linkAddresses.value)) {
+                                    armed.copy(step = armed.step + 1)
+                                } else {
+                                    StandbyReturn.Returned(resumeAt = armed.step + 1)
+                                }
+                            }
+
+                            is MigrationResult.Unmoved.Impossible -> {
+                                cancel()
+                                return
+                            }
+
+                            // The schedule is the retry: no ladder of its own. The osNet the schedule
+                            // was armed with is kept, so a change reported during the probe restarts it.
+                            is MigrationResult.Unmoved.Failed ->
+                                if (result.retryableWithoutNewInformation()) armed.copy(step = armed.step + 1) else StandbyReturn.Idle
+                        }
+                }
+            }
+        }
+
+        merge(
+            monitor.state
+                .filter { it.canRouteOffLink }
+                .map { it.networkId }
+                .filter { it != NetworkId.Unidentified }
+                .distinctUntilChanged()
+                .map { MigrationTrigger.LinkChanged },
+            pathLiveness
+                .filter { it is PathLiveness.Silent }
+                .map { MigrationTrigger.PathStoppedAnswering },
+            standbyReturn.standbyReturnWakes(combine(monitor.state, monitor.linkAddresses, ::OsNetReading)),
+        ).collect { trigger ->
+            // A move that landed on an address no link claimed is on whichever link claims it now.
+            attachedTo = attachedTo.resolvedBy(monitor.linkAddresses.value)
+            when (trigger) {
+                is MigrationTrigger.Handoff -> handOff(trigger)
+                // A wake armed by a schedule that has since been replaced is stale.
+                is MigrationTrigger.StandbyReturnDue -> if (trigger.armed == standbyReturn.value) stepReturn(trigger)
+            }
+            standbyReturn.value = standbyReturn.value.reconciled(attachedTo, monitor.observedLink, monitor.linkAddresses.value)
         }
     }
 }
@@ -468,7 +674,8 @@ private const val BACKOFF_SHIFT_CAP = 20
  * link attached during a data-plane backoff (see [routeFor]) — there is now somewhere to go, so waiting
  * out the rest of the backoff would only keep the connection on the dead path. Returns
  * [RetrySlot.Abandon] when something arrived first that makes this retry stale, and there are two such
- * things, one per trigger.
+ * things, one per trigger. A local address arriving on the link the attempt is predicated on retries at
+ * once ([addressArrivals]).
  *
  * **A different routable, identified link (both triggers).** That link is new information, the
  * collector is about to be handed it, and it should be migrated onto instead of whatever we were
@@ -492,7 +699,7 @@ private const val BACKOFF_SHIFT_CAP = 20
  * with no trigger left to raise.
  */
 private suspend fun awaitRetrySlot(
-    trigger: MigrationTrigger,
+    trigger: MigrationTrigger.Handoff,
     monitor: NetworkMonitor,
     pathLiveness: StateFlow<PathLiveness>,
     standby: StandbyPaths,
@@ -530,9 +737,36 @@ private suspend fun awaitRetrySlot(
                                 !offeredToTheFailedAttempt.offers(it.id)
                         }.map { RetrySlot.Retry }
             },
+            addressArrivals(monitor, attempting),
         ).first()
     } ?: RetrySlot.Retry
 }
+
+/**
+ * [RetrySlot.Retry] each time the link [attempting] names gains a local address it did not carry when
+ * the wait began. A platform can name a link before it has an address of the peer's family, and every
+ * attempt onto it fails until one arrives, so the arrival is what the backoff was waiting for.
+ */
+private fun addressArrivals(
+    monitor: NetworkMonitor,
+    attempting: Attachment,
+): Flow<RetrySlot> =
+    when (attempting) {
+        is Attachment.On -> {
+            val carried = monitor.linkAddresses.value.carriedBy(attempting.id)
+            monitor.linkAddresses
+                .filter { !carried.containsAll(it.carriedBy(attempting.id)) }
+                .map { RetrySlot.Retry }
+        }
+        Attachment.AwaitingBaseline, is Attachment.OnUnclaimedAddress -> emptyFlow()
+    }
+
+/** The addresses the link [id] carries; none when the link or the addresses are not reported. */
+private fun LinkAddresses.carriedBy(id: NetworkId): Set<NumericAddress> =
+    when (this) {
+        LinkAddresses.NotReported -> emptySet()
+        is LinkAddresses.Reported -> byLink[id].orEmpty()
+    }
 
 /** Whether this is a standby link on [id]. */
 private fun StandbyPath.offers(id: NetworkId): Boolean =
@@ -622,7 +856,7 @@ private fun Route.DefaultRoute.byName(before: Attachment): Attachment =
  * path falls back to the default route.
  */
 private fun routeFor(
-    trigger: MigrationTrigger,
+    trigger: MigrationTrigger.Handoff,
     attachedTo: Attachment,
     standby: StandbyPath,
     named: ObservedLink,

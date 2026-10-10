@@ -66,8 +66,11 @@ data class TracePathStats(
     val deliveryRate: Long,
 )
 
-/** Which of the reactor's two triggers woke a migration. */
-enum class TraceMigrationTrigger { LinkChanged, PathStoppedAnswering }
+/**
+ * What woke a migration: the platform naming another link, the active path going silent, or the
+ * scheduled ask of the default link while the connection is on its standby link.
+ */
+enum class TraceMigrationTrigger { LinkChanged, PathStoppedAnswering, ReturnFromStandby }
 
 /** How a migration attempt ended — one entry per `MigrationResult` leaf. */
 enum class TraceMigrationOutcome {
