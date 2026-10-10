@@ -1,5 +1,9 @@
 name: "Android Emulator Integration Test"
 on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        default: "38"
   pull_request:
     # See review.yaml: '*' does not match '/', so '*.md' let every docs/**.md change boot an
     # emulator for nothing. '**.md' matches markdown at any depth.
@@ -37,7 +41,7 @@ jobs:
     # instrumented tests), so a 15-min cap tips a healthy run into a "cancelled" timeout on
     # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
     # genuine hang (e.g. an emulator that never boots).
-    timeout-minutes: 25
+    timeout-minutes: 60
     # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
@@ -55,7 +59,8 @@ jobs:
         # accounting among them — so a lane that stops at 29 cannot observe them. Both use the
         # `default` (AOSP userdebug) image, which is what makes `adb root` + `su 0 iptables/tc`
         # work for the QUIC netem suite; `google_apis*` images would break that.
-        api-level: [29, 35]
+        api-level: [35]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: checkout
         uses: actions/checkout@v7
@@ -220,7 +225,7 @@ jobs:
         # `failure()`, so every upload is skipped and the hang leaves nothing to read (#417). That
         # is not hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
         # artifacts at all. Measured 5.2-6.6 min across 10 recent green job-runs; 12 is ~2x that.
-        timeout-minutes: 12
+        timeout-minutes: 45
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
@@ -245,7 +250,7 @@ jobs:
           # header of scripts/android-emulator-tests.sh. The script also shuts the emulator down
           # itself, bounded (see its EMULATOR SHUTDOWN section), so the action's own trailing
           # `adb emu kill` normally finds no device.
-          script: bash scripts/android-emulator-tests.sh ${{ matrix.api-level }}
+          script: HUNT_MINUTES=${{ inputs.minutes || '38' }} bash scripts/android-emulator-tests.sh ${{ matrix.api-level }}
 
       # Inventory whatever this lane skipped, the same way build-linux and build-apple do. Android
       # was the last lane missing this: the instrumented XML lands under
@@ -320,7 +325,7 @@ jobs:
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
-          name: android-test-reports-${{ matrix.api-level }}
+          name: android-test-reports-${{ matrix.api-level }}-${{ matrix.shard }}
           path: |
             **/build/reports/androidTests/**
             **/build/outputs/androidTest-results/**
@@ -335,7 +340,7 @@ jobs:
         continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
         uses: actions/upload-artifact@v7
         with:
-          name: emulator-shutdown-wedge-${{ matrix.api-level }}
+          name: emulator-shutdown-wedge-${{ matrix.api-level }}-${{ matrix.shard }}
           path: emulator-diagnostics/emulator-shutdown-wedge-*.txt
           if-no-files-found: error
           retention-days: 7
@@ -348,7 +353,7 @@ jobs:
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
-          name: quiche-build-logs-android-${{ matrix.api-level }}
+          name: quiche-build-logs-android-${{ matrix.api-level }}-${{ matrix.shard }}
           path: '**/build/quiche-build-logs/'
           if-no-files-found: ignore
           retention-days: 7

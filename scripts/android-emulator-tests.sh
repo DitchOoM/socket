@@ -134,12 +134,31 @@ if [ "$NETWORK_READY" = "1" ]; then
   # at the end of this script, so a later workflow step cannot reach it. The test outcome is
   # preserved in TEST_EXIT and re-raised as this script's status.
   set +e
-  ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
-    -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
-    -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
-    -Pandroid.testInstrumentationRunnerArguments.netCtrlPort="$NET_CTRL_PORT" \
-    ${REQUIRE_ALL_ARG}
-  TEST_EXIT=$?
+  # HUNT HARNESS (throwaway, do not merge): install the quiche instrumented APK once, then run its whole
+  # package again and again until the budget is spent, counting memory-soak stalls.
+  ./gradlew :socket-quic-quiche:installDebugAndroidTest
+  PKG=com.ditchoom.socket.quic.quiche.test
+  DEADLINE=$(( $(date +%s) + ${HUNT_MINUTES:-38} * 60 ))
+  iter=0; soak_fail=0; other_fail=0
+  mkdir -p emulator-diagnostics/hunt
+  while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+    iter=$((iter + 1))
+    out="emulator-diagnostics/hunt/iter-$iter.txt"
+    timeout 900 adb shell am instrument -w -r -e deviceKind emulator \
+      -e netCtrlHost 127.0.0.1 -e netCtrlPort "$NET_CTRL_PORT" \
+      "$PKG/androidx.test.runner.AndroidJUnitRunner" > "$out" 2>&1 || true
+    if grep -B40 "INSTRUMENTATION_STATUS_CODE: -2" "$out" | grep -q "test=theNativeHeapIsFlat"; then
+      soak_fail=$((soak_fail + 1)); echo "HUNT iter=$iter SOAK-STALL"
+      grep -m3 "soak stopped\|Timed out\|stall dump" "$out" || true
+    fi
+    failed=$(grep -B40 "INSTRUMENTATION_STATUS_CODE: -2" "$out" | grep "^INSTRUMENTATION_STATUS: test=" | grep -v theNativeHeapIsFlat | sort -u | tr '\n' ' ')
+    if [ -n "$failed" ]; then other_fail=$((other_fail + 1)); echo "HUNT iter=$iter OTHER-FAIL $failed"; fi
+    grep -q "^OK (" "$out" || grep -q "^FAILURES!!!" "$out" || { echo "HUNT iter=$iter NO-RESULT"; tail -3 "$out"; }
+    echo "HUNT iter=$iter done $(grep -m1 '^Tests run\|^OK (' "$out")"
+  done
+  echo "HUNT-RESULT iterations=$iter soak_stalls=$soak_fail iterations_with_other_failures=$other_fail"
+  grep -c "STALL-SNAPSHOT" "$LOGCAT_FILE" 2>/dev/null | sed 's/^/HUNT stall-snapshot lines in logcat: /' || true
+  TEST_EXIT=$(( soak_fail > 0 ? 1 : 0 ))
   set -e
 
   ./gradlew :socket-quic-quiche:stopNetworkControlServer || true
