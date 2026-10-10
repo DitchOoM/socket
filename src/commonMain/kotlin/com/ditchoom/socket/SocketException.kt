@@ -376,15 +376,12 @@ class CertificateHashPinningException(
 }
 
 /**
- * A QUIC server's certificate chain was not trusted, for [rejection]: the platform trust store refused it
- * (the iOS system store), or the connection's `ServerCertVerifier` did. Thrown by a client connect before
- * the connection is handed to the caller; the connection is already closed. A subtype of
- * [SSLSocketException], so it is caught with every other TLS failure.
+ * A QUIC client refused the server's certificate chain, for [rejection]. Thrown before the connection is
+ * handed to the caller; the connection is already closed.
  */
 class ServerCertificateRejectedException(
     val rejection: ServerCertificateRejection,
-    cause: Throwable? = null,
-) : SSLSocketException(rejection.description, cause) {
+) : SSLSocketException(rejection.description) {
     override val reason: ConnectionFailureReason get() = ConnectionFailureReason.TlsBadCertificate
 }
 
@@ -397,7 +394,7 @@ sealed interface ServerCertificateRejection {
         override val description get() = "The server presented no certificate"
     }
 
-    /** One certificate in the chain was larger than the [maxBytes] this client reads. Fail-closed. */
+    /** One certificate was larger than the [maxBytes] this client reads. */
     data class CertificateTooLarge(
         val sizeBytes: Int,
         val maxBytes: Int,
@@ -405,26 +402,65 @@ sealed interface ServerCertificateRejection {
         override val description get() = "A server certificate ($sizeBytes bytes) exceeds the $maxBytes-byte limit"
     }
 
-    /** The chain was longer than the [maxCertificates] this client reads. Fail-closed. */
+    /** The chain was longer than the [maxCertificates] this client reads. */
     data class ChainTooLong(
         val maxCertificates: Int,
     ) : ServerCertificateRejection {
         override val description get() = "The server's certificate chain is longer than $maxCertificates certificates"
     }
 
-    /** The platform trust store refused the chain for [serverName]; [detail] is the platform's own account. */
+    /** The platform trust store refused the chain for [serverName]. */
     data class UntrustedBySystem(
         val serverName: String,
-        val detail: String,
+        val failure: SystemTrustFailure,
     ) : ServerCertificateRejection {
-        override val description get() = "The system trust store does not trust the certificate for $serverName: $detail"
+        override val description get() = "The system trust store does not trust the certificate for $serverName: ${failure.description}"
     }
 
-    /** The connection's `ServerCertVerifier` (`QuicOptions.serverCertVerifier`) rejected the chain. */
+    /** The connection's `ServerCertVerifier` rejected the chain. */
     data class RejectedByVerifier(
         val reason: String,
     ) : ServerCertificateRejection {
         override val description get() = "The server certificate verifier rejected the chain: $reason"
+    }
+}
+
+/** How a platform trust store (Security.framework's `SecTrust`) refused a chain. */
+sealed interface SystemTrustFailure {
+    val description: String
+
+    /** Certificate [index] could not be copied into platform memory. */
+    data class CopyFailed(
+        val index: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "certificate $index could not be copied"
+    }
+
+    /** The platform could not take certificate [index] as a DER X.509 certificate. */
+    data class UnreadableCertificate(
+        val index: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "certificate $index is not a DER X.509 certificate"
+    }
+
+    /** The trust object could not be created; [osStatus] is the platform's status code. */
+    data class TrustCreationFailed(
+        val osStatus: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "trust evaluation could not start (OSStatus $osStatus)"
+    }
+
+    /** Evaluation refused the chain with platform error [code] (a `CFError` code); [platformDescription] is its text. */
+    data class Refused(
+        val code: Long,
+        val platformDescription: String,
+    ) : SystemTrustFailure {
+        override val description get() = "$platformDescription (CFError $code)"
+    }
+
+    /** Evaluation refused the chain without reporting an error. */
+    data object RefusedWithoutError : SystemTrustFailure {
+        override val description get() = "evaluation refused the chain"
     }
 }
 

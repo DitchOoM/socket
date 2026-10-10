@@ -187,22 +187,24 @@ roots installed by MDM or the user, OS revocation and certificate-transparency p
 `QuicOptions.appleTrustSource = AppleTrustSource.BundledMozillaRoots` swaps that for the Mozilla root
 set compiled into the library. `trustedCaCertificatesPem` pins private anchors on every platform.
 
-For a rule of your own, such as pinning a key or requiring an intermediate, set `serverCertVerifier`.
-It receives the server's **whole** chain (DER, leaf first) once the handshake completes and before your
-block runs, and answers with a typed verdict:
+For a rule of your own, such as pinning a key or requiring an intermediate, add a `ServerCertVerifier`
+to `serverCertVerifiers`. Each receives the server's **whole** chain (DER, leaf first) once the
+handshake completes and before your block runs, and answers with a typed verdict:
 
 ```kotlin
 val options = QuicOptions(
     alpnProtocols = listOf("h3"),
-    serverCertVerifier = { chain ->
-        if (spkiOf(chain.leaf) in myPins) ServerCertVerdict.Trusted
-        else ServerCertVerdict.Rejected("leaf key not pinned")
-    },
+    serverCertVerifiers = listOf(
+        ServerCertVerifier { chain ->
+            if (spkiOf(chain.leaf) in myPins) ServerCertVerdict.Trusted
+            else ServerCertVerdict.Rejected("leaf key not pinned")
+        },
+    ),
 )
 ```
 
-The verifier is **additive**. With `verifyPeer` on, it is consulted only for a chain the platform
-already accepted, so it can narrow trust but never widen it. A rejection throws
+Verifiers are **additive**. With `verifyPeer` on, they are consulted only for a chain the platform
+already accepted, so they can narrow trust but never widen it. The first rejection throws
 `ServerCertificateRejectedException` (an `SSLSocketException`) whose `rejection` says why
 (`RejectedByVerifier`, `UntrustedBySystem`, …), and the connection is closed before any application
 data is sent. A resumed connection's trust was settled by the connection that issued its ticket.
@@ -217,7 +219,7 @@ QUIC errors mirror the core `socket` sealed hierarchy:
   `RESET_STREAM`); the connection stays healthy. Inspect `abort: QuicStreamAbort` for the peer's
   application error code.
 - **`ServerCertificateRejectedException`** (an `SSLSocketException`) — the server's certificate chain
-  was refused by the device trust store or by your `serverCertVerifier`; see
+  was refused by the device trust store or by one of your `serverCertVerifiers`; see
   [Server Certificate Trust](#server-certificate-trust).
 - **`QuicNativeMemoryRequiredException`** (an `IllegalArgumentException`) — **your** write handed the
   connection a buffer without native memory where `capabilities.requiresNativeMemoryBuffers` holds.

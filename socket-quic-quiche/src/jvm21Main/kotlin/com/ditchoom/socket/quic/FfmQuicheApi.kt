@@ -1349,11 +1349,7 @@ class FfmQuicheApi private constructor(
         return if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
     }
 
-    /**
-     * The out-parameter [streamIterNext] writes into, one per thread. The driver walks the readable streams
-     * after every command, one call per stream; a confined Arena per call made that walk's cost mostly
-     * native allocate and free (a fifth of a 64-stream profile). Per thread, so no two calls ever share it.
-     */
+    /** [streamIterNext]'s out-parameter, one per thread so no two calls share it and no call allocates. */
     private val streamIdScratch: ThreadLocal<MemorySegment> = ThreadLocal.withInitial { Arena.ofAuto().allocate(JAVA_LONG) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {

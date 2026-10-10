@@ -1001,17 +1001,9 @@ allprojects {
         // projectDir is read at configuration time, so this stays configuration-cache safe.
         environment("SIMCTL_CHILD_SOCKET_TESTCERTS_DIR", projectDir.resolve("testcerts").absolutePath)
 
-        // ─── Booted mode for the iOS simulator (issues #359, #81) ──────────────────────────────
-        //
-        // `simctl spawn --standalone` runs the binary outside launchd_sim, so the network daemons a
-        // QUIC connection needs are unreachable and the harness-backed suites skip with
-        // simulator-lacks-network-services (AppleWebTransportTest, QuicHarnessIntegrationTests). A
-        // lane that has already booted a simulator exports its UDID as IOS_SIMULATOR_BOOTED_UDID;
-        // the iOS tests then spawn into that booted device (`standalone = false`) and the suites
-        // are told so through QUIC_SIM_BOOTED, which quicHarnessAvailability() honours.
-        //
-        // iOS only: the UDID names an iOS device, and tvOS/watchOS run their own runtimes (their
-        // QUIC suites skip for a different reason anyway: no quiche target). Unset → unchanged.
+        // Booted iOS simulator: `simctl spawn --standalone` runs outside launchd_sim, where QUIC's
+        // network daemons are unreachable. A lane that exports IOS_SIMULATOR_BOOTED_UDID runs the iOS
+        // tests inside that booted device instead and tells the suites so through QUIC_SIM_BOOTED.
         val bootedUdid = providers.environmentVariable("IOS_SIMULATOR_BOOTED_UDID").orNull
         if (bootedUdid != null && name.startsWith("iosSimulator")) {
             device.set(bootedUdid)

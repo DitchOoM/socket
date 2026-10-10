@@ -55,11 +55,8 @@ private fun X509Certificate.keyDescription(): String =
     }
 
 /**
- * The NIST P-256 (secp256r1) domain parameters, from FIPS 186-4 §D.1.2.3, so the curve check is exact.
- *
- * Stated rather than asked of the JCE: `AlgorithmParameters.getInstance("EC")` has no provider on Android
- * before API 26, and resolving it there returned null, which failed every P-256 leaf as "not ECDSA P-256"
- * (seen on the API 24 emulator lane). Every type here is in the platform since API 1.
+ * The NIST P-256 (secp256r1) domain parameters from FIPS 186-4 §D.1.2.3. Stated rather than asked of the
+ * JCE because `AlgorithmParameters.getInstance("EC")` has no provider on Android below API 26.
  */
 internal val nistP256Spec: ECParameterSpec by lazy {
     fun hex(s: String) = BigInteger(s, 16)

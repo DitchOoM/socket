@@ -57,8 +57,7 @@ jobs:
         # work for the QUIC netem suite; `google_apis*` images would break that.
         # 24 = :socket-quic-quiche's minSdk: the oldest device the published AAR claims to run on,
         # and the one place a call to a newer API without a version guard fails. 36 = the newest
-        # platform with a `default` x86_64 image (checked against sys-img2-3.xml, 2026-10): the next
-        # tightening lands here before it reaches users. Both images exist; 37 has none yet.
+        # platform with a `default` x86_64 image: the next tightening lands here before it reaches users.
         # No arm64 lane: GitHub's arm64 runners offer no KVM, and an unaccelerated emulator cannot
         # finish this suite inside the job's budget. The arm64 JNI build is covered by build-linux.
         api-level: [24, 29, 35, 36]

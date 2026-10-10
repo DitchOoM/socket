@@ -102,7 +102,7 @@ internal class JvmQuicConnection(
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
 
-    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf (#186). */
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf. */
     internal suspend fun readPeerCertChainDer(
         index: Int,
         der: PlatformBuffer,

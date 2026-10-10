@@ -332,7 +332,7 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     return copy_conn_bytes(quiche_conn_peer_cert, conn, buf, buf_len);
 }
 
-/* Certificate `index` of the peer's chain, leaf first (#186). 0 = past the end, or no certificate.
+/* Certificate `index` of the peer's chain, leaf first. 0 = past the end, or no certificate.
    Same copy-when-it-fits contract as copy_conn_bytes. */
 JNIEXPORT jint JNICALL JNI_FN(nConnPeerCertChainAt)(
     JNIEnv *env, jclass cls, jlong conn, jint index, jlong buf, jint buf_len) {

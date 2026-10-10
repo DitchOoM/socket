@@ -19,10 +19,9 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * [QuicOptions.serverCertVerifier] (#186), against a real server on every quiche backend:
+ * [QuicOptions.serverCertVerifiers], against a real server on every quiche backend:
  *
- *  - the verifier is handed the server's **whole** chain, leaf first, as the server sent it — the thing
- *    quiche's C API could not give before `quiche_conn_peer_cert_chain_at`;
+ *  - the verifier is handed the server's **whole** chain, leaf first, as the server sent it;
  *  - a rejection fails the connect with a typed [ServerCertificateRejectedException] **before** the
  *    caller's block runs;
  *  - it is **additive**: a chain the platform's own validation refuses never reaches the verifier, so a
@@ -70,12 +69,16 @@ abstract class ServerCertVerifierTestSuite {
                         var seenName: String? = null
                         val verifying =
                             options().copy(
-                                serverCertVerifier = { chain ->
-                                    seenName = chain.serverName
-                                    seenCount = chain.certificates.size
-                                    seenMatches = chain.certificates.zip(expected) { got, want -> got.slice().contentEquals(want.slice()) }
-                                    ServerCertVerdict.Trusted
-                                },
+                                serverCertVerifiers =
+                                    listOf(
+                                        ServerCertVerifier { chain ->
+                                            seenName = chain.serverName
+                                            seenCount = chain.certificates.size
+                                            seenMatches =
+                                                chain.certificates.zip(expected) { got, want -> got.slice().contentEquals(want.slice()) }
+                                            ServerCertVerdict.Trusted
+                                        },
+                                    ),
                             )
                         var blockRan = false
                         withQuicConnection("127.0.0.1", port, verifying, timeout = 10.seconds.scaled) { blockRan = true }
@@ -98,7 +101,8 @@ abstract class ServerCertVerifierTestSuite {
                     val serverJob = launch { runCatching { connections {} } }
                     try {
                         var blockRan = false
-                        val rejecting = options().copy(serverCertVerifier = { ServerCertVerdict.Rejected("not our key") })
+                        val rejecting =
+                            options().copy(serverCertVerifiers = listOf(ServerCertVerifier { ServerCertVerdict.Rejected("not our key") }))
                         val ex =
                             assertFailsWith<ServerCertificateRejectedException> {
                                 withQuicConnection("127.0.0.1", port, rejecting, timeout = 10.seconds.scaled) { blockRan = true }
@@ -125,10 +129,13 @@ abstract class ServerCertVerifierTestSuite {
                         val additive =
                             options().copy(
                                 verifyPeer = true,
-                                serverCertVerifier = {
-                                    consulted = true
-                                    ServerCertVerdict.Trusted
-                                },
+                                serverCertVerifiers =
+                                    listOf(
+                                        ServerCertVerifier {
+                                            consulted = true
+                                            ServerCertVerdict.Trusted
+                                        },
+                                    ),
                             )
                         val failure =
                             runCatching {

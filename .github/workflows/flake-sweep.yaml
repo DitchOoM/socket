@@ -2,11 +2,8 @@ name: Nightly flake sweep
 
 # Runs the suites with a history of flaking, many times each, every night, against `main`.
 #
-# flake-hunt.yaml answers "how often does THIS suite fail on THIS ref" when someone thinks to ask.
-# Nothing asked on a schedule, so a suite that started flaking was first seen as a red PR lane and
-# re-run, and a fix was judged by a handful of green PR runs. This sweep keeps a standing failure
-# rate per suite: a rate that rises names the night it rose, and a fix's claim is checked by the
-# nights that follow it rather than by one lucky PR.
+# flake-hunt.yaml measures one suite on one ref on demand; this sweep keeps a standing failure rate per
+# suite, so a rising rate names the night it rose and a fix is judged by the nights that follow it.
 #
 # It never fails on a flake — like flake-hunt, finding one is the point. It reports rates to the run
 # summary and keeps them in one tracking issue (edited in place, never a comment per night).
@@ -17,8 +14,8 @@ name: Nightly flake sweep
 
 on:
   schedule:
-    # 06:41 UTC: off the top of the hour, and clear of native-deps-freshness (09:17 daily) and
-    # weekly-dependency-update (Sunday 03:15), which share the runner pool and native caches.
+    # 06:41 UTC: off the top of the hour, and clear of native-deps-freshness (09:17), which shares the
+    # runner pool and native caches.
     - cron: "41 6 * * *"
   workflow_dispatch:
     inputs:

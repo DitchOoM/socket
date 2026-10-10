@@ -19,7 +19,7 @@ name: QUIC interop (quic-interop-runner)
 
 on:
   schedule:
-    # 07:23 UTC, clear of flake-sweep (06:41), native-deps-freshness (09:17) and Sunday's 03:15 job.
+    # 07:23 UTC, clear of flake-sweep (06:41) and native-deps-freshness (09:17).
     - cron: "23 7 * * *"
   workflow_dispatch:
     inputs:

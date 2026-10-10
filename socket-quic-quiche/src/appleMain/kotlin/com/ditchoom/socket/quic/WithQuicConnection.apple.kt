@@ -130,10 +130,8 @@ internal suspend fun buildAppleQuicConnection(
                     unlink(caBundlePath)
                 }
             } else if (usesSecTrust(quicOptions)) {
-                // iOS family, verifyPeer on, no pinned anchors, the default AppleTrustSource: the
-                // device's trust store decides, through SecTrust, after the handshake (#186). BoringSSL
-                // has no anchors to verify against here (iOS ships no CA file), so its in-handshake
-                // check is off; appleSystemChainTrust below is the check, and it fails closed.
+                // SecTrust validates the chain after the handshake (appleSystemChainTrust, fail-closed);
+                // BoringSSL has no anchors here (iOS ships no CA file), so its own check is off.
                 quiche_config_verify_peer(config, false)
             } else if (effectiveVerifyPeer(quicOptions)) {
                 // verifyPeer is on with no pinned anchors. On macOS quiche/BoringSSL's compiled-in
@@ -321,13 +319,11 @@ internal suspend fun buildAppleQuicConnection(
                 parseLeafFields = ::parsePinnedLeafFieldsDer,
                 now = tuning.wallClock(),
             )
-            // The iOS trust store (when it, not BoringSSL, is the one validating) and then the caller's
-            // ServerCertVerifier (#186), before the connection is handed back.
             verifyServerCertificateChain(
                 serverName,
-                resumed = quicConn.resumption is QuicResumptionOutcome.Resumed,
-                systemTrust = if (usesSecTrust(quicOptions)) appleSystemChainTrust else null,
-                verifier = quicOptions.serverCertVerifier,
+                quicConn.resumption,
+                if (usesSecTrust(quicOptions)) appleSystemChainTrust else PlatformChainTrust.InHandshake,
+                quicOptions.serverCertVerifiers,
                 bufferFactory,
                 readChainDer = quicConn::readPeerCertChainDer,
                 closeConnection = { quicConn.close() },
@@ -445,7 +441,7 @@ internal class AppleQuicConnection(
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
 
-    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf (#186). */
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf. */
     suspend fun readPeerCertChainDer(
         index: Int,
         der: PlatformBuffer,
@@ -616,10 +612,8 @@ private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
     }
 
 /**
- * Whether this client connection's server chain is validated by the device's trust store through SecTrust
- * ([appleSystemChainTrust]) instead of by BoringSSL: the iOS family (macOS's BoringSSL finds the system
- * store itself), peer verification on, no anchors pinned and no leaf hashes pinned (those decide trust
- * themselves), and the default [AppleTrustSource.SystemTrustStore].
+ * Whether SecTrust ([appleSystemChainTrust]) rather than BoringSSL validates the server chain: the iOS
+ * family, peer verification on, no pinned anchors or leaf hashes, and [AppleTrustSource.SystemTrustStore].
  */
 private fun usesSecTrust(o: QuicOptions): Boolean =
     Platform.osFamily != OsFamily.MACOSX &&

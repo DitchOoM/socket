@@ -382,10 +382,9 @@ jobs:
           - name: "macOS x64 (all other modules)"
             tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
             requireAllTests: "1"
-          # Booted, not standalone (#359/#81): the shard boots an iPhone simulator first and the
-          # tests spawn into it, so the network daemons the WebTransport and QUIC-harness suites
-          # need are reachable. requireAllTests stays off until this shard's skip inventory has been
-          # read from a run and comes back zero, which is the issue's own "Done when".
+          # Booted, not standalone: the shard boots an iPhone simulator and the tests spawn into it,
+          # so the network daemons the WebTransport and QUIC-harness suites need are reachable.
+          # requireAllTests stays off until this shard's skip inventory reads zero.
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
             bootSimulator: "1"

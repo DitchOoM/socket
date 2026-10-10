@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.socket.SystemTrustFailure
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
@@ -34,35 +35,30 @@ import platform.Security.SecTrustRefVar
 import platform.Security.errSecSuccess
 
 /**
- * [AppleTrustSource.SystemTrustStore] (#186): the server's chain evaluated against the device's own trust
- * store by Security.framework, with an SSL server policy for the name the connection asked for — the same
- * evaluation the device's own TLS runs, so MDM- and user-installed roots, OS revocation and certificate
- * transparency policy all apply. BoringSSL's in-handshake verification is turned off for these connections
- * (iOS ships no CA file for it to load), and this runs after the handshake, before the connection is handed
- * to the caller.
- *
- * `SecTrustEvaluateWithError` blocks (it may fetch revocation or intermediates over the network), so it
- * runs on [Dispatchers.Default], never on whatever dispatcher the connect was called from.
+ * [AppleTrustSource.SystemTrustStore]: the chain evaluated by Security.framework against the device trust
+ * store with an SSL policy for the server name. `SecTrustEvaluateWithError` blocks (it may fetch revocation
+ * or intermediates), so it runs on [Dispatchers.Default].
  */
 internal val appleSystemChainTrust =
-    SystemChainTrust { serverName, chain -> withContext(Dispatchers.Default) { evaluateWithSecTrust(serverName, chain) } }
+    PlatformChainTrust.AfterHandshake { serverName, chain ->
+        withContext(Dispatchers.Default) { evaluateWithSecTrust(serverName, chain) }
+    }
 
-/** `SecTrustEvaluateWithError` blocks; Apple asks that it never run on the main thread, hence Default above. */
 private fun evaluateWithSecTrust(
     serverName: String,
     chain: List<ReadBuffer>,
-): String? {
+): SystemTrustVerdict {
     val owned = mutableListOf<CFTypeRef?>()
     try {
         return memScoped {
             val certificates = CFArrayCreateMutable(null, chain.size.convert(), kCFTypeArrayCallBacks.ptr)
             owned += certificates
             for ((index, der) in chain.withIndex()) {
-                val data = cfData(der) ?: return "certificate $index could not be copied"
+                val data = cfData(der) ?: return untrusted(SystemTrustFailure.CopyFailed(index))
                 owned += data
                 val certificate =
                     SecCertificateCreateWithData(null, data)
-                        ?: return "certificate $index is not a DER X.509 certificate"
+                        ?: return untrusted(SystemTrustFailure.UnreadableCertificate(index))
                 owned += certificate
                 CFArrayAppendValue(certificates, certificate)
             }
@@ -72,19 +68,19 @@ private fun evaluateWithSecTrust(
             owned += policy
             val trust = alloc<SecTrustRefVar>()
             val created = SecTrustCreateWithCertificates(certificates, policy, trust.ptr)
-            if (created != errSecSuccess || trust.value == null) return "SecTrustCreateWithCertificates failed ($created)"
+            if (created != errSecSuccess || trust.value == null) return untrusted(SystemTrustFailure.TrustCreationFailed(created))
             owned += trust.value
             val error = alloc<CFErrorRefVar>()
             if (SecTrustEvaluateWithError(trust.value, error.ptr)) {
-                null
+                SystemTrustVerdict.Trusted
             } else {
-                val err = error.value
-                if (err == null) {
-                    "SecTrustEvaluateWithError refused the chain"
-                } else {
-                    owned += err
-                    val description = CFBridgingRelease(CFErrorCopyDescription(err)) as? String
-                    "${description ?: "untrusted"} (CFError ${CFErrorGetCode(err)})"
+                when (val err = error.value) {
+                    null -> untrusted(SystemTrustFailure.RefusedWithoutError)
+                    else -> {
+                        owned += err
+                        val description = CFBridgingRelease(CFErrorCopyDescription(err)).toString()
+                        untrusted(SystemTrustFailure.Refused(CFErrorGetCode(err).convert(), description))
+                    }
                 }
             }
         }
@@ -93,7 +89,9 @@ private fun evaluateWithSecTrust(
     }
 }
 
-/** A CFData holding [der]'s remaining bytes, or null if CoreFoundation could not allocate one. */
+private fun untrusted(failure: SystemTrustFailure) = SystemTrustVerdict.Untrusted(failure)
+
+/** A CFData holding [der]'s remaining bytes; null when CoreFoundation cannot allocate (`CFDataCreate`). */
 private fun cfData(der: ReadBuffer) =
     memScoped {
         val length = der.remaining()

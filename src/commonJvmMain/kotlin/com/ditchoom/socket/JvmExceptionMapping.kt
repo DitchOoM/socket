@@ -26,12 +26,9 @@ internal fun wrapJvmException(
     // Already wrapped — pass through
     if (ex is SocketException) return ex
 
-    // NIO2's read/write timeout. Subclass of IOException with a null message, so without this explicit
-    // case it would fall through to the generic SocketIOException branch (RFC_READ_TIMEOUT_CONTRACT §4.1,
-    // Axis 3). Matched by class, not by an `is` check: Android has it only from API 26, and below that an
-    // `is InterruptedByTimeoutException` fails to resolve and throws NoClassDefFoundError out of this
-    // function, hiding whatever it was mapping (an API 24 server bind did exactly that).
-    if (interruptedByTimeout?.isInstance(ex) == true) {
+    // NIO2's read/write timeout (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Matched reflectively: Android
+    // below API 26 lacks the class, and an `is` check there throws NoClassDefFoundError.
+    if (isInterruptedByTimeout(ex)) {
         return com.ditchoom.socket.SocketTimeoutException(ex.message ?: "Socket operation timed out", host, port, ex)
     }
 
@@ -126,7 +123,8 @@ private fun isCertificateFailure(ex: Throwable): Boolean {
         msg.contains("pkix")
 }
 
-/** `java.nio.channels.InterruptedByTimeoutException`, or null where the runtime lacks NIO2 (Android < 26). */
-private val interruptedByTimeout: Class<*>? by lazy {
-    runCatching { Class.forName("java.nio.channels.InterruptedByTimeoutException") }.getOrNull()
+/** `is java.nio.channels.InterruptedByTimeoutException`; always false where the runtime lacks NIO2. */
+private val isInterruptedByTimeout: (Throwable) -> Boolean by lazy {
+    runCatching { Class.forName("java.nio.channels.InterruptedByTimeoutException") }
+        .fold(onSuccess = { type -> { ex: Throwable -> type.isInstance(ex) } }, onFailure = { { _: Throwable -> false } })
 }

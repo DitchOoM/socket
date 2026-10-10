@@ -18,22 +18,38 @@ import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 
 /**
- * A server socket on plain NIO (`ServerSocketChannel`, blocking accept on [Dispatchers.IO]), for the
- * platforms without NIO2: Android below API 26, where `AsynchronousServerSocketChannel` does not exist and
- * [com.ditchoom.socket.nio2.AsyncServerSocket] cannot bind. `ServerSocket.allocate` picks it there.
- *
- * Binds through `socket().bind(…)` rather than `ServerSocketChannel.bind(…)`, which Android added only in
- * API 24 and this library's minSdk is 23.
+ * A server socket on plain NIO (blocking accept on [Dispatchers.IO]) for runtimes without NIO2: Android
+ * below API 26. Binds through `socket().bind(…)` because `ServerSocketChannel.bind(…)` needs API 24.
  */
 class NioServerSocket(
     private val config: TransportConfig = TransportConfig(),
 ) : ServerSocket {
+    private sealed interface Listener {
+        data object Unbound : Listener
+
+        class Bound(
+            val channel: ServerSocketChannel,
+        ) : Listener
+    }
+
     @Volatile
-    private var server: ServerSocketChannel? = null
+    private var listener: Listener = Listener.Unbound
 
-    override fun port() = server?.socket()?.localPort?.takeIf { it > 0 } ?: -1
+    override fun port() =
+        when (val l = listener) {
+            Listener.Unbound -> -1
+            is Listener.Bound ->
+                l.channel
+                    .socket()
+                    .localPort
+                    .takeIf { it > 0 } ?: -1
+        }
 
-    override fun isListening() = server?.isOpen ?: false
+    override fun isListening() =
+        when (val l = listener) {
+            Listener.Unbound -> false
+            is Listener.Bound -> l.channel.isOpen
+        }
 
     override suspend fun bind(
         port: Int,
@@ -54,17 +70,15 @@ class NioServerSocket(
                     throw wrapJvmException(e, host, port)
                 }
             }
-        this.server = server
+        listener = Listener.Bound(server)
         return flow {
             while (isListening()) {
                 val client: SocketChannel =
                     try {
-                        // Interruptible so a cancelled collector unblocks the accept; that interrupt
-                        // closes the channel (ClosedByInterruptException), which is caught below.
+                        // A cancelled collector interrupts the accept, which closes the channel.
                         runInterruptible(Dispatchers.IO) { server.accept() }
                     } catch (e: ClosedChannelException) {
-                        // A close() during or between accepts ends the flow, as AsyncServerSocket's
-                        // does; a cancellation still propagates as one.
+                        // A close() ends the flow; a cancellation still propagates.
                         currentCoroutineContext().ensureActive()
                         break
                     }
@@ -74,7 +88,10 @@ class NioServerSocket(
     }
 
     override suspend fun close() {
-        server?.aClose()
+        when (val l = listener) {
+            Listener.Unbound -> Unit
+            is Listener.Bound -> l.channel.aClose()
+        }
     }
 }
 

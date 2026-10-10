@@ -596,11 +596,8 @@ class QuicheDriver(
 
     /**
      * Streams whose last write quiche refused for flow control (`QUICHE_ERR_DONE`, or 0 bytes): the only
-     * ones with a writer that may be parked on [StreamSlot.writableSignal]. [signalWritableStreams] walks
-     * `quiche_conn_writable` only while this is non-empty. Without it the walk ran after every command
-     * and visited every stream with send capacity, which on a busy connection is all of them: one FFI
-     * call per stream per command, so throughput fell as streams were added (64 streams moved a sixth
-     * of what one did). Driver-loop only, like [streams].
+     * ones with a writer that may be parked on [StreamSlot.writableSignal], and the only ones
+     * [signalWritableStreams] asks about. Driver-loop only, like [streams].
      */
     private val awaitingWritable = mutableSetOf<Long>()
     private var nextStreamId = if (role is QuicRole.Server) 1L else 0L
@@ -2243,19 +2240,13 @@ class QuicheDriver(
     }
 
     /**
-     * Wake any writer parked on a stream whose flow-control window just reopened (a `MAX_STREAM_DATA` /
-     * `MAX_DATA` frame arrived in the command we just processed). Only streams in [awaitingWritable] are
-     * asked, through [QuicheApi.connStreamCapacity], so the cost is per refused writer rather than per
-     * stream on the connection. It **never creates a slot**, unlike the read path: a stream nobody is
-     * writing to has nothing to wake. The signal is CONFLATED, so a wake the writer has not parked for yet
-     * is buffered rather than lost.
+     * Wake each writer in [awaitingWritable] whose stream's capacity is no longer 0: positive means the
+     * window reopened, negative means the stream can no longer be written and the writer's retry reports
+     * that. A woken writer leaves the set; a retry refused again re-enters it. Never creates a slot. The
+     * signal is CONFLATED, so a wake the writer has not parked for yet is buffered rather than lost.
      */
     private fun signalWritableStreams() {
         if (awaitingWritable.isEmpty()) return
-        // Ask about just the refused streams, one capacity read each, instead of walking every writable
-        // stream. A positive capacity means the window reopened; a negative one means the stream can no
-        // longer be written (finished, stopped, reset), and its writer's retry reports exactly that. Either
-        // way the writer is woken once and leaves the set; a retry refused again re-enters it.
         val iter = awaitingWritable.iterator()
         while (iter.hasNext()) {
             val id = iter.next()

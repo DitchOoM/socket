@@ -252,9 +252,8 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
-    // Export the peer's certificate chain (quiche's C API has only the leaf), for verifiers outside
-    // BoringSSL: SecTrust on iOS and a consumer's ServerCertVerifier (#186). Idempotent, fails loudly on
-    // drift OR on an upstream export. See the KDoc.
+    // Export the peer's certificate chain (quiche's C API has only the leaf), for SecTrust on iOS and
+    // ServerCertVerifier. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuichePeerCertChainFfi(sourceDir)
     // Keep a stream's FIN queued until a frame carries it and owed until the peer acknowledges it, so a
     // FIN written behind a retransmission is still sent and a send side is not complete before its FIN
@@ -502,14 +501,9 @@ fun patchQuicheEarlyDataReasonFfi(sourceDir: File) {
 
 /**
  * Export `quiche_conn_peer_cert_chain_at`: the peer's certificate chain, one DER certificate per index,
- * leaf first, as the peer sent it (#186).
- *
- * quiche's Rust API has `Connection::peer_cert_chain` and its C API exports only the leaf
- * (`quiche_conn_peer_cert`). The chain is what a verifier outside BoringSSL needs: Security.framework's
- * SecTrust on iOS evaluates a leaf plus its intermediates against the OS trust store, and a consumer's
- * own verifier may pin an intermediate. One index-addressed export rather than a length and an
- * accessor, so a binding reads until the length comes back 0 and cannot disagree with itself about
- * how long the chain is. The bytes are conn-owned, valid while the connection is, like the leaf's.
+ * leaf first, as the peer sent it. quiche's Rust API has `Connection::peer_cert_chain`; its C API exports
+ * only the leaf. Index-addressed, so a binding reads until the length comes back 0 and cannot disagree
+ * with itself about the chain's length. The bytes are conn-owned, like the leaf's.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
  * that exports the chain itself throws, telling you to delete this patch.

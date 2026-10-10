@@ -422,13 +422,11 @@ data class QuicOptions(
      */
     val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
     /**
-     * **Client-side**: a verifier consulted with the server's whole certificate chain after the handshake
-     * and before the connection is handed to the caller (#186). Additive: with [verifyPeer] on it sees
-     * only a chain the platform already validated, so it can narrow trust (pin a key, require an
-     * intermediate) but never widen it. See [ServerCertVerifier]. A rejection throws
-     * [com.ditchoom.socket.ServerCertificateRejectedException]. Ignored for the server role.
+     * **Client-side**: verifiers consulted in order with the server's whole certificate chain after the
+     * handshake and before the connection is handed to the caller; the first rejection fails the connect.
+     * See [ServerCertVerifier]. Ignored for the server role.
      */
-    val serverCertVerifier: ServerCertVerifier? = null,
+    val serverCertVerifiers: List<ServerCertVerifier> = emptyList(),
     /**
      * **Client-side, iOS/tvOS/watchOS**: where the trust anchors come from when [verifyPeer] is on and
      * [trustedCaCertificatesPem] pins none. Defaults to the device's own trust store

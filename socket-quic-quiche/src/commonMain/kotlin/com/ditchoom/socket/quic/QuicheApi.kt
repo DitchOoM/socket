@@ -210,8 +210,7 @@ interface QuicheApi {
     /**
      * Bytes [streamId] can take right now (`quiche_conn_stream_capacity`): > 0 when a write would be
      * accepted, 0 when flow control is full, negative quiche error when the stream can no longer be written
-     * (finished, stopped, reset). The driver asks this only of streams whose last write was refused, so a
-     * reopened window wakes just their writers instead of walking every writable stream.
+     * (finished, stopped, reset).
      */
     fun connStreamCapacity(
         conn: QuicheConn,
@@ -399,12 +398,10 @@ interface QuicheApi {
 
     /**
      * Copy certificate [index] of the peer's chain (`quiche_conn_peer_cert_chain_at`, a patched-in export;
-     * 0 = the leaf [connPeerCert] reads, then its intermediates in the order the peer sent them) into the
-     * native buffer at [buf]. Same snprintf-style contract as [connPeerCert]; `0` also means [index] is
-     * past the end of the chain, so a caller reads from 0 until it gets 0. The chain is what a verifier
-     * outside BoringSSL needs (SecTrust on iOS, a [ServerCertVerifier]) — #186.
+     * 0 = the leaf, then intermediates in the order sent) into the native buffer at [buf]. Same
+     * snprintf-style contract as [connPeerCert]; `0` also means [index] is past the end of the chain.
      *
-     * quiche is single-threaded — call this only from the driver loop (via [QuicheCmd.PeerCertChainAt]).
+     * quiche is single-threaded — call this only from the driver loop (via [QuicheCmd.PeerCert]).
      */
     fun connPeerCertChainAt(
         conn: QuicheConn,
