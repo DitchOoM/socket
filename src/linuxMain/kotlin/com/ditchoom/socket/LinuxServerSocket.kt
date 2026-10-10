@@ -2,9 +2,14 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.coroutineContext
 
@@ -59,9 +64,23 @@ class LinuxServerSocket(
             while (coroutineContext.isActive && listening.value == 1) {
                 val clientSocket = acceptWithIoUring()
                 if (clientSocket != null) {
-                    emit(clientSocket)
+                    handOff(clientSocket)
                 }
             }
+        }
+    }
+
+    /**
+     * Emits [accepted], closing it if its collection is cancelled meanwhile: `emit` refuses a value once the
+     * collecting coroutine is cancelled, before any collector holds it, and nobody else ever will. A collection
+     * cancelled after the collector received it ends that socket's handling too, so it is closed the same way.
+     */
+    private suspend fun FlowCollector<ClientSocket>.handOff(accepted: ClientSocket) {
+        try {
+            emit(accepted)
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) withContext(NonCancellable) { accepted.close() }
+            throw e
         }
     }
 
@@ -168,7 +187,13 @@ class LinuxServerSocket(
 
             // A close cancels this accept once the poller has prepared it, and refuses it before then.
             val result =
-                descriptor.submit(serverFd, SocketDescriptor.Lane.Read, timeout = null) { sqe, open ->
+                descriptor.submit(
+                    serverFd,
+                    SocketDescriptor.Lane.Read,
+                    timeout = null,
+                    // Accepted for a caller cancelled meanwhile, which will never adopt it.
+                    abandoned = { accepted -> closeSocket(accepted) },
+                ) { sqe, open ->
                     io_uring_prep_accept(sqe, open, addrPtr, addrLenPtr, 0)
                 }
 
