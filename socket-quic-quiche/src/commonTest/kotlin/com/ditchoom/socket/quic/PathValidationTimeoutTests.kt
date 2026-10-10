@@ -189,6 +189,12 @@ class PathValidationTimeoutTests {
             return deferred
         }
 
+        /** quiche evicts the path on [port] from its table, which is what frees that path's port. */
+        suspend fun evict(port: Int) {
+            stub.pathEvents += StubPathEvent(QuichePathEventType.Closed, port)
+            wake()
+        }
+
         /** One benign driver-loop wake (a no-op stream open), so `afterCommand`'s flush runs. */
         suspend fun wake() {
             driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
@@ -289,8 +295,11 @@ class PathValidationTimeoutTests {
                 f.migrate()
                 runCurrent()
                 // Measured before destroy(): cleanup() would free all three anyway, so asserting after
-                // teardown would pass with no replace-time teardown at all.
-                assertEquals(1, probed.closeCount, "the replaced path's UDP socket was left open")
+                // teardown would pass with no eviction-time release at all.
+                assertEquals(0, probed.closeCount, "the replaced path's port was released while quiche still holds it")
+                f.evict(f.factory.portOfPath(1))
+                runCurrent()
+                assertEquals(1, probed.closeCount, "the replaced path's UDP socket was left open after eviction")
                 assertEquals(1, f.api.recvInfoFrees, "the replaced path's recv_info was never freed")
                 assertEquals(1, f.factory.releases, "the replaced path's pinned sockaddr was never released")
             } finally {
@@ -579,7 +588,7 @@ class PathValidationTimeoutTests {
                 f.stub.availableDcids = 2L
                 f.migrate()
                 runCurrent()
-                assertEquals(1, kept.closeCount, "the replace must have torn the kept path down for this test to mean anything")
+                assertTrue(1L in f.stub.retiredDcids, "the replace must have torn the kept path down for this test to mean anything")
                 val sendsBefore = f.primaryChannel.sendCount
 
                 // The next flush carries two datagrams: quiche schedules the first on the replaced path
@@ -591,7 +600,7 @@ class PathValidationTimeoutTests {
                 f.wake()
                 runCurrent()
 
-                assertEquals(1, kept.sendCount, "a datagram reached the replaced path's closed socket")
+                assertEquals(1, kept.sendCount, "a datagram reached the torn-down path's socket")
                 assertEquals(
                     sendsBefore + 1,
                     f.primaryChannel.sendCount,

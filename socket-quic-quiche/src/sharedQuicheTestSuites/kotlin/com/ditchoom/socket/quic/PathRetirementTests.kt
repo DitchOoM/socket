@@ -13,7 +13,6 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -228,6 +227,12 @@ class PathRetirementTests {
             wake()
         }
 
+        /** quiche evicts the path on [port] from its table, which is what frees that path's port. */
+        suspend fun evict(port: Int) {
+            stub.pathEvents += StubPathEvent(QuichePathEventType.Closed, port)
+            wake()
+        }
+
         /** One benign driver-loop wake (a no-op stream open), so `afterCommand` runs again. */
         suspend fun wake() {
             driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
@@ -264,11 +269,17 @@ class PathRetirementTests {
                 result.assertSucceeded()
 
                 assertEquals(
+                    0,
+                    f.primaryChannel.closeCount,
+                    "the migrated-from path's socket closed while quiche still holds its 4-tuple, so the " +
+                        "kernel may hand that port to a probe that quiche then refuses",
+                )
+                f.evict(primaryPort)
+                runCurrent()
+                assertEquals(
                     1,
                     f.primaryChannel.closeCount,
-                    "the migrated-from (primary) path's UDP socket was left open — it stays live for the " +
-                        "connection's whole life and keeps feeding quiche a recv_info for an address the " +
-                        "connection no longer uses (#395)",
+                    "the migrated-from (primary) path's UDP socket was left open after quiche evicted it (#395)",
                 )
                 assertEquals(
                     0,
@@ -314,13 +325,15 @@ class PathRetirementTests {
                 runCurrent()
                 second.assertSucceeded()
 
+                assertEquals(0, firstPath.closeCount, "the retired path's port was released while quiche still holds it")
+                f.evict(f.factory.portOfPath(1))
+                runCurrent()
                 assertEquals(
                     1,
                     firstPath.closeCount,
-                    "the first migrated-to path's socket was left open after the second migration — " +
+                    "the first migrated-to path's socket was left open after quiche evicted it — " +
                         "`paths` grows by one live socket per migration (#395)",
                 )
-                runCurrent()
                 assertTrue(
                     firstPath.readerCancelled.isCompleted,
                     "the retired path's reader loop is still parked in receive() — N migrations leak " +
@@ -634,7 +647,10 @@ class PathRetirementTests {
                 runCurrent()
                 assertEquals(listOf(1L), f.stub.retiredDcids, "the replaced kept path's id was not retired")
                 assertEquals(setOf(0L, 2L), f.stub.linkedDcidSeqs, "the fresh socket's probe must hold the only other id")
-                assertEquals(1, f.factory.channels[0].closeCount, "the replaced kept path's socket was left open")
+                assertEquals(0, f.factory.channels[0].closeCount, "the replaced path's port was released while quiche still holds it")
+                f.evict(f.factory.portOfPath(1))
+                runCurrent()
+                assertEquals(1, f.factory.channels[0].closeCount, "the replaced kept path's socket was left open after eviction")
                 assertEquals(1, f.factory.releases, "the replaced kept path's pinned sockaddr was never released")
             } finally {
                 f.driver.destroy()
@@ -771,10 +787,12 @@ class PathRetirementTests {
                     result.await(),
                     "the refused switch was not reported to the caller",
                 )
+                f.evict(f.factory.portOfPath(1))
+                runCurrent()
                 assertEquals(
                     1,
                     f.factory.channels[0].closeCount,
-                    "the path quiche refused to switch to was left open — nothing will ever use it again",
+                    "the path quiche refused to switch to was left open after eviction — nothing will ever use it again",
                 )
                 assertEquals(
                     setOf(0L),
@@ -793,77 +811,59 @@ class PathRetirementTests {
         }
 
     /**
-     * **A stale-path collision is retried from a fresh port, once** (#583).
-     *
-     * `quiche_conn_probe_path` returns `INVALID_STATE` when the 4-tuple it was handed already names a
-     * path whose destination connection id is gone — the state a previously abandoned probe leaves
-     * behind once the kernel hands its ephemeral port back. It is **not** an exhausted pool, and it is
-     * not absorbed by waiting: probing the same 4-tuple again fails identically forever, which is why
-     * the replenish backoff in `FailedProbeConnectionIdTestSuite` could never rescue it and why #583
-     * surfaced as a flake wearing #447's error message.
-     *
-     * The only thing that can clear it is a different local port, so the driver rebinds and re-probes.
+     * **A torn-down path's port stays bound until quiche evicts the path.** quiche keeps the path under
+     * its 4-tuple with no destination CID, and `quiche_conn_probe_path` on that 4-tuple answers
+     * `INVALID_STATE` on every retry; holding the port is what stops the kernel handing it to a probe.
      */
     @Test
-    fun aStalePathCollisionRebindsAndProbesAgain() =
+    fun aTornDownPathHoldsItsPortUntilQuicheEvictsIt() =
         runTest {
-            val f = Fixture()
-            // First bind lands on a port quiche still holds a dead path for; the retry is unscripted,
-            // so the stub probes it normally.
-            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
+            val f = Fixture(spares = 4L)
             f.driver.start(this)
             try {
                 runCurrent()
-                val result = f.migrate()
+                f.migrate()
                 runCurrent()
+                f.failValidation(1)
+                runCurrent()
+                f.migrate() // replaces the kept path, which tears it down
+                runCurrent()
+                val replaced = f.factory.channels[0]
+                assertEquals(listOf(1L), f.stub.retiredDcids, "the replaced path was not torn down")
 
-                assertNotEquals(
-                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_INVALID_STATE),
-                    result.await(),
-                    "the collision was reported to the caller instead of being retried from another port " +
-                        "— which is the one response that can clear it",
-                )
-                assertEquals(
-                    2,
-                    f.factory.opened,
-                    "the driver did not rebind: a stale-path collision retried on the same 4-tuple fails " +
-                        "identically forever, so one bind means the retry never happened",
-                )
+                f.wake()
+                runCurrent()
+                assertEquals(0, replaced.closeCount, "the port was released while quiche still holds the path")
+                assertEquals(0, f.factory.releases, "the pinned sockaddr was released while the socket is still bound")
+
+                f.evict(f.factory.portOfPath(1))
+                runCurrent()
+                assertEquals(1, replaced.closeCount, "quiche evicted the path, so its port must be released")
+                assertEquals(1, f.factory.releases, "the evicted path's pinned sockaddr was never released")
             } finally {
                 f.driver.destroy()
             }
         }
 
-    /**
-     * **…and only once.** A second collision on a freshly bound ephemeral port is evidence of something
-     * this does not model, not of bad luck twice, so it is reported rather than retried into a loop.
-     */
+    /** **A path still bound at teardown is released with the connection.** */
     @Test
-    fun aSecondStalePathCollisionIsReportedRatherThanRetriedForever() =
+    fun aHeldPortIsReleasedWhenTheConnectionEnds() =
         runTest {
             val f = Fixture()
-            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
-            f.stub.connProbeOutcomes += ProbeOutcome.Rejected(QUICHE_ERR_INVALID_STATE)
             f.driver.start(this)
             try {
                 runCurrent()
                 val result = f.migrate()
                 runCurrent()
-
-                assertEquals(
-                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_INVALID_STATE),
-                    result.await(),
-                    "a second collision was not reported, so the rebind is unbounded",
-                )
-                assertEquals(
-                    2,
-                    f.factory.opened,
-                    "the driver bound ${f.factory.opened} times for one migration — the retry is not bounded " +
-                        "to a single rebind",
-                )
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+                assertEquals(0, f.primaryChannel.closeCount, "the migrated-from port was released before eviction")
             } finally {
                 f.driver.destroy()
             }
+            runCurrent()
+            assertEquals(1, f.primaryChannel.closeCount, "the connection ended with a torn-down path's socket still bound")
         }
 
     /**

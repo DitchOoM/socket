@@ -167,17 +167,9 @@ sealed interface MigrationResult {
             /**
              * The QUIC stack refused to probe the new path, carrying its error number verbatim.
              *
-             * ⚠️ **A known gap, deliberately left open.** A [code] cannot tell a caller whether
-             * the refusal is worth another attempt, and the two that occur in practice call for
-             * opposite responses: a stale-path collision clears only by binding a *different* local
-             * port, while an exhausted connection-id pool clears only by waiting for a replacement id.
-             * A caller reading this can act on neither; the driver's own retry classifies the code
-             * internally.
-             *
-             * It stays an `Int` because replacing it with the sealed reason the driver already uses is
-             * source- and binary-incompatible, and this library is not ready for a major release. **The
-             * next major should replace [code] with that type** — see `ProbeRejection` in
-             * `socket-quic-quiche`, which is the shape it should take.
+             * ⚠️ A [code] cannot tell a caller whether the refusal is worth another attempt. It stays
+             * an `Int` because a sealed reason is source- and binary-incompatible; the next major
+             * replaces it (#746).
              */
             data class ProbeRejected(
                 val code: Int,
