@@ -2460,14 +2460,20 @@ abstract class MigrationSimTestSuite {
                         )
 
                         // The platform catches up and names the standby link as its default.
+                        val namedAt = scheduler.currentTime.milliseconds
                         monitor.setNetworkId(CELLULAR)
                         assertEquals("settled", echo.round("settled"))
                         delay(BLIP_SETTLE)
                         assertEquals(
                             1,
-                            client.attempts.size,
+                            client.attempts.count { it is MigrationResult.Succeeded },
                             "the platform naming the link the connection already moved to must not move it " +
-                                "again: ${client.attempts}",
+                                "again: ${client.timeline}",
+                        )
+                        assertTrue(
+                            client.timeline.none { it.began >= namedAt },
+                            "once the platform names the standby link it is the default, and nothing is left to " +
+                                "return to: ${client.timeline}",
                         )
                     } finally {
                         echo.stop()
@@ -2538,6 +2544,163 @@ abstract class MigrationSimTestSuite {
                 }
             }
         }
+
+    /**
+     * **The 2026-09-26 Samsung walk.** A 4.6s Wi-Fi blip moved the connection onto the standby cellular
+     * link; Wi-Fi answered again 0.4s later and the platform kept naming it, unchanged, so nothing
+     * ever woke the reactor and the connection stayed on roaming LTE for 62.7h.
+     *
+     * Here the Wi-Fi link goes dark, the connection moves onto the standby link, and Wi-Fi comes back
+     * with **no** monitor event. The connection must be back on Wi-Fi within [STANDBY_RETURN_BOUND].
+     */
+    @Test
+    fun aMoveOntoTheStandbyLinkIsUndoneOnceTheDefaultLinkAnswersAgainWithNoPlatformEvent() =
+        runTest {
+            val scheduler = testScheduler
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val wifi = SimWifi()
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 740_101L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { wifi.impairment() },
+                    standby = SimStandby.Link(CELLULAR, MutableStateFlow(SimAttach.Attached)),
+                ) {
+                    val echo = echoOver(this)
+                    try {
+                        assertEquals("before", echo.round("before"))
+                        awaitSpareDcids()
+
+                        wifi.set(this, PathReach.Dark) // the blip
+                        // Data in flight on the dark path: what makes it go silent at all.
+                        val during = client.async { runCatching { echo.round("during") }.getOrElse { "CONNECTION DIED: $it" } }
+                        withTimeout(IDLE_TIMEOUT_IN_THE_FIELD) {
+                            while (client.attempts.isEmpty()) delay(10.milliseconds)
+                        }
+                        val moved = assertIs<MigrationResult.Succeeded>(client.attempts.single(), "attempts: ${client.timeline}")
+                        assertEquals(
+                            SIM_OTHER_LINK_HOST,
+                            moved.localEndpoint.host,
+                            "precondition: the blip moved the connection onto the standby link",
+                        )
+
+                        delay(WIFI_BACK_AFTER_THE_MOVE)
+                        wifi.set(this, PathReach.Open) // Wi-Fi answers again; the platform says nothing
+                        val answeredAt = scheduler.currentTime.milliseconds
+                        assertEquals("during", during.await())
+                        val home =
+                            withTimeoutOrNull(STANDBY_RETURN_BOUND) {
+                                while (!client.isBackOn(SIM_LINK_HOST)) delay(10.milliseconds)
+                            }
+                        assertTrue(
+                            home != null,
+                            "Wi-Fi answered again at ${answeredAt.inWholeMilliseconds}ms and the platform named it " +
+                                "throughout, but the connection was still on the standby link $STANDBY_RETURN_BOUND " +
+                                "later. Attempts: ${client.timeline}, pipe: ${pipeTraffic()}",
+                        )
+                        assertEquals("home", echo.round("home"))
+                        assertEquals(WIFI, monitor.state.value.networkId, "the platform must never have named another link")
+                    } finally {
+                        echo.stop()
+                    }
+                }
+            }
+        }
+
+    /**
+     * A Wi-Fi link that stays dark keeps the connection on the working standby link: it is asked again
+     * on a decaying schedule, never moved onto, and the connection carries traffic throughout.
+     */
+    @Test
+    fun aDefaultLinkThatStaysDarkIsAskedOnADecayingScheduleWhileTheStandbyLinkCarriesTheConnection() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val wifi = SimWifi()
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 740_102L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { wifi.impairment() },
+                    standby = SimStandby.Link(CELLULAR, MutableStateFlow(SimAttach.Attached)),
+                ) {
+                    val echo = echoOver(this)
+                    try {
+                        assertEquals("before", echo.round("before"))
+                        awaitSpareDcids()
+                        wifi.set(this, PathReach.Dark)
+                        assertEquals("during", runCatching { echo.round("during") }.getOrElse { "CONNECTION DIED: $it" })
+                        val parked = client.timeline.single()
+                        assertEquals(SIM_OTHER_LINK_HOST, assertIs<MigrationResult.Succeeded>(parked.result).localEndpoint.host)
+
+                        repeat((DARK_DEFAULT_WATCH / STANDBY_KEEPALIVE).toInt()) {
+                            delay(STANDBY_KEEPALIVE)
+                            assertEquals("on standby", runCatching { echo.round("on standby") }.getOrElse { "CONNECTION DIED: $it" })
+                        }
+
+                        val returns = client.timeline.drop(1)
+                        assertTrue(returns.isNotEmpty(), "the dark default link was never asked again. Attempts: ${client.timeline}")
+                        assertTrue(
+                            returns.none { it.result is MigrationResult.Succeeded },
+                            "the connection left the standby link for a dark one. Attempts: ${client.timeline}",
+                        )
+                        assertTrue(
+                            returns.first().began - parked.ended <= STANDBY_RETURN_BOUND,
+                            "the first return probe came ${returns.first().began - parked.ended} after the move. " +
+                                "Attempts: ${client.timeline}",
+                        )
+                        val waits = returns.zipWithNext { a, b -> b.began - a.ended }
+                        assertTrue(
+                            waits.zipWithNext().all { (a, b) -> b >= a } && waits.last() >= 30.seconds && waits.last() <= 1.minutes,
+                            "the waits between return probes must grow to about a minute and stay there: $waits. " +
+                                "Attempts: ${client.timeline}",
+                        )
+                    } finally {
+                        echo.stop()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The Wi-Fi link every default-route socket lands on, the primary included: [set] heals or darkens
+     * every path already open on it, and [impairment] is what the next one opens with.
+     */
+    private class SimWifi {
+        private var reach: PathReach = PathReach.Open
+
+        fun impairment(): PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(reach))
+
+        fun set(
+            sim: MigrationSimScope,
+            reach: PathReach,
+        ) {
+            this.reach = reach
+            sim.pipe
+                .paths()
+                .filter { it.local.host == SIM_LINK_HOST }
+                .forEach { sim.pipe.impair(it.local, impairment()) }
+        }
+    }
+
+    /** Whether the latest successful move landed on [host]. */
+    private fun SimClientQuicConnection.isBackOn(host: String): Boolean =
+        attempts
+            .filterIsInstance<MigrationResult.Succeeded>()
+            .lastOrNull()
+            ?.localEndpoint
+            ?.host == host
 
     /** An echo stream over a sim connection: [round] writes a payload and reads the server's echo of it. */
     private class SimEcho(
@@ -2693,7 +2856,7 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * A recorded trace says which of the reactor's two triggers woke a migration.
+     * A recorded trace says what woke a migration.
      *
      * The load-bearing assertion is the negative one: the monitor never moves here, so a trace claiming
      * `LinkChanged` is recording a trigger that did not fire. Asserting the positive alone would pass
@@ -3376,6 +3539,22 @@ abstract class MigrationSimTestSuite {
 
         /** The 2026-09-24 walk probe's echo cadence (`echoIntervalMs=250`). */
         val WALK_ECHO_INTERVAL = 250.milliseconds
+
+        /**
+         * How long after the default link answers again a connection parked on the standby link must be
+         * back on it. The 2026-09-26 walk paid 62.7h; this is the scale of the silence detection that
+         * moved it off.
+         */
+        val STANDBY_RETURN_BOUND = 5.seconds
+
+        /** How long after the move onto cellular the 2026-09-26 walk's Wi-Fi answered again. */
+        val WIFI_BACK_AFTER_THE_MOVE = 400.milliseconds
+
+        /** How often the dark-default scenario writes, so the standby path stays inside its idle timeout. */
+        val STANDBY_KEEPALIVE = 5.seconds
+
+        /** Long enough for the return schedule to reach its ceiling and stay there for several probes. */
+        val DARK_DEFAULT_WATCH = 10.minutes
 
         /** A write cadence under the sim path's PTO, so no expiry fires at all: the walk's v4 connection 2. */
         val FAST_WRITE_INTERVAL = 100.milliseconds

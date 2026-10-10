@@ -315,14 +315,20 @@ internal class MigrationSimScope(
 internal class SimClientQuicConnection(
     private val driver: QuicheDriver,
     private val delegate: DriverQuicConnection,
+    /** The sim's clock, so [timeline] reads in the same virtual time the test body does. */
+    private val now: () -> Duration,
 ) : QuicConnection by delegate {
-    private val _attempts = mutableListOf<MigrationResult>()
+    private val _timeline = mutableListOf<SimAttempt>()
 
     /** Every [migrate] outcome so far, in order — whoever asked, reactor or test body. */
-    val attempts: List<MigrationResult> get() = _attempts.toList()
+    val attempts: List<MigrationResult> get() = _timeline.map { it.result }
 
-    override suspend fun migrate(target: MigrationTarget): MigrationResult =
-        try {
+    /** [attempts] with when each began and ended. */
+    val timeline: List<SimAttempt> get() = _timeline.toList()
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult {
+        val began = now()
+        return try {
             val deferred = CompletableDeferred<MigrationResult>()
             driver.commands.send(QuicheCmd.Migrate(target, deferred))
             // Suspends until the path has validated and the active path has switched, or the attempt
@@ -330,10 +336,30 @@ internal class SimClientQuicConnection(
             deferred.await()
         } catch (_: ClosedSendChannelException) {
             MigrationResult.Unmoved.Impossible.ConnectionClosed
-        }.also { _attempts += it }
+        }.also { _timeline += SimAttempt(began, now(), it) }
+    }
 
     /** A migration through [via], recorded beside [migrate]'s — what a [StandbyPath.Ready] calls. */
-    suspend fun migrateVia(via: PathVia): MigrationResult = driver.migrateVia(via).also { _attempts += it }
+    suspend fun migrateVia(via: PathVia): MigrationResult {
+        val began = now()
+        return driver.migrateVia(via).also { _timeline += SimAttempt(began, now(), it) }
+    }
+}
+
+/** One migration attempt on a [SimClientQuicConnection]: when it [began] and [ended], and its [result]. */
+internal class SimAttempt(
+    val began: Duration,
+    val ended: Duration,
+    val result: MigrationResult,
+) {
+    override fun toString(): String {
+        val landed =
+            when (result) {
+                is MigrationResult.Succeeded -> "Succeeded on ${result.localEndpoint.host}:${result.localEndpoint.port}"
+                is MigrationResult.Unmoved -> result.toString()
+            }
+        return "[${began.inWholeMilliseconds}..${ended.inWholeMilliseconds}ms $landed]"
+    }
 }
 
 /**
@@ -828,6 +854,7 @@ internal suspend fun <R> withMigrationSim(
             SimClientQuicConnection(
                 clientDriver,
                 DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
+                now,
             )
         val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
         val result =

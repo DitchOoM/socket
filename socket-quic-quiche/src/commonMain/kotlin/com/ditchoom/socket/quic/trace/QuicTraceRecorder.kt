@@ -156,6 +156,7 @@ class QuicTraceRecorder(
             when (trigger) {
                 MigrationTrigger.LinkChanged -> TraceMigrationTrigger.LinkChanged
                 MigrationTrigger.PathStoppedAnswering -> TraceMigrationTrigger.PathStoppedAnswering
+                is MigrationTrigger.StandbyReturnDue -> TraceMigrationTrigger.ReturnFromStandby
             }
         record(TraceEvent.Migration(now(), triggerToken, attempt, outcome.toTraceOutcome()))
     }
