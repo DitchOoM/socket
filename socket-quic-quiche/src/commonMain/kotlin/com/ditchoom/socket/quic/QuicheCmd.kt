@@ -198,6 +198,7 @@ sealed interface QuicheCmd {
         val buf: QuicheMemory,
         val bufLen: Int,
         val result: CompletableDeferred<Int>,
+        val position: PeerCertPosition = PeerCertPosition.Leaf,
     ) : QuicheCmd
 
     /**
@@ -363,4 +364,16 @@ internal sealed interface Inspected<out T> {
 
     /** The connection was already torn down, so there was nothing left to read. */
     data object ConnectionGone : Inspected<Nothing>
+}
+
+/**
+ * Which of the peer's certificates a [QuicheCmd.PeerCert] reads: the leaf (`quiche_conn_peer_cert`), or
+ * one position in the chain the peer sent (`quiche_conn_peer_cert_chain_at`), where 0 is the leaf.
+ */
+sealed interface PeerCertPosition {
+    data object Leaf : PeerCertPosition
+
+    data class InChain(
+        val index: Int,
+    ) : PeerCertPosition
 }

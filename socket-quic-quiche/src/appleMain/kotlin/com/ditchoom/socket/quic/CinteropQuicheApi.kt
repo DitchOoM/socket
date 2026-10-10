@@ -60,6 +60,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert_chain_at
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
@@ -78,6 +79,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_set_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
+import com.ditchoom.socket.quic.quiche.quiche_conn_stream_capacity
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_data_unacknowledged
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
@@ -395,6 +397,11 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         }
     }
 
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = quiche_conn_stream_capacity(conn.handle.toCPointer()!!, streamId.id.convert()).convert()
+
     override fun connStreamShutdown(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -431,6 +438,31 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
                 len
             }
         }
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        if (index < 0) return 0
+        return memScoped {
+            val out = alloc<CPointerVar<UByteVar>>() // const uint8_t **out
+            val outLen = alloc<ULongVar>() // size_t *out_len
+            quiche_conn_peer_cert_chain_at(conn.handle.toCPointer()!!, index.convert(), out.ptr, outLen.ptr)
+            val len = outLen.value.toInt()
+            val src = out.value
+            if (len <= 0 || src == null) {
+                0
+            } else {
+                // Same snprintf-style contract as connPeerCert: copy only when it fits.
+                if (len <= bufLen) {
+                    memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
+                }
+                len
+            }
+        }
+    }
 
     override fun connApplicationProto(
         conn: QuicheConn,

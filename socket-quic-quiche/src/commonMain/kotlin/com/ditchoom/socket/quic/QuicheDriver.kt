@@ -593,6 +593,13 @@ class QuicheDriver(
 
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
+
+    /**
+     * Streams whose last write quiche refused for flow control (`QUICHE_ERR_DONE`, or 0 bytes): the only
+     * ones with a writer that may be parked on [StreamSlot.writableSignal], and the only ones
+     * [signalWritableStreams] asks about. Driver-loop only, like [streams].
+     */
+    private val awaitingWritable = mutableSetOf<Long>()
     private var nextStreamId = if (role is QuicRole.Server) 1L else 0L
 
     // Locally-initiated unidirectional stream IDs (RFC 9000 §2.1): low 2 bits 0b10 (client → 2)
@@ -2091,11 +2098,16 @@ class QuicheDriver(
                         cmd.buf.endBorrow()
                     }
                 if (sent.result > 0) activePathOwesAnAnswer()
+                // The writer is about to park on writableSignal; recorded before it is told, so the
+                // next afterCommand already looks for its window to reopen.
+                if (sent.result == QUICHE_ERR_DONE || sent.result == 0) awaitingWritable += cmd.streamId
                 cmd.result.complete(sent)
             }
 
             is QuicheCmd.StreamShutdown -> {
                 val result = api.connStreamShutdown(conn, QuicStreamId(cmd.streamId), cmd.direction, cmd.errorCode)
+                // Write side (1) shut: no write on it will be refused again, so it no longer waits to be woken.
+                if (cmd.direction == 1) awaitingWritable -= cmd.streamId
                 cmd.result.complete(result)
             }
 
@@ -2127,7 +2139,11 @@ class QuicheDriver(
                 try {
                     cmd.result.complete(
                         try {
-                            api.connPeerCert(conn, cmd.buf.address, cmd.bufLen)
+                            when (val position = cmd.position) {
+                                PeerCertPosition.Leaf -> api.connPeerCert(conn, cmd.buf.address, cmd.bufLen)
+                                is PeerCertPosition.InChain ->
+                                    api.connPeerCertChainAt(conn, position.index, cmd.buf.address, cmd.bufLen)
+                            }
                         } finally {
                             cmd.buf.endBorrow()
                         },
@@ -2224,23 +2240,25 @@ class QuicheDriver(
     }
 
     /**
-     * Wake any writer parked on a stream whose flow-control window just reopened. The write-path mirror
-     * of [discoverNewStreams]: quiche surfaces newly-writable streams via [QuicheApi.connWritable] (e.g.
-     * after a `MAX_STREAM_DATA` / `MAX_DATA` frame arrived in the command we just processed). Unlike the
-     * read path this **never creates a slot** — a writable stream we don't track is one nobody is writing
-     * to, so there is nothing to wake and a phantom slot would be an impossible state. The signal is
-     * CONFLATED, so signalling a stream with no parked writer is a harmless no-op.
+     * Wake each writer in [awaitingWritable] whose stream's capacity is no longer 0: positive means the
+     * window reopened, negative means the stream can no longer be written and the writer's retry reports
+     * that. A woken writer leaves the set; a retry refused again re-enters it. Never creates a slot. The
+     * signal is CONFLATED, so a wake the writer has not parked for yet is buffered rather than lost.
      */
     private fun signalWritableStreams() {
-        val iter = api.connWritable(conn)
-        if (iter.isExhausted) return
-        try {
-            while (true) {
-                val streamId = api.streamIterNext(iter) ?: break
-                streams[streamId.id]?.writableSignal?.trySend(Unit)
+        if (awaitingWritable.isEmpty()) return
+        val iter = awaitingWritable.iterator()
+        while (iter.hasNext()) {
+            val id = iter.next()
+            val slot = streams[id]
+            if (slot == null) {
+                iter.remove()
+                continue
             }
-        } finally {
-            api.streamIterFree(iter)
+            if (api.connStreamCapacity(conn, QuicStreamId(id)) != 0L) {
+                iter.remove()
+                slot.writableSignal.trySend(Unit)
+            }
         }
     }
 

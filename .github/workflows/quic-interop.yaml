@@ -1,0 +1,164 @@
+name: QUIC interop (quic-interop-runner)
+
+# Runs this library's QUIC client and server against other QUIC implementations with the standard
+# quic-interop-runner, nightly.
+#
+# Every other QUIC lane here is quiche talking to quiche (the HTTP/3 lane's aioquic server and the
+# browser WebTransport lane aside). Two copies of one engine can agree on the same mistake; another
+# stack does not. The runner's tests also map directly onto what a mobile client relies on:
+# `resumption` and `zerortt` (session tickets and 0-RTT), `rebind-port`/`rebind-addr` (a NAT rebinding
+# under the connection, which our server must follow), and loss/corruption/blackhole tests.
+#
+# Peers run in both directions: our client against their server, then their client against ours.
+# Tests the endpoint does not implement exit 127 and are reported "unsupported", not failed (see
+# QuicInteropEndpoint.kt for the list and why: e.g. `connectionmigration` is the server's
+# preferred_address, which quiche does not advertise).
+#
+# Informational: this job reports a matrix and fails only if the endpoint could not run at all, so a
+# peer's regression never reddens main. Read the summary.
+
+on:
+  schedule:
+    # 07:23 UTC, clear of flake-sweep (06:41) and native-deps-freshness (09:17).
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      peers:
+        description: "Comma-separated peer implementations (names from the runner's implementations file)"
+        required: false
+        default: "quic-go,ngtcp2,quinn,msquic"
+      tests:
+        description: "Comma-separated tests (empty = the runner's full list)"
+        required: false
+        default: "handshake,transfer,multiplexing,longrtt,retry,resumption,zerortt,blackhole,handshakeloss,transferloss,handshakecorruption,transfercorruption,amplificationlimit,ipv6,rebind-port,rebind-addr,goodput"
+
+permissions:
+  contents: read
+  actions: read # borrows the newest quiche-linux-natives-full artifact, as flake-hunt does
+
+concurrency:
+  group: quic-interop
+  cancel-in-progress: true
+
+env:
+  ORG_GRADLE_PROJECT_version: "0.0.0-interop"
+  IMAGE: ditchoom-socket-interop:ci
+
+jobs:
+  interop:
+    name: "quic-interop-runner"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same borrowing as flake-hunt.yaml: this workflow has no natives job of its own, and the
+      # newest main build's libquiche is the one under test.
+      - name: Find a quiche natives artifact to borrow
+        id: natives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=quiche-linux-natives-full&per_page=100" \
+                  --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
+          if [ -z "$RID" ]; then
+            echo "::error::No unexpired quiche-linux-natives-full artifact exists. Run build-linux once, then retry."
+            exit 1
+          fi
+          echo "run-id=$RID" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ steps.natives.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Build the endpoint jar and image
+        run: |
+          set -euo pipefail
+          ./gradlew :socket-quic-quiche:quicInteropJar -PlinuxTargets=false --no-configuration-cache
+          docker build -t "$IMAGE" test-harness/quic-interop
+
+      - name: Install the runner and tshark
+        run: |
+          set -euo pipefail
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          pip install -r /tmp/runner/requirements.txt
+          # Register this endpoint beside the peers. The file was renamed upstream once; accept either.
+          cd /tmp/runner
+          FILE=implementations_quic.json
+          [ -f "$FILE" ] || FILE=implementations.json
+          jq --arg img "$IMAGE" '. + {"ditchoom": {"image": $img, "url": "https://github.com/DitchOoM/socket", "role": "both"}}' \
+            "$FILE" > /tmp/impl.json && mv /tmp/impl.json "$FILE"
+          echo "registered in $FILE"
+
+      - name: Run (our client → peer servers, peer clients → our server)
+        id: run
+        env:
+          PEERS: ${{ inputs.peers || 'quic-go,ngtcp2,quinn,msquic' }}
+          TESTS: ${{ inputs.tests || 'handshake,transfer,multiplexing,longrtt,retry,resumption,zerortt,blackhole,handshakeloss,transferloss,handshakecorruption,transfercorruption,amplificationlimit,ipv6,rebind-port,rebind-addr,goodput' }}
+        working-directory: /tmp/runner
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/interop
+          # run.py exits non-zero when any test fails; that is the matrix's content, not this step's
+          # failure. A missing result file is.
+          python3 run.py -c ditchoom -s "$PEERS" -t "$TESTS" -l /tmp/interop/logs-client -j /tmp/interop/client.json -d || true
+          python3 run.py -s ditchoom -c "$PEERS" -t "$TESTS" -l /tmp/interop/logs-server -j /tmp/interop/server.json -d || true
+          for f in client server; do
+            if [ ! -s "/tmp/interop/$f.json" ]; then
+              echo "::error::the runner produced no $f result — the endpoint or the runner did not start"
+              exit 1
+            fi
+          done
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # Result JSON: servers[], clients[], tests{abbr: {name}}, results[server*clients + client] =
+          # [{abbr, result: succeeded|failed|unsupported}].
+          table() {
+            local f=$1 title=$2
+            [ -s "$f" ] || return 0
+            echo "### $title"
+            echo
+            jq -r '
+              . as $r
+              | ($r.servers | length) as $ns
+              | ["Server", "Client"] + ([$r.tests | to_entries[] | .key]) as $hdr
+              | ($hdr | "| " + join(" | ") + " |"),
+                ($hdr | map("---") | "| " + join(" | ") + " |"),
+                ( [range(0; $r.servers | length) as $s | range(0; $r.clients | length) as $c | {s: $s, c: $c}][]
+                  | . as $p
+                  | $r.results[$p.c * $ns + $p.s] as $cell
+                  | [$r.servers[$p.s], $r.clients[$p.c]]
+                    + [$r.tests | to_entries[] | .key as $k
+                       | ($cell | map(select(.abbr == $k)) | .[0].result // "-")
+                       | if . == "succeeded" then "✅" elif . == "failed" then "❌" elif . == "unsupported" then "–" else . end]
+                  | "| " + join(" | ") + " |")
+            ' "$f"
+            echo
+            echo "Legend: ✅ succeeded · ❌ failed · – unsupported by one side"
+            echo
+          }
+          {
+            echo "## QUIC interop"
+            echo
+            table /tmp/interop/client.json "Our client"
+            table /tmp/interop/server.json "Our server"
+            echo "Test abbreviations are the runner's; see its README."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: quic-interop-${{ github.run_id }}
+          path: /tmp/interop
+          if-no-files-found: warn
+          retention-days: 14

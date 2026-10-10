@@ -182,6 +182,10 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN, ADDRESS),
         )
     }
+    private val hStreamCapacity by lazy {
+        // ssize_t quiche_conn_stream_capacity(conn, uint64 stream_id)
+        downcall("quiche_conn_stream_capacity", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG))
+    }
     private val hStreamShutdown by lazy {
         // int quiche_conn_stream_shutdown(conn, uint64 stream_id, enum quiche_shutdown direction, uint64 err)
         downcall(
@@ -262,6 +266,11 @@ class FfmQuicheApi private constructor(
     private val hConnPeerCert by lazy {
         // void quiche_conn_peer_cert(conn, const uint8_t **out, size_t *out_len)
         downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+    }
+
+    private val hConnPeerCertChainAt by lazy {
+        // void quiche_conn_peer_cert_chain_at(conn, size_t index, const uint8_t **out, size_t *out_len) — patched-in export
+        downcall("quiche_conn_peer_cert_chain_at", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS, ADDRESS))
     }
 
     private val hConnApplicationProto by lazy {
@@ -637,6 +646,11 @@ class FfmQuicheApi private constructor(
             StreamSendResult(result, errorCode)
         }
 
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = hStreamCapacity.invokeExact(seg(conn.handle), streamId.id) as Long
+
     override fun connStreamShutdown(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -662,6 +676,28 @@ class FfmQuicheApi private constructor(
             }
             len
         }
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        if (index < 0) return 0
+        return Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
+            hConnPeerCertChainAt.invokeExact(seg(conn.handle), index.toLong(), outPtr, outLen)
+            val len = outLen.get(JAVA_LONG, 0).toInt()
+            if (len <= 0) return@use 0
+            // Same snprintf-style contract as connPeerCert: copy only when it fits.
+            if (len <= bufLen) {
+                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
+                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+            }
+            len
+        }
+    }
 
     override fun connApplicationProto(
         conn: QuicheConn,
@@ -1308,12 +1344,13 @@ class FfmQuicheApi private constructor(
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null
-        return Arena.ofConfined().use { arena ->
-            val streamIdOut = arena.allocate(JAVA_LONG)
-            val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
-            if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
-        }
+        val streamIdOut = streamIdScratch.get()
+        val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
+        return if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
     }
+
+    /** [streamIterNext]'s out-parameter, one per thread so no two calls share it and no call allocates. */
+    private val streamIdScratch: ThreadLocal<MemorySegment> = ThreadLocal.withInitial { Arena.ofAuto().allocate(JAVA_LONG) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {
         if (!iter.isExhausted) hStreamIterFree.invokeExact(seg(iter.handle))

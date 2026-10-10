@@ -283,6 +283,16 @@ internal suspend fun buildLinuxQuicConnection(
                 parseLeafFields = ::parsePinnedLeafFieldsLinux,
                 now = tuning.wallClock(),
             )
+            verifyServerCertificateChain(
+                serverName,
+                quicConn.resumption,
+                PlatformChainTrust.InHandshake,
+                quicOptions.serverCertVerifiers,
+                bufferFactory,
+                readChainDer = quicConn::readPeerCertChainDer,
+                closeConnection = { quicConn.close() },
+                now = tuning.wallClock(),
+            )
             quicConn
         }
     } finally {
@@ -394,6 +404,13 @@ internal class LinuxQuicConnection(
         der: PlatformBuffer,
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
+
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf. */
+    suspend fun readPeerCertChainDer(
+        index: Int,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int = readPeerCertDerThroughDriver(driver, der, capacity, PeerCertPosition.InChain(index))
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 

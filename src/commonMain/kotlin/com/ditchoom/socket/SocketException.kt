@@ -376,6 +376,95 @@ class CertificateHashPinningException(
 }
 
 /**
+ * A QUIC client refused the server's certificate chain, for [rejection]. Thrown before the connection is
+ * handed to the caller; the connection is already closed.
+ */
+class ServerCertificateRejectedException(
+    val rejection: ServerCertificateRejection,
+) : SSLSocketException(rejection.description) {
+    override val reason: ConnectionFailureReason get() = ConnectionFailureReason.TlsBadCertificate
+}
+
+/** Why [ServerCertificateRejectedException] was thrown. */
+sealed interface ServerCertificateRejection {
+    val description: String
+
+    /** The server presented no certificate on a connection that was not resumed. */
+    data object NoPeerCertificate : ServerCertificateRejection {
+        override val description get() = "The server presented no certificate"
+    }
+
+    /** One certificate was larger than the [maxBytes] this client reads. */
+    data class CertificateTooLarge(
+        val sizeBytes: Int,
+        val maxBytes: Int,
+    ) : ServerCertificateRejection {
+        override val description get() = "A server certificate ($sizeBytes bytes) exceeds the $maxBytes-byte limit"
+    }
+
+    /** The chain was longer than the [maxCertificates] this client reads. */
+    data class ChainTooLong(
+        val maxCertificates: Int,
+    ) : ServerCertificateRejection {
+        override val description get() = "The server's certificate chain is longer than $maxCertificates certificates"
+    }
+
+    /** The platform trust store refused the chain for [serverName]. */
+    data class UntrustedBySystem(
+        val serverName: String,
+        val failure: SystemTrustFailure,
+    ) : ServerCertificateRejection {
+        override val description get() = "The system trust store does not trust the certificate for $serverName: ${failure.description}"
+    }
+
+    /** The connection's `ServerCertVerifier` rejected the chain. */
+    data class RejectedByVerifier(
+        val reason: String,
+    ) : ServerCertificateRejection {
+        override val description get() = "The server certificate verifier rejected the chain: $reason"
+    }
+}
+
+/** How a platform trust store (Security.framework's `SecTrust`) refused a chain. */
+sealed interface SystemTrustFailure {
+    val description: String
+
+    /** Certificate [index] could not be copied into platform memory. */
+    data class CopyFailed(
+        val index: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "certificate $index could not be copied"
+    }
+
+    /** The platform could not take certificate [index] as a DER X.509 certificate. */
+    data class UnreadableCertificate(
+        val index: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "certificate $index is not a DER X.509 certificate"
+    }
+
+    /** The trust object could not be created; [osStatus] is the platform's status code. */
+    data class TrustCreationFailed(
+        val osStatus: Int,
+    ) : SystemTrustFailure {
+        override val description get() = "trust evaluation could not start (OSStatus $osStatus)"
+    }
+
+    /** Evaluation refused the chain with platform error [code] (a `CFError` code); [platformDescription] is its text. */
+    data class Refused(
+        val code: Long,
+        val platformDescription: String,
+    ) : SystemTrustFailure {
+        override val description get() = "$platformDescription (CFError $code)"
+    }
+
+    /** Evaluation refused the chain without reporting an error. */
+    data object RefusedWithoutError : SystemTrustFailure {
+        override val description get() = "evaluation refused the chain"
+    }
+}
+
+/**
  * Why [CertificateHashPinningException] rejected the peer. Sealed so each case carries case-specific data
  * and callers can branch exhaustively; new cases extend the hierarchy where they need to.
  */

@@ -45,7 +45,7 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     strategy:
-      # 29 and 35 are independent signals — an API-35-only regression must not cancel the 29 lane
+      # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
       fail-fast: false
       matrix:
@@ -55,7 +55,12 @@ jobs:
         # accounting among them — so a lane that stops at 29 cannot observe them. Both use the
         # `default` (AOSP userdebug) image, which is what makes `adb root` + `su 0 iptables/tc`
         # work for the QUIC netem suite; `google_apis*` images would break that.
-        api-level: [29, 35]
+        # 24 = :socket-quic-quiche's minSdk: the oldest device the published AAR claims to run on,
+        # and the one place a call to a newer API without a version guard fails. 36 = the newest
+        # platform with a `default` x86_64 image: the next tightening lands here before it reaches users.
+        # No arm64 lane: GitHub's arm64 runners offer no KVM, and an unaccelerated emulator cannot
+        # finish this suite inside the job's budget. The arm64 JNI build is covered by build-linux.
+        api-level: [24, 29, 35, 36]
     steps:
       - name: checkout
         uses: actions/checkout@v7

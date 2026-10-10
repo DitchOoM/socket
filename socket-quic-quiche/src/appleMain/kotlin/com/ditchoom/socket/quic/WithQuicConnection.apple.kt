@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_free
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
+import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_connect
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpConnectException
@@ -128,12 +129,17 @@ internal suspend fun buildAppleQuicConnection(
                 } finally {
                     unlink(caBundlePath)
                 }
+            } else if (usesSecTrust(quicOptions)) {
+                // SecTrust validates the chain after the handshake (appleSystemChainTrust, fail-closed);
+                // BoringSSL has no anchors here (iOS ships no CA file), so its own check is off.
+                quiche_config_verify_peer(config, false)
             } else if (effectiveVerifyPeer(quicOptions)) {
                 // verifyPeer is on with no pinned anchors. On macOS quiche/BoringSSL's compiled-in
                 // default verify paths resolve the system store, but the iOS family ships no
                 // filesystem CA store, so the defaults find nothing and every public-CA handshake
-                // fails (tlsAlert 48). Load the embedded Mozilla roots there — the Apple companion to
-                // the Linux /etc/ssl probe and the JVM/Android default-anchor fallback.
+                // fails (tlsAlert 48). With AppleTrustSource.BundledMozillaRoots, load the embedded
+                // Mozilla roots there — the Apple companion to the Linux /etc/ssl probe and the
+                // JVM/Android default-anchor fallback.
                 loadAppleSystemCaTrust(config)
             }
 
@@ -313,6 +319,16 @@ internal suspend fun buildAppleQuicConnection(
                 parseLeafFields = ::parsePinnedLeafFieldsDer,
                 now = tuning.wallClock(),
             )
+            verifyServerCertificateChain(
+                serverName,
+                quicConn.resumption,
+                if (usesSecTrust(quicOptions)) appleSystemChainTrust else PlatformChainTrust.InHandshake,
+                quicOptions.serverCertVerifiers,
+                bufferFactory,
+                readChainDer = quicConn::readPeerCertChainDer,
+                closeConnection = { quicConn.close() },
+                now = tuning.wallClock(),
+            )
             quicConn
         }
     } finally {
@@ -424,6 +440,13 @@ internal class AppleQuicConnection(
         der: PlatformBuffer,
         capacity: Int,
     ): Int = readPeerCertDerThroughDriver(driver, der, capacity)
+
+    /** Certificate [index] of the peer's chain (0 = leaf), the same way [readPeerCertDer] reads the leaf. */
+    suspend fun readPeerCertChainDer(
+        index: Int,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int = readPeerCertDerThroughDriver(driver, der, capacity, PeerCertPosition.InChain(index))
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
@@ -589,16 +612,27 @@ private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
     }
 
 /**
+ * Whether SecTrust ([appleSystemChainTrust]) rather than BoringSSL validates the server chain: the iOS
+ * family, peer verification on, no pinned anchors or leaf hashes, and [AppleTrustSource.SystemTrustStore].
+ */
+private fun usesSecTrust(o: QuicOptions): Boolean =
+    Platform.osFamily != OsFamily.MACOSX &&
+        o.appleTrustSource == AppleTrustSource.SystemTrustStore &&
+        o.trustedCaCertificatesPem.isEmpty() &&
+        o.serverCertificateHashes.isEmpty() &&
+        effectiveVerifyPeer(o)
+
+/**
  * Load the default trust anchors for [config] on Apple when verifyPeer is on but no anchors are
  * pinned. macOS keeps BoringSSL's compiled-in default verify paths (they resolve `/etc/ssl/cert.pem`,
  * which macOS ships) — a no-op here. The iOS family (device + simulator) has no
  * such filesystem store, so the embedded Mozilla root bundle ([MOZILLA_CA_ROOTS_PEM], generated from
  * mozilla-ca/cacert.pem) is written to a temp file and loaded as the anchor set. BoringSSL then does
  * full RFC 5280 chain validation internally against those roots during the handshake — we never need
- * the peer chain ourselves (quiche only surfaces the leaf). Branching on [Platform.osFamily] rather
- * than probing the filesystem keeps this deterministic on the simulator, which can otherwise see the
- * host Mac's `/etc/ssl`. Bundled roots stand in for SecTrust/keychain delegation, so MDM-installed
- * and OS-revoked roots are not honoured.
+ * the peer chain ourselves. Branching on [Platform.osFamily] rather than probing the filesystem keeps
+ * this deterministic on the simulator, which can otherwise see the host Mac's `/etc/ssl`. Only reached
+ * under [AppleTrustSource.BundledMozillaRoots]: the default evaluates the chain with SecTrust instead
+ * ([usesSecTrust], [appleSystemChainTrust]), which honours MDM-installed roots and OS revocation.
  */
 private fun loadAppleSystemCaTrust(config: CPointer<cnames.structs.quiche_config>) {
     if (Platform.osFamily == OsFamily.MACOSX) return

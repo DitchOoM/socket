@@ -301,6 +301,16 @@ internal suspend fun buildJvmQuicConnection(
             parseLeafFields = ::parsePinnedLeafFieldsJvm,
             now = tuning.wallClock(),
         )
+        verifyServerCertificateChain(
+            serverName,
+            quicConnection.resumption,
+            PlatformChainTrust.InHandshake,
+            quicOptions.serverCertVerifiers,
+            bufferFactory,
+            readChainDer = quicConnection::readPeerCertChainDer,
+            closeConnection = { quicConnection.close() },
+            now = tuning.wallClock(),
+        )
         return quicConnection
     } finally {
         // Exhaustive on purpose: every stage has to state what it owes, so one added later cannot
