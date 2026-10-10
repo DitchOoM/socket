@@ -238,6 +238,10 @@ fun downloadQuicheSource(
     // so a path the peer migrated away from cannot orphan its in-flight packets forever (#393).
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheOrphanPathLoss(sourceDir)
+    // Requeue the frames an evicted path still owed the peer onto the active path, so evicting a path
+    // with data in flight cannot leave a permanent hole in a stream. Idempotent, fails loudly on drift.
+    // See the KDoc.
+    patchQuicheEvictedPathFramesRequeued(sourceDir)
     // Make a packet whose DCID quiche has already retired a DROP instead of a fatal InvalidState, so a
     // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
     // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -1290,6 +1294,189 @@ fun patchQuicheOrphanPathLoss(sourceDir: File) {
         gcongestionRs.writeText(gcongestionText.replaceFirst(anchor, replacement))
         logger.lifecycle("Patched quiche source: $marker in gcongestion/recovery.rs (BBR2)")
     }
+}
+
+/**
+ * When quiche evicts a path from its table to make room for a new one, queue every frame that path still
+ * owed the peer for retransmission on the active path, instead of dropping it with the path.
+ *
+ * `make_room_for_new_path` evicts the first `unused()` path once the table holds `max_concurrent_paths`,
+ * and `unused()` looks only at the path's designation and connection ID — upstream marks it `FIXME: we
+ * should check that there is nothing in the sent queue`. The path goes with its `Recovery`, and with it
+ * every packet still in flight and every frame already declared lost but not yet resent. Nothing else
+ * holds those frames: STREAM data in them is never retransmitted (RFC 9000 §13.3 requires it until it is
+ * acknowledged), and the peer's stream has a hole for the life of the connection.
+ *
+ * A client reaches this whenever it migrates off a path holding unacknowledged data and probes again
+ * before any ACK arrives: retiring the old path's connection ID ([patchQuicheRetireDcidNoRelink]) makes
+ * it `unused()`, and `socket-orphan-path-loss` ([patchQuicheOrphanPathLoss]) can only declare its
+ * packets lost on an ACK, which a held uplink keeps away. Seen on the 2026-09-28 iPhone walk: 67 STREAM
+ * frames lost this way, a 6 h stall. A server reaches it the same way after its peer migrates.
+ *
+ * The edits: `RecoveryOps` gains `socket_take_outstanding_frames` (the frames of every packet neither
+ * acknowledged nor declared lost, and every lost frame not yet resent) and `socket_requeue_lost_frames`,
+ * in both recovery implementations; `make_room_for_new_path` returns the evicted path, and `insert_path`
+ * moves its frames into the lost queue of the designated-active path (the new path when there is none),
+ * which `send` drains for every path. PING, PATH_CHALLENGE and PATH_RESPONSE stay behind: each belongs to
+ * the path it was sent on and none is retransmitted. A frame whose packet did arrive is sent again, which
+ * the peer discards as a duplicate. Which paths are evicted, and when, is unchanged.
+ *
+ * Reproduced by `MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered`. Marker-guarded
+ * and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
+    val marker = "socket-evicted-path-frames-requeued"
+    val recoveryRs = sourceDir.resolve("quiche/src/recovery/mod.rs")
+    val legacyRs = sourceDir.resolve("quiche/src/recovery/congestion/recovery.rs")
+    val gcongestionRs = sourceDir.resolve("quiche/src/recovery/gcongestion/recovery.rs")
+    val pathRs = sourceDir.resolve("quiche/src/path.rs")
+    if (listOf(recoveryRs, legacyRs, gcongestionRs, pathRs).any { !it.exists() }) return
+    if (pathRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump moved it. Re-fit patchQuicheEvictedPathFramesRequeued, or delete it if quiche now keeps " +
+                    "a path with frames in flight or retransmits them when it evicts the path. Either way keep " +
+                    "MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        recoveryRs,
+        "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool;\n",
+        "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool;\n\n" +
+            "    // $marker: every frame of a packet neither acknowledged nor declared lost, and every lost\n" +
+            "    // frame not yet resent, taken out of this recovery.\n" +
+            "    fn socket_take_outstanding_frames(&mut self, epoch: packet::Epoch) -> Vec<frame::Frame>;\n\n" +
+            "    // $marker: queue [frames] for retransmission as if this path had declared them lost.\n" +
+            "    fn socket_requeue_lost_frames(&mut self, epoch: packet::Epoch, frames: Vec<frame::Frame>);\n",
+    )
+    replaceOnce(
+        legacyRs,
+        "    fn has_lost_frames(&self, epoch: Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n",
+        "    fn has_lost_frames(&self, epoch: Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n\n" +
+            """
+            |    // $marker
+            |    fn socket_take_outstanding_frames(&mut self, epoch: Epoch) -> Vec<frame::Frame> {
+            |        let e = &mut self.epochs[epoch];
+            |        let mut frames: Vec<frame::Frame> = e.lost_frames_ack.drain(..).collect();
+            |        frames.extend(e.lost_frames_pto.drain(..));
+            |        for p in e.sent_packets.iter_mut() {
+            |            if p.time_acked.is_none() && p.time_lost.is_none() {
+            |                frames.extend(p.frames.drain(..));
+            |            }
+            |        }
+            |        frames
+            |    }
+            |
+            |    // $marker
+            |    fn socket_requeue_lost_frames(&mut self, epoch: Epoch, frames: Vec<frame::Frame>) {
+            |        self.epochs[epoch].lost_frames_ack.extend(frames);
+            |    }
+            |
+            """.trimMargin(),
+    )
+    replaceOnce(
+        gcongestionRs,
+        "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n",
+        "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n\n" +
+            """
+            |    // $marker
+            |    fn socket_take_outstanding_frames(&mut self, epoch: packet::Epoch) -> Vec<frame::Frame> {
+            |        let e = &mut self.epochs[epoch];
+            |        let mut frames: Vec<frame::Frame> = e.lost_frames_ack.drain(..).collect();
+            |        frames.extend(e.lost_frames_pto.drain(..));
+            |        for p in e.sent_packets.iter_mut() {
+            |            if let SentStatus::Sent { frames: sent, .. } = &mut p.status {
+            |                frames.extend(sent.drain(..));
+            |            }
+            |        }
+            |        frames
+            |    }
+            |
+            |    // $marker
+            |    fn socket_requeue_lost_frames(&mut self, epoch: packet::Epoch, frames: Vec<frame::Frame>) {
+            |        self.epochs[epoch].lost_frames_ack.extend(frames);
+            |    }
+            |
+            """.trimMargin(),
+    )
+    replaceOnce(
+        pathRs,
+        "    fn make_room_for_new_path(&mut self) -> Result<()> {\n" +
+            "        if self.paths.len() < self.max_concurrent_paths {\n            return Ok(());\n        }\n",
+        "    // $marker: returns the evicted path, so insert_path can\n" +
+            "    // requeue the frames it still owed the peer.\n" +
+            "    fn make_room_for_new_path(&mut self) -> Result<Option<Path>> {\n" +
+            "        if self.paths.len() < self.max_concurrent_paths {\n            return Ok(None);\n        }\n",
+    )
+    replaceOnce(
+        pathRs,
+        "        self.notify_event(PathEvent::Closed(path.local_addr, path.peer_addr));\n\n        Ok(())\n    }\n",
+        "        self.notify_event(PathEvent::Closed(path.local_addr, path.peer_addr));\n\n        Ok(Some(path))\n    }\n",
+    )
+    replaceOnce(
+        pathRs,
+        "        self.make_room_for_new_path()?;\n",
+        "        let evicted = self.make_room_for_new_path()?;\n",
+    )
+    replaceOnce(
+        pathRs,
+        """
+        |        if is_server {
+        |            self.notify_event(PathEvent::New(local_addr, peer_addr));
+        |        }
+        |
+        |        Ok(pid)
+        """.trimMargin(),
+        """
+        |        if is_server {
+        |            self.notify_event(PathEvent::New(local_addr, peer_addr));
+        |        }
+        |
+        |        // $marker: an evicted path's frames still owed to the peer are
+        |        // resent from the active path, not dropped with it.
+        |        if let Some(mut evicted) = evicted {
+        |            let heir = self
+        |                .paths
+        |                .iter()
+        |                .find(|(_, p)| p.socket_designated_active())
+        |                .map_or(pid, |(heir, _)| heir);
+        |            for &epoch in crate::packet::Epoch::epochs(
+        |                crate::packet::Epoch::Initial..=crate::packet::Epoch::Application,
+        |            ) {
+        |                let frames = evicted
+        |                    .recovery
+        |                    .socket_take_outstanding_frames(epoch)
+        |                    .into_iter()
+        |                    .filter(|f| {
+        |                        !matches!(
+        |                            f,
+        |                            crate::frame::Frame::Ping { .. } |
+        |                                crate::frame::Frame::PathChallenge { .. } |
+        |                                crate::frame::Frame::PathResponse { .. }
+        |                        )
+        |                    })
+        |                    .collect();
+        |                self.paths[heir]
+        |                    .recovery
+        |                    .socket_requeue_lost_frames(epoch, frames);
+        |            }
+        |        }
+        |
+        |        Ok(pid)
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: an evicted path's outstanding frames are requeued, not dropped")
 }
 
 /**

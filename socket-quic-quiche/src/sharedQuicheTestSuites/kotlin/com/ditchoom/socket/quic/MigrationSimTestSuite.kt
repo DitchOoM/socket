@@ -242,6 +242,112 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * Stream data sent on a path the client has migrated away from still reaches the server when a later
+     * probe makes quiche evict that path from its table.
+     *
+     * The 2026-09-28 iPhone walk: Wi-Fi went dark both ways with 67 STREAM frames sent once on it and not
+     * yet acknowledged. The client validated cellular — PATH_RESPONSE carries no ACK, and the server's
+     * ACKs went to the dark Wi-Fi — migrated, and retired the Wi-Fi path's connection ID, which made that
+     * path `unused()`. The held cellular uplink kept every ACK away for 25 s, during which the next probe
+     * found the path table full and quiche evicted the Wi-Fi path with its sent queue. Nothing had declared
+     * those packets lost, so nothing retransmitted their frames: the server's stream had a hole for the
+     * remaining 6 h of an otherwise healthy connection.
+     *
+     * Staged here exactly: earlier abandoned probes fill the table, the old path holds the data in flight,
+     * no ACK reaches the client between the migration and the evicting probe, and only then does the new
+     * path carry traffic both ways.
+     */
+    @Test
+    fun streamDataInFlightOnAnEvictedPathIsStillDelivered() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val oldPath = 0
+                    val fillers = 1 until SPARE_POOL.toInt()
+                    val newPath = SPARE_POOL.toInt()
+                    val evictingProbe = newPath + 1
+
+                    fun on(endpoint: Int): (QuichePairByHand.Datagram) -> Boolean = { it.clientEndpoint == endpoint }
+
+                    val stream = QuicStreamId(0)
+
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    pair.issueSpareCids(pair.server)
+                    pair.issueSpareCids(pair.client)
+                    val prefix = "prefix;"
+                    assertEquals(prefix.length, pair.streamSend(pair.client, stream, prefix, fin = false))
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+
+                    // Abandoned probes onto links that never answer, each retired as the driver retires
+                    // one: the table fills with unused paths, and the server tops the spare pool back up.
+                    val fillerSeqs = fillers.map { endpoint -> assertIs<ProbeOutcome.Probed>(pair.probe(endpoint)).dcidSeq }
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    fillerSeqs.forEach { assertEquals(0, pair.retireDcid(it)) }
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    pair.issueSpareCids(pair.server)
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    assertEquals(SPARE_POOL, pair.spareDcids(), "the spare pool must be full before the old path goes dark")
+                    assertEquals(SPARE_POOL, pair.pathCount(pair.client), "abandoned probes must fill the table to one short of the limit")
+
+                    // The old path goes dark both ways with data in flight on it.
+                    val chunks = (0 until IN_FLIGHT_CHUNKS).map { "chunk-${it.toString().padStart(3, '0')};" }
+                    var sentOnOld = 0
+                    chunks.forEach { chunk ->
+                        assertEquals(chunk.length, pair.streamSend(pair.client, stream, chunk, fin = false))
+                        val datagrams = pair.sends(pair.client)
+                        assertTrue(datagrams.all { it.clientEndpoint == oldPath }, "the in-flight data must leave on the old path")
+                        sentOnOld += datagrams.size
+                        pair.elapse(CHUNK_INTERVAL)
+                    }
+
+                    // The new path validates; its PATH_RESPONSE carries no ACK, and the server's ACKs go to
+                    // the old path.
+                    val newSeq = assertIs<ProbeOutcome.Probed>(pair.probe(newPath)).dcidSeq
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(newPath))
+                    assertIs<MigrateOutcome.Migrated>(pair.migrate(newPath), "the client must move onto the validated path (dcid $newSeq)")
+                    assertEquals(0, pair.retireDcid(INITIAL_DCID_SEQ), "the client retires the old path's connection id")
+                    // The new path's uplink holds everything the client sends now, so no ACK can come back.
+                    val held = pair.sends(pair.client)
+                    val tableBeforeEviction = pair.pathTable(pair.client)
+
+                    assertIs<ProbeOutcome.Probed>(pair.probe(evictingProbe), "the evicting probe must find room")
+                    val events = pair.pathEvents(pair.client)
+                    assertTrue(
+                        "Closed(endpoint $oldPath)" in events,
+                        "the probe must evict the old path for this scenario to mean anything; events $events, table $tableBeforeEviction",
+                    )
+
+                    // The uplink releases; the new path carries traffic both ways from here on.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(held, pair.server)
+                    val expected = prefix + chunks.joinToString("")
+                    var received = ""
+                    var waited = Duration.ZERO
+                    while (received.length < expected.length && waited < DELIVERY_BOUND) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(newPath))
+                        received += pair.readText(pair.server, stream).first
+                        pair.elapse(DELIVERY_STEP)
+                        waited += DELIVERY_STEP
+                    }
+
+                    val missingFrom = expected.indices.firstOrNull { it >= received.length || received[it] != expected[it] }
+                    assertEquals(
+                        expected,
+                        received,
+                        "the server must read every byte the client wrote within $DELIVERY_BOUND of the uplink releasing; " +
+                            "it read ${received.length} of ${expected.length} bytes, diverging at stream offset $missingFrom " +
+                            "(the in-flight data is offsets ${prefix.length}..${expected.length - 1}, sent once in $sentOnOld " +
+                            "datagrams on the old path, endpoint $oldPath). Client path table before the evicting probe: " +
+                            "$tableBeforeEviction; after: ${pair.pathTable(pair.client)}; client path events $events",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
      * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
      * datagrams at the same virtual instants every time. Runs [readAReplyAfterTheServerClosed]
@@ -3378,6 +3484,24 @@ abstract class MigrationSimTestSuite {
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
+
+        /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
+        const val INITIAL_DCID_SEQ = 0L
+
+        /**
+         * Stream writes the old path holds in flight in [streamDataInFlightOnAnEvictedPathIsStillDelivered],
+         * each its own packet, as the walk's 13-byte echo probes were.
+         */
+        const val IN_FLIGHT_CHUNKS = 24
+
+        /** Time between those writes. */
+        val CHUNK_INTERVAL = 10.milliseconds
+
+        /** How long the server has to read every byte once the new path carries traffic both ways. */
+        val DELIVERY_BOUND = 10.seconds
+
+        /** Clock step between exchanges while waiting for that. */
+        val DELIVERY_STEP = 250.milliseconds
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
