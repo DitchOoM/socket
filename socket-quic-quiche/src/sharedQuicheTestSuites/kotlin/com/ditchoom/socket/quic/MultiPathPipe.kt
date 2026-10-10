@@ -275,6 +275,21 @@ internal class MultiPathPipe(
     private val pathsByKey = LinkedHashMap<PathKey, Path>()
     private val pathsByAddr = LinkedHashMap<SocketAddress, Path>()
 
+    /** Closed paths whose endpoint was bound again; their memory is still the pipe's to free in [close]. */
+    private val rebound = ArrayList<Path>()
+
+    /** Client endpoints in the order their sockets closed. */
+    private val released = ArrayList<SocketAddress>()
+
+    /**
+     * Ports on [host] whose socket is closed, most recently released last — what a kernel can hand the
+     * next ephemeral bind.
+     */
+    fun releasedPorts(host: String): List<Int> =
+        synchronized(lock) {
+            released.filter { it.host == host && pathsByAddr[it]?.socket == SimSocket.Closed }.map { it.port }
+        }
+
     /** Every path opened so far, in open order — path 0 is the primary. */
     fun paths(): List<Path> = synchronized(lock) { pathsByAddr.values.toList() }
 
@@ -294,7 +309,10 @@ internal class MultiPathPipe(
         val key = api.decodePathKey(sockAddr.address)
         val path = Path(local, sockAddr, key, impairment)
         synchronized(lock) {
-            check(pathsByAddr[local] == null) { "a path is already open at $local" }
+            // A closed socket's endpoint can be bound again, as a kernel reuses a released ephemeral port.
+            val previous = pathsByAddr[local]
+            check(previous?.socket != SimSocket.Open) { "a path is already open at $local" }
+            if (previous != null) rebound += previous
             pathsByKey[key] = path
             pathsByAddr[local] = path
         }
@@ -340,7 +358,7 @@ internal class MultiPathPipe(
             ledger.release(queued.datagram)
         }
         synchronized(lock) {
-            pathsByAddr.values.forEach {
+            (pathsByAddr.values + rebound).forEach {
                 it.inbound.close()
                 while (true) {
                     val queued = it.inbound.tryReceive().getOrNull() ?: break
@@ -350,6 +368,8 @@ internal class MultiPathPipe(
             }
             pathsByAddr.clear()
             pathsByKey.clear()
+            rebound.clear()
+            released.clear()
         }
     }
 
@@ -500,7 +520,11 @@ internal class MultiPathPipe(
         override fun close() {
             // The socket closes; the path's link stays in the pipe, whose close() tears it down. What was
             // already queued for this socket is discarded with it, as a real socket's receive queue is.
-            path.socket = SimSocket.Closed
+            synchronized(lock) {
+                path.socket = SimSocket.Closed
+                released.remove(path.local)
+                released += path.local
+            }
             path.inbound.close()
             while (true) {
                 val queued = path.inbound.tryReceive().getOrNull() ?: break

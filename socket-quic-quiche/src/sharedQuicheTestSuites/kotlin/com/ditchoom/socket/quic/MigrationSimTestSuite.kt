@@ -242,6 +242,342 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * Stream data sent on a path the client has migrated away from still reaches the server when a later
+     * probe makes quiche evict that path from its table.
+     *
+     * The 2026-09-28 iPhone walk: Wi-Fi went dark both ways with 67 STREAM frames sent once on it and not
+     * yet acknowledged. The client validated cellular — PATH_RESPONSE carries no ACK, and the server's
+     * ACKs went to the dark Wi-Fi — migrated, and retired the Wi-Fi path's connection ID, which made that
+     * path `unused()`. The held cellular uplink kept every ACK away for 25 s, during which the next probe
+     * found the path table full and quiche evicted the Wi-Fi path with its sent queue. Nothing had declared
+     * those packets lost, so nothing retransmitted their frames: the server's stream had a hole for the
+     * remaining 6 h of an otherwise healthy connection.
+     *
+     * Staged here exactly: earlier abandoned probes fill the table, the old path holds the data in flight,
+     * no ACK reaches the client between the migration and the evicting probe, and only then does the new
+     * path carry traffic both ways.
+     */
+    @Test
+    fun streamDataInFlightOnAnEvictedPathIsStillDelivered() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val oldPath = 0
+                    val fillers = 1 until SPARE_POOL.toInt()
+                    val newPath = SPARE_POOL.toInt()
+                    val evictingProbe = newPath + 1
+
+                    fun on(endpoint: Int): (QuichePairByHand.Datagram) -> Boolean = { it.clientEndpoint == endpoint }
+
+                    val stream = QuicStreamId(0)
+
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    pair.issueSpareCids(pair.server)
+                    pair.issueSpareCids(pair.client)
+                    val prefix = "prefix;"
+                    assertEquals(prefix.length, pair.streamSend(pair.client, stream, prefix, fin = false))
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+
+                    // Abandoned probes onto links that never answer, each retired as the driver retires
+                    // one: the table fills with unused paths, and the server tops the spare pool back up.
+                    val fillerSeqs = fillers.map { endpoint -> assertIs<ProbeOutcome.Probed>(pair.probe(endpoint)).dcidSeq }
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    fillerSeqs.forEach { assertEquals(0, pair.retireDcid(it)) }
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    pair.issueSpareCids(pair.server)
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(oldPath))
+                    assertEquals(SPARE_POOL, pair.spareDcids(pair.client), "the spare pool must be full before the old path goes dark")
+                    assertEquals(SPARE_POOL, pair.pathCount(pair.client), "abandoned probes must fill the table to one short of the limit")
+
+                    // The old path goes dark both ways with data in flight on it.
+                    val chunks = (0 until IN_FLIGHT_CHUNKS).map { "chunk-${it.toString().padStart(3, '0')};" }
+                    var sentOnOld = 0
+                    chunks.forEach { chunk ->
+                        assertEquals(chunk.length, pair.streamSend(pair.client, stream, chunk, fin = false))
+                        val datagrams = pair.sends(pair.client)
+                        assertTrue(datagrams.all { it.clientEndpoint == oldPath }, "the in-flight data must leave on the old path")
+                        sentOnOld += datagrams.size
+                        pair.elapse(CHUNK_INTERVAL)
+                    }
+
+                    // The new path validates; its PATH_RESPONSE carries no ACK, and the server's ACKs go to
+                    // the old path.
+                    val newSeq = assertIs<ProbeOutcome.Probed>(pair.probe(newPath)).dcidSeq
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(newPath))
+                    assertIs<MigrateOutcome.Migrated>(pair.migrate(newPath), "the client must move onto the validated path (dcid $newSeq)")
+                    assertEquals(0, pair.retireDcid(INITIAL_DCID_SEQ), "the client retires the old path's connection id")
+                    // The new path's uplink holds everything the client sends now, so no ACK can come back.
+                    val held = pair.sends(pair.client)
+                    val tableBeforeEviction = pair.pathTable(pair.client)
+
+                    assertIs<ProbeOutcome.Probed>(pair.probe(evictingProbe), "the evicting probe must find room")
+                    val events = pair.pathEvents(pair.client)
+                    assertTrue(
+                        "Closed(endpoint $oldPath)" in events,
+                        "the probe must evict the old path for this scenario to mean anything; events $events, table $tableBeforeEviction",
+                    )
+
+                    // The uplink releases; the new path carries traffic both ways from here on.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(held, pair.server)
+                    val expected = prefix + chunks.joinToString("")
+                    var received = ""
+                    var waited = Duration.ZERO
+                    while (received.length < expected.length && waited < DELIVERY_BOUND) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(newPath))
+                        received += pair.readText(pair.server, stream).first
+                        pair.elapse(DELIVERY_STEP)
+                        waited += DELIVERY_STEP
+                    }
+
+                    val missingFrom = expected.indices.firstOrNull { it >= received.length || received[it] != expected[it] }
+                    assertEquals(
+                        expected,
+                        received,
+                        "the server must read every byte the client wrote within $DELIVERY_BOUND of the uplink releasing; " +
+                            "it read ${received.length} of ${expected.length} bytes, diverging at stream offset $missingFrom " +
+                            "(the in-flight data is offsets ${prefix.length}..${expected.length - 1}, sent once in $sentOnOld " +
+                            "datagrams on the old path, endpoint $oldPath). Client path table before the evicting probe: " +
+                            "$tableBeforeEviction; after: ${pair.pathTable(pair.client)}; client path events $events",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * Probes the client abandoned before their PATH_CHALLENGEs reached the server do not leave the server
+     * unable to admit a new path.
+     *
+     * The 2026-09-26 iPhone walk: a held cellular uplink delivered challenges 6–9 s after the client had
+     * given up on their probes at 3 s and retired the IDs it probed with. The server created a path for
+     * each, linked one of the client's spare IDs to it to answer, and kept both forever: the paths failed
+     * validation and lost their source IDs, but held their destination IDs, so none was `unused()`. With
+     * the table full, the server dropped every datagram from a new 4-tuple — 1,710 probes over 29 h.
+     */
+    @Test
+    fun lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val active = 0
+                    val abandoned = 1..SPARE_POOL.toInt()
+                    val healthy = SPARE_POOL.toInt() + 1
+
+                    fun replenish() {
+                        pair.issueSpareCids(pair.server)
+                        pair.issueSpareCids(pair.client)
+                    }
+
+                    fun on(vararg endpoints: Int): (QuichePairByHand.Datagram) -> Boolean = { it.clientEndpoint in endpoints }
+
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+                    replenish()
+                    pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+
+                    // Each probe's challenges are held on its uplink; the client gives up on it and
+                    // retires the id it probed with, as the driver does.
+                    val seqs = abandoned.map { assertIs<ProbeOutcome.Probed>(pair.probe(it), "probe from endpoint $it").dcidSeq }
+                    val late = mutableListOf<QuichePairByHand.Datagram>()
+                    var probing = Duration.ZERO
+                    while (probing < PROBE_ABANDONED_AFTER) {
+                        val (held, prompt) = pair.sends(pair.client).partition { it.clientEndpoint in abandoned }
+                        late += held
+                        pair.elapse(DEFAULT_PATH_LATENCY)
+                        pair.deliver(prompt, pair.server)
+                        val answers = pair.sends(pair.server)
+                        pair.elapse(DEFAULT_PATH_LATENCY)
+                        pair.deliver(answers, pair.client)
+                        probing += DEFAULT_PATH_LATENCY * 2
+                    }
+                    seqs.forEach { assertEquals(0, pair.retireDcid(it)) }
+                    val retirements = pair.sends(pair.client)
+
+                    // The uplink releases: the late challenges first, then the retirements behind them. The
+                    // server's answers go to sockets the client has closed.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(late, pair.server)
+                    val pathsAfterLateChallenges = pair.pathCount(pair.server)
+                    val answers = pair.sends(pair.server).filter(on(active))
+                    pair.deliver(retirements, pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(answers, pair.client)
+                    repeat(SETTLE_ROUNDS) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(active))
+                        replenish()
+                        pair.elapse(SETTLE_STEP)
+                    }
+                    val serverTableBefore = pair.pathTable(pair.server)
+
+                    // A probe from a healthy new 4-tuple.
+                    val probe = pair.probe(healthy)
+                    var events = emptyList<String>()
+                    var waited = Duration.ZERO
+                    while ("Validated(endpoint $healthy)" !in events && waited < DELIVERY_BOUND) {
+                        pair.exchange(DEFAULT_PATH_LATENCY, on(active, healthy))
+                        replenish()
+                        events = events + pair.pathEvents(pair.client)
+                        pair.elapse(DELIVERY_STEP)
+                        waited += DELIVERY_STEP
+                    }
+                    assertTrue(
+                        "Validated(endpoint $healthy)" in events,
+                        "a probe from a healthy new 4-tuple must validate within $DELIVERY_BOUND " +
+                            "(probe ${probe::class.simpleName}); the late challenges left the server " +
+                            "$pathsAfterLateChallenges paths; server path table before the probe $serverTableBefore, " +
+                            "after ${pair.pathTable(pair.server)}; spare ids held: server ${pair.spareDcids(pair.server)}, " +
+                            "client ${pair.spareDcids(pair.client)}; ids left to issue: server ${pair.scidsLeft(pair.server)}, " +
+                            "client ${pair.scidsLeft(pair.client)}; server ${pair.closed(pair.server)}, " +
+                            "client ${pair.closed(pair.client)}; client path events $events",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * The driver-level twin of [streamDataInFlightOnAnEvictedPathIsStillDelivered]: the connection moves
+     * off a path that went dark with stream data in flight, then probes dead links until quiche evicts
+     * that path. The old path's port stays bound exactly as long as quiche holds the path — released at
+     * the eviction, not before — and the server reads every byte.
+     */
+    @Test
+    fun aPathEvictedWithDataInFlightReleasesItsPortAtTheEvictionAndLosesNoData() =
+        runTest {
+            var probesReachTheServer = true
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 748_001L,
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = DEFAULT_PATH_LATENCY,
+                            reach = LinkReach(if (probesReachTheServer) PathReach.Open else PathReach.Dark),
+                        )
+                    },
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    val oldPort =
+                        pipe
+                            .paths()
+                            .first()
+                            .local.port
+                    val payload = (0 until IN_FLIGHT_CHUNKS).joinToString("") { "chunk-${it.toString().padStart(3, '0')};" }
+                    val received = StringBuilder()
+                    val reader =
+                        client.launch {
+                            val accepted = server.acceptStream()
+                            while (received.length < payload.length) {
+                                val data = assertIs<ReadResult.Data>(accepted.read(IDLE_TIMEOUT_IN_THE_FIELD))
+                                received.append(data.buffer.readString(data.buffer.remaining(), Charset.UTF8))
+                                data.buffer.freeIfNeeded()
+                            }
+                        }
+                    pipe.impair(
+                        pipe.paths().first().local,
+                        PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark)),
+                    )
+                    client.openStream().writeText(payload)
+
+                    assertIs<MigrationResult.Succeeded>(withTimeout(120.seconds) { migrate().await() })
+                    assertPortsMatchQuichePaths("after the move off the dark path")
+                    assertTrue(oldPort in boundClientPorts(), "the old path's port was released while quiche still holds it")
+
+                    probesReachTheServer = false
+                    var attempts = 0
+                    while (oldPort in boundClientPorts() && attempts < FAILED_ATTEMPTS + 1) {
+                        val pathsBefore = clientPathCount()
+                        withTimeout(120.seconds) { migrate().await() }
+                        attempts++
+                        assertPortsMatchQuichePaths("after dead-link probe $attempts")
+                        if (oldPort !in boundClientPorts()) {
+                            assertEquals(
+                                pathsBefore,
+                                clientPathCount(),
+                                "the old path's port was released by a probe that did not evict a path (table ${clientPathTable()})",
+                            )
+                        }
+                    }
+                    assertTrue(
+                        oldPort !in boundClientPorts(),
+                        "quiche never evicted the old path in $attempts probes: ${clientPathTable()}",
+                    )
+
+                    withTimeout(DELIVERY_BOUND) { reader.join() }
+                    assertEquals(payload, received.toString(), "the server must read every byte written before the old path went dark")
+                }
+            }
+        }
+
+    /**
+     * The driver-level twin of [lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath]: twice, a
+     * held uplink delivers a run of probes' challenges, and the retirements behind them, after the client
+     * has given up on those probes — as the walk's two bursts did. A probe on a healthy link must still
+     * move the connection, and every abandoned probe's port stays bound exactly as long as quiche holds
+     * its path.
+     */
+    @Test
+    fun probesAbandonedBehindAHeldUplinkLeaveTheServerRoomForTheNextMove() =
+        runTest {
+            var probeReach = LinkReach.Open
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 748_002L,
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = probeReach) },
+                ) {
+                    val primary = pipe.paths().first().local
+                    awaitSpareDcids(count = SPARE_POOL)
+                    repeat(HELD_BURSTS) { burst ->
+                        val release = currentTime.milliseconds + LATE_PROBE_HOLD
+                        // The server's answers find the client long gone: nothing comes back on these links.
+                        probeReach = LinkReach(PathReach.HeldUntil(release), PathReach.Dark)
+                        // The active path's uplink holds too, and releases just after the probes': the
+                        // retirements reach the server behind the late challenges.
+                        pipe.impair(
+                            primary,
+                            PathImpairment(
+                                latency = DEFAULT_PATH_LATENCY,
+                                reach = LinkReach(PathReach.HeldUntil(release + DEFAULT_PATH_LATENCY), PathReach.Open),
+                            ),
+                        )
+                        repeat(PROBES_PER_BURST) { attempt ->
+                            val result = withTimeout(120.seconds) { migrate().await() }
+                            assertTrue(result is MigrationResult.Unmoved, "burst ${burst + 1} probe ${attempt + 1} reported $result")
+                            assertPortsMatchQuichePaths("after burst ${burst + 1} probe ${attempt + 1}")
+                        }
+                        assertTrue(currentTime.milliseconds < release, "burst ${burst + 1} outlasted its hold, so nothing arrived late")
+                        delay(release - currentTime.milliseconds + SETTLE_AFTER_RELEASE)
+                        pipe.impair(primary, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+                        awaitSpareDcids(count = PROBES_PER_BURST.toLong())
+                    }
+
+                    probeReach = LinkReach.Open
+                    val moved = withTimeout(120.seconds) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(
+                        moved,
+                        "a probe on a healthy link after the late challenges reported $moved; server ${serverPathTable()}, " +
+                            "client ${clientPathTable()}, server spare ids ${serverAvailableDcids()}",
+                    )
+                    assertPortsMatchQuichePaths("after the move")
+                }
+            }
+        }
+
+    /** Every bound client port names a path quiche holds, and every path quiche holds has a bound port. */
+    private suspend fun MigrationSimScope.assertPortsMatchQuichePaths(moment: String) {
+        assertEquals(
+            clientPathCount(),
+            boundClientPorts().size.toLong(),
+            "$moment: bound client ports ${boundClientPorts()} against quiche's table ${clientPathTable()}",
+        )
+    }
+
+    /**
      * One seed is one run. The sim exists so a failure seen once can be replayed exactly — under a
      * debugger, with a log line added, after a fix — and that only holds if the same seed sends the same
      * datagrams at the same virtual instants every time. Runs [readAReplyAfterTheServerClosed]
@@ -679,6 +1015,58 @@ abstract class MigrationSimTestSuite {
                     }
                 }
             }
+        }
+
+    /**
+     * A probe socket can never be bound to a 4-tuple quiche still holds a path for.
+     *
+     * quiche keeps a torn-down path under its 4-tuple, with no destination connection id, until it
+     * evicts it; `quiche_conn_probe_path` on that 4-tuple answers `QUICHE_ERR_INVALID_STATE`, and every
+     * retry on it fails the same way. The sim's kernel here hands every ephemeral bind the most recently
+     * released port, so a driver that releases a port while quiche still holds its path collides on
+     * every bind, however many times it rebinds.
+     */
+    @Test
+    fun anEphemeralBindNeverLandsOnAPathQuicheStillHolds() =
+        runTest {
+            var blackholeProbes = true
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 58_301L,
+                    probeImpairment = { PathImpairment(reach = LinkReach(if (blackholeProbes) PathReach.Dark else PathReach.Open)) },
+                    ephemeralPorts = SimEphemeralPorts.ReuseLastReleased,
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    repeat(FAILED_ATTEMPTS) { attempt ->
+                        val result = withTimeout(120.seconds) { migrate().await() }
+                        assertTrue(result is MigrationResult.Unmoved, "attempt ${attempt + 1} was blackholed yet reported $result")
+                    }
+                    blackholeProbes = false
+                    val recovered = withTimeout(120.seconds) { migrate().await() }
+                    val evidence = "probes=${clientAudit.probeCalls.describe()} quichePaths=${clientPathTable()}"
+                    assertIs<MigrationResult.Succeeded>(recovered, "the recovery migration reported $recovered. $evidence")
+                    assertTrue(
+                        clientAudit.probeCalls.none { (it.second as? ProbeOutcome.Rejected)?.code == QUICHE_ERR_INVALID_STATE },
+                        "a probe landed on a 4-tuple quiche still holds a path for. $evidence",
+                    )
+                    val bound = clientPaths()
+                    assertTrue(
+                        bound.size > bound.toSet().size,
+                        "the sim's kernel never handed a released port back, so nothing was exercised: $bound",
+                    )
+                }
+            }
+        }
+
+    private fun List<Pair<PathKey, ProbeOutcome>>.describe(): String =
+        joinToString(prefix = "[", postfix = "]") { (key, outcome) ->
+            val answer =
+                when (outcome) {
+                    is ProbeOutcome.Probed -> "dcid=${outcome.dcidSeq}"
+                    is ProbeOutcome.Rejected -> "rejected=${outcome.code}"
+                }
+            ":${key.port} $answer"
         }
 
     /**
@@ -3326,6 +3714,45 @@ abstract class MigrationSimTestSuite {
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
+
+        /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
+        const val INITIAL_DCID_SEQ = 0L
+
+        /**
+         * Stream writes the old path holds in flight in [streamDataInFlightOnAnEvictedPathIsStillDelivered],
+         * each its own packet, as the walk's 13-byte echo probes were.
+         */
+        const val IN_FLIGHT_CHUNKS = 24
+
+        /** Time between those writes. */
+        val CHUNK_INTERVAL = 10.milliseconds
+
+        /** How long the server has to read every byte once the new path carries traffic both ways. */
+        val DELIVERY_BOUND = 10.seconds
+
+        /** Clock step between exchanges while waiting for that. */
+        val DELIVERY_STEP = 250.milliseconds
+
+        /** When the driver gives up on an unanswered probe: the 3 s abandon the walk's client ran. */
+        val PROBE_ABANDONED_AFTER = 3.seconds
+
+        /** Rounds the active path carries traffic after the late challenges, long enough for the server's own validations to fail. */
+        const val SETTLE_ROUNDS = 40
+
+        /** Clock step between those rounds. */
+        val SETTLE_STEP = 250.milliseconds
+
+        /** Runs of late probes in [probesAbandonedBehindAHeldUplinkLeaveTheServerRoomForTheNextMove]. */
+        const val HELD_BURSTS = 2
+
+        /** Probes per run: two runs leave more late paths than the server's spare ids. */
+        const val PROBES_PER_BURST = 4
+
+        /** How long each run's uplink holds: inside the walk's 12–47 s, past the run's last abandon. */
+        val LATE_PROBE_HOLD = 40.seconds
+
+        /** How long after a run's hold releases the sim runs before the next step. */
+        val SETTLE_AFTER_RELEASE = 5.seconds
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
