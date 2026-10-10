@@ -501,6 +501,110 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A probe made after the connection has moved is abandoned on the budget of the path it is on now,
+     * not the one it left.
+     *
+     * RFC 9000 §8.2.4 sizes the abandon timer as three times the larger of the *current* PTO and the new
+     * path's `kInitialRtt` PTO. quiche keeps a path the connection has left in its table, with its RTT
+     * estimate frozen where the connection stopped sampling it — on a link that was dying, the worst
+     * estimate it ever held. Sized from that path, an unanswered probe off a fast link waits out the
+     * slow one's budget, and because one migration runs at a time, every later network change waits too.
+     * The 2026-09-26 Samsung walk measured exactly that: two probes abandoned after 21.28 s, three times
+     * the PTO of the Wi-Fi it had left, where the cellular path it was on gave ~3 s.
+     */
+    @Test
+    fun aProbeAfterAMigrationIsAbandonedOnTheCurrentPathsBudget() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(
+                    // quiche fails a dark probe on its own after three lost challenges; on the walk it
+                    // reported nothing, and the abandon timer was the only bound left.
+                    simEnv().withSilentValidationFailures(),
+                    seed = 742_001L,
+                    primaryImpairment = PathImpairment(latency = SLOW_LINK_LATENCY),
+                    probeImpairment = { probe ->
+                        if (probe == 1) {
+                            PathImpairment(latency = DEFAULT_PATH_LATENCY)
+                        } else {
+                            PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Dark))
+                        }
+                    },
+                ) {
+                    awaitSpareDcids(count = 2, timeout = 2.minutes)
+                    val moved = withTimeout(2.minutes) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(moved, "the first probe goes to a healthy fast path; table ${clientPathTimers()}")
+                    awaitSpareDcids(count = 1, timeout = 2.minutes)
+
+                    val table = clientPathTimers()
+                    val left = table.first { it.index == 0L }
+                    val current = table.single { it.active }
+                    val budgetOnCurrent = maxOf(current.pto, K_INITIAL_PTO) * 3
+                    val budgetOnLeft = maxOf(left.pto, K_INITIAL_PTO) * 3
+                    assertTrue(
+                        current.index != 0L && budgetOnLeft > budgetOnCurrent * 2,
+                        "precondition: the connection must be on a new, faster path than the one it left; table $table",
+                    )
+                    val reported = clientDriver.stats().pathStats
+                    assertTrue(
+                        reported != null && reported.active && reported.rtt == current.rtt,
+                        "stats() must report the active path ${current.index}, not one the connection left: " +
+                            "reported $reported; table $table",
+                    )
+
+                    val started = currentTime
+                    val probe = withTimeout(2.minutes) { migrate().await() }
+                    val took = (currentTime - started).milliseconds
+                    assertTrue(probe !is MigrationResult.Succeeded, "the second probe path is dark, so it cannot validate: $probe")
+                    assertTrue(
+                        took <= budgetOnCurrent + ABANDON_SLACK,
+                        "the probe was abandoned after $took; 3×PTO of the current path ${current.index} is " +
+                            "$budgetOnCurrent, of the path ${left.index} the connection left is $budgetOnLeft — " +
+                            "the budget was sized from a path the connection is no longer on. Table at probe: $table",
+                    )
+                }
+            }
+        }
+
+    /**
+     * The draining period a closed connection holds its ids for is three times the PTO of the path it
+     * closed on (RFC 9000 §10.2), not of a path it had already left.
+     */
+    @Test
+    fun theDrainingPeriodIsMeasuredOnThePathTheConnectionClosedOn() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 742_002L,
+                    primaryImpairment = PathImpairment(latency = SLOW_LINK_LATENCY),
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+                ) {
+                    awaitSpareDcids(count = 1, timeout = 2.minutes)
+                    val moved = withTimeout(2.minutes) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(moved, "the probe goes to a healthy fast path; table ${clientPathTimers()}")
+
+                    val table = clientPathTimers()
+                    val left = table.first { it.index == 0L }
+                    val current = table.single { it.active }
+                    assertTrue(
+                        current.index != 0L && left.pto > current.pto * 2,
+                        "precondition: the connection must be on a new, faster path than the one it left; table $table",
+                    )
+
+                    client.close()
+                    withTimeout(1.minutes) { clientDriver.state.first { it is QuicConnectionState.Closed } }
+                    val draining = clientDriver.drainingPeriod
+                    assertTrue(
+                        draining < left.pto * 3 && draining <= current.pto * 3 + ABANDON_SLACK,
+                        "the draining period is $draining; 3×PTO of the path ${current.index} the connection " +
+                            "closed on is ${current.pto * 3}, of the path ${left.index} it had left is " +
+                            "${left.pto * 3}. Table before close: $table",
+                    )
+                }
+            }
+        }
+
+    /**
      * **#447, reproduced from a blackholed probe path alone — no device, no network, no test seam.**
      *
      * The field condition is an unanswered PATH_CHALLENGE, routine on cellular, which previously
@@ -2082,11 +2186,9 @@ abstract class MigrationSimTestSuite {
      * reason.
      *
      * ⚠️ Two prior migrations rather than one, so the active path index is 2 and a reader that assumed
-     * index 0 is caught: `QuicheCmd.Stats` reads path 0, which is the active path only until the first
-     * successful migration, and an earlier cut of this scenario measured 0 expiries through it and sent
-     * the investigation after a comparability guard that was never involved. The expiry counts here go
-     * through [MigrationSim.clientActivePathExpiries], which searches for the active path exactly as
-     * `sampleActivePathLiveness` does.
+     * index 0 is caught: path 0 is the active path only until the first successful migration. The
+     * expiry counts here go through [MigrationSimScope.clientActivePath], which searches for the active
+     * path as `ActivePath` does.
      */
     @Test
     fun aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime() =
@@ -3309,6 +3411,15 @@ abstract class MigrationSimTestSuite {
 
         /** Several PTOs at the 60 ms path once the link heals, and far below the 120 s idle timeout. */
         val FIN_ARRIVES_WITHIN = 20.seconds
+
+        /**
+         * One-way latency of the link a connection leaves in the active-path timer tests: slow enough
+         * that its PTO budget is several times the `kInitialRtt` floor a fast path gets.
+         */
+        val SLOW_LINK_LATENCY = 1500.milliseconds
+
+        /** How late past its budget an abandon may land: the driver re-measures on its next wake. */
+        val ABANDON_SLACK = 250.milliseconds
 
         /** A slow cellular path: 800 ms round trip. */
         val SLOW_PATH_ONE_WAY = 400.milliseconds

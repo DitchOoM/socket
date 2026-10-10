@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.trace.QlogRecord
 import com.ditchoom.socket.quic.trace.QlogSegment
 import com.ditchoom.socket.quic.trace.QlogStep
 import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.SendStalledException
 import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -454,17 +455,29 @@ class QuicheDriver(
 
     /**
      * How long this connection's ids go on meaning "this connection, just closed" once it has closed:
-     * RFC 9000 §10.2's draining period, three times the PTO. Measured on the loop, with the connection
-     * still alive, in [transitionToClosed] and again in [cleanup] — both before [commands] closes, so a
-     * caller that has seen the connection refuse a command reads a measured value. Before either, it is
-     * three times the PTO of a path with no RTT sample (RFC 9002 §6.2.2).
+     * RFC 9000 §10.2's draining period, three times the PTO of the [ActivePath] the connection closed
+     * on. Measured on the loop, with the connection still alive, in [transitionToClosed] and again in
+     * [cleanup] — both before [commands] closes, so a caller that has seen the connection refuse a
+     * command reads a measured value. Before either, or with no active path to read, it is three times
+     * the PTO of a path with no RTT sample (RFC 9002 §6.2.2).
      */
     @kotlin.concurrent.Volatile
     internal var drainingPeriod: Duration = INITIAL_PTO * DRAINING_PTO_MULTIPLIER
         private set
 
     private fun measureDrainingPeriod() {
-        api.connPathStats(conn, 0L)?.let { drainingPeriod = pto(it.rtt, it.rttvar) * DRAINING_PTO_MULTIPLIER }
+        when (val active = api.readActivePath(conn)) {
+            is ActivePath.Read -> drainingPeriod = pto(active.stats.rtt, active.stats.rttvar) * DRAINING_PTO_MULTIPLIER
+            ActivePath.Unreadable -> Unit
+        }
+    }
+
+    /** A STATS trace line for the [ActivePath], the path the connection's traffic is on. */
+    private fun recordActivePathStats(recorder: QuicTraceRecorder) {
+        when (val active = api.readActivePath(conn)) {
+            is ActivePath.Read -> recorder.stats(active.stats)
+            ActivePath.Unreadable -> Unit
+        }
     }
 
     /**
@@ -1182,16 +1195,18 @@ class QuicheDriver(
      * migration policy, and this formula is self-tuning: it widens with the current path's RTT and
      * never drops below the ~3s `kInitialRtt` floor.
      *
-     * **The new path's PTO is genuinely unavailable here, and that is the RFC's own `kInitialRtt`
-     * branch — not a fallback hack.** This driver only ever reads `pathIdx = 0` (the primary) and
-     * keeps no path→index mapping, so there are no RTT samples for a path that has not yet answered
-     * a single PATH_CHALLENGE. [QuicheApi.connPathStats] also answers `null` on a backend that has
-     * not bound the stats FFI, which lands in exactly the same branch for the same reason: no
-     * sample, so assume `kInitialRtt`.
+     * The current PTO is the [ActivePath]'s — never the original path's, which after a migration is a
+     * link the connection has left, its estimate frozen at its worst. The new path has no RTT sample
+     * until it answers a PATH_CHALLENGE, so its PTO is the RFC's own `kInitialRtt` branch, which is
+     * also the floor. An [ActivePath.Unreadable] connection has no sample either and lands there too.
      */
     private fun pathValidationBudget(): Duration {
-        val currentPto = api.connPathStats(conn, 0L)?.let { pto(it.rtt, it.rttvar) }
-        return maxOf(currentPto ?: INITIAL_PTO, INITIAL_PTO) * PATH_VALIDATION_PTO_MULTIPLIER
+        val currentPto =
+            when (val active = api.readActivePath(conn)) {
+                is ActivePath.Read -> pto(active.stats.rtt, active.stats.rttvar)
+                ActivePath.Unreadable -> INITIAL_PTO
+            }
+        return maxOf(currentPto, INITIAL_PTO) * PATH_VALIDATION_PTO_MULTIPLIER
     }
 
     /**
@@ -1423,17 +1438,16 @@ class QuicheDriver(
      * code says "expiry" and not "PTO"). A run of those with nothing arriving in between — the other
      * half, kept by [activePathAnswered] — plus the elapsed time the run has been going, is the whole
      * signal: every retransmission the path's own recovery scheduled went unanswered, on a path we are
-     * still choosing to send over. Nothing new is bound for this; [pathValidationBudget] has been
-     * reading the same struct since RFC 9000 §8.2.4's abandon timer needed a PTO.
+     * still choosing to send over. Nothing new is bound for this: [pathValidationBudget] reads the same
+     * struct for RFC 9000 §8.2.4's abandon timer.
      *
      * ## Called on timer wakes, and only for a connection something is watching
      * A loss-detection timer expiring *is* a driver wake, so sampling where the loop already woke adds
      * no timer of its own and costs **nothing at all** on the datagram path, where an extra call per
      * received datagram would be a real cost. It is not free on the timer path: one
-     * `quiche_conn_stats` plus up to `pathsCount` `quiche_conn_path_stats` reads, the first of which
-     * duplicates the one the trace recorder makes a line above (deliberately — the recorder wants path
-     * 0 and this wants the active one, and fusing them would tie an opt-in diagnostic to a shipped
-     * trigger). That is why the loop only calls this while [pathLiveness] has a collector: under
+     * `quiche_conn_stats` plus up to `pathsCount` `quiche_conn_path_stats` reads, repeating the trace
+     * recorder's read a line above (deliberately — fusing them would tie an opt-in diagnostic to a
+     * shipped trigger). That is why the loop only calls this while [pathLiveness] has a collector: under
      * [MigrationPolicy.Manual] or [MigrationPolicy.Forbidden], on a `NetworkMonitor.AlwaysAvailable`
      * connection, or on a server, nobody subscribes and the reads are never made.
      *
@@ -1451,22 +1465,17 @@ class QuicheDriver(
      * validated ([rebaselineActivePathLiveness]) — and `aDeadPathReHomesWhileTheMonitorStillCallsTheLinkHealthy`
      * asserts the expiry count at which probing started, which is what makes the omission visible.
      *
-     * ## Why the active path is searched for rather than assumed to be index 0
-     * It is index 0 until the first successful migration and never again — quiche keeps the original
-     * path in its slab and appends. Reading index 0 forever would mean a connection that has already
-     * re-homed once is judged by the counters of the link it left, which is precisely the link that has
-     * stopped answering.
+     * ## Why the active path is searched for
+     * See [ActivePath]: a connection that has re-homed once would otherwise be judged by the counters of
+     * the link it left, which is precisely the link that has stopped answering.
      */
     private fun sampleActivePathLiveness() {
-        val pathCount = api.connStats(conn)?.pathsCount ?: return
-        for (index in 0 until pathCount) {
-            val stats = api.connPathStats(conn, index) ?: continue
-            if (!stats.active) continue
-            publishActivePathLiveness(index, stats)
-            return
+        when (val active = api.readActivePath(conn)) {
+            is ActivePath.Read -> publishActivePathLiveness(active.index, active.stats)
+            // No active path is a transient of quiche's own bookkeeping (a switch in progress), not a
+            // verdict: leave the run where it is rather than inventing evidence in either direction.
+            ActivePath.Unreadable -> Unit
         }
-        // No active path at all is a transient of quiche's own bookkeeping (a switch in progress), not
-        // a verdict: leave the run where it is rather than inventing evidence in either direction.
     }
 
     /** Fold one read of the active path into the run and publish the verdict. See [sampleActivePathLiveness]. */
@@ -1875,7 +1884,7 @@ class QuicheDriver(
                 // Trace capture: a timer wake is the periodic-stats sampling point (RFC §5.1 item
                 // 5) — the driver already woke, so this adds no timer and costs nothing when off.
                 if (cmd == null) {
-                    capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
+                    capture.record { r -> recordActivePathStats(r) }
                     // …and the same wake is where the loss-detection timer expires, which is the whole
                     // of the data-plane migration trigger. Gated on there being a collector, which
                     // is the honest test of "could anyone act on this": the reactor subscribes only
@@ -2138,7 +2147,12 @@ class QuicheDriver(
             }
 
             is QuicheCmd.Stats -> {
-                cmd.result.complete(QuicStatsSnapshot(api.connStats(conn), api.connPathStats(conn, 0L)))
+                val active =
+                    when (val path = api.readActivePath(conn)) {
+                        is ActivePath.Read -> path.stats
+                        ActivePath.Unreadable -> null
+                    }
+                cmd.result.complete(QuicStatsSnapshot(api.connStats(conn), active))
             }
 
             is QuicheCmd.PeerTransportParamsRead -> {
@@ -3514,7 +3528,7 @@ class QuicheDriver(
         // Trace capture: one final stats snapshot while the conn handle is still alive, so every
         // recorded session ends with the terminal loss/RTT/byte counters (STATS) even if no timer
         // wake happened (e.g. a pure event-cascade virtual-time run).
-        capture.record { r -> api.connPathStats(conn, 0L)?.let { st -> r.stats(st) } }
+        capture.record { r -> recordActivePathStats(r) }
         api.connFree(conn)
         closeQlog()
         // Tear down any non-primary migration paths: cancel reader, close socket, free
