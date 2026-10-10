@@ -211,8 +211,8 @@ abstract class FailedProbeConnectionIdTestSuite {
             is MigrationResult.Unmoved.Failed.ProbeRejected ->
                 when (result.code) {
                     QUICHE_ERR_INVALID_STATE ->
-                        "the probe's 4-tuple names a path quiche still holds without a CID — a released port " +
-                            "handed back twice in a row, which the driver's single rebind does not absorb"
+                        "the probe's 4-tuple names a path quiche still holds without a CID — the driver " +
+                            "released that path's port before quiche evicted the path"
                     else -> "quiche refused the probe with code ${result.code}"
                 }
             else -> "not a CID-pool failure; see the result"

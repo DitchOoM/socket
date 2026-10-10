@@ -69,7 +69,7 @@ internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /** Client-side local endpoints the sim mints, in open order: primary first, then each probe. */
-internal const val CLIENT_PORT_BASE = 42100
+private const val CLIENT_PORT_BASE = 42100
 
 /** The local address the primary path, and by default every probe path, is bound on. */
 internal const val SIM_LINK_HOST = "127.0.0.1"
@@ -358,6 +358,18 @@ internal sealed interface SimAttach {
     data object Detached : SimAttach
 }
 
+/** How the sim's kernel picks the port for a bind that asked for any port. */
+internal sealed interface SimEphemeralPorts {
+    /** A port no socket has used before. */
+    data object Fresh : SimEphemeralPorts
+
+    /**
+     * The most recently released port, whenever one is free — the worst draw a real kernel can make,
+     * every time, where a real one makes it about once per 16k binds per released port.
+     */
+    data object ReuseLastReleased : SimEphemeralPorts
+}
+
 /**
  * [UdpChannelFactory] over a [MultiPathPipe]. Each `openPath` mints the next synthetic client local
  * endpoint and registers it with the pipe, so a path the driver opens is a path the pipe can impair.
@@ -382,8 +394,7 @@ internal class PipeUdpChannelFactory(
      * synchronous in effect, which is what the pre-#556 `InetSocketAddress` constructor was.
      */
     private val localAddresses: Map<String, Map<Int, SocketAddress>>,
-    /** The port a request for any port binds, by 1-based open index — the sim's ephemeral allocator. */
-    private val ephemeralPort: (Int) -> Int = { CLIENT_PORT_BASE + it },
+    private val ephemeralPorts: SimEphemeralPorts = SimEphemeralPorts.Fresh,
     override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable,
 ) : UdpChannelFactory {
     private val paths = mutableListOf<SocketAddress>()
@@ -395,8 +406,16 @@ internal class PipeUdpChannelFactory(
         localPort: Int,
     ): NewPath {
         val index = paths.size + 1 // +1: the primary was opened by the harness, not through here
-        val port = if (localPort != 0) localPort else ephemeralPort(index)
         val host = localHost ?: hostFor()
+        val port =
+            when {
+                localPort != 0 -> localPort
+                else ->
+                    when (ephemeralPorts) {
+                        SimEphemeralPorts.Fresh -> CLIENT_PORT_BASE + index
+                        SimEphemeralPorts.ReuseLastReleased -> pipe.releasedPorts(host).lastOrNull() ?: (CLIENT_PORT_BASE + index)
+                    }
+            }
         val local =
             localAddresses[host]?.get(port)
                 ?: error("no pre-resolved local endpoint for $host:$port; widen CLIENT_PORT_POOL or SIM_LINK_HOSTS")
@@ -622,11 +641,8 @@ internal suspend fun <R> withMigrationSim(
     primaryImpairment: PathImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY),
     probeImpairment: (Int) -> PathImpairment = { PathImpairment() },
     probeHost: () -> String = { SIM_LINK_HOST },
-    /**
-     * The port each probe socket binds, by 1-based probe index. A fresh port per open by default; a
-     * scenario hands back a port it has seen closed to model a kernel reusing a released ephemeral port.
-     */
-    probePort: (Int) -> Int = { CLIENT_PORT_BASE + it },
+    /** How the sim's kernel picks the port of a probe socket that asked for any port. */
+    ephemeralPorts: SimEphemeralPorts = SimEphemeralPorts.Fresh,
     quicOptions: QuicOptions = migrationSimOptions(),
     serverQuicOptions: QuicOptions = quicOptions,
     establishTimeout: Duration = 60.seconds,
@@ -671,7 +687,7 @@ internal suspend fun <R> withMigrationSim(
         val now: () -> Duration = if (scheduler == null) ({ wallOrigin.elapsedNow() }) else ({ scheduler.currentTime.milliseconds })
         val pipe = MultiPathPipe(seed, simScope, api, bufferFactory, codec, ledger, now)
         val primaryPath = pipe.openPath(primaryLocal, primaryImpairment)
-        val factory = PipeUdpChannelFactory(pipe, probeImpairment, probeHost, clientAddresses, probePort)
+        val factory = PipeUdpChannelFactory(pipe, probeImpairment, probeHost, clientAddresses, ephemeralPorts)
 
         // --- configs (mirror the production server/client setups) ---
         val serverCfg = api.configNew(QUICHE_PROTOCOL_VERSION)

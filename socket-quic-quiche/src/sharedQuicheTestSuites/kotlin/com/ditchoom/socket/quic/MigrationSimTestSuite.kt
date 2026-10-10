@@ -682,58 +682,42 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * A probe socket that lands on the port of a probe path the connection has already torn down still
-     * migrates.
+     * A probe socket can never be bound to a 4-tuple quiche still holds a path for.
      *
-     * Tearing a probe path down retires its destination CID and closes its socket, but quiche keeps the
-     * path, with no CID, under that 4-tuple. A kernel is free to hand the released port to the next
-     * ephemeral bind, and `quiche_conn_probe_path` on that 4-tuple finds the old path and answers
-     * `QUICHE_ERR_INVALID_STATE` — the same 4-tuple fails the same way on every retry, so only a rebind
-     * clears it. The sim hands the port back deterministically, where a real kernel does so roughly once
-     * in 16k binds per stale path.
+     * quiche keeps a torn-down path under its 4-tuple, with no destination connection id, until it
+     * evicts it; `quiche_conn_probe_path` on that 4-tuple answers `QUICHE_ERR_INVALID_STATE`, and every
+     * retry on it fails the same way. The sim's kernel here hands every ephemeral bind the most recently
+     * released port, so a driver that releases a port while quiche still holds its path collides on
+     * every bind, however many times it rebinds.
      */
     @Test
-    fun aProbeBoundToATornDownPathsPortRebindsAndMigrates() =
+    fun anEphemeralBindNeverLandsOnAPathQuicheStillHolds() =
         runTest {
             var blackholeProbes = true
-            val reusedPorts = ArrayDeque<Int>()
             wrapTestBody {
                 withMigrationSim(
                     simEnv(),
                     seed = 58_301L,
                     probeImpairment = { PathImpairment(reach = LinkReach(if (blackholeProbes) PathReach.Dark else PathReach.Open)) },
-                    probePort = { index -> reusedPorts.removeFirstOrNull() ?: (CLIENT_PORT_BASE + index) },
+                    ephemeralPorts = SimEphemeralPorts.ReuseLastReleased,
                 ) {
                     awaitSpareDcids(count = SPARE_POOL)
                     repeat(FAILED_ATTEMPTS) { attempt ->
                         val result = withTimeout(120.seconds) { migrate().await() }
                         assertTrue(result is MigrationResult.Unmoved, "attempt ${attempt + 1} was blackholed yet reported $result")
                     }
-                    // A port quiche probed whose socket the driver has since closed: quiche still holds its path.
-                    val probed =
-                        clientAudit.probeCalls
-                            .filter { it.second is ProbeOutcome.Probed }
-                            .map { it.first }
-                            .toSet()
-                    val stale =
-                        pipe.paths().lastOrNull { it.key in probed && it.socket == SimSocket.Closed }
-                            ?: error("no torn-down probe path to collide with; probes=${clientAudit.probeCalls.describe()}")
-                    val stalePort = stale.local.port
-                    reusedPorts.addLast(stalePort)
-
                     blackholeProbes = false
                     val recovered = withTimeout(120.seconds) { migrate().await() }
-                    val probesOnStalePort = clientAudit.probeCalls.filter { it.first.port == stalePort }
+                    val evidence = "probes=${clientAudit.probeCalls.describe()} quichePaths=${clientPathTable()}"
+                    assertIs<MigrationResult.Succeeded>(recovered, "the recovery migration reported $recovered. $evidence")
                     assertTrue(
-                        probesOnStalePort.any { (it.second as? ProbeOutcome.Rejected)?.code == QUICHE_ERR_INVALID_STATE },
-                        "the recovery probe never collided with the torn-down path on port $stalePort, so this " +
-                            "proves nothing: probes=${clientAudit.probeCalls.describe()}",
+                        clientAudit.probeCalls.none { (it.second as? ProbeOutcome.Rejected)?.code == QUICHE_ERR_INVALID_STATE },
+                        "a probe landed on a 4-tuple quiche still holds a path for. $evidence",
                     )
-                    assertIs<MigrationResult.Succeeded>(
-                        recovered,
-                        "a probe bound to port $stalePort, whose torn-down path quiche still holds, was not " +
-                            "rebound: $recovered. probes=${clientAudit.probeCalls.describe()} " +
-                            "quichePaths=${clientPathTable()}",
+                    val bound = clientPaths()
+                    assertTrue(
+                        bound.size > bound.toSet().size,
+                        "the sim's kernel never handed a released port back, so nothing was exercised: $bound",
                     )
                 }
             }
