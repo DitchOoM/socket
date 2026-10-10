@@ -190,13 +190,9 @@ internal class MigrationSimScope(
      * One read of the client's **active** path — the counters the shipped silence trigger actually
      * folds into its run.
      *
-     * Not reachable through `clientDriver.stats()`: [QuicheCmd.Stats] reads path index 0, which is the
-     * active path only until the first successful migration and never again. A scenario that migrates
-     * before it kills anything must ask for the active path by search, exactly as
-     * `QuicheDriver.sampleActivePathLiveness` does, or it measures the link the connection already left
-     * — which is how the first investigation of
-     * `aPathThatDiesBeforeItsRoundTripIsSampledStillReHomesInTime` came to read zero expiries off a dead
-     * path and go looking in the wrong place.
+     * Searches for the active path as [ActivePath] does, and reports its index too, so a scenario can
+     * assert which path it measured: path 0 is the active path only until the first successful
+     * migration.
      *
      * ⚠️ Only valid while the driver is **quiescent**, for the reason [clientAvailableDcids] gives.
      */
