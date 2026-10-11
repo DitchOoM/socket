@@ -928,6 +928,16 @@ class QuicheDriver(
     private val paths = mutableMapOf(primary.key to primary)
 
     /**
+     * Torn-down paths whose socket stays bound because quiche still holds a path under their 4-tuple.
+     *
+     * quiche keeps a path it no longer uses — with no destination CID — until it evicts it to make
+     * room, and `quiche_conn_probe_path` on that 4-tuple answers `QUICHE_ERR_INVALID_STATE` forever.
+     * Holding the port is what stops the kernel handing it to a new probe socket. An entry leaves only
+     * when quiche reports the path [QuichePathEventType.Closed], or at [cleanup].
+     */
+    private val reservedPorts = mutableMapOf<PathKey, PathEntry>()
+
+    /**
      * The migration wiring when this driver has it, else null — one `when` over the sealed capability
      * instead of the four-term boolean this replaced
      * (`role is Client && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L`). Every
@@ -2801,10 +2811,7 @@ class QuicheDriver(
      * Never suspends: a platform open has no bound of its own, so it runs as its own job under
      * path validation's budget and posts [PathOpened] when it settles.
      */
-    private fun handleMigrate(
-        cmd: QuicheCmd.Migrate,
-        attempt: MigrateAttempt = MigrateAttempt.First,
-    ) {
+    private fun handleMigrate(cmd: QuicheCmd.Migrate) {
         // One translation, not a judgement: each non-Supported capability names exactly one
         // "and never will" outcome, so the caller learns *which* permanent condition applies rather
         // than a single opaque `Unsupported`.
@@ -2908,7 +2915,7 @@ class QuicheDriver(
                     }
                 // The loop owns everything from here. A closed channel means the connection died while
                 // the platform was still opening — nothing will ever probe this socket, so give it back.
-                if (commands.trySend(PathOpened(cmd, attempt, outcome)).isFailure) releaseIfOpened(outcome)
+                if (commands.trySend(PathOpened(cmd, outcome)).isFailure) releaseIfOpened(outcome)
             }
         lane = MigrationLane.Opening(cmd, job)
     }
@@ -2933,14 +2940,13 @@ class QuicheDriver(
         when (val outcome = opened.outcome) {
             is PathOpenOutcome.TimedOut -> cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathOpenTimedOut(outcome.budget))
             is PathOpenOutcome.Failed -> cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathUnavailable(outcome.cause))
-            is PathOpenOutcome.Opened -> probeOpenedPath(cmd, opened.attempt, outcome.path)
+            is PathOpenOutcome.Opened -> probeOpenedPath(cmd, outcome.path)
         }
     }
 
     /** Probe a socket the platform opened for [cmd] and arm validation — the half of a migration that needs quiche. */
     private fun probeOpenedPath(
         cmd: QuicheCmd.Migrate,
-        attempt: MigrateAttempt,
         newPath: NewPath,
     ) {
         val wiring =
@@ -2949,12 +2955,6 @@ class QuicheDriver(
                 cmd.result.complete(MigrationResult.Unmoved.Impossible.BackendCannotMigrate)
                 return
             }
-        val requestedPort =
-            when (val t = cmd.target) {
-                MigrationTarget.FreshLocalEndpoint, is MigrationTarget.LocalAddress -> 0
-                is MigrationTarget.LocalEndpoint -> t.port
-            }
-
         val key = api.decodePathKey(newPath.localSockAddrAddress)
         val kept = keptPath()
         when (kept) {
@@ -3000,9 +3000,8 @@ class QuicheDriver(
 
         // Probe BEFORE the path entry exists, because the entry cannot be built without the DCID this
         // call returns (see [PathSlot]); inserting first would leave every failure exit without a
-        // value to retire. On the `create_path_on_client` failures a rejected probe allocates
-        // nothing, so there is no recv_info, no map entry and no connection ID to unwind here; see
-        // [probeRejection] for the one branch where that is not true.
+        // value to retire. A rejected probe allocates nothing, so there is no recv_info, no map entry
+        // and no connection ID to unwind here.
         val probe =
             api.connProbePath(
                 conn,
@@ -3015,20 +3014,6 @@ class QuicheDriver(
             when (probe) {
                 is ProbeOutcome.Rejected -> {
                     releaseUnprobedPath(newPath)
-                    val reason = probeRejection(probe.code)
-                    // A stale-path collision means the kernel handed back a port whose old path quiche
-                    // still holds. Rebinding is the only thing that can clear it — retrying the same
-                    // 4-tuple fails identically forever — and it is only available when the caller let
-                    // us choose the port. One retry, because a second collision on a fresh ephemeral
-                    // port is evidence of something this does not model, not of bad luck twice.
-                    val rebindable =
-                        reason is ProbeRejection.StalePathCollision &&
-                            requestedPort == 0 &&
-                            attempt == MigrateAttempt.First
-                    if (rebindable) {
-                        handleMigrate(cmd, MigrateAttempt.AfterRebind)
-                        return
-                    }
                     cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
                     return
                 }
@@ -3089,38 +3074,6 @@ class QuicheDriver(
                 }
         }
     }
-
-    /**
-     * What quiche's refusal to probe a path actually means.
-     *
-     * The two codes below are the ones `quiche_conn_probe_path` can return, and they are reached by
-     * different routes in quiche 0.29.3 (`lib.rs:7175`):
-     *
-     * ```rust
-     * let pid = match self.paths.path_id_from_addrs(&(local_addr, peer_addr)) {
-     *     Some(pid) => pid,
-     *     None => self.create_path_on_client(local_addr, peer_addr)?,   // OUT_OF_IDENTIFIERS
-     * };
-     * let path = self.paths.get_mut(pid)?;
-     * path.request_validation();
-     * path.active_dcid_seq.ok_or(Error::InvalidState)                    // INVALID_STATE
-     * ```
-     *
-     * So `INVALID_STATE` is **not** an exhausted pool: it is an *existing* path whose destination CID
-     * is gone — the shape a previous abandoned probe leaves behind when the kernel hands its ephemeral
-     * port back. Probing that same 4-tuple again fails identically forever, so it is retryable only by
-     * rebinding, never by waiting.
-     *
-     * ⚠️ Note `request_validation()` runs **before** the failing check, so on that branch quiche has
-     * already put the existing path into requesting-validation. A rejected probe is therefore not
-     * always inert.
-     */
-    private fun probeRejection(code: Int): ProbeRejection =
-        when (code) {
-            QUICHE_ERR_INVALID_STATE -> ProbeRejection.StalePathCollision
-            QUICHE_ERR_OUT_OF_IDENTIFIERS -> ProbeRejection.OutOfConnectionIds
-            else -> ProbeRejection.Unrecognised(code)
-        }
 
     /**
      * Give back everything [newPath] acquired, for the two exits that abandon it before
@@ -3209,11 +3162,13 @@ class QuicheDriver(
 
                 QuichePathEventType.Closed -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    // Never tear down the path the connection lives on. quiche 0.29 only emits Closed
-                    // for paths make_room_for_new_path evicted — which are never active — so this
-                    // guard is a backstop. It compares against `active`, not the primary: post-migration
-                    // the entry to protect need not be the primary.
+                    // Never tear down the path the connection lives on. quiche only emits Closed for
+                    // paths make_room_for_new_path evicted — which are never active — so this guard is
+                    // a backstop. It compares against `active`, not the primary: post-migration the
+                    // entry to protect need not be the primary.
                     paths[key]?.let { if (it !== active) teardownPath(it) }
+                    // quiche no longer holds this 4-tuple, so its port may name a new path.
+                    reservedPorts.remove(key)?.let(::releaseReservedPort)
                 }
 
                 QuichePathEventType.New,
@@ -3314,12 +3269,8 @@ class QuicheDriver(
     }
 
     /**
-     * Cancel a path's reader, close its socket, and — for non-primary paths — free its recv_info and
-     * pinned sockaddr. The primary's exemption is an *ownership* fact, not a lifecycle one: its
-     * recv_info is the driver-level [recvInfo] freed once in [cleanup], and its sockaddr belongs to
-     * the connection setup's [onCleanup] — freeing either here would be a use-after-free later, but
-     * its reader and socket retire exactly like any other path's when a migration moves off it —
-     * exempting the primary wholesale would mean the original path could never be released.
+     * Retire a path's destination CID, drop it from routing and stop its reader. Its socket stays bound
+     * in [reservedPorts] until quiche evicts the path, and [releaseReservedPort] frees the rest.
      */
     private fun teardownPath(entry: PathEntry) {
         // quiche routes the active path through this socket; closing it would strand the connection.
@@ -3327,16 +3278,24 @@ class QuicheDriver(
         // First, and unconditionally: the path stops holding its destination CID, which retires it
         // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a kept
         // path replaced, a refused switch, a quiche path eviction — so this is the one place a CID
-        // can be released, and there is no way to remove a path from `paths` that bypasses it. It runs before the socket closes because it is a quiche call, not
-        // an I/O one, and the connection is still live for all of them.
+        // can be released, and there is no way to remove a path from `paths` that bypasses it.
         entry.transitionTo(PathSlot.Abandoned)
         paths.remove(entry.key)
         entry.readerJob?.cancel()
+        reservedPorts.put(entry.key, entry)?.let(::releaseReservedPort)
+    }
+
+    /**
+     * Close a torn-down path's socket and — for non-primary paths — free its recv_info and pinned
+     * sockaddr. The primary's exemption is an ownership fact: its recv_info is the driver-level
+     * [recvInfo] freed in [cleanup], and its sockaddr belongs to the connection setup's [onCleanup].
+     */
+    private fun releaseReservedPort(entry: PathEntry) {
         try {
             entry.channel.close()
         } catch (_: Exception) {
         }
-        entry.shut()
+        entry.shut() // after the close, so no platform send can still read a stalled datagram
         if (entry.isPrimary) return
         api.recvInfoFree(entry.recvInfo) // free recv_info before the sockaddr it references
         entry.release()
@@ -3535,6 +3494,8 @@ class QuicheDriver(
             entry.release()
         }
         paths.clear()
+        for (entry in reservedPorts.values) releaseReservedPort(entry)
+        reservedPorts.clear()
         api.recvInfoFree(recvInfo)
         api.sendInfoFree(sendInfo)
         sendScratch.buffer.freeNativeMemory()
