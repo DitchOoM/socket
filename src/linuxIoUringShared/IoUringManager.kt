@@ -696,19 +696,22 @@ internal object IoUringManager {
      * Returns the CQE result: `>= 0` on success, `-errno` on failure. If no ring can be set up, throws
      * the module's [IoUringFailure].
      *
-     * On cancellation the kernel operation is cancelled and its CQE awaited (bounded) before the
-     * CancellationException propagates, so the kernel no longer holds the caller's buffers.
+     * On cancellation the kernel operation is cancelled and its CQE awaited before the CancellationException
+     * propagates, so the kernel no longer holds the caller's buffers. The operation may have completed anyway:
+     * its result goes to [abandoned], since the cancelled caller never sees it, and a result that is a resource,
+     * such as an accepted descriptor, is released there.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun submitAndWait(
         timeout: Duration? = null,
+        abandoned: (result: Int) -> Unit = {},
         prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
     ): Int {
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
         enqueue(SubmissionRequest(userData, deferred, deadline, SubmissionKind.Awaited, prepareOp))
-        return awaitCompletion(userData, deferred)
+        return awaitCompletion(userData, deferred, abandoned)
     }
 
     /**
@@ -730,7 +733,7 @@ internal object IoUringManager {
     ): Int {
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
         enqueue(SubmissionRequest(userData, deferred, deadline, SubmissionKind.Awaited) { sqe, _ -> prepareOp(sqe) })
-        return awaitCompletion(userData, deferred)
+        return awaitCompletion(userData, deferred, abandoned = {})
     }
 
     /**
@@ -739,11 +742,14 @@ internal object IoUringManager {
      * the poller has not prepared yet would then be submitted against whatever the process opens next under
      * that number. The wait ends: the cancel is enqueued behind its target, so the kernel completes the
      * operation with `-ECANCELED` once it is submitted; a forced [stop] completes every pending operation;
-     * an idle release never ends a life that holds one.
+     * an idle release never ends a life that holds one. A result the operation completed with anyway goes to
+     * [abandoned].
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun awaitCompletion(
         userData: Long,
         deferred: CompletableDeferred<Int>,
+        abandoned: (result: Int) -> Unit,
     ): Int {
         try {
             return deferred.await()
@@ -762,6 +768,8 @@ internal object IoUringManager {
                     deferred.join()
                 }
             }
+            // A deferred failed by an ended life carries no result.
+            if (deferred.getCompletionExceptionOrNull() == null) abandoned(deferred.getCompleted())
             throw e
         }
     }
