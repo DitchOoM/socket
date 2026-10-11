@@ -8,13 +8,18 @@ import com.ditchoom.socket.BlockReason
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceMigrationTrigger
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,9 +70,21 @@ class AutoMigrationReactorTests {
     private val cellular = NetworkId.Link(NetworkKind.Cellular, 2L)
     private val ethernet = NetworkId.Link(NetworkKind.Ethernet, 3L)
 
+    /**
+     * How long after a move onto the standby link the connection must be back on a default link that
+     * answers. The walk paid 62.7h; this is the scale of the silence detection that moved it off.
+     */
+    private val returnBound = 5.seconds
+
     private companion object {
         /** Far past any count a backing-off reactor reaches in these tests. */
         const val SPIN_GUARD = 100
+
+        /** A validated probe's round trip on the migration sim's 60ms one-way link. */
+        val ONE_RTT = 120.milliseconds
+
+        /** What an unanswered probe costs before quiche abandons it (RFC 9000 §8.2.4: 3 x PTO, PTO floored near 1s). */
+        val ABANDON_BUDGET = 3.seconds
     }
 
     /**
@@ -81,6 +98,13 @@ class AutoMigrationReactorTests {
     private class RecordingQuicConnection(
         dispatcher: CoroutineContext,
         private val result: MigrationResult,
+        /** The test scheduler's virtual clock, so [migrateTimes] and [trace] are on one timeline. */
+        private val now: () -> Duration,
+        /**
+         * How long each `migrate` takes to answer: the path validation a real attempt waits out. Zero
+         * keeps the instant answers the older tests were written against.
+         */
+        private val validation: Duration,
     ) : QuicConnection {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = dispatcher + job
@@ -95,6 +119,19 @@ class AutoMigrationReactorTests {
         val migrateArgs = mutableListOf<MigrationTarget>()
         val migrateCount: Int get() = migrateArgs.size
 
+        /** When each default-route `migrate` began, on the test's virtual clock. */
+        val migrateTimes = mutableListOf<Duration>()
+
+        /** Everything the reactor recorded, standby moves included: the timeline a failure prints. */
+        val trace = mutableListOf<TraceEvent>()
+
+        /** [trace]'s migrations and the default-route call times, one per line, for an assertion message. */
+        fun timeline(): String =
+            "default-route migrate() began at $migrateTimes; MIGRATION records:" +
+                trace.filterIsInstance<TraceEvent.Migration>().joinToString("") {
+                    "\n  t=${it.at.inWholeMilliseconds}ms ${it.trigger} attempt=${it.attempt} ${it.outcome}"
+                }
+
         /** Set by a test to make the next `migrate` calls park; complete it to let them return. */
         var gate: CompletableDeferred<Unit>? = null
 
@@ -104,6 +141,8 @@ class AutoMigrationReactorTests {
 
         override suspend fun migrate(target: MigrationTarget): MigrationResult {
             migrateArgs += target
+            migrateTimes += now()
+            delay(validation)
             gate?.await()
             completedCount++
             return result
@@ -155,14 +194,22 @@ class AutoMigrationReactorTests {
         migrateResult: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("127.0.0.1", 51234)),
         pathLiveness: MutableStateFlow<PathLiveness> = livenessFlow(),
         standby: StandbyPaths = StandbyPaths.None,
+        validation: Duration = Duration.ZERO,
         // Receiver, not just a parameter, so a test can advance the virtual clock. Every assertion in
         // this file used to be driven by a fresh `setNetworkId`, which is exactly the blind spot #453
         // lived in: the one thing no test could express was *time passing with no further input*.
         body: TestScope.(RecordingQuicConnection) -> Unit,
     ) = runTest {
-        val connection = RecordingQuicConnection(UnconfinedTestDispatcher(testScheduler), migrateResult)
+        val connection =
+            RecordingQuicConnection(
+                UnconfinedTestDispatcher(testScheduler),
+                migrateResult,
+                { testScheduler.currentTime.milliseconds },
+                validation,
+            )
+        val capture = TraceCapture.On(QuicTraceRecorder({ event -> connection.trace += event }, SimClock(testScheduler)))
         try {
-            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness, TraceCapture.Off, standby)
+            wireAutoMigration(options(monitor, policy), connection, monitor, pathLiveness, capture, standby)
             body(connection)
         } finally {
             connection.stop()
@@ -899,6 +946,8 @@ class AutoMigrationReactorTests {
     /** A standby link a test attaches by hand. [moves] counts the migrations made onto it. */
     private class ScriptedStandby(
         private val result: MigrationResult = MigrationResult.Succeeded(QuicLocalEndpoint("192.0.2.7", 40001)),
+        /** How long each move onto the standby link takes to validate. */
+        private val validation: Duration = Duration.ZERO,
     ) : StandbyPaths {
         private val state = MutableStateFlow<StandbyPath>(StandbyPath.Unavailable)
         var moves = 0
@@ -908,6 +957,7 @@ class AutoMigrationReactorTests {
             state.value =
                 StandbyPath.Ready(id) {
                     moves++
+                    delay(validation)
                     // A reactor that stopped backing off would spin here forever on the test's
                     // unconfined dispatcher; end it instead, so the count can say so.
                     if (moves > SPIN_GUARD) MigrationResult.Unmoved.Impossible.ConnectionClosed else result
@@ -1265,7 +1315,12 @@ class AutoMigrationReactorTests {
             standby.attach(cellular)
             assertEquals(1, standby.moves, "the standby link waited out a backoff it should have cut short")
             advanceTimeBy(observationWindow)
-            assertEquals(3, conn.migrateCount, "the ladder kept probing the dead link after moving off it")
+            // Three failures and the move: anything after it is the return schedule, not the ladder.
+            assertEquals(
+                4,
+                conn.trace.filterIsInstance<TraceEvent.Migration>().count { it.trigger == TraceMigrationTrigger.PathStoppedAnswering },
+                "the ladder kept probing the dead link after moving off it. ${conn.timeline()}",
+            )
         }
     }
 
@@ -1284,6 +1339,217 @@ class AutoMigrationReactorTests {
             advanceTimeBy(800.milliseconds)
             assertEquals(3, standby.moves, "the standby link must be retried on the backoff's cadence")
             assertEquals(0, conn.migrateCount)
+        }
+    }
+
+    /**
+     * **The 2026-09-26 Samsung walk: a move onto the standby link was never undone.** A 4.6s Wi-Fi blip
+     * moved the connection onto cellular; Wi-Fi answered again 0.4s later and stayed the platform's
+     * healthy default, and Android reported nothing, so the connection stayed on roaming LTE for 62.7h.
+     *
+     * Here the default route answers from the start and the monitor is never touched after the blip:
+     * the only way back is the reactor asking the default link on its own.
+     */
+    @Test
+    fun aMoveOntoTheStandbyLinkIsUndoneOnceTheDefaultLinkAnswersWithNoPlatformEvent() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby, validation = ONE_RTT) { conn ->
+            liveness.value = PathLiveness.Silent // the blip
+            liveness.value = PathLiveness.Answering // the standby path carries the connection
+            assertEquals(1, standby.moves, "precondition: the blip moved the connection onto the standby link")
+
+            advanceTimeBy(returnBound)
+            assertEquals(
+                1,
+                conn.migrateCount,
+                "the default link answered throughout and the platform named it throughout, but the " +
+                    "connection was still on the standby link $returnBound after the blip. ${conn.timeline()}",
+            )
+            advanceTimeBy(observationWindow * longRunWindows)
+            assertEquals(1, standby.moves, "the connection flapped back onto the standby link. ${conn.timeline()}")
+            assertEquals(1, conn.migrateCount, "the default link was probed again after the return. ${conn.timeline()}")
+        }
+    }
+
+    /**
+     * A default link that stays dark leaves the connection on the standby link, which is working, and
+     * is asked again on a decaying schedule: soon at first, then about once a minute, never given up.
+     */
+    @Test
+    fun aDefaultLinkThatStaysDarkIsAskedOnADecayingScheduleWithoutLeavingTheStandbyLink() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated,
+            pathLiveness = liveness,
+            standby = standby,
+            validation = ABANDON_BUDGET,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            val parkedAt = testScheduler.currentTime.milliseconds
+            advanceTimeBy(observationWindow * 10)
+
+            val starts = conn.migrateTimes.toList()
+            assertTrue(starts.isNotEmpty(), "the default link was never asked again. ${conn.timeline()}")
+            assertTrue(
+                starts.first() - parkedAt <= returnBound,
+                "the first return probe came ${starts.first() - parkedAt} after the move. ${conn.timeline()}",
+            )
+            val waits = starts.zipWithNext { a, b -> b - a - ABANDON_BUDGET }
+            assertTrue(
+                waits.zipWithNext().all { (a, b) -> b >= a },
+                "the waits between return probes must never shrink: $waits. ${conn.timeline()}",
+            )
+            assertTrue(
+                waits.last() >= observationWindow / 2,
+                "the schedule never decayed: waits $waits. ${conn.timeline()}",
+            )
+            assertTrue(
+                waits.last() <= observationWindow,
+                "the schedule gave up or stretched past a minute: waits $waits. ${conn.timeline()}",
+            )
+            assertEquals(1, standby.moves, "the connection left the working standby link. ${conn.timeline()}")
+        }
+    }
+
+    /** A change the platform reports restarts the return schedule: a link that changed is worth asking about now. */
+    @Test
+    fun aPlatformChangeWhileOnTheStandbyLinkRestartsTheReturnSchedule() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress)))
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Unmoved.Failed.PathNotValidated,
+            pathLiveness = liveness,
+            standby = standby,
+            validation = ABANDON_BUDGET,
+        ) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            advanceTimeBy(observationWindow * 10)
+            val before = conn.migrateTimes.toList()
+            assertTrue(before.size >= 2, "precondition: the schedule has decayed. ${conn.timeline()}")
+            val decayedWait = before.last() - before[before.size - 2] - ABANDON_BUDGET
+            // Clear of the probe in flight, so the change lands on a waiting schedule.
+            advanceTimeBy(ABANDON_BUDGET + ONE_RTT)
+            val changedAt = testScheduler.currentTime.milliseconds
+            monitor.setLinkAddresses(mapOf(wifi to listOf(wifiAddress, "2001:db8:1::10")))
+            advanceTimeBy(returnBound)
+            val next = conn.migrateTimes.firstOrNull { it >= changedAt }
+            assertTrue(
+                next != null && next - changedAt <= returnBound && next - changedAt < decayedWait,
+                "the platform reported a change at $changedAt, and the next return probe was still on the " +
+                    "decayed $decayedWait-wait schedule. ${conn.timeline()}",
+            )
+        }
+    }
+
+    /**
+     * A return the default link cannot hold is a flap, and the next return waits longer; a return that
+     * holds lets the schedule start from the beginning the next time.
+     */
+    @Test
+    fun aReturnTheDefaultLinkCannotHoldWaitsLongerBeforeTheNext() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby().apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby, validation = ONE_RTT) { conn ->
+            fun parkOnStandby(): Duration {
+                liveness.value = PathLiveness.Silent
+                liveness.value = PathLiveness.Answering
+                return testScheduler.currentTime.milliseconds
+            }
+
+            /** How long after [parkedAt] the return that follows it began. */
+            fun returnedAfter(parkedAt: Duration): Duration {
+                val returns = conn.migrateCount
+                advanceTimeBy(returnBound)
+                assertEquals(returns + 1, conn.migrateCount, "no return from the standby link. ${conn.timeline()}")
+                return conn.migrateTimes.last() - parkedAt
+            }
+
+            val first = returnedAfter(parkOnStandby())
+            // The default link goes silent again right after the return: a flap.
+            val afterFlap = returnedAfter(parkOnStandby())
+            assertTrue(
+                afterFlap > first,
+                "the return after a flap came $afterFlap after the move, no later than the first ($first): " +
+                    "a link that cannot hold the connection is flapped onto at full rate. ${conn.timeline()}",
+            )
+            advanceTimeBy(observationWindow * longRunWindows)
+            val afterAHeldReturn = returnedAfter(parkOnStandby())
+            assertEquals(
+                first,
+                afterAHeldReturn,
+                "a return that held must let the next one start from the beginning. ${conn.timeline()}",
+            )
+            assertEquals(3, standby.moves)
+        }
+    }
+
+    /**
+     * A move onto the standby link still in flight when a return's hold-down ends starts a schedule of
+     * its own, and the hold-down's end, queued behind that move, does not cancel it.
+     */
+    @Test
+    fun aMoveOntoTheStandbyLinkAsAHoldDownEndsIsStillReturnedFrom() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        val liveness = livenessFlow()
+        val standby = ScriptedStandby(validation = ONE_RTT).apply { attach(cellular) }
+        runReactor(monitor, pathLiveness = liveness, standby = standby, validation = ONE_RTT) { conn ->
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            advanceTimeBy(returnBound)
+            assertEquals(1, conn.migrateCount, "precondition: the first return. ${conn.timeline()}")
+            val returnedAt = conn.migrateTimes.last() + ONE_RTT
+
+            // The default link goes silent just before the hold-down ends; the move onto the standby
+            // link is still validating when it does.
+            advanceTimeBy(returnedAt + RETURN_HOLD_DOWN - ONE_RTT / 2 - testScheduler.currentTime.milliseconds)
+            liveness.value = PathLiveness.Silent
+            liveness.value = PathLiveness.Answering
+            advanceTimeBy(returnBound)
+            assertEquals(2, standby.moves, "precondition: the second move onto the standby link. ${conn.timeline()}")
+            assertEquals(
+                2,
+                conn.migrateCount,
+                "the connection moved onto the standby link as the hold-down ended and never asked its way " +
+                    "back: the hold-down's own end, queued behind the move, cancelled the new schedule. ${conn.timeline()}",
+            )
+        }
+    }
+
+    /**
+     * **The walk's Q5.3.** Android named a Wi-Fi network with no IPv4 address yet, so every attempt
+     * onto it failed; the address arrived and the next attempt waited out the rest of a 16s backoff.
+     * The address arriving is the news the backoff was waiting for.
+     */
+    @Test
+    fun anAddressArrivingOnTheLinkARetryIsWaitingForEndsItsBackoff() {
+        val monitor = SimNetworkMonitor.on(cellular)
+        monitor.setLinkAddresses(mapOf(cellular to listOf(cellularAddress), wifi to emptyList()))
+        runReactor(
+            monitor,
+            migrateResult = MigrationResult.Unmoved.Failed.LocalPathUnavailable(IllegalStateException("no IPv4 address on wifi")),
+        ) { conn ->
+            monitor.setNetworkId(wifi)
+            advanceTimeBy(20.seconds) // attempts at 0, 0.25, 0.75, 1.75, 3.75, 7.75 and 15.75s; the next is 16s off
+            val attempts = conn.migrateCount
+            val arrivedAt = testScheduler.currentTime.milliseconds
+            monitor.setLinkAddresses(mapOf(cellular to listOf(cellularAddress), wifi to listOf(wifiAddress)))
+            assertEquals(
+                attempts + 1,
+                conn.migrateCount,
+                "wifi's address arrived at $arrivedAt and no attempt followed it. ${conn.timeline()}",
+            )
+            assertEquals(arrivedAt, conn.migrateTimes.last(), conn.timeline())
         }
     }
 
