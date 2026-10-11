@@ -90,11 +90,19 @@ internal class LaggingScidRetirementQuicheApi(
             if (recording) recvResults = recvResults + it
         }
 
+    /** quiche's own retired-SCID count at the server's latest wake — what the gate is hiding. */
+    @Volatile
+    private var quicheRetired = 0
+
     override fun connRetiredScids(conn: QuicheConn): Int {
         val actual = delegate.connRetiredScids(conn)
+        quicheRetired = actual
         if (actual > 0) firstRetirement.complete(actual)
         return if (gated) 0 else actual
     }
+
+    /** The gate, what quiche has retired behind it, and the recv codes recorded so far, for a failure message. */
+    fun describe(): String = "routing view: gated=$gated, quiche retired=$quicheRetired, recv codes since release=$recvResults"
 
     /**
      * While gated, report no active source ids at all. [QuicheDriver] treats that as "this backend
