@@ -8,15 +8,13 @@ import platform.posix.access
 /**
  * Linux K/Native member of [QuicActiveMigrationTestSuite].
  *
- * Linux wires a real `UdpSocketChannelFactory` (`WithQuicConnection.linux.kt:199`), so both suite
- * tests are expected to pass here. That is the point of adding this member alongside the Apple one:
- * a suite that is red everywhere proves nothing about the platform, only about the suite. Linux
- * green + Apple red localises the defect to the platform.
+ * Both ends are Linux: the client migrates through `UdpSocketChannelFactory`, and the server answers
+ * the migrated path through the shared unconnected socket, sending each reply to quiche's
+ * `send_info.to` ([ServerConnectionUdpChannel]).
  *
- * Distinct from the pre-existing [LinuxQuicMigrationLoopbackTests], which migrates to the `127.0.0.2`
- * loopback alias — a Linux-only address trick. This member exercises the portable fresh-ephemeral-port
- * path that every target can run. The alias test is kept: it additionally proves migration across a
- * different local *address*, not just a different port.
+ * Distinct from [LinuxQuicMigrationLoopbackTests], which migrates to the `127.0.0.2` loopback alias — a
+ * Linux-only address trick that proves a move across local *addresses*. This member exercises the
+ * portable fresh-ephemeral-port path every target runs.
  *
  * cinterop fixes the quiche binding at compile time, so there is no `UnsatisfiedLinkError` skip path
  * and [wrapTestBody] stays the default pass-through — on Linux this always runs.
