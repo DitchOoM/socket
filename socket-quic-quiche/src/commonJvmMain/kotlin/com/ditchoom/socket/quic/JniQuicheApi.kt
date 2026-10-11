@@ -265,11 +265,23 @@ object JniQuicheApi : QuicheApi {
         err: Long,
     ): Int = nConnStreamShutdown(conn.handle, streamId.id, direction, err)
 
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = nConnStreamCapacity(conn.handle, streamId.id)
+
     override fun connPeerCert(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
     ): Int = nConnPeerCert(conn.handle, buf, bufLen)
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnPeerCertChainAt(conn.handle, index, buf, bufLen)
 
     override fun connApplicationProto(
         conn: QuicheConn,
@@ -869,6 +881,13 @@ object JniQuicheApi : QuicheApi {
 
     @FastNative
     @JvmStatic
+    private external fun nConnStreamCapacity(
+        conn: Long,
+        streamId: Long,
+    ): Long
+
+    @FastNative
+    @JvmStatic
     private external fun nConnStreamShutdown(
         conn: Long,
         streamId: Long,
@@ -880,6 +899,15 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic
     private external fun nConnPeerCert(
         conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnPeerCertChainAt(
+        conn: Long,
+        index: Int,
         buf: Long,
         bufLen: Int,
     ): Int

@@ -122,6 +122,28 @@ class AndroidQuicMigrationTests {
         }
     }
 
+    /**
+     * [NetworkControl.addLatency], or a counted skip when the device's kernel has no `netem` qdisc. The
+     * API 24 emulator image ships without it (`Android does not support qdisc 'netem'`), which is a
+     * property of that system image, not of the code under test, and no lane setting can add it, the same
+     * shape as the unrooted-device skip in [checkPrerequisites]. Matched narrowly: any other control
+     * failure still fails the test.
+     */
+    private fun addLatencyOrSkip(ms: Int) {
+        try {
+            control.addLatency(ms)
+        } catch (e: RuntimeException) {
+            val message = e.message.orEmpty()
+            if (!message.contains("does not support qdisc 'netem'")) throw e
+            recordSkip(
+                AndroidQuicMigrationTests::class,
+                SkipReason.HostBehaviourDiffers(message),
+                SkipGate.HostCannotProvideIt("a device kernel with the netem qdisc for latency impairment"),
+            )
+            assumeTrue(message, false)
+        }
+    }
+
     private suspend fun QuicByteStream.send(payload: String) {
         val out = BufferFactory.Default.allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
@@ -199,6 +221,9 @@ class AndroidQuicMigrationTests {
     @Test
     fun connectionWithHighLatency() =
         runBlocking(Dispatchers.IO) {
+            // Probed before connecting, so a missing capability skips outside the connection's block.
+            addLatencyOrSkip(500)
+            control.removeLatency()
             withServerConnection {
                 control.addLatency(500)
                 delay(1.seconds)

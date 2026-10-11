@@ -269,6 +269,14 @@ internal class StubQuicheApi : QuicheApi {
         return StreamSendResult(result, code)
     }
 
+    /** What [connStreamCapacity] reports for every stream: writable by default, like an idle real stream. */
+    @Volatile var streamCapacity: Long = 1L shl 20
+
+    override fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long = streamCapacity
+
     /** Records each [connStreamShutdown] call as (streamId, direction, errorCode) so tests can assert resets. */
     val streamShutdowns = mutableListOf<Triple<Long, Int, Long>>()
 
@@ -291,6 +299,16 @@ internal class StubQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ) = peerCertLen
+
+    /** Lengths [connPeerCertChainAt] reports, leaf first; past the end it reports 0. Never writes, as above. */
+    @Volatile var peerCertChainLens: List<Int> = emptyList()
+
+    override fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
+        buf: Long,
+        bufLen: Int,
+    ) = peerCertChainLens.getOrElse(index) { 0 }
 
     override fun connPeerError(conn: QuicheConn): QuicError? = peerError
 

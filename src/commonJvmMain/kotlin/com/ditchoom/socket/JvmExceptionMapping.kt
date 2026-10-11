@@ -5,7 +5,6 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.ClosedChannelException
-import java.nio.channels.InterruptedByTimeoutException
 import javax.net.ssl.SSLHandshakeException
 
 /**
@@ -27,6 +26,12 @@ internal fun wrapJvmException(
     // Already wrapped — pass through
     if (ex is SocketException) return ex
 
+    // NIO2's read/write timeout (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Matched reflectively: Android
+    // below API 26 lacks the class, and an `is` check there throws NoClassDefFoundError.
+    if (isInterruptedByTimeout(ex)) {
+        return com.ditchoom.socket.SocketTimeoutException(ex.message ?: "Socket operation timed out", host, port, ex)
+    }
+
     return when (ex) {
         is ConnectException -> {
             val msg = ex.message?.lowercase() ?: ""
@@ -46,16 +51,6 @@ internal fun wrapJvmException(
         is UnknownHostException ->
             SocketUnknownHostException(host ?: ex.message, cause = ex)
         is SocketTimeoutException ->
-            com.ditchoom.socket.SocketTimeoutException(
-                ex.message ?: "Socket operation timed out",
-                host,
-                port,
-                ex,
-            )
-        is InterruptedByTimeoutException ->
-            // NIO2's read/write timeout. Subclass of IOException with a null message, so without
-            // this explicit case it would fall through to the generic SocketIOException branch
-            // (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Map it to the uniform timeout type.
             com.ditchoom.socket.SocketTimeoutException(
                 ex.message ?: "Socket operation timed out",
                 host,
@@ -126,4 +121,10 @@ private fun isCertificateFailure(ex: Throwable): Boolean {
         msg.contains("certificate") ||
         msg.contains("unable to find valid") ||
         msg.contains("pkix")
+}
+
+/** `is java.nio.channels.InterruptedByTimeoutException`; always false where the runtime lacks NIO2. */
+private val isInterruptedByTimeout: (Throwable) -> Boolean by lazy {
+    runCatching { Class.forName("java.nio.channels.InterruptedByTimeoutException") }
+        .fold(onSuccess = { type -> { ex: Throwable -> type.isInstance(ex) } }, onFailure = { { _: Throwable -> false } })
 }

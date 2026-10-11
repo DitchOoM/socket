@@ -11,6 +11,7 @@ import java.net.ConnectException
 import java.net.UnknownHostException
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.ClosedChannelException
+import java.nio.channels.InterruptedByTimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -26,6 +27,20 @@ import kotlin.time.Duration.Companion.seconds
  * Tests every branch with synthetic JVM exceptions, no network I/O needed.
  */
 class WrapJvmExceptionTests {
+    // ==================== NIO2 read/write timeout ====================
+
+    @Test
+    fun interruptedByTimeout_mapsToSocketTimeoutException() {
+        // Matched by class name rather than an `is` check, so the mapping still links on Android < 26,
+        // which has no NIO2. This pins that the by-name match still maps it on a runtime that does.
+        val original = InterruptedByTimeoutException()
+        val result = wrapJvmException(original, "localhost", 8080)
+        assertIs<SocketTimeoutException>(result)
+        assertEquals("localhost", result.host)
+        assertEquals(8080, result.port)
+        assertSame(original, result.cause)
+    }
+
     // ==================== ConnectException branches ====================
 
     @Test
