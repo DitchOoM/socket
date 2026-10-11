@@ -682,6 +682,58 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A probe socket can never be bound to a 4-tuple quiche still holds a path for.
+     *
+     * quiche keeps a torn-down path under its 4-tuple, with no destination connection id, until it
+     * evicts it; `quiche_conn_probe_path` on that 4-tuple answers `QUICHE_ERR_INVALID_STATE`, and every
+     * retry on it fails the same way. The sim's kernel here hands every ephemeral bind the most recently
+     * released port, so a driver that releases a port while quiche still holds its path collides on
+     * every bind, however many times it rebinds.
+     */
+    @Test
+    fun anEphemeralBindNeverLandsOnAPathQuicheStillHolds() =
+        runTest {
+            var blackholeProbes = true
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 58_301L,
+                    probeImpairment = { PathImpairment(reach = LinkReach(if (blackholeProbes) PathReach.Dark else PathReach.Open)) },
+                    ephemeralPorts = SimEphemeralPorts.ReuseLastReleased,
+                ) {
+                    awaitSpareDcids(count = SPARE_POOL)
+                    repeat(FAILED_ATTEMPTS) { attempt ->
+                        val result = withTimeout(120.seconds) { migrate().await() }
+                        assertTrue(result is MigrationResult.Unmoved, "attempt ${attempt + 1} was blackholed yet reported $result")
+                    }
+                    blackholeProbes = false
+                    val recovered = withTimeout(120.seconds) { migrate().await() }
+                    val evidence = "probes=${clientAudit.probeCalls.describe()} quichePaths=${clientPathTable()}"
+                    assertIs<MigrationResult.Succeeded>(recovered, "the recovery migration reported $recovered. $evidence")
+                    assertTrue(
+                        clientAudit.probeCalls.none { (it.second as? ProbeOutcome.Rejected)?.code == QUICHE_ERR_INVALID_STATE },
+                        "a probe landed on a 4-tuple quiche still holds a path for. $evidence",
+                    )
+                    val bound = clientPaths()
+                    assertTrue(
+                        bound.size > bound.toSet().size,
+                        "the sim's kernel never handed a released port back, so nothing was exercised: $bound",
+                    )
+                }
+            }
+        }
+
+    private fun List<Pair<PathKey, ProbeOutcome>>.describe(): String =
+        joinToString(prefix = "[", postfix = "]") { (key, outcome) ->
+            val answer =
+                when (outcome) {
+                    is ProbeOutcome.Probed -> "dcid=${outcome.dcidSeq}"
+                    is ProbeOutcome.Rejected -> "rejected=${outcome.code}"
+                }
+            ":${key.port} $answer"
+        }
+
+    /**
      * **A migration strands in-flight packets on the path it left — reproduced from per-path latency
      * alone, and a measured limit on how far that gets.**
      *
