@@ -6,9 +6,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
- * Read the peer's leaf certificate DER into [der] (capacity [capacity]) through [driver], so the
- * `quiche_conn_peer_cert` read is serialized with every other access to the connection. Snprintf-style
- * return: see [QuicheCmd.PeerCert].
+ * Read the peer's certificate at [position] (the leaf by default, or one position in its chain) as DER
+ * into [der] (capacity [capacity]) through [driver], so the quiche read is serialized with every other
+ * access to the connection. Snprintf-style return: see [QuicheCmd.PeerCert]; 0 past the end of the chain.
  *
  * **This does not return while the driver is still borrowing [der].** The caller frees that memory as
  * soon as this returns — `verifyServerCertificateHashes` does it in a `finally` — and the driver has
@@ -27,11 +27,12 @@ internal suspend fun readPeerCertDerThroughDriver(
     driver: QuicheDriver,
     der: PlatformBuffer,
     capacity: Int,
+    position: PeerCertPosition = PeerCertPosition.Leaf,
 ): Int {
     val deferred = CompletableDeferred<Int>()
     // The buffer travels with its address: quiche writes the DER into it on the driver loop, so what
     // keeps that memory mapped has to reach the driver too. See [QuicheMemory].
-    driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred))
+    driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred, position))
     // Past the send, so the driver is borrowing: from here every exit waits for it to say it is done.
     try {
         return deferred.await()

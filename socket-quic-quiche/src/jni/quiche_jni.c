@@ -286,6 +286,12 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamSend)(
     return result;
 }
 
+/* Bytes the stream can take now: > 0 writable, 0 flow-control full, < 0 quiche error (no longer writable). */
+JNIEXPORT jlong JNICALL JNI_FN(nConnStreamCapacity)(
+    JNIEnv *env, jclass cls, jlong conn, jlong stream_id) {
+    return (jlong)quiche_conn_stream_capacity((quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id);
+}
+
 /* Shut down one direction of a stream with an application error code:
    direction 0 = QUICHE_SHUTDOWN_READ (STOP_SENDING), 1 = QUICHE_SHUTDOWN_WRITE (RESET_STREAM). */
 JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
@@ -324,6 +330,21 @@ static jint copy_conn_bytes(
 JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
     return copy_conn_bytes(quiche_conn_peer_cert, conn, buf, buf_len);
+}
+
+/* Certificate `index` of the peer's chain, leaf first. 0 = past the end, or no certificate.
+   Same copy-when-it-fits contract as copy_conn_bytes. */
+JNIEXPORT jint JNICALL JNI_FN(nConnPeerCertChainAt)(
+    JNIEnv *env, jclass cls, jlong conn, jint index, jlong buf, jint buf_len) {
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    if (index < 0) return 0;
+    quiche_conn_peer_cert_chain_at((const quiche_conn *)(uintptr_t)conn, (size_t)index, &out, &out_len);
+    if (out == NULL || out_len == 0) return 0;
+    if ((jlong)out_len <= (jlong)buf_len) {
+        memcpy((void *)(uintptr_t)buf, out, out_len);
+    }
+    return (jint)out_len;
 }
 
 /* Negotiated ALPN protocol (RFC 7301). 0 = no protocol negotiated. */

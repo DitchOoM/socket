@@ -208,6 +208,16 @@ interface QuicheApi {
     ): StreamSendResult
 
     /**
+     * Bytes [streamId] can take right now (`quiche_conn_stream_capacity`): > 0 when a write would be
+     * accepted, 0 when flow control is full, negative quiche error when the stream can no longer be written
+     * (finished, stopped, reset).
+     */
+    fun connStreamCapacity(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+    ): Long
+
+    /**
      * Shut down one [direction] of [streamId] with application error code [err]
      * (`quiche_conn_stream_shutdown`): [direction] 0 = read (sends STOP_SENDING), 1 = write (sends
      * RESET_STREAM). Returns 0 on success or a negative quiche error code.
@@ -382,6 +392,20 @@ interface QuicheApi {
      */
     fun connPeerCert(
         conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
+     * Copy certificate [index] of the peer's chain (`quiche_conn_peer_cert_chain_at`, a patched-in export;
+     * 0 = the leaf, then intermediates in the order sent) into the native buffer at [buf]. Same
+     * snprintf-style contract as [connPeerCert]; `0` also means [index] is past the end of the chain.
+     *
+     * quiche is single-threaded — call this only from the driver loop (via [QuicheCmd.PeerCert]).
+     */
+    fun connPeerCertChainAt(
+        conn: QuicheConn,
+        index: Int,
         buf: Long,
         bufLen: Int,
     ): Int
