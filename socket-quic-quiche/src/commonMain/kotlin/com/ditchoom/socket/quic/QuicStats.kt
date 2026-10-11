@@ -96,8 +96,9 @@ data class QuicConnStats(
 )
 
 /**
- * One on-loop stats read ([QuicheDriver.stats]): connection-level plus active-path stats, either
- * `null` on a backend that has not bound the stats FFI (or once the connection is torn down).
+ * One on-loop stats read ([QuicheDriver.stats]): connection-level plus [ActivePath] stats, either
+ * `null` on a backend that has not bound the stats FFI (or once the connection is torn down);
+ * [pathStats] is also `null` while quiche is between paths.
  */
 data class QuicStatsSnapshot(
     val connStats: QuicConnStats?,
