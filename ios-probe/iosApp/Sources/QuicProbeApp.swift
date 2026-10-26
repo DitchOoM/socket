@@ -73,7 +73,11 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
     // address families on every network it crosses: `-host "192.0.2.1,2001:db8::1"`.
     // A colon cannot be the separator — an IPv6 literal is made of them.
     let server: ServerConfig = ServerConfig.load()
-    var minutes: Int32 = 4500
+    // `-minutes <n>` on the same launch (launch.sh's WALK_MINUTES); 4500 (75 h) without it.
+    var minutes: Int32 = {
+        let stored = UserDefaults.standard.integer(forKey: "minutes")
+        return stored > 0 ? Int32(stored) : 4500
+    }()
 
     override init() {
         super.init()
