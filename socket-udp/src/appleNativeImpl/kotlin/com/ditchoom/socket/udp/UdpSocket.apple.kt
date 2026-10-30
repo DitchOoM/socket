@@ -151,22 +151,16 @@ actual object UdpSocket {
                 var resumed = false
                 nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _ ->
                     if (resumed) return@nw_udp_set_state_handler
-                    when (state) {
-                        STATE_READY -> {
+                    when (val verdict = nwConnectVerdict(state, errorDomain, errorCode)) {
+                        NwConnectVerdict.Ready -> {
                             resumed = true
                             continuation.resume(Unit)
                         }
-                        STATE_FAILED, STATE_CANCELLED -> {
+                        is NwConnectVerdict.Failed -> {
                             resumed = true
-                            // Typed in NW's own (domain, code) namespace: domain 1 is POSIX and
-                            // the code is then the errno, so a consumer can branch on it exactly as it
-                            // would on a Linux errno. A `cancelled` state with no error is NW reporting
-                            // that the connection went away before it was ready.
-                            continuation.resumeWithException(
-                                UdpConnectException(UdpConnectError.PlatformError(errorDomain, errorCode)),
-                            )
+                            continuation.resumeWithException(UdpConnectException(verdict.error))
                         }
-                        else -> {}
+                        NwConnectVerdict.Pending -> {}
                     }
                 }
                 nw_udp_start(conn)
@@ -390,9 +384,4 @@ actual object UdpSocket {
 
     /** Bounded redraw for an ephemeral wildcard bind — see [bindDualStackWildcard]. */
     private const val MAX_WILDCARD_BIND_ATTEMPTS = 8
-
-    // nw_connection_state_t values (nw_udp_helpers.h): 3=ready, 4=failed, 5=cancelled.
-    private const val STATE_READY = 3
-    private const val STATE_FAILED = 4
-    private const val STATE_CANCELLED = 5
 }
