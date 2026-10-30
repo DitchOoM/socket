@@ -149,9 +149,9 @@ actual object UdpSocket {
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
                 var resumed = false
-                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _ ->
+                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus ->
                     if (resumed) return@nw_udp_set_state_handler
-                    when (val verdict = nwConnectVerdict(state, errorDomain, errorCode)) {
+                    when (val verdict = nwConnectVerdict(state, errorDomain, errorCode, pathStatus)) {
                         NwConnectVerdict.Ready -> {
                             resumed = true
                             continuation.resume(Unit)

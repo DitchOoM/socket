@@ -13,24 +13,37 @@ class NwConnectVerdictTests {
     private val posix = 1
 
     @Test
-    fun aWaitWithNoRouteFailsAsUnreachableLikeAPosixConnect() {
+    fun aWaitWithAnUnsatisfiedPathAndNoErrorFailsAsUnreachable() {
+        // The shape NW actually reports for a v6 peer on IPv4-only Wi-Fi: no error at all.
         assertEquals(
-            NwConnectVerdict.Failed(UdpConnectError.Unreachable(ENETUNREACH)),
-            nwConnectVerdict(NW_STATE_WAITING, posix, ENETUNREACH),
+            NwConnectVerdict.Failed(UdpConnectError.Unreachable(ERRNO_NOT_SURFACED)),
+            nwConnectVerdict(NW_STATE_WAITING, errorDomain = 0, errorCode = 0, pathStatus = NW_PATH_UNSATISFIED),
         )
     }
 
     @Test
-    fun aWaitForAnyOtherReasonKeepsWaiting() {
-        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, posix, ETIMEDOUT))
-        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, errorDomain = 2, errorCode = -65554))
-        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, errorDomain = 0, errorCode = 0))
+    fun aWaitWithANoRouteErrnoFailsAsUnreachableWithThatErrno() {
+        assertEquals(
+            NwConnectVerdict.Failed(UdpConnectError.Unreachable(ENETUNREACH)),
+            nwConnectVerdict(NW_STATE_WAITING, posix, ENETUNREACH, NW_PATH_SATISFIABLE),
+        )
+    }
+
+    @Test
+    fun aWaitThatAPathCouldStillSatisfyKeepsWaiting() {
+        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, 0, 0, NW_PATH_SATISFIABLE))
+        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, 0, 0, NW_PATH_SATISFIED))
+        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, posix, ETIMEDOUT, NW_PATH_SATISFIABLE))
+        assertEquals(NwConnectVerdict.Pending, nwConnectVerdict(NW_STATE_WAITING, 0, 0, pathStatus = 0))
     }
 
     @Test
     fun readyFailedAndCancelledKeepTheirMeaning() {
-        assertEquals(NwConnectVerdict.Ready, nwConnectVerdict(3, 0, 0))
-        assertEquals(NwConnectVerdict.Failed(UdpConnectError.PlatformError(posix, ENETUNREACH)), nwConnectVerdict(4, posix, ENETUNREACH))
-        assertEquals(NwConnectVerdict.Failed(UdpConnectError.PlatformError(0, 0)), nwConnectVerdict(5, 0, 0))
+        assertEquals(NwConnectVerdict.Ready, nwConnectVerdict(3, 0, 0, NW_PATH_SATISFIED))
+        assertEquals(
+            NwConnectVerdict.Failed(UdpConnectError.PlatformError(posix, ENETUNREACH)),
+            nwConnectVerdict(4, posix, ENETUNREACH, NW_PATH_UNSATISFIED),
+        )
+        assertEquals(NwConnectVerdict.Failed(UdpConnectError.PlatformError(0, 0)), nwConnectVerdict(5, 0, 0, 0))
     }
 }
