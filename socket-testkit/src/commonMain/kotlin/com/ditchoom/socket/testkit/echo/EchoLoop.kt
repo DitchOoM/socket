@@ -9,8 +9,17 @@ import kotlin.time.Duration.Companion.seconds
 public sealed interface EchoWrite {
     public data object Written : EchoWrite
 
-    /** The deadline passed before the stream took the bytes. */
+    /** The deadline passed before the stream took any of the bytes: none of this echo is on the stream. */
     public data object TimedOut : EchoWrite
+
+    /**
+     * The deadline passed after the stream took [accepted] of the echo's bytes and before it took the
+     * other [pending]: the stream now carries a partial record it can never realign past.
+     */
+    public data class Torn(
+        val accepted: Int,
+        val pending: Int,
+    ) : EchoWrite
 }
 
 /** The stream an [EchoLoop] exchanges over: a bounded write and a bounded read, nothing else. */
@@ -181,8 +190,9 @@ public class EchoLoop(
         sentAt: Duration,
         nextSendAt: Duration,
     ): Next {
-        when (stream.write(payload, writeDeadline)) {
+        when (val write = stream.write(payload, writeDeadline)) {
             EchoWrite.TimedOut -> return handle(seq, session.writeTimedOut(seq, waited = clock() - sentAt, at = clock()))
+            is EchoWrite.Torn -> return handle(seq, session.writeTorn(seq, write, clock()))
             EchoWrite.Written -> session.sent(seq, payload, clock())
         }
         while (session.owedBytes > 0) {

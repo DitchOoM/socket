@@ -9,11 +9,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.milliseconds
@@ -221,6 +223,53 @@ class DriverCommandFailureTests {
                 // carries this buffer's raw native address, and freeing under it is precisely the
                 // send-path use-after-free the NonCancellable join exists to prevent (#366 / #401).
                 if (everSettled) buf.freeNativeMemory()
+            }
+        }
+
+    /**
+     * A deadline that lands while the write's command is still queued must not hide the bytes quiche
+     * then takes. The writer's `finally` waits for that command (the #366 / #401 lifetime join), so
+     * quiche does accept them; reporting a timeout on top tells the caller nothing went out when a
+     * record's head did — the torn stream a 10-26 walk recorded as two integrity breaks.
+     */
+    @Test
+    fun aDeadlineThatLosesTheRaceToAnAcceptedSendReportsTheBytes() =
+        runQuicTest(timeout = 20.seconds) {
+            val api = StubQuicheApi()
+            api.established = true
+            // The startup flush parks the loop before it can dequeue the write (as above).
+            api.connSendOnce = 1300
+            api.connStreamSendResult = 3
+            val wedged = WedgedUdpChannel()
+            val driver = createTestDriver(api, udpChannel = wedged)
+            val driverScope = CoroutineScope(SupervisorJob() + CoroutineExceptionHandler { _, _ -> })
+            driver.start(driverScope)
+            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val buf = bufferFactory.allocate(8)
+            buf.writeString("ping", Charset.UTF8)
+            buf.resetForRead()
+            val writerScope =
+                CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, _ -> })
+            val settled = CompletableDeferred<Result<Int>>()
+            try {
+                withTimeout(3.seconds) { while (wedged.sendCount == 0) yield() }
+                writerScope.launch {
+                    settled.complete(runCatching { adapter.streamWrite(QuicStreamId(0L), buf, WRITE_DEADLINE) })
+                }
+                // Past the deadline, the writer is parked in its join on the still-queued command.
+                delay(WRITE_DEADLINE * 2)
+                wedged.release()
+                val outcome = assertNotNull(withTimeoutOrNull(5.seconds) { settled.await() }, "the write never settled")
+                assertEquals(
+                    3,
+                    outcome.getOrElse { throw AssertionError("quiche accepted 3 bytes, yet the write reported $it", it) },
+                )
+            } finally {
+                wedged.release()
+                driver.destroy()
+                driverScope.cancel()
+                writerScope.cancel()
+                if (settled.isCompleted) buf.freeNativeMemory()
             }
         }
 

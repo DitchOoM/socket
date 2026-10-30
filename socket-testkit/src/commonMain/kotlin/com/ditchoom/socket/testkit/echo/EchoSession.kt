@@ -37,6 +37,14 @@ public sealed interface SessionEnd {
         ) : StreamGone {
             override val label: String get() = "WritesStalled($consecutiveTimeouts)"
         }
+
+        /** A write's deadline cut a record in half; every byte after it would be judged against the wrong offset. */
+        public data class WriteTorn(
+            val accepted: Int,
+            val pending: Int,
+        ) : StreamGone {
+            override val label: String get() = "WriteTorn(accepted=$accepted,pending=$pending)"
+        }
     }
 
     /** The connection closed under the stream. */
@@ -91,6 +99,9 @@ public sealed interface EchoStep {
                     is SessionEnd.StreamGone.WritesStalled ->
                         "STREAM-WRITES-STALLED seq=$seq consecutiveTimeouts=${end.consecutiveTimeouts} owed=${owedBytes}B — " +
                             "the peer is not draining the stream; leaving scope to reconnect"
+                    is SessionEnd.StreamGone.WriteTorn ->
+                        "STREAM-WRITE-TORN seq=$seq accepted=${end.accepted}B pending=${end.pending}B owed=${owedBytes}B — " +
+                            "the deadline cut this record in half; leaving scope to reconnect"
                     SessionEnd.ConnectionDead, SessionEnd.WalkOver, SessionEnd.ScopeFailed ->
                         "SESSION-ENDED seq=$seq owed=${owedBytes}B ended=${end.label} — the session had already ended; leaving scope"
                 }
@@ -172,6 +183,16 @@ public class EchoSession(
                     EchoStep.WriteTimedOut(seq, waited, consecutiveWriteTimeouts)
                 }
             }
+        }
+
+    public fun writeTorn(
+        seq: Int,
+        torn: EchoWrite.Torn,
+        at: Duration,
+    ): EchoStep =
+        when (val life = lifetime) {
+            is Lifetime.Ended -> EchoStep.Reconnect(life.end, seq, ledger.owedBytes)
+            Lifetime.Open -> leave(SessionEnd.StreamGone.WriteTorn(torn.accepted, torn.pending), seq, at)
         }
 
     public fun reply(

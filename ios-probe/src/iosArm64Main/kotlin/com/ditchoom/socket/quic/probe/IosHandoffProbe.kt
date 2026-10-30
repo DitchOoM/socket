@@ -40,6 +40,7 @@ import com.ditchoom.socket.testkit.echo.EchoLoopEnd
 import com.ditchoom.socket.testkit.echo.EchoLoopEvent
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
+import com.ditchoom.socket.testkit.echo.writeEcho
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
 import com.ditchoom.socket.testkit.echo.StreamReply
@@ -874,15 +875,11 @@ private class QuicEchoStream(
         try {
             out.writeString(payload, Charset.UTF8)
             out.resetForRead()
-            stream.write(out, deadline)
-        } catch (e: TimeoutCancellationException) {
-            // Only this scope's own cancellation, which wears the same type, gets out of here.
-            currentCoroutineContext().ensureActive()
-            return EchoWrite.TimedOut
+            // Never a bare write: a partial one dropped this record's tail on the 10-26 walk.
+            return stream.writeEcho(out, deadline)
         } finally {
             out.freeIfNeeded()
         }
-        return EchoWrite.Written
     }
 
     override suspend fun read(deadline: Duration): StreamReply =

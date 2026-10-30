@@ -243,7 +243,7 @@ def analyze(path, lines, lane=None):
         """Its `n=`, which is what the probe's own `connection=N` lines are tagged with."""
         m = re.match(r"CONNECT-ATTEMPT n=(\d+)", text)
         return m.group(1) if m else "?"
-    ends = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
+    ends = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED", "STREAM-WRITE-TORN",
                                                         "CONNECTION-ENDED", "CONNECTION-DEAD", "SCOPE-EXITED"))]
     attempt_results = attempt_outcomes(events, attempts)
     never = Counter(o for o in attempt_results if o != ESTABLISHED)
@@ -330,7 +330,7 @@ def analyze(path, lines, lane=None):
     gaps = [(answered[i][0] - answered[i - 1][0], answered[i][0]) for i in range(1, len(answered))]
     worst = sorted(gaps, reverse=True)[:5]
     write_timeouts = [t for t, b in events if b.startswith("ECHO-WRITE-TIMEOUT")]
-    stream_gone = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED"))]
+    stream_gone = [(t, b) for t, b in events if b.startswith(("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED", "STREAM-WRITE-TORN"))]
     print(f"\nechoes: ok={len(ok)} late={len(late)} overdue={len(overdue)} unanswered={unanswered} fail={len(fail)} no-data={len(nodata)}"
           f" write-timeouts={len(write_timeouts)} stream-gone={len(stream_gone)}"
           + (f" in-sync={len(timed)} one-behind={len(ok) - len(timed)} (pre-#599 grammar)" if legacy else ""))
@@ -406,7 +406,7 @@ def analyze(path, lines, lane=None):
 
     # verbatim: the lines that matter
     tagged_connection = re.compile(r"\bconnection=(\d+) family=")
-    for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED",
+    for tag in ("STREAM-INTEGRITY-BROKEN", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED", "STREAM-WRITE-TORN",
                 "STALL-SUSPECTED", "CONNECTION-DEAD", "WAKELOCK", "DONE", "MIGRATION-", "ECHO-LIVENESS"):
         hits = [(t, b) for t, b in events if b.startswith(tag)]
         real = [(t, b) for t, b in hits for m in [tagged_connection.search(b)] if not (m and m.group(1) in hollow)]
@@ -642,7 +642,7 @@ def stamp(events):
 
 # A handoff is path activity on any lane; events closer together than this are one handoff.
 HANDOFF_GAP_MS = 30_000
-ENDINGS = ("CONNECTION-DEAD", "CONNECTION-ENDED", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED")
+ENDINGS = ("CONNECTION-DEAD", "CONNECTION-ENDED", "STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED", "STREAM-WRITE-TORN")
 DISRUPTION = ("PATH Probing", "PATH Validated", "PATH Migrated", "PATH Failed") + ENDINGS
 
 

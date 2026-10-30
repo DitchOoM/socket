@@ -38,6 +38,7 @@ import com.ditchoom.socket.testkit.echo.EchoWrite
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
 import com.ditchoom.socket.testkit.echo.StreamReply
+import com.ditchoom.socket.testkit.echo.writeEcho
 import com.ditchoom.socket.testkit.migration.PoolProbeHistory
 import com.ditchoom.socket.testkit.migration.PoolRecoveryVerdict
 import com.ditchoom.socket.testkit.migration.forConnection
@@ -1016,15 +1017,11 @@ private class QuicEchoStream(
         try {
             out.writeString(payload, Charset.UTF8)
             out.resetForRead()
-            stream.write(out, deadline)
-        } catch (e: TimeoutCancellationException) {
-            // Only this scope's own cancellation, which wears the same type, gets out of here.
-            currentCoroutineContext().ensureActive()
-            return EchoWrite.TimedOut
+            // Never a bare write: a partial one dropped this record's tail on the 10-26 walk.
+            return stream.writeEcho(out, deadline)
         } finally {
             out.freeIfNeeded()
         }
-        return EchoWrite.Written
     }
 
     // Scoped read (#538): the echoed bytes are decoded inside the block and the buffer is released on
