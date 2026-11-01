@@ -192,5 +192,8 @@ struct ProbeView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding()
+        // `-autostart 1` on the launch (launch.sh's WALK_AUTOSTART): the walk begins without a tap, so a
+        // launch from the Mac is the whole start. Location authorization still has to be Always.
+        .onAppear { if UserDefaults.standard.bool(forKey: "autostart") { runner.begin() } }
     }
 }
