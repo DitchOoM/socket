@@ -1,5 +1,10 @@
 package com.ditchoom.socket.udp
 
+import kotlinx.coroutines.CancellableContinuation
+import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
 /** What one `nw_connection_t` state change means for a connect still waiting on it. */
 internal sealed interface NwConnectVerdict {
     data object Ready : NwConnectVerdict
@@ -10,6 +15,29 @@ internal sealed interface NwConnectVerdict {
 
     /** Not ready yet, and nothing says it cannot become ready: keep waiting. */
     data object Pending : NwConnectVerdict
+}
+
+/**
+ * Settles a connect's continuation from NW state changes, exactly once.
+ *
+ * NW calls the state handler on a concurrent queue, and back-to-back changes (waiting → preparing →
+ * waiting arrives within milliseconds) can run on two threads at once. A plain "already resumed" flag
+ * let both read `false` and both resume; Kotlin/Native aborts the process on the second — three
+ * iPhone walk crashes on 10-30/10-31, all `alreadyResumedError` in this handler.
+ */
+internal class NwConnectSettle(
+    private val continuation: CancellableContinuation<Unit>,
+) {
+    private val settled = AtomicInt(0)
+
+    fun on(verdict: NwConnectVerdict) {
+        if (verdict == NwConnectVerdict.Pending || !settled.compareAndSet(0, 1)) return
+        when (verdict) {
+            NwConnectVerdict.Ready -> continuation.resume(Unit)
+            is NwConnectVerdict.Failed -> continuation.resumeWithException(UdpConnectException(verdict.error))
+            NwConnectVerdict.Pending -> Unit
+        }
+    }
 }
 
 /**

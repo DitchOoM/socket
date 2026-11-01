@@ -44,8 +44,6 @@ import platform.posix.setsockopt
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
 import platform.posix.socket
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * The Apple/K-N default: a native deterministic factory (ARC-managed `NSMutableData`). Both the
@@ -148,20 +146,9 @@ actual object UdpSocket {
             // timed-out/cancelled connect never leaks the nw_connection_t (B4c/B4d). Terminal NW states
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
-                var resumed = false
+                val settle = NwConnectSettle(continuation)
                 nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus ->
-                    if (resumed) return@nw_udp_set_state_handler
-                    when (val verdict = nwConnectVerdict(state, errorDomain, errorCode, pathStatus)) {
-                        NwConnectVerdict.Ready -> {
-                            resumed = true
-                            continuation.resume(Unit)
-                        }
-                        is NwConnectVerdict.Failed -> {
-                            resumed = true
-                            continuation.resumeWithException(UdpConnectException(verdict.error))
-                        }
-                        NwConnectVerdict.Pending -> {}
-                    }
+                    settle.on(nwConnectVerdict(state, errorDomain, errorCode, pathStatus))
                 }
                 nw_udp_start(conn)
                 continuation.invokeOnCancellation { nw_udp_cancel(conn) }
