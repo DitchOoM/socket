@@ -343,6 +343,18 @@ def analyze(path, lines, lane=None):
     if lateness:
         print(f"  late by p50=+{lateness[len(lateness) // 2]}ms p95=+{lateness[int(len(lateness) * 0.95)]}ms max=+{lateness[-1]}ms")
     print("  longest gaps between answered echoes:", ", ".join(f"{g / 1000:.1f}s at t+{at / 1000:.0f}s" for g, at in worst))
+    # Adaptive pace: how long the lane echoed fast and why, against how long it idled. The end of the
+    # last echo is the end of the measured span.
+    paces = [(t, b) for t, b in events if b.startswith("PACE ")]
+    if paces:
+        end = answered[-1][0] if answered else paces[-1][0]
+        spans = Counter()
+        for (t, b), nxt in zip(paces, [pt for pt, _ in paces[1:]] + [end]):
+            m = re.match(r"PACE (fast reason=(\S+)|idle)", b)
+            spans["idle" if m.group(1) == "idle" else m.group(2)] += max(0, nxt - t)
+        total = sum(spans.values()) or 1
+        print("  pace: " + ", ".join(f"{k} {v / 60000:.1f} min ({100 * v / total:.0f}%)" for k, v in spans.most_common())
+              + f" over {len(paces)} PACE changes")
     errs = Counter(re.search(r"err=(\S+)", b).group(1) for _, b in fail if re.search(r"err=(\S+)", b))
     print("  fail kinds:", dict(errs), "(a pre-#599 build files every missed deadline here as TimeoutCancellationException)" if legacy and errs else "")
 

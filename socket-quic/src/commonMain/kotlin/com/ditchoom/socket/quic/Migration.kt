@@ -97,7 +97,7 @@ sealed interface MigrationResult {
             /** Only clients migrate in QUIC v1 (RFC 9000 §9); this is a server-accepted connection. */
             data object ServerConnection : Impossible
 
-            /** [MigrationPolicy.Forbidden] — this endpoint advertised `disable_active_migration`. */
+            /** [MigrationPolicy.Forbidden] or [MigrationPolicy.Pinned] — this endpoint advertised `disable_active_migration`. */
             data object PolicyForbids : Impossible
 
             /**

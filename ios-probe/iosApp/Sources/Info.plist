@@ -34,6 +34,8 @@
 	<array>
 		<string>location</string>
 	</array>
+	<key>NSMotionUsageDescription</key>
+	<string>Motion activity (walking, driving, still) sets how often the probe echoes: fast while you move, slower while the phone sits still, to save battery.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Keeps the QUIC handoff recording running while you walk. Your location is never stored, sent anywhere, or written to the log — only a count of updates, which is how the recording proves it stayed running in your pocket.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

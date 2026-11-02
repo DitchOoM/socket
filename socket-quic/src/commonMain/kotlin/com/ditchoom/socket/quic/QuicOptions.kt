@@ -249,7 +249,8 @@ data class QuicOptions(
      *
      * One decision replacing the `disableActiveMigration` + `autoMigrateOnNetworkChange` pair, whose
      * fourth combination (advertise `disable_active_migration` *and* react to network changes) was a
-     * contradiction the constructor resolved silently. See [MigrationPolicy].
+     * contradiction the constructor resolved silently. See [MigrationPolicy]; [MigrationPolicy.Pinned]
+     * also opens the path on one radio instead of the OS default network.
      */
     val migration: MigrationPolicy = MigrationPolicy.Automatic,
     /**
@@ -417,8 +418,7 @@ data class QuicOptions(
     /**
      * **Client-side, under [MigrationPolicy.Automatic]**: whether a second link is kept attached for a
      * dead path to move onto. Defaults to [StandbyLink.KeepCellularReady]; a no-op off Android. Ignored
-     * for the server role and under [MigrationPolicy.Manual] and [MigrationPolicy.Forbidden], which do
-     * not migrate on their own.
+     * for the server role and under every other [MigrationPolicy], none of which migrates on its own.
      */
     val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
     /**

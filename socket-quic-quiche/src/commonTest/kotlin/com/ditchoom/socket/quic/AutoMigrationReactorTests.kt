@@ -226,6 +226,16 @@ class AutoMigrationReactorTests {
     }
 
     @Test
+    fun pinnedPolicyLaunchesNoObserver() {
+        val monitor = SimNetworkMonitor.on(wifi)
+        runReactor(monitor, policy = MigrationPolicy.Pinned(NetworkKind.Wifi)) { conn ->
+            monitor.setNetworkId(cellular)
+            assertEquals(0, conn.migrateCount, "a connection pinned to one radio must not follow the default network")
+            assertTrue(conn.coroutineContext[Job]!!.children.none(), "a pinned connection must not launch an observer")
+        }
+    }
+
+    @Test
     fun manualPolicyNeverObserves() {
         val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor, policy = MigrationPolicy.Manual) { conn ->

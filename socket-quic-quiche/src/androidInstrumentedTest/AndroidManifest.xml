@@ -26,4 +26,10 @@
       Without it those two fields report NotReported and every other fact still lands.
     -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <application>
+        <!-- DeviceHandoffProbe's dead man's switch: posts "probe stopped" when its alarm was not pushed back. -->
+        <receiver
+            android:name="com.ditchoom.socket.quic.ProbeStoppedReceiver"
+            android:exported="false" />
+    </application>
 </manifest>

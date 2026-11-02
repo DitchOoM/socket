@@ -42,7 +42,7 @@ class EchoLoopTests {
         EchoLoop(
             stream = ScriptedEchoStream(clock, echoAfter),
             session = session,
-            interval = interval,
+            pace = EchoPace.Fixed(interval),
             clock = clock,
             emit = { lines += "t=${clock().inWholeMilliseconds}ms $it" },
             closedBy = { EchoFailure.Exchange },

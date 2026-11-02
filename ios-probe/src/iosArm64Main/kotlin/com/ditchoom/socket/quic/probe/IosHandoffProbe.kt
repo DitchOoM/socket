@@ -2,94 +2,64 @@
 
 package com.ditchoom.socket.quic.probe
 
-import com.ditchoom.socket.NetworkMonitor
-import com.ditchoom.socket.processDefault
-import com.ditchoom.socket.testkit.migration.PoolProbeHistory
-import com.ditchoom.socket.testkit.migration.forConnection
-import com.ditchoom.socket.testkit.migration.forRun
-import com.ditchoom.socket.testkit.osnet.OsNetWatch
-import kotlin.concurrent.AtomicArray
-import kotlin.concurrent.AtomicInt
-import kotlin.concurrent.AtomicLong
-import kotlin.concurrent.AtomicReference
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.processDefault
+import com.ditchoom.socket.quic.InternalQuicApi
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationResult
 import com.ditchoom.socket.quic.QuicByteStream
-import com.ditchoom.socket.quic.InternalQuicApi
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.UnresolvedRouteSourceException
-import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.UnresolvedRouteSourceException
+import com.ditchoom.socket.quic.describe
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.TrafficSecretsLog
+import com.ditchoom.socket.quic.withQuicConnection
+import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
 import com.ditchoom.socket.testkit.echo.EchoLoop
 import com.ditchoom.socket.testkit.echo.EchoLoopEnd
 import com.ditchoom.socket.testkit.echo.EchoLoopEvent
+import com.ditchoom.socket.testkit.echo.EchoPace
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
-import com.ditchoom.socket.testkit.echo.writeEcho
 import com.ditchoom.socket.testkit.echo.RunLiveness
 import com.ditchoom.socket.testkit.echo.SessionEnd
 import com.ditchoom.socket.testkit.echo.StreamReply
+import com.ditchoom.socket.testkit.echo.writeEcho
+import com.ditchoom.socket.testkit.migration.PoolProbeHistory
+import com.ditchoom.socket.testkit.migration.forConnection
+import com.ditchoom.socket.testkit.migration.forRun
+import com.ditchoom.socket.testkit.osnet.OsNetWatch
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.testkit.walk.AttemptOutcome
 import com.ditchoom.socket.testkit.walk.AttemptTotals
+import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.ConnectAttempt
 import com.ditchoom.socket.testkit.walk.ConnectFailure
+import com.ditchoom.socket.testkit.walk.DiskFree
+import com.ditchoom.socket.testkit.walk.LaneRadio
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.StallBounds
 import com.ditchoom.socket.testkit.walk.WalkLane
-import com.ditchoom.socket.testkit.walk.BuildRevision
-import com.ditchoom.socket.testkit.walk.DiskFree
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
-import com.ditchoom.socket.quic.read
-import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.joinAll
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import platform.Foundation.NSDate
-import platform.Foundation.NSDocumentDirectory
-import platform.Foundation.NSFileManager
-import platform.Foundation.NSFileSystemFreeSize
-import platform.Foundation.NSLibraryDirectory
-import platform.Foundation.NSNumber
-import platform.Foundation.NSLog
-import platform.Foundation.NSSearchPathForDirectoriesInDomains
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fputs
-import platform.Foundation.NSUserDomainMask
-import platform.Foundation.timeIntervalSince1970
-import kotlin.concurrent.Volatile
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -97,6 +67,26 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.value
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import platform.Foundation.NSDate
+import platform.Foundation.NSDocumentDirectory
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileSystemFreeSize
+import platform.Foundation.NSLibraryDirectory
+import platform.Foundation.NSLog
+import platform.Foundation.NSNumber
+import platform.Foundation.NSSearchPathForDirectoriesInDomains
+import platform.Foundation.NSUserDomainMask
+import platform.Foundation.timeIntervalSince1970
 import platform.UIKit.UIDevice
 import platform.UIKit.UIDeviceBatteryState
 import platform.darwin.KERN_SUCCESS
@@ -105,6 +95,19 @@ import platform.darwin.mach_msg_type_number_tVar
 import platform.darwin.mach_task_basic_info
 import platform.darwin.mach_task_self_
 import platform.darwin.task_info
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fputs
+import kotlin.concurrent.AtomicArray
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicLong
+import kotlin.concurrent.AtomicReference
+import kotlin.concurrent.Volatile
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * The iOS half of the real-handoff rig — the Apple counterpart of `DeviceHandoffProbe`.
@@ -159,6 +162,17 @@ object IosHandoffProbe {
         locUpdates++
     }
 
+    /**
+     * Called by the host app while Core Motion says the phone is moving (walking, running, cycling,
+     * driving). Not location fixes: at the 3 km accuracy residency runs on, a still phone gets fixes too.
+     */
+    fun noteMovement() {
+        signals.moved(now())
+    }
+
+    /** The device's network changes and movement, which every lane's echo pace reads. */
+    private val signals = DeviceSignals()
+
     private val startedAt: Double get() = NSDate().timeIntervalSince1970
 
     private fun now() = NSDate().timeIntervalSince1970.seconds
@@ -202,13 +216,46 @@ object IosHandoffProbe {
         port: Int,
         minutes: Int,
         echoIntervalMs: Long = 100,
+        pinned: String = "",
+    ) = launchWalk(hosts, port, minutes, echoIntervalMs, pinned, WalkBegin.Fresh)
+
+    /**
+     * Continue a walk the process lost — a crash, iOS terminating it, a relaunch for a location event —
+     * for the [minutes] it has left. Nothing is rotated: the log is appended to, its `t=` keeps counting
+     * from [startedAtEpoch] (the walk's first START), a `RESUME` line says why, and each lane's
+     * connections are numbered on from the files already there.
+     */
+    fun resume(
+        hosts: String,
+        port: Int,
+        minutes: Int,
+        echoIntervalMs: Long,
+        startedAtEpoch: Double,
+        reason: String,
+        pinned: String = "",
+    ) = launchWalk(hosts, port, minutes, echoIntervalMs, pinned, WalkBegin.Resume(startedAtEpoch, reason))
+
+    /** A run line from the host app (location authorization, why it launched); dropped while no walk runs. */
+    fun noteRun(line: String) = runEmit(line)
+
+    @Volatile
+    private var runEmit: (String) -> Unit = {}
+
+    private fun launchWalk(
+        hosts: String,
+        port: Int,
+        minutes: Int,
+        echoIntervalMs: Long,
+        pinned: String,
+        begin: WalkBegin,
     ) {
         if (running) return
         running = true
         GlobalScope.launch(Dispatchers.Default) {
             try {
-                walk(hosts, port, minutes, echoIntervalMs)
+                walk(hosts, port, minutes, echoIntervalMs, pinned, begin)
             } finally {
+                runEmit = {}
                 running = false
             }
         }
@@ -219,6 +266,8 @@ object IosHandoffProbe {
         port: Int,
         minutes: Int,
         echoIntervalMs: Long,
+        pinned: String,
+        begin: WalkBegin,
     ) {
         val targets =
             when (val parsed = WalkTargets.parse(hosts, port)) {
@@ -228,21 +277,35 @@ object IosHandoffProbe {
                     statusLine = "no host — launch with -host <ip>[,<ip>]"
                     return
                 }
-                is WalkTargetsParse.Parsed -> parsed.targets
+                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(pinned))
             }
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Tapping Start used to delete the log, and the trace files would have been
         // appended to across walks.
-        val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
-        val keptKeys = rotatePreviousRun(library(), listOf("keys"))
-        val log = Logger(logPath(), startedAt)
         val diskFreeAtStart = diskFree()
-        log.emit(
-            "START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()} keys=${keysDir()} " +
-                "${BuildRevision.parse(PROBE_BUILD_STAMP).line} ${diskFreeAtStart.line}",
-        )
-        log.emit(kept)
-        log.emit("KEYS $keptKeys")
+        val log =
+            when (begin) {
+                WalkBegin.Fresh -> {
+                    val kept = rotatePreviousRun(documents(), listOf("quic-handoff-probe.log", "traces", "qlog"))
+                    val keptKeys = rotatePreviousRun(library(), listOf("keys"))
+                    Logger(logPath(), startedAt).also {
+                        it.emit(
+                            "START device=ios ${targets.line} minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=${qlogDir()} " +
+                                "keys=${keysDir()} ${BuildRevision.parse(PROBE_BUILD_STAMP).line} ${diskFreeAtStart.line}",
+                        )
+                        it.emit(kept)
+                        it.emit("KEYS $keptKeys")
+                    }
+                }
+                is WalkBegin.Resume ->
+                    Logger(logPath(), begin.startedAtEpoch).also {
+                        it.emit(
+                            "RESUME reason=${begin.reason} minutesLeft=$minutes ${targets.line} " +
+                                "${BuildRevision.parse(PROBE_BUILD_STAMP).line} ${diskFreeAtStart.line}",
+                        )
+                    }
+            }
+        runEmit = log::emit
         log.emit(targets.lanesLine(echoIntervalMs.milliseconds))
         // quiche's own frame-level record: evidence written by quiche itself, not by this library's
         // code. Each connection writes a run of .sqlog segments named from the same stem as its trace
@@ -300,7 +363,7 @@ object IosHandoffProbe {
         // trace gets a copy, so an offline replay of any one connection carries the network it was on.
         val monitor = NetworkMonitor.processDefault()
         val osSource = IosOsNetworkSource()
-        val osNet = OsNetWatch(osSource, ::now, log::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } })
+        val osNet = OsNetWatch(osSource, ::now, log::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } }, signals)
         osSource.register { osNet.sample(monitor.state.value) }
 
         // A heartbeat once a minute whatever the connections are doing: residency (locUpdates), the
@@ -409,7 +472,7 @@ object IosHandoffProbe {
                 // Keepalive keeps an idle connection honest.
                 idleTimeout = IDLE_TIMEOUT,
                 keepAliveInterval = 5.seconds,
-                migration = MigrationPolicy.Automatic,
+                migration = lane.radio.migration,
             )
         var retryDelayMs = RECONNECT_MIN_MS
         while (NSDate().timeIntervalSince1970 < deadline) {
@@ -434,6 +497,7 @@ object IosHandoffProbe {
                             val stream = openStream()
                             var lastWire = identity.wire
                             probe.watch.connected()
+                            val pace = EchoPace.Adaptive(signals, fast = echoIntervalMs.milliseconds)
 
                             // A DEDICATED collector, not a poll: an unanswered path probe is bounded at ~3s
                             // (RFC 9000 §8.2.4), so a whole Probing -> Failed sequence can fall between two
@@ -441,6 +505,7 @@ object IosHandoffProbe {
                             launch {
                                 pathState.collect {
                                     emit("PATH $it")
+                                    pace.pathChanged(now())
                                     ledger.onPath(it)
                                     probe.status = ledger.oneLine(it.toString())
                                 }
@@ -450,7 +515,7 @@ object IosHandoffProbe {
                                 EchoLoop(
                                     stream = QuicEchoStream(stream),
                                     session = session,
-                                    interval = echoIntervalMs.milliseconds,
+                                    pace = pace,
                                     clock = ::now,
                                     emit = emit,
                                     closedBy = ::connectionClosedBy,
@@ -924,7 +989,9 @@ private class WalkTraceFiles(
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
-    private val connections: Map<String, AtomicInt> = lanes.associate { it.label to AtomicInt(0) }
+    // Numbered on from the files already here: a resumed walk appends to this directory, and reusing a
+    // stem would append one connection's events onto another's trace.
+    private val connections: Map<String, AtomicInt> = lanes.associate { it.label to AtomicInt(lastConnection(dir, it)) }
     private val budget = AtomicReference<TraceSpend>(TraceSpend.Live(0L))
 
     init {
@@ -970,6 +1037,29 @@ private class WalkTraceFiles(
             TrafficSecretsLog.File("$keysDir/$name.keys"),
         )
     }
+}
+
+/** How a walk begins: from nothing, or continuing one the process lost. */
+private sealed interface WalkBegin {
+    data object Fresh : WalkBegin
+
+    data class Resume(
+        val startedAtEpoch: Double,
+        val reason: String,
+    ) : WalkBegin
+}
+
+/** The highest connection number [lane] already has a trace for in [dir]; 0 when it has none. */
+private fun lastConnection(
+    dir: String,
+    lane: WalkLane,
+): Int {
+    val prefix = "conn-${lane.label}-"
+    val names = NSFileManager.defaultManager.contentsOfDirectoryAtPath(dir, null).orEmpty()
+    return names
+        .map { it.toString() }
+        .filter { it.startsWith(prefix) && it.endsWith(".trace") }
+        .maxOfOrNull { it.removePrefix(prefix).removeSuffix(".trace").toIntOrNull() ?: 0 } ?: 0
 }
 
 /** Long enough that a dead path is not immediately reaped, short enough that the walk shows a death rather than a hang. */
@@ -1054,3 +1144,11 @@ private fun rotatePreviousRun(
     leftovers.forEach { fm.moveItemAtPath("$documents/$it", "$into/$it", null) }
     return "PREVIOUS-RUN kept previous/$stamp/ [${leftovers.joinToString(",")}] — pull.sh collects it"
 }
+
+/** A lane's radio as the connection's policy: the default lane migrates with the OS, a pinned lane never leaves its radio. */
+private val LaneRadio.migration: MigrationPolicy
+    get() =
+        when (this) {
+            LaneRadio.Default -> MigrationPolicy.Automatic
+            is LaneRadio.Pinned -> MigrationPolicy.Pinned(radio)
+        }

@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.osnet
 import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.testkit.trace.encodeMechanism
@@ -33,6 +34,9 @@ import kotlin.time.Duration
  * device gets, and is written into the run's `OS-NET-SOURCE` line, so a quiet stretch of log is
  * readable as "nothing changed" or "nothing was looked at" rather than guessed at.
  *
+ * Each change of the device's network state is also told to [signals], which is what holds every
+ * lane's [EchoPace.Adaptive][com.ditchoom.socket.testkit.echo.EchoPace.Adaptive] at the fast rate.
+ *
  * Lock-free: the observation collector, the heartbeat and a platform callback all sample
  * concurrently, and the compare-and-set below is what makes exactly one of them the writer of any
  * given transition.
@@ -42,6 +46,7 @@ public class OsNetWatch(
     private val clock: () -> Duration,
     private val emit: (String) -> Unit,
     private val sink: TraceSink,
+    private val signals: DeviceSignals = DeviceSignals(),
 ) {
     /**
      * What has been recorded so far. Sealed, so "nothing yet" is a case rather than a null that
@@ -79,6 +84,9 @@ public class OsNetWatch(
             if (recorded.compareAndSet(previous, Recorded.Last(facts))) {
                 emit("OS-NET ${facts.line}")
                 sink.emit(TraceEvent.OsNet(clock(), facts))
+                // Pace reacts to the device's network itself changing — the active link, its
+                // internet verdict — not to an address list the OS re-reports every few seconds.
+                if (previous !is Recorded.Last || previous.facts.state != facts.state) signals.networkChanged(clock())
                 return
             }
         }

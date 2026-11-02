@@ -143,6 +143,9 @@ internal suspend fun buildJvmQuicConnection(
         // resolved once at the connect entry and every candidate reaches here as an address.
         val peer = UdpSocket.resolve(endpoint.address.ip, endpoint.port)
         val codec = SocketAddressCodec(hostOsSockAddrLayout())
+        // A pinned connection holds its radio's network for as long as its scope lives, which every
+        // failure below and the connection's own release end.
+        val opener = quicOptions.migration.pathOpener { radio -> pinnedRadioOpener(radio, timeout, parentJob) }
         val path =
             binding.openClientPath(peer) {
                 UdpSocketChannelFactory(
@@ -153,6 +156,7 @@ internal suspend fun buildJvmQuicConnection(
                     receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
                     // NIO binds the requested local endpoint before connecting.
                     localEndpointSupport = LocalEndpointSupport.Bindable,
+                    openChannel = opener,
                 )
             }
         // A single handle that releases both the socket and its selector coroutine — and, on a shared

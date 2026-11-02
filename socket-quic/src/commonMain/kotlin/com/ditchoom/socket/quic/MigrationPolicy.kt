@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.transport.NetworkKind
 
 /**
  * Whether — and by whom — this connection's local path may move (RFC 9000 §9 active migration).
@@ -52,6 +53,30 @@ sealed interface MigrationPolicy {
      * the remainder of it, which is the outage active migration exists to prevent.
      */
     data object Automatic : MigrationPolicy
+
+    /**
+     * **Client-only.** The connection's path is opened on [radio] instead of the OS default network, and
+     * never leaves it: [Forbidden] on one radio, so a process can hold one connection per radio side by
+     * side. Advertises `disable_active_migration` like [Forbidden], holds no [StandbyLink], and
+     * [QuicScope.migrate] answers [MigrationResult.Unmoved.Impossible.PolicyForbids].
+     *
+     * A radio that is not there fails the connect with a [PinnedRadioUnavailableException]; one that
+     * goes away later ends the connection as any dead path does, by idle timeout or a failed send.
+     * Where the engine cannot pin ([EngineCapabilities.pinnableRadios]), or the connection rides a port
+     * it does not own, the connect is refused with a [PinnedRadioRefusedException] before any socket
+     * opens.
+     *
+     * | Platform | How the path is pinned |
+     * |---|---|
+     * | Android | a `ConnectivityManager.requestNetwork` for [radio] + `INTERNET`, held while the connection is open; every socket is bound to that network with `Network.bindSocket` |
+     * | Apple | the `NWConnection` requires an interface of [radio]'s type |
+     * | JVM, Linux, JS | refused: [PinnedRadioRefusal.EngineCannotPin] |
+     *
+     * A server binds the sockets its [QuicPortBinding] names, so it treats this as [Forbidden].
+     */
+    data class Pinned(
+        val radio: NetworkKind.Radio,
+    ) : MigrationPolicy
 }
 
 /**

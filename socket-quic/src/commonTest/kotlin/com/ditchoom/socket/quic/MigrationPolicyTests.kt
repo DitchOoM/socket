@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -16,19 +17,20 @@ import kotlin.test.assertTrue
  */
 class MigrationPolicyTests {
     @Test
-    fun policyIsExhaustiveOverThreeCases() {
+    fun policyIsExhaustiveOverFourCases() {
         val policies: List<MigrationPolicy> =
-            listOf(MigrationPolicy.Forbidden, MigrationPolicy.Manual, MigrationPolicy.Automatic)
-        // The `when` is the assertion: a fourth case would stop compiling here.
+            listOf(MigrationPolicy.Forbidden, MigrationPolicy.Manual, MigrationPolicy.Automatic, MigrationPolicy.Pinned(NetworkKind.Wifi))
+        // The `when` is the assertion: a fifth case would stop compiling here.
         val described =
             policies.map {
                 when (it) {
                     MigrationPolicy.Forbidden -> "forbidden"
                     MigrationPolicy.Manual -> "manual"
                     MigrationPolicy.Automatic -> "automatic"
+                    is MigrationPolicy.Pinned -> "pinned to ${it.radio}"
                 }
             }
-        assertEquals(listOf("forbidden", "manual", "automatic"), described)
+        assertEquals(listOf("forbidden", "manual", "automatic", "pinned to Wifi"), described)
     }
 
     @Test

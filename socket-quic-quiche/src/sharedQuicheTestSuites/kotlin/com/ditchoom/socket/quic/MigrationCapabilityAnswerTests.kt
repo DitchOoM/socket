@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -90,6 +91,8 @@ class MigrationCapabilityAnswerTests {
 
         assertEquals(MigrationCapability.PolicyForbids, clientMigrationCapability(MigrationPolicy.Forbidden, wiring))
         assertEquals(0, wiringBuilt, "a forbidden policy must not build migration wiring")
+        assertEquals(MigrationCapability.PolicyForbids, clientMigrationCapability(MigrationPolicy.Pinned(NetworkKind.Cellular), wiring))
+        assertEquals(0, wiringBuilt, "a connection pinned to one radio must not build migration wiring")
 
         // Manual and Automatic differ in WHO calls migrate(), not in whether the connection can.
         val manual = clientMigrationCapability(MigrationPolicy.Manual, wiring)

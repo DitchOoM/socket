@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.echo
 import kotlinx.coroutines.delay
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /** What one bounded write did. */
@@ -96,8 +97,9 @@ public sealed interface EchoLoopEnd {
 }
 
 /**
- * The walk probes' echo loop over one connection's stream: write `probe-N;` every [interval], judge
- * each echo with [session], until the walk's deadline or the stream ends.
+ * The walk probes' echo loop over one connection's stream: write `probe-N;` at the rate [pace] sets
+ * round by round, judge each echo with [session], until the walk's deadline or the stream ends. Every
+ * late, unanswered or failed exchange is reported to [pace], and a change of rate is logged as `PACE`.
  *
  * A read stays outstanding from each send until nothing is owed or the next send is due, so an echo
  * is judged the instant it becomes readable and its round trip is the path's, not the loop's. The
@@ -117,7 +119,7 @@ public sealed interface EchoLoopEnd {
 public class EchoLoop(
     private val stream: EchoStream,
     private val session: EchoSession,
-    private val interval: Duration,
+    private val pace: EchoPace,
     private val clock: () -> Duration,
     private val emit: (String) -> Unit,
     private val closedBy: (Throwable) -> EchoFailure,
@@ -141,15 +143,21 @@ public class EchoLoop(
 
     private var integrity: Integrity = Integrity.Intact
 
+    /** Exchanges that crossed their deadline since the last answer; a run of them is trouble, one is jitter. */
+    private var overdueRun = 0
+
     /** Exchange until [until] on [clock], or until the stream or the connection ends. */
     public suspend fun run(until: Duration): EchoLoopEnd {
-        emit("LOOP-SCHEDULE read=held-until-answered intervalMs=${interval.inWholeMilliseconds}")
+        emit("LOOP-SCHEDULE read=held-until-answered ${pace.schedule}")
+        pace.connected(clock())
         var seq = 0
         while (clock() < until) {
             seq++
             observe(EchoLoopEvent.Round(seq))
             val sentAt = clock()
-            val nextSendAt = sentAt + interval
+            val step = pace.next(sentAt)
+            if (step is PaceStep.Changed) emit(step.line)
+            val nextSendAt = sentAt + step.interval
             // Delimited so payload boundaries stay visible in a coalesced read.
             val payload = "probe-$seq;"
             try {
@@ -163,6 +171,7 @@ public class EchoLoop(
                 throw e
             } catch (e: Throwable) {
                 emit("ECHO-FAIL seq=$seq after=${(clock() - sentAt).inWholeMilliseconds}ms err=${e::class.simpleName} msg=${e.message}")
+                pace.troubled(clock())
                 observe(EchoLoopEvent.Failed(session.owedBytes))
                 // A dead connection makes "keep going" a loop spinning against a closed connection for
                 // the rest of the walk. Leave, and let the caller reconnect: a reconnect is itself
@@ -223,6 +232,10 @@ public class EchoLoop(
                         when (val read = step.read) {
                             is EchoRead.Consumed -> {
                                 read.outcomes.forEach { emit(it.line(read.owedBytes)) }
+                                if (read.outcomes.isNotEmpty()) overdueRun = 0
+                                if (read.outcomes.any { it is EchoOutcome.Late && it.roundTrip - it.deadline >= TROUBLE_LATENESS }) {
+                                    pace.troubled(clock())
+                                }
                                 observe(EchoLoopEvent.Read(read))
                             }
                             is EchoRead.Diverged ->
@@ -244,6 +257,7 @@ public class EchoLoop(
             }
             is EchoStep.WriteTimedOut -> {
                 emit(step.line)
+                pace.troubled(clock())
                 observe(EchoLoopEvent.WriteTimedOut(session.owedBytes))
                 Next.KeepGoing
             }
@@ -258,6 +272,7 @@ public class EchoLoop(
     private fun reportOverdue() {
         session.overdue(clock()).forEach {
             emit(it.line)
+            if (++overdueRun >= TROUBLE_OVERDUE_RUN) pace.troubled(clock())
             observe(EchoLoopEvent.Overdue(it))
         }
     }
@@ -265,5 +280,14 @@ public class EchoLoop(
     public companion object {
         /** Bounds one write; [EchoSession.WRITE_TIMEOUT_STREAK_LIMIT] of these in a row ends the session. */
         public val WRITE_DEADLINE: Duration = 5.seconds
+
+        /**
+         * What [pace] counts as trouble among echoes that missed their deadline. That deadline tracks
+         * the round trip closely, so ordinary Wi-Fi jitter crosses it by a few milliseconds about once a
+         * minute — counting that held a still phone at the fast rate for good. An echo this late is
+         * trouble, and so is this long a run of misses with no answer between them.
+         */
+        public val TROUBLE_LATENESS: Duration = 500.milliseconds
+        public const val TROUBLE_OVERDUE_RUN: Int = 3
     }
 }

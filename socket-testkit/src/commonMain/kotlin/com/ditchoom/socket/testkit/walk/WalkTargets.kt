@@ -1,5 +1,6 @@
 package com.ditchoom.socket.testkit.walk
 
+import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
 
 /**
@@ -88,6 +89,7 @@ public data class WalkLane(
     val label: String,
     val target: WalkTarget,
     val index: Int,
+    val radio: LaneRadio = LaneRadio.Default,
 ) {
     public val token: String get() = "lane=$label"
 
@@ -109,6 +111,25 @@ public data class WalkLane(
     }
 }
 
+/** Which network a lane's connection runs over. */
+public sealed interface LaneRadio {
+    /** Whatever the OS makes default, migrating with it. */
+    public data object Default : LaneRadio
+
+    /** Always [radio], never migrating off it: that radio's own record, beside the default lane's. */
+    public data class Pinned(
+        val radio: NetworkKind.Radio,
+    ) : LaneRadio
+}
+
+/** How a lane label and a launcher argument name a radio. */
+public val NetworkKind.Radio.token: String
+    get() =
+        when (this) {
+            NetworkKind.Wifi -> "wifi"
+            NetworkKind.Cellular -> "cellular"
+        }
+
 /**
  * The targets one walk runs, one [WalkLane] each, all at once: a device on a stable network holds
  * each connection for the whole run, so a single rotating connection would test one family per run.
@@ -123,15 +144,24 @@ public data class WalkLane(
 public data class WalkTargets(
     val first: WalkTarget,
     val rest: List<WalkTarget> = emptyList(),
+    /** Radios to pin a second lane per target to, beside each target's [LaneRadio.Default] lane. */
+    val pinned: List<NetworkKind.Radio> = emptyList(),
 ) {
     public val all: List<WalkTarget> = listOf(first) + rest
 
-    public val lanes: List<WalkLane> =
+    private val defaultLanes: List<WalkLane> =
         all.mapIndexed { index, target ->
             val family = target.family.label
             val earlier = all.take(index).count { it.family.label == family }
             WalkLane(label = if (earlier == 0) family else "$family-${earlier + 1}", target = target, index = index)
         }
+
+    /** Each target's default lane, then one lane per [pinned] radio per target (`v4-cellular`). */
+    public val lanes: List<WalkLane> =
+        defaultLanes +
+            pinned
+                .flatMap { radio -> defaultLanes.map { it.copy(label = "${it.label}-${radio.token}", radio = LaneRadio.Pinned(radio)) } }
+                .mapIndexed { i, lane -> lane.copy(index = defaultLanes.size + i) }
 
     /** What `START` carries: every target in lane order, each with its family. */
     public val line: String get() = "targets=" + all.joinToString(",") { "${it.authority}/${it.family.label}" }
@@ -160,5 +190,17 @@ public data class WalkTargets(
                 WalkTargets(WalkTarget(hosts.first(), port), hosts.drop(1).map { WalkTarget(it, port) }),
             )
         }
+
+        /**
+         * The radios a launcher argument names, comma-separated (`cellular`, `wifi`): each adds a lane
+         * per target pinned to that radio. Empty or absent is none.
+         */
+        public fun radios(spec: String): List<NetworkKind.Radio> =
+            spec.split(SEPARATOR).map { it.trim().lowercase() }.filter { it.isNotEmpty() }.map { name ->
+                RADIOS.firstOrNull { it.token == name }
+                    ?: error("unknown radio '$name' — expected one of ${RADIOS.joinToString { it.token }}")
+            }
+
+        private val RADIOS = listOf(NetworkKind.Wifi, NetworkKind.Cellular)
     }
 }
