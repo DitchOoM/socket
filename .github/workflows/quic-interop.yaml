@@ -73,6 +73,17 @@ jobs:
           natives-run-id: ${{ steps.natives.outputs.run-id }}
           github-token: ${{ github.token }}
 
+      # The runner's docker-compose.yml gives each sim interface an `interface_name`, which Docker
+      # Engine rejects before v28.1 ("interface_name requires Docker Engine v28.1 or later"). The
+      # ubuntu-24.04 image ships an older engine, so every compliance check failed, every pair was
+      # skipped and the result files held only nulls. Upstream's own CI installs the same engine.
+      - uses: docker/setup-docker-action@v5
+        with:
+          version: version=v28.3.0
+
+      - name: Enable IPv6 packet filtering for the simulator
+        run: sudo modprobe ip6table_filter
+
       - name: Build the endpoint jar and image
         run: |
           set -euo pipefail
@@ -114,14 +125,21 @@ jobs:
               echo "::error::the runner produced no $f result — the endpoint or the runner did not start"
               exit 1
             fi
+            # A pair the runner skips (compliance check failed, sim did not start) is written as a row
+            # of nulls. If no pair produced a single verdict, nothing was tested.
+            if ! jq -e '[.results[][] | .result | select(. != null)] | length > 0' "/tmp/interop/$f.json" > /dev/null; then
+              echo "::error::the runner ran no $f test against any peer — every pair was skipped (see 'not compliant' above)"
+              exit 1
+            fi
           done
 
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          # Result JSON: servers[], clients[], tests{abbr: {name}}, results[server*clients + client] =
-          # [{abbr, result: succeeded|failed|unsupported}].
+          # Result JSON: servers[], clients[], tests{abbr: {name}} (tests and measurements), and per pair
+          # at index client*len(servers) + server: results[] and measurements[], each
+          # [{abbr, result: succeeded|failed|unsupported|null}]; null = the runner skipped the pair.
           table() {
             local f=$1 title=$2
             [ -s "$f" ] || return 0
@@ -130,20 +148,20 @@ jobs:
             jq -r '
               . as $r
               | ($r.servers | length) as $ns
-              | ["Server", "Client"] + ([$r.tests | to_entries[] | .key]) as $hdr
+              | (["Server", "Client"] + [$r.tests | to_entries[] | .key]) as $hdr
               | ($hdr | "| " + join(" | ") + " |"),
                 ($hdr | map("---") | "| " + join(" | ") + " |"),
                 ( [range(0; $r.servers | length) as $s | range(0; $r.clients | length) as $c | {s: $s, c: $c}][]
                   | . as $p
-                  | $r.results[$p.c * $ns + $p.s] as $cell
+                  | ($r.results[$p.c * $ns + $p.s] + ($r.measurements[$p.c * $ns + $p.s] // [])) as $cell
                   | [$r.servers[$p.s], $r.clients[$p.c]]
                     + [$r.tests | to_entries[] | .key as $k
-                       | ($cell | map(select(.abbr == $k)) | .[0].result // "-")
-                       | if . == "succeeded" then "✅" elif . == "failed" then "❌" elif . == "unsupported" then "–" else . end]
+                       | ($cell | map(select(.abbr == $k)) | if length == 0 then "-" else .[0].result end)
+                       | if . == "succeeded" then "✅" elif . == "failed" then "❌" elif . == "unsupported" then "–" elif . == null then "skipped" else . end]
                   | "| " + join(" | ") + " |")
             ' "$f"
             echo
-            echo "Legend: ✅ succeeded · ❌ failed · – unsupported by one side"
+            echo "Legend: ✅ succeeded · ❌ failed · – unsupported by one side · skipped = the runner never ran the pair"
             echo
           }
           {
