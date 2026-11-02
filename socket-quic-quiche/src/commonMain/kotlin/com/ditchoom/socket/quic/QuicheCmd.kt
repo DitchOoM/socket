@@ -120,10 +120,27 @@ sealed interface QuicheCmd {
      * Allocate the next stream ID and create a [StreamSlot]. [unidirectional] selects the
      * uni-stream ID space (RFC 9000 §2.1) for the locally-initiated control / QPACK streams
      * HTTP/3 needs; the default is a bidirectional stream.
+     *
+     * At the peer's stream limit the command stays queued in the driver, behind any open of the same
+     * direction already waiting, until a MAX_STREAMS raises the limit; the id is assigned only then.
      */
     class OpenStream(
         val result: CompletableDeferred<StreamSlot>,
         val unidirectional: Boolean = false,
+    ) : QuicheCmd
+
+    /**
+     * The caller of [open] stopped waiting for it — its bound ran out, or it was cancelled — and has
+     * already cancelled [OpenStream.result] (a no-op if the driver completed it first).
+     *
+     * Both halves of the race are settled here, on the driver loop: an [open] still queued at the
+     * peer's stream limit is dropped from the queue (so an abandoned waiter does not stay queued), and
+     * an [open] the driver had already completed with a stream nobody will receive gives that stream
+     * back, to the next waiter or the next open — so its id is not burned and the ids the application
+     * sees stay contiguous.
+     */
+    class AbandonOpen(
+        val open: OpenStream,
     ) : QuicheCmd
 
     /**

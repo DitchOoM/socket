@@ -124,7 +124,15 @@ interface QuicScope : CoroutineScope {
     val capabilities: QuicCapabilities
         get() = throw UnsupportedOperationException("Connection capabilities are not available on this platform")
 
-    /** Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN). */
+    /**
+     * Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN).
+     *
+     * At the peer's stream limit this waits for the peer to raise it (MAX_STREAMS) under
+     * [QuicOptions.streamOpenPolicy] — indefinitely by default — and waiting opens are served in call
+     * order. A bounded wait that runs out throws [com.ditchoom.socket.SocketTimeoutException]
+     * ([com.ditchoom.socket.TimeoutContext.StreamOpen]); a connection that closes meanwhile throws its
+     * [QuicCloseException]. Neither, nor cancelling the call, consumes a stream id.
+     */
     suspend fun openStream(): QuicByteStream
 
     /**
@@ -132,6 +140,9 @@ interface QuicScope : CoroutineScope {
      * uni streams HTTP/3 needs (control + QPACK encoder/decoder, RFC 9114 §6.2). The caller writes
      * the stream-type prefix as the first bytes, and `close()` sends FIN. The returned stream's
      * [QuicByteStream.streamId] is unidirectional ([QuicStreamId.isUnidirectional]).
+     *
+     * Waits at the peer's unidirectional stream limit exactly as [openStream] does at its bidirectional
+     * one; the two limits are separate, so an open of one kind never waits behind the other.
      *
      * Defaults to [UnsupportedOperationException]; quiche-backed connections override this.
      */

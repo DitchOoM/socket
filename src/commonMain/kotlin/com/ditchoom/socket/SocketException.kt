@@ -207,6 +207,17 @@ sealed interface TimeoutContext {
     }
 
     /**
+     * Opening a stream waited [deadline] for the peer to allow another one (a multiplexed transport
+     * whose peer limits how many streams may be open at once, such as QUIC's MAX_STREAMS). Nothing was
+     * created: the connection is still usable and a later open may succeed.
+     */
+    data class StreamOpen(
+        val deadline: Duration,
+    ) : TimeoutContext {
+        override fun describe(): String = "Stream open timed out after $deadline waiting for the peer's stream limit"
+    }
+
+    /**
      * A timeout surfaced by a platform primitive that gave us only a string (an errno description,
      * a JDK exception message, the NIO selector) with no structured operation or deadline to
      * recover. This is a *distinct variant* — not a null deadline on the typed ones — so "we have

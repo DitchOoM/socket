@@ -186,6 +186,14 @@ class FfmQuicheApi private constructor(
         // ssize_t quiche_conn_stream_capacity(conn, uint64 stream_id)
         downcall("quiche_conn_stream_capacity", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG))
     }
+    private val hPeerStreamsLeftBidi by lazy {
+        // uint64_t quiche_conn_peer_streams_left_bidi(const quiche_conn *conn)
+        downcall("quiche_conn_peer_streams_left_bidi", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+    private val hPeerStreamsLeftUni by lazy {
+        // uint64_t quiche_conn_peer_streams_left_uni(const quiche_conn *conn)
+        downcall("quiche_conn_peer_streams_left_uni", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
     private val hStreamShutdown by lazy {
         // int quiche_conn_stream_shutdown(conn, uint64 stream_id, enum quiche_shutdown direction, uint64 err)
         downcall(
@@ -650,6 +658,10 @@ class FfmQuicheApi private constructor(
         conn: QuicheConn,
         streamId: QuicStreamId,
     ): Long = hStreamCapacity.invokeExact(seg(conn.handle), streamId.id) as Long
+
+    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = hPeerStreamsLeftBidi.invokeExact(seg(conn.handle)) as Long
+
+    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = hPeerStreamsLeftUni.invokeExact(seg(conn.handle)) as Long
 
     override fun connStreamShutdown(
         conn: QuicheConn,

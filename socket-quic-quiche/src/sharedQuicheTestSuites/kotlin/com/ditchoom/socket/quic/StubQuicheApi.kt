@@ -277,6 +277,16 @@ internal class StubQuicheApi : QuicheApi {
         streamId: QuicStreamId,
     ): Long = streamCapacity
 
+    /** What [connPeerStreamsLeftBidi] reports: effectively unlimited by default, like a generous peer. */
+    @Volatile var peerStreamsLeftBidi: Long = Long.MAX_VALUE
+
+    /** What [connPeerStreamsLeftUni] reports. */
+    @Volatile var peerStreamsLeftUni: Long = Long.MAX_VALUE
+
+    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = peerStreamsLeftBidi
+
+    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = peerStreamsLeftUni
+
     /** Records each [connStreamShutdown] call as (streamId, direction, errorCode) so tests can assert resets. */
     val streamShutdowns = mutableListOf<Triple<Long, Int, Long>>()
 

@@ -13,6 +13,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.SocketTimeoutException
+import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.quic.trace.QlogFile
 import com.ditchoom.socket.quic.trace.QlogOpening
 import com.ditchoom.socket.quic.trace.QlogRecord
@@ -96,6 +98,11 @@ class QuicheDriver(
      */
     internal val streamReadPolicy: ReadPolicy = ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
     internal val streamWritePolicy: WritePolicy = WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
+    /**
+     * How long [openStreamSlot] waits for the peer to allow another stream. See [QuicOptions.streamOpenPolicy];
+     * the default matches it, so a test double that omits it gets the production behaviour.
+     */
+    internal val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
     /**
      * The driver's clock seam (monotonic mark + the `select` timeout clause). Defaults to
      * [RealDriverClock] so every platform and production path keeps its exact pre-seam timer
@@ -604,6 +611,47 @@ class QuicheDriver(
         destroy()
     }
 
+    /**
+     * Open a locally-initiated stream — the one implementation behind every driver-backed connection's
+     * `openStream()` / `openUniStream()`.
+     *
+     * At the peer's stream limit this waits, under [streamOpenPolicy], for the peer's MAX_STREAMS; the
+     * driver serves waiting opens in call order as credit arrives (see [admitWaitingOpens]). A bound that
+     * runs out throws [SocketTimeoutException] with [TimeoutContext.StreamOpen]; a connection that closes
+     * meanwhile throws its [QuicCloseException]. Either way, and on cancellation, the open is withdrawn
+     * with [QuicheCmd.AbandonOpen] so it neither stays queued nor strands a stream the driver created for
+     * it in the same instant.
+     */
+    internal suspend fun openStreamSlot(unidirectional: Boolean): StreamSlot {
+        val open = QuicheCmd.OpenStream(CompletableDeferred(), unidirectional)
+        try {
+            commands.send(open)
+        } catch (_: ClosedSendChannelException) {
+            throw connectionClosed()
+        }
+        try {
+            return when (val policy = streamOpenPolicy) {
+                StreamOpenPolicy.UntilClosed -> open.result.await()
+                is StreamOpenPolicy.Bounded ->
+                    withTimeoutOrNull(policy.deadline) { open.result.await() } ?: run {
+                        // Withdraw first. If the driver completed the open in the same instant, the
+                        // withdrawal is refused and the open's own outcome (its stream, or the close
+                        // that failed it) is the answer, not a timeout.
+                        if (open.result.completeExceptionally(CancellationException("stream open timed out"))) {
+                            commands.trySend(QuicheCmd.AbandonOpen(open))
+                            throw SocketTimeoutException(TimeoutContext.StreamOpen(policy.deadline))
+                        }
+                        open.result.await()
+                    }
+            }
+        } catch (e: CancellationException) {
+            // No-op when the driver already handed over a stream; AbandonOpen then gives that stream back.
+            open.result.cancel()
+            commands.trySend(QuicheCmd.AbandonOpen(open))
+            throw e
+        }
+    }
+
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
 
@@ -618,6 +666,36 @@ class QuicheDriver(
     // Locally-initiated unidirectional stream IDs (RFC 9000 §2.1): low 2 bits 0b10 (client → 2)
     // or 0b11 (server → 3), stepping by 4. Separate from the bidi counter above.
     private var nextUniStreamId = if (role is QuicRole.Server) 3L else 2L
+
+    /**
+     * Opens of one direction that have not been handed a stream yet, and streams created for opens whose
+     * caller left before taking them. Driver-loop only, like [streams]; one per direction because the
+     * peer grants bidirectional and unidirectional credit separately (RFC 9000 §4.6), so an open of one
+     * kind must never wait behind the other's limit.
+     */
+    private class OpenLane(
+        val unidirectional: Boolean,
+    ) {
+        /**
+         * Opens waiting for the peer's stream limit to rise, oldest first. Served strictly in order: a
+         * later open never takes credit an earlier one is still waiting for.
+         */
+        val waiting = ArrayDeque<QuicheCmd.OpenStream>()
+
+        /**
+         * Streams quiche already created for an open whose caller gave up in the same instant the stream
+         * was handed over (see [QuicheCmd.AbandonOpen]), lowest id first. Nothing reached the wire for
+         * them — a zero-length, non-fin send puts nothing there — so the next open of this direction takes
+         * one rather than a fresh id. Without this the abandoned id is a hole in the ids the application
+         * sees, and a stream credit the peer granted is spent on nothing.
+         */
+        val unclaimed = ArrayDeque<StreamSlot>()
+    }
+
+    private val bidiOpens = OpenLane(unidirectional = false)
+    private val uniOpens = OpenLane(unidirectional = true)
+
+    private fun openLane(unidirectional: Boolean): OpenLane = if (unidirectional) uniOpens else bidiOpens
 
     // --- Unreliable datagrams (RFC 9221) ---
 
@@ -1971,7 +2049,10 @@ class QuicheDriver(
             dispatch(cmd)
             val queuedOnly =
                 when (cmd) {
-                    is QuicheCmd.OpenStream -> true
+                    // Served at once is queued-only; an open left waiting for the peer's stream limit needs
+                    // the network to hear the MAX_STREAMS that ends the wait.
+                    is QuicheCmd.OpenStream -> cmd.result.isCompleted
+                    is QuicheCmd.AbandonOpen -> true
                     is QuicheCmd.StreamSend -> cmd.result.isCompleted && cmd.result.getCompleted().result == cmd.bufLen
                     else -> false
                 }
@@ -2038,53 +2119,22 @@ class QuicheDriver(
             }
 
             is QuicheCmd.OpenStream -> {
-                val id =
-                    if (cmd.unidirectional) {
-                        QuicStreamId(nextUniStreamId).also { nextUniStreamId += 4 }
-                    } else {
-                        QuicStreamId(nextStreamId).also { nextStreamId += 4 }
-                    }
-                val slot = StreamSlot(id)
-                streams[id.id] = slot
-                // Make the stream real to quiche now, so that openStream() means what its name says.
-                // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
-                // here and nowhere else would make a read before the first write ask quiche about a
-                // stream it has never heard of, which answers INVALID_STREAM_STATE — a transport
-                // failure for a stream that has not finished and has not failed, it has not started.
-                // Starting a reader before writing the request is an ordinary shape.
-                //
-                // A zero-length, non-fin send is the whole materialisation: quiche creates the stream
-                // and, with no data and no FIN, the stream is not flushable, so nothing is put on the
-                // wire (quiche's `stream_do_send`; the connection byte counters are unchanged across
-                // an openStream that is never written to).
-                //
-                // The result is CHECKED, not discarded. At the peer's initial_max_streams this send is
-                // the call that fails, with QUICHE_ERR_STREAM_LIMIT — swallowing it would return a slot
-                // quiche had refused to create, and the next read on it would answer
-                // INVALID_STREAM_STATE. The typed error is in hand here, so it is reported here.
-                val materialised = api.connStreamSend(conn, id, sendScratch.address, 0, false)
-                // Only STREAM_LIMIT. That is the one code which means "this stream cannot be created",
-                // which is the only thing this call is here to find out. Every other negative code
-                // describes the state of an *existing* stream — STREAM_STOPPED, STREAM_RESET, DONE —
-                // and cannot truthfully apply to an id quiche has never seen; treating them as fatal
-                // here would move their error reporting off the first real write where it belongs.
-                if (materialised.result == QUICHE_ERR_STREAM_LIMIT) {
-                    // Give the id back: nothing was put on the wire and quiche holds no state for it,
-                    // so burning it would leak stream ids on a connection that is merely at its limit.
-                    streams.remove(id.id)
-                    if (cmd.unidirectional) nextUniStreamId -= 4 else nextStreamId -= 4
-                    cmd.result.completeExceptionally(
-                        QuicStreamOpenException(
-                            streamId = id.id,
-                            quicheErrorCode = materialised.result,
-                            message =
-                                "cannot open QUIC stream ${id.id}: the peer's stream limit is reached " +
-                                    "(quiche code ${materialised.result}). Retire or close a stream, " +
-                                    "or raise initial_max_streams.",
-                        ),
-                    )
-                } else {
-                    cmd.result.complete(slot)
+                // Queued behind any open already waiting, then served if the peer's limit allows: an
+                // open at the limit is not refused, it waits here for the peer's MAX_STREAMS, which
+                // [admitWaitingOpens] notices after the packet carrying it is received.
+                val lane = openLane(cmd.unidirectional)
+                lane.waiting.addLast(cmd)
+                admitOpens(lane)
+            }
+
+            is QuicheCmd.AbandonOpen -> {
+                val open = cmd.open
+                val lane = openLane(open.unidirectional)
+                lane.waiting.remove(open)
+                // The caller's cancel lost the race: this driver had already handed it a stream, which
+                // nobody will now receive. Give it back for the next open of its direction.
+                if (open.result.isCompleted && open.result.getCompletionExceptionOrNull() == null) {
+                    reclaimUnclaimedStream(lane, open.result.getCompleted())
                 }
             }
 
@@ -2248,6 +2298,7 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         discoverNewStreams()
+        admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
         updateState()
@@ -2263,6 +2314,98 @@ class QuicheDriver(
         lastMaxDatagramSize = api.connDgramMaxWritableLen(conn)
         if (api.hasReadableDgram(conn)) dgramSignal.trySend(Unit)
         dgramWritableSignal.trySend(Unit)
+    }
+
+    /**
+     * Serve opens waiting at the peer's stream limit, if the peer has raised it. The open-side mirror of
+     * [signalWritableStreams]: a MAX_STREAMS frame is processed inside the `connRecv` of the packet that
+     * carried it, and this runs after every command, so a waiting open is served on the same turn of the
+     * loop that received its credit — no timer, no polling. Costs one queue check when nothing waits.
+     */
+    private fun admitWaitingOpens() {
+        if (bidiOpens.waiting.isNotEmpty()) admitOpens(bidiOpens)
+        if (uniOpens.waiting.isNotEmpty()) admitOpens(uniOpens)
+    }
+
+    /**
+     * Hand streams to the opens waiting in [lane], oldest first, until it is empty or the peer's limit is
+     * reached again. An open whose caller has already gone (its result cancelled) is dropped as it is
+     * reached and takes nothing.
+     */
+    private fun admitOpens(lane: OpenLane) {
+        while (true) {
+            val head = lane.waiting.firstOrNull() ?: return
+            if (head.result.isCompleted) {
+                lane.waiting.removeFirst()
+                continue
+            }
+            val slot = lane.unclaimed.removeFirstOrNull() ?: materialiseStream(lane.unidirectional) ?: return
+            lane.waiting.removeFirst()
+            // complete() refuses only when the caller cancelled between the check above and here; the
+            // stream then goes to the next waiter (or the next open) instead of being burned.
+            if (!head.result.complete(slot)) reclaimUnclaimedStream(lane, slot)
+        }
+    }
+
+    /**
+     * Create the next locally-initiated stream of one direction with quiche, or answer null when the peer's
+     * stream limit does not allow another one yet. The id is assigned only when the stream is created, so
+     * the ids handed out stay contiguous however long an open waits.
+     */
+    private fun materialiseStream(unidirectional: Boolean): StreamSlot? {
+        val left = if (unidirectional) api.connPeerStreamsLeftUni(conn) else api.connPeerStreamsLeftBidi(conn)
+        if (left == 0L) return null
+        val id =
+            if (unidirectional) {
+                QuicStreamId(nextUniStreamId).also { nextUniStreamId += 4 }
+            } else {
+                QuicStreamId(nextStreamId).also { nextStreamId += 4 }
+            }
+        val slot = StreamSlot(id)
+        streams[id.id] = slot
+        // Make the stream real to quiche now, so that openStream() means what its name says.
+        // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
+        // here and nowhere else would make a read before the first write ask quiche about a
+        // stream it has never heard of, which answers INVALID_STREAM_STATE — a transport
+        // failure for a stream that has not finished and has not failed, it has not started.
+        // Starting a reader before writing the request is an ordinary shape.
+        //
+        // A zero-length, non-fin send is the whole materialisation: quiche creates the stream
+        // and, with no data and no FIN, the stream is not flushable, so nothing is put on the
+        // wire (quiche's `stream_do_send`; the connection byte counters are unchanged across
+        // an openStream that is never written to).
+        //
+        // The result is CHECKED, not discarded, even though the peer's remaining credit was read just
+        // above: quiche's own refusal is the authority on whether the stream exists, and returning a
+        // slot quiche had refused to create would make the next read on it answer INVALID_STREAM_STATE.
+        // Only STREAM_LIMIT: that is the one code which means "this stream cannot be created". Every
+        // other negative code describes the state of an *existing* stream — STREAM_STOPPED,
+        // STREAM_RESET, DONE — and cannot truthfully apply to an id quiche has never seen; reporting
+        // those belongs to the first real write.
+        val materialised = api.connStreamSend(conn, id, sendScratch.address, 0, false)
+        if (materialised.result == QUICHE_ERR_STREAM_LIMIT) {
+            // Give the id back: nothing was put on the wire and quiche holds no state for it, so
+            // burning it would leak stream ids on a connection that is merely at its limit.
+            streams.remove(id.id)
+            if (unidirectional) nextUniStreamId -= 4 else nextStreamId -= 4
+            return null
+        }
+        return slot
+    }
+
+    /**
+     * Keep [slot] — created for an open whose caller left — for the next open of [lane]'s direction, and
+     * serve any open already waiting. Lowest id first, so the ids the application receives stay in order.
+     */
+    private fun reclaimUnclaimedStream(
+        lane: OpenLane,
+        slot: StreamSlot,
+    ) {
+        // Torn down already (cleanup cleared the map): there is no connection to give it back to.
+        if (streams[slot.id.id] !== slot) return
+        val at = lane.unclaimed.indexOfFirst { it.id.id > slot.id.id }
+        if (at < 0) lane.unclaimed.addLast(slot) else lane.unclaimed.add(at, slot)
+        admitOpens(lane)
     }
 
     /**
@@ -3485,6 +3628,13 @@ class QuicheDriver(
             failCommand(cmd)
         }
 
+        // Opens still waiting for the peer's stream limit fail with the connection's close reason, as an
+        // open that arrives after the close does. Their unclaimed streams go with the map below.
+        for (lane in listOf(bidiOpens, uniOpens)) {
+            while (true) failCommand(lane.waiting.removeFirstOrNull() ?: break)
+            lane.unclaimed.clear()
+        }
+
         // A migration still in flight when the connection dies never completes — fail it. An open still
         // running beside the loop is cancelled; its own posting sees the closed channel and releases
         // whatever the platform produced after this point.
@@ -3570,6 +3720,8 @@ class QuicheDriver(
                 cmd.result.completeExceptionally(
                     QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed", attribution = closeAttribution()),
                 )
+            // Nothing to give back: the streams it could return die with the connection.
+            is QuicheCmd.AbandonOpen -> Unit
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.ConnectionGone)
             is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
             // The stream/connection is gone; the shutdown frame won't go out, which is fine — the
@@ -3629,6 +3781,7 @@ class QuicheDriver(
                     is QuicheCmd.PacketLifetime.Released -> Unit
                 }
             is QuicheCmd.OpenStream -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.AbandonOpen -> Unit
             is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamShutdown -> cmd.result.completeExceptionally(cause)
