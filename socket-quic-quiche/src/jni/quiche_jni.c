@@ -292,6 +292,15 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnStreamCapacity)(
     return (jlong)quiche_conn_stream_capacity((quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id);
 }
 
+/* Streams of each kind the peer's MAX_STREAMS still lets this endpoint open. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnPeerStreamsLeftBidi)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_peer_streams_left_bidi((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnPeerStreamsLeftUni)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_peer_streams_left_uni((const quiche_conn *)(uintptr_t)conn);
+}
+
 /* Shut down one direction of a stream with an application error code:
    direction 0 = QUICHE_SHUTDOWN_READ (STOP_SENDING), 1 = QUICHE_SHUTDOWN_WRITE (RESET_STREAM). */
 JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(

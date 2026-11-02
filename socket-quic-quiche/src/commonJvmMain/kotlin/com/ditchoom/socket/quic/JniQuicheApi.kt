@@ -270,6 +270,10 @@ object JniQuicheApi : QuicheApi {
         streamId: QuicStreamId,
     ): Long = nConnStreamCapacity(conn.handle, streamId.id)
 
+    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = nConnPeerStreamsLeftBidi(conn.handle)
+
+    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = nConnPeerStreamsLeftUni(conn.handle)
+
     override fun connPeerCert(
         conn: QuicheConn,
         buf: Long,
@@ -885,6 +889,14 @@ object JniQuicheApi : QuicheApi {
         conn: Long,
         streamId: Long,
     ): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnPeerStreamsLeftBidi(conn: Long): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnPeerStreamsLeftUni(conn: Long): Long
 
     @FastNative
     @JvmStatic

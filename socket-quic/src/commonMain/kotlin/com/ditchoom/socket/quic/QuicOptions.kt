@@ -230,6 +230,18 @@ data class QuicOptions(
      */
     val persistentStreams: Boolean = false,
     /**
+     * What [QuicScope.openStream] / [QuicScope.openUniStream] do when the peer's stream limit
+     * (`initial_max_streams`, then its latest MAX_STREAMS) is reached — see [StreamOpenPolicy].
+     *
+     * Defaults to [StreamOpenPolicy.UntilClosed]: the open suspends until the peer raises the limit,
+     * the same back-pressure answer a stalled write gets, and fails only if the connection closes
+     * meanwhile (with the connection's close reason). [StreamOpenPolicy.Bounded] caps the wait and then
+     * fails with a [com.ditchoom.socket.SocketTimeoutException] carrying
+     * [com.ditchoom.socket.TimeoutContext.StreamOpen], having consumed no stream id. Applies to both
+     * roles: a server connection opening streams to its client waits on the client's limit the same way.
+     */
+    val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
+    /**
      * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
      * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
      * (linger until the peer has acknowledged everything written, bounded by [idleTimeout]), so a reply

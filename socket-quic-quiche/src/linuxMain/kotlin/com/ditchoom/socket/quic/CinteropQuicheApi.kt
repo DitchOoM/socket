@@ -62,6 +62,8 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert_chain_at
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_bidi
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_uni
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
@@ -394,6 +396,10 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         conn: QuicheConn,
         streamId: QuicStreamId,
     ): Long = quiche_conn_stream_capacity(conn.handle.toCPointer()!!, streamId.id.convert()).convert()
+
+    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = quiche_conn_peer_streams_left_bidi(conn.handle.toCPointer()!!).convert()
+
+    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = quiche_conn_peer_streams_left_uni(conn.handle.toCPointer()!!).convert()
 
     override fun connStreamShutdown(
         conn: QuicheConn,

@@ -91,6 +91,7 @@ internal suspend fun buildLinuxQuicServer(
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 streamReadPolicy = resolveStreamReadPolicy(quicOptions),
                 streamWritePolicy = resolveStreamWritePolicy(quicOptions),
+                streamOpenPolicy = quicOptions.streamOpenPolicy,
                 closeLinger = quicOptions.closeLinger,
                 idleTimeout = quicOptions.idleTimeout,
                 // server.close() frees config + drivers; the per-call parent scope is the server's

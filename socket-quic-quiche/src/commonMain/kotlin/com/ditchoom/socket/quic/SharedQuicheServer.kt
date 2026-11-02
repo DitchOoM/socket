@@ -78,6 +78,8 @@ internal class SharedQuicheServer(
     private val streamReadPolicy: ReadPolicy = ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
     /** Threaded into every accepted connection's [QuicheDriver.streamWritePolicy]. See [QuicOptions.persistentStreams]. */
     private val streamWritePolicy: WritePolicy = WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
+    /** Threaded into every accepted connection's [QuicheDriver.streamOpenPolicy]. See [QuicOptions.streamOpenPolicy]. */
+    private val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
     /**
      * When an accepted connection may send its CONNECTION_CLOSE once its handler returns
      * ([QuicOptions.closeLinger], threaded here by every build function). See [lingerBeforeClose].
@@ -687,6 +689,7 @@ internal class SharedQuicheServer(
                 keepAliveInterval = keepAliveInterval,
                 streamReadPolicy = streamReadPolicy,
                 streamWritePolicy = streamWritePolicy,
+                streamOpenPolicy = streamOpenPolicy,
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
                 sendStallBound = tuning.sendStallBound,

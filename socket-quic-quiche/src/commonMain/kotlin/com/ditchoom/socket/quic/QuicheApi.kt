@@ -218,6 +218,17 @@ interface QuicheApi {
     ): Long
 
     /**
+     * How many more locally-initiated bidirectional streams the peer currently lets this endpoint open
+     * (`quiche_conn_peer_streams_left_bidi`): the peer's latest MAX_STREAMS (or its
+     * `initial_max_streams_bidi`) minus the streams already opened. Rises when a MAX_STREAMS frame
+     * arrives, which is what wakes an `openStream()` waiting at the limit.
+     */
+    fun connPeerStreamsLeftBidi(conn: QuicheConn): Long
+
+    /** The unidirectional mirror of [connPeerStreamsLeftBidi] (`quiche_conn_peer_streams_left_uni`). */
+    fun connPeerStreamsLeftUni(conn: QuicheConn): Long
+
+    /**
      * Shut down one [direction] of [streamId] with application error code [err]
      * (`quiche_conn_stream_shutdown`): [direction] 0 = read (sends STOP_SENDING), 1 = write (sends
      * RESET_STREAM). Returns 0 on success or a negative quiche error code.

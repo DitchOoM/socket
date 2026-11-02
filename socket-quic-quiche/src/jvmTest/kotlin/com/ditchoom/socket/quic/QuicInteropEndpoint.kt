@@ -12,7 +12,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -26,7 +25,6 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
 import kotlin.system.exitProcess
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -300,30 +298,13 @@ private suspend fun QuicScope.download(
     url: URI,
     downloads: File,
 ) {
-    val stream = openStreamWhenAllowed()
+    // At the peer's stream limit this waits for its MAX_STREAMS (QuicOptions.streamOpenPolicy defaults
+    // to UntilClosed): the multiplexing test asks for far more files than a peer allows streams at once
+    // (msquic grants 100), and credit for a finished stream returns only once the peer has seen it finish.
+    val stream = openStream()
     writeRequest(stream, url, bufferFactory)
     receive(stream, url, downloads)
 }
-
-/**
- * [QuicScope.openStream] refuses a stream past the peer's bidirectional stream limit
- * ([QuicStreamOpenException]) rather than waiting for the peer's MAX_STREAMS, and nothing signals when
- * that arrives. The multiplexing test asks for far more files than a peer allows streams at once (msquic
- * grants 100), and credit for a finished stream returns only once the peer has seen it finish, so a
- * client that keeps 100 requests in flight reaches the limit routinely. Wait and ask again; a connection
- * that closes meanwhile fails the open with its close reason, which ends the wait.
- */
-private suspend fun QuicScope.openStreamWhenAllowed(): QuicByteStream {
-    while (true) {
-        try {
-            return openStream()
-        } catch (_: QuicStreamOpenException) {
-            delay(STREAM_CREDIT_POLL)
-        }
-    }
-}
-
-private val STREAM_CREDIT_POLL = 5.milliseconds
 
 private suspend fun writeRequest(
     stream: QuicByteStream,

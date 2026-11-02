@@ -52,24 +52,18 @@ internal class DriverQuicConnection(
     override suspend fun openUniStream(): QuicByteStream = open(unidirectional = true)
 
     private suspend fun open(unidirectional: Boolean): QuicByteStream {
-        try {
-            val deferred = CompletableDeferred<StreamSlot>()
-            driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
-            val slot = deferred.await()
-            val adapter = DriverStreamAdapter(driver, slot)
-            return QuicByteStream(
+        val slot = driver.openStreamSlot(unidirectional)
+        val adapter = DriverStreamAdapter(driver, slot)
+        return QuicByteStream(
+            slot.id,
+            QuicheStreamByteStream(
                 slot.id,
-                QuicheStreamByteStream(
-                    slot.id,
-                    adapter,
-                    driver.streamReadPool,
-                    readPolicy = driver.streamReadPolicy,
-                    writePolicy = driver.streamWritePolicy,
-                ),
-            )
-        } catch (_: ClosedSendChannelException) {
-            throw driver.connectionClosed()
-        }
+                adapter,
+                driver.streamReadPool,
+                readPolicy = driver.streamReadPolicy,
+                writePolicy = driver.streamWritePolicy,
+            ),
+        )
     }
 
     override suspend fun acceptStream(): QuicByteStream = driver.acceptIncomingStream()

@@ -17,7 +17,17 @@ package com.ditchoom.socket.quic
  * The id is **not** consumed by a failed open: nothing reached the wire and quiche holds no state for
  * it, so the driver hands it back rather than leaking stream ids on a connection that is merely at its
  * limit.
+ *
+ * **No longer thrown.** An open at the peer's stream limit now waits for the peer's MAX_STREAMS under
+ * [QuicOptions.streamOpenPolicy] instead of failing; a bounded wait that runs out fails with
+ * [com.ditchoom.socket.SocketTimeoutException] ([com.ditchoom.socket.TimeoutContext.StreamOpen]).
  */
+@Deprecated(
+    "openStream()/openUniStream() no longer fail at the peer's stream limit: they wait under " +
+        "QuicOptions.streamOpenPolicy, and a bounded wait that runs out throws SocketTimeoutException " +
+        "with TimeoutContext.StreamOpen. Nothing throws this any more. Removed in 5.0.",
+    level = DeprecationLevel.WARNING,
+)
 class QuicStreamOpenException(
     /** The stream id that would have been used. Not consumed — a later open will reuse it. */
     val streamId: Long,
