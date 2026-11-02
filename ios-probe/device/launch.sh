@@ -11,6 +11,6 @@ set -euo pipefail
 # the app reads from UserDefaults' argument domain and keeps for later launches from the icon.
 [ $# -ge 1 ] && SERVER_HOST="$1"
 walk_server_require SERVER_HOST SERVER_PORT
-xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE" -- -host "$SERVER_HOST" -port "$SERVER_PORT" 2>&1 | tail -1
+xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE" -- -host "$SERVER_HOST" -port "$SERVER_PORT" ${WALK_MINUTES:+-minutes "$WALK_MINUTES"} ${WALK_AUTOSTART:+-autostart "$WALK_AUTOSTART"} 2>&1 | tail -1
 sleep 3
 xcrun devicectl device info processes --device "$DEVICE" 2>/dev/null | grep -i quicprobe || echo "NOT RUNNING"
