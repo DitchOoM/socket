@@ -30,7 +30,8 @@ sealed interface PinnedRadioUnavailable {
 
     /**
      * The platform refused to request the radio's network; [cause] is its exception. Android, when the
-     * merged manifest lacks `android.permission.CHANGE_NETWORK_STATE`.
+     * merged manifest lacks `android.permission.CHANGE_NETWORK_STATE`; Apple, when the user turned the
+     * radio's data off for this app.
      */
     data class NotPermitted(
         val cause: Throwable,

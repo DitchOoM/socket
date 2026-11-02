@@ -55,6 +55,16 @@ sealed interface UdpConnectError {
         val errno: Int,
     ) : UdpConnectError
 
+    /**
+     * The user's settings withhold [access] from this app, so no path exists until they change them:
+     * Apple's Local Network privacy grant, or cellular or Wi-Fi data turned off for the app. A retry
+     * cannot help; the user has to. Reported where the platform says so — Network.framework's
+     * unsatisfied-path reason.
+     */
+    data class Denied(
+        val access: DeniedAccess,
+    ) : UdpConnectError
+
     /** Refused by policy: `EACCES`, `EPERM` (a privileged port, a sandbox, a firewall rule). */
     data class NotPermitted(
         val errno: Int,
@@ -101,6 +111,7 @@ sealed interface UdpConnectError {
             is AddressInUse -> "the local endpoint or 4-tuple is already in use" + errnoSuffix(errno)
             is LocalAddressUnavailable -> "the requested local address is not available on this host" + errnoSuffix(errno)
             is Unreachable -> "no route to the peer from this host" + errnoSuffix(errno)
+            is Denied -> access.describe()
             is NotPermitted -> "not permitted" + errnoSuffix(errno)
             is SocketUnavailable -> "the socket could not be created" + errnoSuffix(errno)
             is OsError -> "connect failed (errno=$errno)"
@@ -109,6 +120,26 @@ sealed interface UdpConnectError {
         }
 
     private fun errnoSuffix(errno: Int): String = if (errno == ERRNO_NOT_SURFACED) "" else " (errno=$errno)"
+}
+
+/** What a user's settings can withhold from an app, each a switch the user turns in the system's settings. */
+enum class DeniedAccess {
+    /** Reaching devices on the local network: Apple's Local Network privacy grant. */
+    LocalNetwork,
+
+    /** Cellular data for this app. */
+    CellularData,
+
+    /** Wi-Fi for this app. */
+    WifiData,
+    ;
+
+    fun describe(): String =
+        when (this) {
+            LocalNetwork -> "this app is not allowed to reach the local network"
+            CellularData -> "cellular data is turned off for this app"
+            WifiData -> "Wi-Fi is turned off for this app"
+        }
 }
 
 /**

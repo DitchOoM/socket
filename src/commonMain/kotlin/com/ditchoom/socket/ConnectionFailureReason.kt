@@ -43,6 +43,17 @@ sealed interface ConnectionFailureReason {
         override val description get() = "Network is unreachable"
     }
 
+    /**
+     * The user's settings withhold [access] from this app, so there is no path until they change it —
+     * Apple's Local Network privacy grant, or cellular or Wi-Fi data turned off for the app. Retrying
+     * cannot help; tell the user which switch to turn.
+     */
+    data class AccessDenied(
+        val access: NetworkAccess,
+    ) : ConnectionFailureReason {
+        override val description get() = access.description
+    }
+
     /** DNS resolution failed for the hostname (EAI_NONAME / UnknownHostException / equivalent). */
     data object UnknownHost : ConnectionFailureReason {
         override val description get() = "Hostname could not be resolved"
@@ -84,6 +95,20 @@ sealed interface ConnectionFailureReason {
     ) : ConnectionFailureReason {
         override val description get() = "Unclassified connection failure: $raw"
     }
+}
+
+/** A kind of network access a user can withhold from one app in the system's settings. */
+enum class NetworkAccess(
+    val description: String,
+) {
+    /** Reaching devices on the local network: Apple's Local Network privacy grant. */
+    LocalNetwork("This app is not allowed to reach the local network"),
+
+    /** Cellular data for this app. */
+    CellularData("Cellular data is turned off for this app"),
+
+    /** Wi-Fi for this app. */
+    WifiData("Wi-Fi is turned off for this app"),
 }
 
 /**
