@@ -3346,6 +3346,91 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * The 2026-10-31 flight, as one connection lived it (iPhone lane v4, connection 187): opened on the
+     * plane's Wi-Fi, which twice went silent without a word from the platform and was left for a fresh
+     * path on the same link; after landing, cellular, then an airport Wi-Fi, cellular again and home
+     * Wi-Fi. One connection across all of it, never a reconnect. iOS names a Wi-Fi by its interface, so
+     * the platform reports the *same* Wi-Fi id every time the phone comes back to one, as it does here.
+     *
+     * Each hop is the field's: every path used so far goes dark, and for a link change the platform
+     * then names the next link. The echo after each hop is the assertion, content and all, so a stream
+     * that survived the moves but lost or reordered bytes fails as surely as one that died.
+     */
+    @Test
+    fun theFlightConnectionCrossesEveryNetworkOfTheTripWithoutAReconnect() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            val hops =
+                listOf(
+                    FlightHop.Silent("the plane's Wi-Fi stalls"),
+                    FlightHop.Silent("the plane's Wi-Fi stalls again"),
+                    FlightHop.LinkChange("landing: cellular", CELLULAR),
+                    FlightHop.LinkChange("the airport's Wi-Fi", WIFI),
+                    FlightHop.LinkChange("leaving the airport: cellular", CELLULAR),
+                    FlightHop.LinkChange("home Wi-Fi", WIFI),
+                )
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 1_031_187L,
+                    quicOptions =
+                        migrationSimOptions(
+                            idleTimeout = IDLE_TIMEOUT_IN_THE_FIELD,
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                    probeImpairment = { PathImpairment(latency = 35.milliseconds) },
+                ) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.write(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        val stream = client.openStream()
+
+                        suspend fun echo(payload: String): String {
+                            val out = BufferFactory.network().allocate(payload.length)
+                            out.writeString(payload, Charset.UTF8)
+                            out.resetForRead()
+                            stream.write(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                            out.freeNativeMemory()
+                            val r = stream.read(IDLE_TIMEOUT_IN_THE_FIELD)
+                            if (r !is ReadResult.Data) return "NO_DATA"
+                            return r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
+                        }
+
+                        assertEquals("boarding", echo("boarding"), "the connection must be healthy on the plane's Wi-Fi first")
+                        for ((index, hop) in hops.withIndex()) {
+                            awaitSpareDcids()
+                            for (path in pipe.paths()) pipe.impair(path.local, PathImpairment(reach = LinkReach(PathReach.Dark)))
+                            if (hop is FlightHop.LinkChange) monitor.setNetworkId(hop.to)
+                            val payload = "after hop ${index + 1}"
+                            val echoed = runCatching { echo(payload) }.getOrElse { "CONNECTION DIED: $it" }
+                            assertEquals(payload, echoed, "the connection did not survive ${hop.what}; attempts ${client.attempts}")
+                        }
+                        val moved = client.attempts.count { it is MigrationResult.Succeeded }
+                        assertTrue(moved >= hops.size, "${hops.size} hops but $moved successful moves: ${client.attempts}")
+                        val settled = pipe.pathAt(clientPaths().last())
+                        assertTrue(
+                            settled.stats.sentToServer > 0 && settled.stats.sentToClient > 0,
+                            "the last path carried no two-way traffic (toServer=${settled.stats.sentToServer} " +
+                                "toClient=${settled.stats.sentToClient})",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
      * A recorded trace says what woke a migration.
      *
      * The load-bearing assertion is the negative one: the monitor never moves here, so a trace claiming
@@ -4338,4 +4423,20 @@ abstract class MigrationSimTestSuite {
                 activeConnectionIdLimit = WALK_PEER_CID_LIMIT,
             )
     }
+}
+
+/** One hop of [MigrationSimTestSuite.theFlightConnectionCrossesEveryNetworkOfTheTripWithoutAReconnect]. */
+private sealed interface FlightHop {
+    val what: String
+
+    /** The link in use stops answering and the platform says nothing. */
+    data class Silent(
+        override val what: String,
+    ) : FlightHop
+
+    /** The link in use goes away and the platform names [to]. */
+    data class LinkChange(
+        override val what: String,
+        val to: NetworkId,
+    ) : FlightHop
 }

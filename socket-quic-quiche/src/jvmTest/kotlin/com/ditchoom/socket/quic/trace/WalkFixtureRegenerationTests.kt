@@ -77,6 +77,21 @@ class WalkFixtureRegenerationTests {
                 "Walk20260924V4Conn2AbruptHandoff.kt",
                 FixtureEnd.At(396_000_000_000L.nanoseconds),
             ),
+            Walk(
+                "walk-traces/20261101T193304Z-walk-1031-flight-conn-v4-0187-from-2661255539042-to-2680000000000.trace",
+                "walk-2026-10-31-v4-conn-187-landing-handoff",
+                "walk20261031V4Conn187LandingHandoff",
+                2_661_255_539_042L,
+                "Walk20261031V4Conn187LandingHandoff.kt",
+                FixtureEnd.At(2_680_000_000_000L.nanoseconds),
+            ),
+            Walk(
+                "walk-traces/20261101T232429Z-walk-1031-flight-conn-v4-cellular-0165-from-67195738099.trace",
+                "walk-2026-10-31-v4-cellular-conn-165-data-suspended",
+                "walk20261031V4CellularConn165DataSuspended",
+                67_195_738_099L,
+                "Walk20261031V4CellularConn165DataSuspended.kt",
+            ),
         )
 
     private fun Walk.events(): List<TraceEvent> {
