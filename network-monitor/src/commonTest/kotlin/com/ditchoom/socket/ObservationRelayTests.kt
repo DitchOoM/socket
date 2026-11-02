@@ -4,6 +4,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -50,6 +51,28 @@ class ObservationRelayTests {
                 "the subscription value plus one per record, each with its own sequence",
             )
             assertEquals(List(4) { wifi }, seen.map { it.state }, "every one folded to the same state")
+        }
+
+    /**
+     * A state is never visible before the observation that produced it is counted. A reader that sees the
+     * new state on another thread must also see the count it advanced: the iOS-simulator release lane saw
+     * `state` leave Unknown while `observationCount` still read 0, because the state was written first. The
+     * unconfined collector runs inside the state write itself — exactly the instant that reader landed in.
+     */
+    @Test
+    fun aStateIsNeverVisibleBeforeItsObservationIsCounted() =
+        runTest {
+            val state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
+            val relay = ObservationRelay(state)
+            val countWhenSeen = mutableListOf<Long>()
+            backgroundScope.launch(Dispatchers.Unconfined) {
+                state.collect { if (it != NetworkState.Unknown) countWhenSeen += relay.count.value }
+            }
+
+            relay.record(wifi)
+            relay.record(cellular)
+
+            assertEquals(listOf(1L, 2L), countWhenSeen, "each state must be counted by the time it can be seen")
         }
 
     /** A subscriber opens with the live current state, exactly as collecting the StateFlow would. */
