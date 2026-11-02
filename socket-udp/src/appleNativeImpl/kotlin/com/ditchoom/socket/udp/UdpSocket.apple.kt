@@ -44,8 +44,6 @@ import platform.posix.setsockopt
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
 import platform.posix.socket
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * The Apple/K-N default: a native deterministic factory (ARC-managed `NSMutableData`). Both the
@@ -148,26 +146,9 @@ actual object UdpSocket {
             // timed-out/cancelled connect never leaks the nw_connection_t (B4c/B4d). Terminal NW states
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
-                var resumed = false
-                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _ ->
-                    if (resumed) return@nw_udp_set_state_handler
-                    when (state) {
-                        STATE_READY -> {
-                            resumed = true
-                            continuation.resume(Unit)
-                        }
-                        STATE_FAILED, STATE_CANCELLED -> {
-                            resumed = true
-                            // Typed in NW's own (domain, code) namespace: domain 1 is POSIX and
-                            // the code is then the errno, so a consumer can branch on it exactly as it
-                            // would on a Linux errno. A `cancelled` state with no error is NW reporting
-                            // that the connection went away before it was ready.
-                            continuation.resumeWithException(
-                                UdpConnectException(UdpConnectError.PlatformError(errorDomain, errorCode)),
-                            )
-                        }
-                        else -> {}
-                    }
+                val settle = NwConnectSettle(continuation)
+                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus ->
+                    settle.on(nwConnectVerdict(state, errorDomain, errorCode, pathStatus))
                 }
                 nw_udp_start(conn)
                 continuation.invokeOnCancellation { nw_udp_cancel(conn) }
@@ -390,9 +371,4 @@ actual object UdpSocket {
 
     /** Bounded redraw for an ephemeral wildcard bind — see [bindDualStackWildcard]. */
     private const val MAX_WILDCARD_BIND_ATTEMPTS = 8
-
-    // nw_connection_state_t values (nw_udp_helpers.h): 3=ready, 4=failed, 5=cancelled.
-    private const val STATE_READY = 3
-    private const val STATE_FAILED = 4
-    private const val STATE_CANCELLED = 5
 }

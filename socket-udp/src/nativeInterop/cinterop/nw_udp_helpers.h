@@ -34,12 +34,14 @@ nw_connection_t _Nullable nw_udp_create(
     const char * _Nonnull port);
 
 // State handler. state (nw_connection_state_t): 0=invalid,1=waiting,2=preparing,3=ready,4=failed,
-// 5=cancelled. error_domain: 0=none,1=posix,2=dns,3=tls,4=unknown.
+// 5=cancelled. error_domain: 0=none,1=posix,2=dns,3=tls,4=unknown. path_status (nw_path_status_t of the
+// connection's current path at this change): 0=none/invalid,1=satisfied,2=unsatisfied,3=satisfiable.
 typedef void (^nw_udp_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
-    NSString * _Nullable error_desc);
+    NSString * _Nullable error_desc,
+    int32_t path_status);
 
 void nw_udp_set_state_handler(
     nw_connection_t _Nonnull conn,
