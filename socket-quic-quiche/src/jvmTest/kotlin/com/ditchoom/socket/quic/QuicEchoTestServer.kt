@@ -151,7 +151,7 @@ suspend fun QuicScope.echoConnection(quicOptions: QuicOptions) {
                 val buf = BufferFactory.deterministic().allocate(greeting.length)
                 buf.writeString(greeting, Charset.UTF8)
                 buf.resetForRead()
-                s.write(buf, 10.seconds)
+                s.writeFully(buf, 10.seconds)
                 buf.freeNativeMemory()
                 s.close() // FIN, so the client sees the greeting then End
             } catch (_: Exception) {

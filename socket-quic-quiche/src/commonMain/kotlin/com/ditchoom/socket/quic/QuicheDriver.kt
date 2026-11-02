@@ -4517,6 +4517,15 @@ class DriverStreamAdapter(
                 @Suppress("UNREACHABLE_CODE")
                 0
             }
+        } catch (deadline: TimeoutCancellationException) {
+            // The deadline can land while the driver is inside connStreamSend. If quiche took bytes
+            // there, they are on the stream: report them, or the caller re-sends or drops a record
+            // whose head is already out — a torn stream it can never realign.
+            val pending = inFlight ?: throw deadline
+            withContext(NonCancellable) { pending.join() }
+            inFlight = null
+            val accepted = if (pending.isCancelled) 0 else pending.getCompleted().result
+            if (accepted > 0) accepted else throw deadline
         } catch (_: ClosedSendChannelException) {
             throw driver.connectionClosed()
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
