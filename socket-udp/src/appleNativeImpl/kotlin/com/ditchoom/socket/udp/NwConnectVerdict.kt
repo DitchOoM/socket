@@ -56,6 +56,7 @@ internal fun nwConnectVerdict(
     errorDomain: Int,
     errorCode: Int,
     pathStatus: Int,
+    unsatisfiedReason: Int,
 ): NwConnectVerdict =
     when (state) {
         NW_STATE_READY -> NwConnectVerdict.Ready
@@ -63,7 +64,7 @@ internal fun nwConnectVerdict(
         // errno. A `cancelled` state with no error is NW reporting that the connection went away
         // before it was ready.
         NW_STATE_FAILED, NW_STATE_CANCELLED -> NwConnectVerdict.Failed(UdpConnectError.PlatformError(errorDomain, errorCode))
-        NW_STATE_WAITING -> waitingVerdict(errorDomain, errorCode, pathStatus)
+        NW_STATE_WAITING -> waitingVerdict(errorDomain, errorCode, pathStatus, unsatisfiedReason)
         else -> NwConnectVerdict.Pending
     }
 
@@ -71,7 +72,17 @@ private fun waitingVerdict(
     errorDomain: Int,
     errorCode: Int,
     pathStatus: Int,
+    unsatisfiedReason: Int,
 ): NwConnectVerdict {
+    // The user's settings first: a denied app also sees no route, and "no route" would send it
+    // retrying against a switch only the user can turn.
+    if (pathStatus == NW_PATH_UNSATISFIED) {
+        when (unsatisfiedReason) {
+            NW_UNSATISFIED_CELLULAR_DENIED -> return denied(DeniedAccess.CellularData)
+            NW_UNSATISFIED_WIFI_DENIED -> return denied(DeniedAccess.WifiData)
+            NW_UNSATISFIED_LOCAL_NETWORK_DENIED -> return denied(DeniedAccess.LocalNetwork)
+        }
+    }
     if (errorDomain == NW_ERROR_DOMAIN_POSIX) {
         val error = connectErrnoToError(errorCode)
         if (error is UdpConnectError.Unreachable) return NwConnectVerdict.Failed(error)
@@ -82,6 +93,14 @@ private fun waitingVerdict(
         NwConnectVerdict.Pending
     }
 }
+
+private fun denied(access: DeniedAccess): NwConnectVerdict = NwConnectVerdict.Failed(UdpConnectError.Denied(access))
+
+// nw_path_unsatisfied_reason_t values (nw_udp_helpers.h); 4 (a required VPN is inactive) is a missing route, not a user's switch.
+internal const val NW_UNSATISFIED_NO_REASON = 0
+internal const val NW_UNSATISFIED_CELLULAR_DENIED = 1
+internal const val NW_UNSATISFIED_WIFI_DENIED = 2
+internal const val NW_UNSATISFIED_LOCAL_NETWORK_DENIED = 3
 
 // nw_connection_state_t values (nw_udp_helpers.h): 1=waiting, 3=ready, 4=failed, 5=cancelled.
 internal const val NW_STATE_WAITING = 1

@@ -2,8 +2,11 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.ConnectionFailureReason
+import com.ditchoom.socket.NetworkAccess
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.transport.NetworkKind
+import com.ditchoom.socket.udp.DeniedAccess
 import com.ditchoom.socket.udp.NwRequiredInterface
 import com.ditchoom.socket.udp.UdpConnectError
 import com.ditchoom.socket.udp.UdpConnectException
@@ -44,12 +47,37 @@ internal fun primaryPathFailure(
         is MigrationPolicy.Pinned ->
             when (refusal.error) {
                 is UdpConnectError.Unreachable -> PinnedRadioUnavailableException(policy.radio, PinnedRadioUnavailable.NoPath(refusal))
-                else -> refused(endpoint, refusal)
+                is UdpConnectError.Denied -> PinnedRadioUnavailableException(policy.radio, PinnedRadioUnavailable.NotPermitted(refusal))
+                else -> connectFailure(endpoint, refusal)
             }
-        MigrationPolicy.Forbidden, MigrationPolicy.Manual, MigrationPolicy.Automatic -> refused(endpoint, refusal)
+        MigrationPolicy.Forbidden, MigrationPolicy.Manual, MigrationPolicy.Automatic -> connectFailure(endpoint, refusal)
     }
 
-private fun refused(
+/**
+ * The typed connect failure for a primary socket NW would not open. Only [UdpConnectError] says why,
+ * so it decides the [ConnectionFailureReason]: no route and a user's denial are not a refusal.
+ */
+internal fun connectFailure(
     endpoint: QuicEndpoint,
     refusal: UdpConnectException,
-) = SocketConnectionException.Refused(endpoint.address.ip, endpoint.port, platformError = refusal.message)
+): SocketConnectionException =
+    when (val error = refusal.error) {
+        is UdpConnectError.Unreachable ->
+            SocketConnectionException.HostUnreachable("${endpoint.address.ip}:${endpoint.port}: ${error.describe()}", refusal)
+        is UdpConnectError.Denied ->
+            SocketConnectionException.Other(
+                ConnectionFailureReason.AccessDenied(error.access.toNetworkAccess()),
+                "${endpoint.address.ip}:${endpoint.port}: ${error.describe()}",
+                refusal,
+            )
+        is UdpConnectError.AddressInUse, is UdpConnectError.LocalAddressUnavailable, is UdpConnectError.NotPermitted,
+        is UdpConnectError.SocketUnavailable, is UdpConnectError.OsError, is UdpConnectError.PlatformError, is UdpConnectError.Transport,
+        -> SocketConnectionException.Refused(endpoint.address.ip, endpoint.port, refusal, platformError = refusal.message)
+    }
+
+private fun DeniedAccess.toNetworkAccess(): NetworkAccess =
+    when (this) {
+        DeniedAccess.LocalNetwork -> NetworkAccess.LocalNetwork
+        DeniedAccess.CellularData -> NetworkAccess.CellularData
+        DeniedAccess.WifiData -> NetworkAccess.WifiData
+    }

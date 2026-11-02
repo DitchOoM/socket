@@ -157,8 +157,8 @@ actual object UdpSocket {
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
                 val settle = NwConnectSettle(continuation)
-                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus ->
-                    settle.on(nwConnectVerdict(state, errorDomain, errorCode, pathStatus))
+                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus, unsatisfiedReason ->
+                    settle.on(nwConnectVerdict(state, errorDomain, errorCode, pathStatus, unsatisfiedReason))
                 }
                 nw_udp_start(conn)
                 continuation.invokeOnCancellation { nw_udp_cancel(conn) }

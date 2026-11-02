@@ -71,7 +71,15 @@ void nw_udp_set_state_handler(nw_connection_t _Nonnull conn, nw_udp_state_handle
             // is the only thing that says whether any route exists.
             nw_path_t path = nw_connection_copy_current_path(conn);
             int32_t path_status = path == NULL ? 0 : (int32_t)nw_path_get_status(path);
-            handler((int32_t)state, domain, code, desc, path_status);
+            // Why it is unsatisfied, when the user's settings are the reason: the app was denied local
+            // network access, or cellular or Wi-Fi data. NW says so nowhere else.
+            int32_t unsatisfied_reason = 0;
+            if (path != NULL && path_status == nw_path_status_unsatisfied) {
+                if (@available(macOS 11.0, iOS 14.2, watchOS 7.1, tvOS 14.2, *)) {
+                    unsatisfied_reason = (int32_t)nw_path_get_unsatisfied_reason(path);
+                }
+            }
+            handler((int32_t)state, domain, code, desc, path_status, unsatisfied_reason);
         });
 }
 
