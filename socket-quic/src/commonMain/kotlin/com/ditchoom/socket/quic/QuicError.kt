@@ -162,6 +162,27 @@ sealed interface QuicError : DatagramCloseReason {
     }
 
     /**
+     * The QUIC stack refused to produce an outgoing packet for a reason no later attempt cures, so this
+     * endpoint closed the connection rather than let it fall silent.
+     *
+     * [backendCode] is the stack's own raw return, kept as it was given — for quiche, a `quiche_error`
+     * value such as `-6` (`QUICHE_ERR_INVALID_STATE`). It is the one fact that says *which* internal
+     * state went wrong, and folding it into [InternalError]'s free-form detail would leave it to be
+     * parsed back out of a string.
+     *
+     * Before this existed, such a refusal was read as "nothing to send": the connection stopped
+     * sending anything — ACKs included — and surfaced only as an [IdleTimeout] long after the cause.
+     *
+     * Sent on the wire as INTERNAL_ERROR (RFC 9000 §20.1, code 0x1), which is what it is from the
+     * peer's side, so [code] is 0x1.
+     */
+    data class SendRejected(
+        val backendCode: Int,
+    ) : QuicError {
+        override val code: Long = 0x1
+    }
+
+    /**
      * Human-readable one-line description including the numeric wire [code] in hex — for log/exception
      * messages. The structured value stays the sealed type; this is only its rendering (e.g.
      * `ProtocolViolation (0xa)`, `ApplicationError(applicationCode=256) (0x100)`).

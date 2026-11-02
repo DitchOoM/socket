@@ -337,7 +337,9 @@ class QuicheDriver(
      * sent. A [QuicError] with none (`code < 0`: [QuicError.HandshakeTimeout], [QuicError.IdleTimeout],
      * [QuicError.PlatformError]) has nothing truthful to put on the wire but NO_ERROR, and reading
      * NO_ERROR back would report a *graceful* close for a handshake we abandoned. So [execute] remembers
-     * the reason here when quiche accepts such a close, and [resolveCloseReason] reports it.
+     * the reason here when quiche accepts such a close, and [resolveCloseReason] reports it. The same
+     * holds for [QuicError.SendRejected] ([closeOnRejectedSend]): it goes out as INTERNAL_ERROR and would
+     * read back without the quiche code it exists to carry.
      *
      * A sealed pair rather than a nullable error: "this driver decided nothing" is a case to match on,
      * not an absence. Written and read on the driver loop only — [execute] and [transitionToClosed] —
@@ -2545,17 +2547,19 @@ class QuicheDriver(
     private fun resolveCloseReason(): QuicCloseReason {
         val peer = api.connPeerError(conn)
         val local = api.connLocalError(conn)
-        // Precedence is unchanged: a real (non-NoError) reason wins, peer before local.
+        // A real (non-NoError) reason wins: the peer's, then this driver's verdict, then quiche's local one.
         peer?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByPeer(it) }
-        local?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByLocal(it) }
-        // A local close whose reason has no transport code went out as NO_ERROR and is only known here
-        // (see [LocalCloseVerdict]). Ahead of the NoError → Graceful fold below, which is exactly the
-        // misreading it exists to prevent; behind quiche's own errors, which it can only have been
-        // recorded in the absence of.
+        // A local close whose reason quiche cannot read back faithfully is only known here (see
+        // [LocalCloseVerdict]): one with no transport code went out as NO_ERROR, and a
+        // [QuicError.SendRejected] reads back as a bare INTERNAL_ERROR without quiche's code. Ahead of
+        // quiche's local error, which for a recorded verdict is only the wire projection of it — a
+        // verdict is recorded solely when quiche ACCEPTED the close, i.e. had no local error of its own —
+        // and ahead of the NoError → Graceful fold below, which is exactly the misreading it prevents.
         when (val verdict = localCloseVerdict) {
             is LocalCloseVerdict.Decided -> return QuicCloseReason.ByLocal(verdict.error)
             LocalCloseVerdict.None -> Unit
         }
+        local?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByLocal(it) }
         // No CONNECTION_CLOSE frame: distinguish an idle/handshake-stall timeout (a local event, no wire
         // code) from a genuinely clean shutdown — otherwise a stalled connection looks like NoError.
         if (api.connIsTimedOut(conn)) return QuicCloseReason.ByLocal(QuicError.IdleTimeout)
@@ -2596,7 +2600,57 @@ class QuicheDriver(
         }
     }
 
+    /** How one drain of quiche's send queue ended — see [flushOutgoing]. */
+    private sealed interface DrainEnd {
+        /**
+         * Nothing that ends the connection: quiche had nothing more, the buffer will be offered again
+         * next flush, or the socket stopped taking datagrams (RFC 9002 loss recovery owns those).
+         */
+        data object Paused : DrainEnd
+
+        /** quiche refused to produce a packet for a reason no later flush cures. */
+        data class Rejected(
+            val stop: QuicheSendStop.Rejected,
+        ) : DrainEnd
+    }
+
+    /**
+     * Drain quiche's send queue onto the sockets, and act on a refusal by quiche to send at all.
+     *
+     * A [QuicheSendStop.Rejected] is the one stop that ends the connection, because it is the one no
+     * later flush cures: quiche answers every following send with the same error, so the connection
+     * stops sending anything — ACKs included — and used to die 30 s later as an unexplained
+     * [QuicError.IdleTimeout]. It is closed instead, with a reason carrying quiche's code:
+     * 1. ask quiche to close with [QuicError.SendRejected] (INTERNAL_ERROR on the wire);
+     * 2. drain once more, so the peer hears the CONNECTION_CLOSE if quiche can still send it;
+     * 3. if that drain is refused too, nothing will ever leave: end the connection here.
+     *
+     * When quiche declines the close (`Done`: it is already closing, draining or closed), the reason
+     * it recorded for that is the connection's reason and is not overridden — see [resolveCloseReason].
+     */
     private suspend fun flushOutgoing() {
+        when (val end = drainSendQueue()) {
+            DrainEnd.Paused -> Unit
+            is DrainEnd.Rejected -> closeOnRejectedSend(end.stop)
+        }
+    }
+
+    private suspend fun closeOnRejectedSend(stop: QuicheSendStop.Rejected) {
+        capture.record { it.error(QuicheSendRejected(stop.quicheCode)) }
+        val reason = QuicError.SendRejected(stop.quicheCode)
+        // app=false, INTERNAL_ERROR: SendRejected's code is 0x1, so it goes on the wire as itself.
+        if (api.connClose(conn, reason.wireCloseError()) == 0) {
+            // quiche reads its local error back as a bare INTERNAL_ERROR; the verdict keeps the code.
+            localCloseVerdict = LocalCloseVerdict.Decided(reason)
+        }
+        when (drainSendQueue()) {
+            // The close went out (or quiche had nothing left): quiche's closing timer finishes it.
+            DrainEnd.Paused -> Unit
+            is DrainEnd.Rejected -> transitionToClosed()
+        }
+    }
+
+    private suspend fun drainSendQueue(): DrainEnd {
         // Read once per flush, not once per datagram: a path's validation state only moves inside
         // quiche's recv()/on_timeout(), both of which belong to the command that has already run by the
         // time this drains. A send can start a validation but never finish one.
@@ -2604,7 +2658,12 @@ class QuicheDriver(
         while (true) {
             val scratch = sendScratch
             val written = api.connSend(conn, scratch.address, window.bytes, sendInfo)
-            if (written <= 0) break
+            if (written <= 0) {
+                return when (val stop = QuicheSendStop.decode(written)) {
+                    QuicheSendStop.NothingToSend, QuicheSendStop.BufferTooShort -> DrainEnd.Paused
+                    is QuicheSendStop.Rejected -> DrainEnd.Rejected(stop)
+                }
+            }
             // Route by the local egress address quiche chose. Until the first probe ever opens
             // ([routingLive]) this is dormant — send straight to primary, no decode — so the
             // never-migrating common case is byte-for-byte unchanged. Once a probe has existed,
@@ -2706,7 +2765,7 @@ class QuicheDriver(
                     // — a handoff happens *because* the old path died, so the first send afterwards
                     // would kill the connection before the new path could be validated. Termination
                     // is left to quiche's idle timer, which reports the truthful QuicError.IdleTimeout.
-                    return
+                    return DrainEnd.Paused
                 }
                 is SendOutcome.Stalled -> {
                     // The socket stays open. quiche keeps routing this path through its 4-tuple, and the
@@ -2726,7 +2785,7 @@ class QuicheDriver(
                     // Stop draining, as for Failed: a stall is not one of RFC 9000 SS10's terminations.
                     // If the platform never answers, the idle timer — armed by a loop that is live
                     // again — ends the connection as ByLocal(IdleTimeout) and the caller reconnects.
-                    return
+                    return DrainEnd.Paused
                 }
             }
         }

@@ -220,8 +220,15 @@ internal class StubQuicheApi : QuicheApi {
             return once
         }
         connSendQueue.removeFirstOrNull()?.let { return it }
-        return 0
+        return connSendFallback
     }
+
+    /**
+     * What [connSend] returns once every scripted seam above is exhausted — every call, forever. `0`
+     * (nothing to send) by default, so existing tests are unchanged; a quiche error code here models a
+     * connection quiche refuses to send on at all (DitchOoM/socket#764/#765's `-6`).
+     */
+    @Volatile var connSendFallback: Int = 0
 
     /**
      * Scripted [connSend] queue, drained one value per call in FIFO order — after
@@ -449,10 +456,18 @@ internal class StubQuicheApi : QuicheApi {
         conn: QuicheConn,
         error: QuicError,
     ): Int {
-        closeInitiated = true
         closeErrors += error
+        if (connCloseResult != 0) return connCloseResult
+        closeInitiated = true
         return 0
     }
+
+    /**
+     * What [connClose] returns. `0` (accepted) by default; `QUICHE_ERR_DONE` models quiche declining
+     * because the connection is already closing for a reason it recorded itself — the close is then
+     * still listed in [closeErrors] (it was asked for) but initiates nothing.
+     */
+    @Volatile var connCloseResult: Int = 0
 
     // --- Server (no-ops) ---
     override fun configLoadCertChainFromPemFile(
