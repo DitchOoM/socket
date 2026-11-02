@@ -34,6 +34,8 @@
 	<array>
 		<string>location</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>The probe can walk against another phone on the same network, directly, with no server in between.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Motion activity (walking, driving, still) sets how often the probe echoes: fast while you move, slower while the phone sits still, to save battery.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

@@ -17,6 +17,13 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
+      ACCESS_LOCAL_NETWORK lets P2pEchoServerProbe serve a phone on the same Wi-Fi. From API 37 an app
+      without it never sees a datagram from a local-network peer: the kernel counts each one as a drop on
+      the socket and nothing else says so, while a peer reaching the same socket from the internet gets
+      through. A runtime grant, like POST_NOTIFICATIONS (device-probe/install.sh grants both).
+    -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!--
       READ_PHONE_STATE is what lets the probe's OS-NET line carry the radio's registration state
       (IN_SERVICE / OUT_OF_SERVICE / POWER_OFF) and its data bearer. A phone registered on a roaming
       carrier with no data bearer looks, to everything else the walk records, exactly like airplane
