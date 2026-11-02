@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
 import kotlin.reflect.KClass
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -105,6 +107,11 @@ class ServerAcceptsOnlyInitialsTests {
             override val type = ServerDatagramDrop.RuntInitial::class
             override val messageCarries = "at least 1200 bytes"
         }
+
+        data object RuntUnsupportedVersion : ExpectedDrop {
+            override val type = ServerDatagramDrop.RuntUnsupportedVersion::class
+            override val messageCarries = "too small to answer"
+        }
     }
 
     /**
@@ -123,6 +130,45 @@ class ServerAcceptsOnlyInitialsTests {
     /** An Initial in a 300-byte datagram: parseable, well-formed, and below the §14.1 floor. */
     @Test
     fun aRuntInitialIsDroppedNotAccepted() = assertDropped(longHeaderPacket(typeBits = 0b00, size = 300), ExpectedDrop.RuntInitial)
+
+    /** RFC 9000 §5.2.2: "Servers MUST drop smaller packets that specify unsupported versions." */
+    @Test
+    fun aRuntPacketOfAnUnsupportedVersionIsDroppedUnanswered() =
+        assertDropped(
+            unsupportedVersionPacket(dcid = ByteArray(8) { 0x11 }, scid = ByteArray(8) { 0x22 }, size = 300),
+            ExpectedDrop.RuntUnsupportedVersion,
+        )
+
+    /**
+     * The quic-interop-runner network simulator's readiness probe, byte for byte (its
+     * `wait-for-it-quic`): version "WAIT", empty connection IDs, 1200 bytes of zeros. The simulator
+     * starts no test until this is answered with a Version Negotiation packet, so before the server
+     * answered unsupported versions every interop case against it failed before the client started.
+     */
+    @Test
+    fun theInteropSimulatorsProbeIsAnsweredWithVersionNegotiation() =
+        assertVersionNegotiation(
+            byteArrayOf(0xC0.toByte(), 0x57, 0x41, 0x49, 0x54, 0, 0) + ByteArray(1200),
+            expectDcid = ByteArray(0),
+            expectScid = ByteArray(0),
+        )
+
+    /**
+     * The reply swaps the connection IDs (RFC 9000 §17.2.1), and nothing version 1 defines decides
+     * whether it is sent: Retry type bits, and connection IDs longer than version 1's 20-byte limit
+     * ("Version-specific rules for the connection ID therefore MUST NOT influence a decision about
+     * whether to send a Version Negotiation packet").
+     */
+    @Test
+    fun anUnsupportedVersionIsAnsweredWhateverItsVersion1FieldsSay() {
+        val dcid = ByteArray(32) { (0x40 + it).toByte() }
+        val scid = ByteArray(25) { (0x80 + it).toByte() }
+        assertVersionNegotiation(
+            unsupportedVersionPacket(dcid = dcid, scid = scid, size = 1200, typeBits = 0b11),
+            expectDcid = scid,
+            expectScid = dcid,
+        )
+    }
 
     @Test
     fun aRealClientStillEstablishesAndItsInitialIsTheOneAcceptTimeDatagram() =
@@ -197,6 +243,80 @@ class ServerAcceptsOnlyInitialsTests {
                 }
             }
         }
+    }
+
+    private fun assertVersionNegotiation(
+        datagram: ByteArray,
+        expectDcid: ByteArray,
+        expectScid: ByteArray,
+    ) = runBlocking(Dispatchers.IO) {
+        skipOnMissingNativeLib(ServerAcceptsOnlyInitialsTests::class) {
+            val record = ServerRecord()
+            withTimeout(30.seconds) {
+                withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options.copy(trace = QuicTraceCapture(record.sink))) {
+                    val acceptJob = launch { runCatching { connections { } } }
+                    try {
+                        val probe = UdpSocket.bind("127.0.0.1", receiveBufferSize = 2048)
+                        val reply =
+                            try {
+                                val payload = BufferFactory.deterministic().allocate(datagram.size)
+                                datagram.forEach { payload.writeByte(it) }
+                                payload.resetForRead()
+                                probe.send(payload, to = UdpSocket.resolve("127.0.0.1", port))
+                                withTimeoutOrNull(DROP_WAIT) {
+                                    when (val r = probe.receive()) {
+                                        is DatagramReadResult.Received ->
+                                            r.datagram.payload.let { p ->
+                                                ByteArray(p.remaining()) { p.readByte() }.also { p.freeNativeMemory() }
+                                            }
+                                        else -> fail("the probe socket closed before any reply: $r")
+                                    }
+                                } ?: fail(
+                                    "no reply to a ${datagram.size}-byte packet of an unsupported version: a server MUST answer " +
+                                        "it with Version Negotiation (RFC 9000 §5.2.2/§6.1). Recorded: ${record.events}",
+                                )
+                            } finally {
+                                probe.close()
+                            }
+                        assertTrue(reply[0].toInt() and 0x80 != 0, "a Version Negotiation packet has a long header")
+                        assertEquals(listOf<Byte>(0, 0, 0, 0), reply.slice(1..4), "a Version Negotiation packet's version is 0")
+                        var i = 5
+                        val dcid = reply.copyOfRange(i + 1, i + 1 + reply[i].toInt()).also { i += 1 + it.size }
+                        val scid = reply.copyOfRange(i + 1, i + 1 + reply[i].toInt()).also { i += 1 + it.size }
+                        assertContentEquals(expectDcid, dcid, "the reply's DCID is the packet's SCID")
+                        assertContentEquals(expectScid, scid, "the reply's SCID is the packet's DCID")
+                        val versions = reply.copyOfRange(i, reply.size).toList().chunked(4)
+                        assertTrue(listOf<Byte>(0, 0, 0, 1) in versions, "the reply must list version 1: $versions")
+                        assertEquals(0, record.acceptTimeInitials(), "no accept-time datagram may be recorded: ${record.events}")
+                        assertEquals(0, record.connectionStates(), "no connection may have been created: ${record.events}")
+                        // The reply can reach the probe before the server's send has returned, and the
+                        // server records the answer only once it has, so the record is awaited, not read.
+                        val drops = { synchronized(record.events) { record.events.filterIsInstance<TraceEvent.Drop>().map { it.type } } }
+                        withTimeoutOrNull(DROP_WAIT) { while (drops().isEmpty()) delay(POLL) }
+                        val answered = drops()
+                        assertEquals(listOf(ServerDatagramDrop.AnsweredWithVersionNegotiation::class.qualifiedName), answered)
+                    } finally {
+                        acceptJob.cancel()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * A long header naming version 0x1a2a3a4a (a reserved version, RFC 9000 §15) with the given
+     * connection IDs and [typeBits], zero-padded to [size] bytes.
+     */
+    private fun unsupportedVersionPacket(
+        dcid: ByteArray,
+        scid: ByteArray,
+        size: Int,
+        typeBits: Int = 0b00,
+    ): ByteArray {
+        val head =
+            byteArrayOf((0xC0 or (typeBits shl 4)).toByte(), 0x1a, 0x2a, 0x3a, 0x4a, dcid.size.toByte()) +
+                dcid + byteArrayOf(scid.size.toByte()) + scid
+        return head + ByteArray(size - head.size)
     }
 
     /** `0x40` fixed bit, then 20 bytes of DCID (the server parses `dcil = 20`), then a few more. */
