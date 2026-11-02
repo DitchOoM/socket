@@ -245,9 +245,20 @@ internal class QuichePairByHand private constructor(
     /** Spare destination connection IDs [conn] holds. */
     fun spareDcids(conn: QuicheConn): Long = at { api.connAvailableDcids(conn) }
 
-    /** How [conn] has ended: open, or the error it closed with. */
-    fun closed(conn: QuicheConn): String =
-        if (!at { api.connIsClosed(conn) }) "open" else "local=${at { api.connLocalError(conn) }} peer=${at { api.connPeerError(conn) }}"
+    /**
+     * How [conn] has ended: open, or the error it is closing or closed with. A connection that has sent or
+     * received a CONNECTION_CLOSE is not open even while it drains, before quiche reports it closed.
+     */
+    fun closed(conn: QuicheConn): String {
+        val local = at { api.connLocalError(conn) }
+        val peer = at { api.connPeerError(conn) }
+        val isClosed = at { api.connIsClosed(conn) }
+        return if (!isClosed && local == null && peer == null) {
+            "open"
+        } else {
+            "${if (isClosed) "closed" else "closing"} local=$local peer=$peer"
+        }
+    }
 
     /** Source connection IDs [conn] may still issue to its peer. */
     fun scidsLeft(conn: QuicheConn): Long = at { api.connScidsLeft(conn) }

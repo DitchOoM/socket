@@ -254,6 +254,10 @@ fun downloadQuicheSource(
     // answered with RETIRE_CONNECTION_ID cannot make every later send fail with InvalidState (the interop
     // runner's handshakeloss / handshakecorruption against quinn). Idempotent, fails loudly on drift.
     patchQuicheRetiredScidIsNotAdvertised(sourceDir)
+    // Ignore a RETIRE_CONNECTION_ID for an id already retired even when one id is left, instead of closing
+    // with PROTOCOL_VIOLATION (the interop runner's handshakeloss / handshakecorruption against quinn, after
+    // the previous patch). Idempotent, fails loudly on drift.
+    patchQuicheRepeatedRetirementIsIgnored(sourceDir)
     // Send a CONNECTION_CLOSE made before the handshake is confirmed in a 1-RTT packet as well as the
     // Handshake one, so a peer that has already confirmed and discarded its Handshake keys can read it.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -1082,6 +1086,83 @@ fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
         libRs.writeText(libText.replaceFirst(anchor, replacement))
     }
     logger.lifecycle("Patched quiche source: a retired source connection id is never advertised again")
+}
+
+/**
+ * Make removing an id that is not in quiche's connection-id set answer "not there" (`Ok(None)`) before
+ * it asks whether the set is down to its last id.
+ *
+ * **The defect.** `BoundedConnectionIdSeqs::remove(seq)` (cid.rs) refuses with `OutOfIdentifiers` whenever
+ * the set holds a single id, without looking at `seq`. `retire_scid` — the RETIRE_CONNECTION_ID handler —
+ * already treats an absent id as nothing to do (`if let Some(e) = self.scids.remove(seq)? { … } else
+ * { None }`), but never gets that far: once the peer has retired every id but one, a RETIRE_CONNECTION_ID
+ * repeating any of them fails, and `recv()` closes the connection with PROTOCOL_VIOLATION
+ * (`OutOfIdentifiers.to_wire()`). RFC 9000 §13.3 retransmits RETIRE_CONNECTION_ID like any frame, so a
+ * repeat arriving after the first copy took effect is ordinary; the handler's real guards — a sequence
+ * number we never issued, and retiring the id the packet itself was sent to — are unchanged.
+ *
+ * **Seen in the quic-interop-runner** (`handshakeloss` and `handshakecorruption`, client against quinn,
+ * run 41433270213): we had issued ids 0–4; one quinn packet carried RETIRE_CONNECTION_ID 1, 2, 3, 0 and 1
+ * again, and the client answered with CONNECTION_CLOSE 0x0a.
+ *
+ * The removal of the last id that IS present still refuses, so `retire_dcid`'s "cannot retire the last
+ * destination id" contract stands; an absent destination id now reaches `retire_dcid`'s own
+ * `ok_or(InvalidState)` instead of `OutOfIdentifiers`, which the driver treats the same (best-effort).
+ *
+ * Regression guard, outliving this patch:
+ * `MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen`. Upstream at the
+ * time of writing has the same code. Idempotent and loud in both directions.
+ */
+fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
+    val marker = "socket-repeated-retirement-is-ignored"
+    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
+    if (!cidRs.exists()) return
+    val text = cidRs.readText()
+    if (text.contains(marker)) return
+
+    val anchor =
+        """
+        |    fn remove(&mut self, seq: u64) -> Result<Option<ConnectionIdEntry>> {
+        |        if self.inner.len() <= 1 {
+        |            return Err(Error::OutOfIdentifiers);
+        |        }
+        |
+        |        Ok(self
+        |            .inner
+        |            .iter()
+        |            .position(|e| e.seq == seq)
+        |            .and_then(|index| self.inner.remove(index)))
+        |    }
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: BoundedConnectionIdSeqs::remove in quiche/src/cid.rs was not found. A quiche bump moved " +
+                "or reshaped it — possibly fixing this upstream (a repeated RETIRE_CONNECTION_ID with one id " +
+                "left closes the connection with PROTOCOL_VIOLATION). If upstream fixed it: DELETE this patch " +
+                "and its call site, and KEEP MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen. " +
+                "Otherwise re-fit the anchor and re-run that test before shipping.",
+        )
+    }
+    val replacement =
+        """
+        |    fn remove(&mut self, seq: u64) -> Result<Option<ConnectionIdEntry>> {
+        |        // $marker: an id that is not here is "nothing removed"
+        |        // whatever is left. Refusing it as OutOfIdentifiers made a repeated RETIRE_CONNECTION_ID —
+        |        // legal, frames are retransmitted — close the connection once one id was left.
+        |        let index = match self.inner.iter().position(|e| e.seq == seq) {
+        |            Some(index) => index,
+        |            None => return Ok(None),
+        |        };
+        |
+        |        if self.inner.len() <= 1 {
+        |            return Err(Error::OutOfIdentifiers);
+        |        }
+        |
+        |        Ok(self.inner.remove(index))
+        |    }
+        """.trimMargin()
+    cidRs.writeText(text.replaceFirst(anchor, replacement))
+    logger.lifecycle("Patched quiche source: a repeated retirement of an id already retired is ignored")
 }
 
 /**
