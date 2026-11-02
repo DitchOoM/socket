@@ -165,9 +165,11 @@ class ObservationRelay(
         require(dropped >= 0) { "dropped $dropped is negative; a gap counts observations that went missing" }
         val observation =
             NetworkObservation.Sequenced(newState, ObservationSequence(latest.value.sequence.value + dropped + 1))
-        state.value = newState
+        // Counted before it is visible: a reader on another thread that sees [newState] must also see the
+        // count it advanced. The state is the last write, so nothing can observe it uncounted.
         latest.value = observation
         _count.value = observation.sequence.value
+        state.value = newState
         relayed.tryEmit(observation)
     }
 
