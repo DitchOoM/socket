@@ -2322,7 +2322,12 @@ class QuicheDriver(
     }
 
     private fun updateState() {
-        if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
+        // quiche marks the handshake complete before it validates the peer's transport parameters, so a
+        // handshake that ends in TRANSPORT_PARAMETER_ERROR reads as established AND closed in the same
+        // wake, with none of the peer's limits applied (its stream limit is still 0). That connection
+        // was never usable: it goes from Handshaking straight to Closed below, and the caller learns the
+        // close reason instead of a stream-limit refusal on its first openStream().
+        if (_state.value is QuicConnectionState.Handshaking && api.connIsEstablished(conn) && !api.connIsClosed(conn)) {
             _state.value =
                 QuicConnectionState.Established(
                     readNegotiatedAlpn(),
