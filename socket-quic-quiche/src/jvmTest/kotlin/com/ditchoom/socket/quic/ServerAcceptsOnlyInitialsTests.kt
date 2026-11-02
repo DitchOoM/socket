@@ -291,9 +291,9 @@ class ServerAcceptsOnlyInitialsTests {
                         assertEquals(0, record.connectionStates(), "no connection may have been created: ${record.events}")
                         // The reply can reach the probe before the server's send has returned, and the
                         // server records the answer only once it has, so the record is awaited, not read.
-                        fun answered() = synchronized(record.events) { record.events.filterIsInstance<TraceEvent.Drop>().map { it.type } }
-                        withTimeoutOrNull(DROP_WAIT) { while (answered().isEmpty()) delay(POLL) }
-                        val answered = answered()
+                        val drops = { synchronized(record.events) { record.events.filterIsInstance<TraceEvent.Drop>().map { it.type } } }
+                        withTimeoutOrNull(DROP_WAIT) { while (drops().isEmpty()) delay(POLL) }
+                        val answered = drops()
                         assertEquals(listOf(ServerDatagramDrop.AnsweredWithVersionNegotiation::class.qualifiedName), answered)
                     } finally {
                         acceptJob.cancel()
