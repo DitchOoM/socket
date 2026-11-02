@@ -242,6 +242,256 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A client keeps sending after the peer retires connection IDs whose NEW_CONNECTION_ID frames the
+     * client has queued to send again.
+     *
+     * The quic-interop-runner's `handshakeloss` against quinn (run 41385368697): the packet that carried
+     * our NEW_CONNECTION_ID frames reached quinn, but its acknowledgement did not reach us. One packet from
+     * quinn then brought an ACK that declared ours lost and RETIRE_CONNECTION_ID frames for those ids.
+     * quiche removed the ids, and when it next built a packet it queued the lost frames' sequence numbers
+     * to advertise again without asking whether the ids still existed, looked the first one up, found
+     * nothing, and failed: `quiche_conn_send` answered `InvalidState` on every call from then on. The
+     * client sent nothing at all, not even an ACK, while it went on decrypting quinn's packets, until its
+     * idle timeout 30 s later.
+     *
+     * Staged here with a real one-way delay between every leg: the frames' packet is held back, three
+     * later packets are acknowledged (packet threshold, RFC 9002 §6.1.1), the held packet then arrives,
+     * and the server's retirement of what it carried reaches the client before the client sends again.
+     */
+    @Test
+    fun theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    val issued = pair.scidsLeft(pair.client)
+                    assertTrue(
+                        issued >= RETIRED_BY_THE_PEER,
+                        "the client must be able to issue $RETIRED_BY_THE_PEER ids, could issue $issued",
+                    )
+                    pair.issueSpareCids(pair.client)
+
+                    // The NEW_CONNECTION_ID frames leave; their packet is held back.
+                    val advertised = pair.sends(pair.client)
+                    assertEquals(1, advertised.size, "the client's ids must leave in one datagram")
+                    // Three later packets arrive and are acknowledged, which declares the held one lost: the
+                    // client queues its NEW_CONNECTION_ID frames again.
+                    val later =
+                        (0 until PACKET_THRESHOLD).flatMap { i ->
+                            assertEquals(2, pair.streamSend(pair.client, stream, "p$i", fin = false))
+                            pair.sends(pair.client)
+                        }
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(later, pair.server)
+                    pair.elapse(SERVER_ACK_DELAY)
+                    val acks = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(acks, pair.client)
+
+                    // The held packet arrives after all; the server retires ids it carried.
+                    pair.deliver(advertised, pair.server)
+                    (1L..RETIRED_BY_THE_PEER).forEach { seq ->
+                        assertEquals(0, pair.retireDcid(seq, pair.server), "the server must retire the client's id $seq")
+                    }
+                    val retirement = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(retirement, pair.client)
+
+                    // The client writes; it must still put packets on the wire, and the bytes must arrive.
+                    assertEquals(5, pair.streamSend(pair.client, stream, "after", fin = true))
+                    val afterRetirement = pair.sends(pair.client)
+                    assertTrue(
+                        afterRetirement.isNotEmpty(),
+                        "the client must still send after the peer retired its ids; quiche_conn_send answered " +
+                            "${pair.lastSendEnd(
+                                pair.client,
+                            )} (QUICHE_ERR_DONE is ${QuicheDriver.QUICHE_ERR_DONE}), client ${pair.closed(pair.client)}",
+                    )
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(afterRetirement, pair.server)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    assertEquals("open", pair.closed(pair.client), "the client's connection must stay open")
+                    assertEquals(
+                        QuicheDriver.QUICHE_ERR_DONE,
+                        pair.lastSendEnd(pair.client),
+                        "every client send must end on DONE, not a refusal",
+                    )
+                    assertEquals(
+                        "p0p1p2after" to true,
+                        pair.readText(pair.server, stream),
+                        "the server must read everything the client wrote, and its end",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * The other order of [theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain], as the
+     * `handshakecorruption` trace has it: the peer retires the ids first, and only afterwards does the
+     * client give up on the packet that advertised them and schedule its frames again — here on a probe
+     * timeout (RFC 9002 §6.2), which re-sends the frames of a packet that carried stream data. Nothing may
+     * schedule a NEW_CONNECTION_ID for an id that is already retired.
+     */
+    @Test
+    fun theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    val issued = pair.scidsLeft(pair.client)
+                    assertTrue(
+                        issued >= RETIRED_BY_THE_PEER,
+                        "the client must be able to issue $RETIRED_BY_THE_PEER ids, could issue $issued",
+                    )
+                    pair.issueSpareCids(pair.client)
+
+                    // The ids leave beside stream data, so a probe timeout sends the packet's frames again.
+                    assertEquals(2, pair.streamSend(pair.client, stream, "p0", fin = false))
+                    val advertised = pair.sends(pair.client)
+                    assertEquals(1, advertised.size, "the client's ids and its data must leave in one datagram")
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(advertised, pair.server)
+                    // The server's acknowledgement is lost; it retires ids the packet carried, and that reaches
+                    // the client.
+                    pair.elapse(SERVER_ACK_DELAY)
+                    pair.sends(pair.server)
+                    (1L..RETIRED_BY_THE_PEER).forEach { seq ->
+                        assertEquals(0, pair.retireDcid(seq, pair.server), "the server must retire the client's id $seq")
+                    }
+                    val retirement = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(retirement, pair.client)
+
+                    // No acknowledgement ever came: the client's probe timeout fires and it sends again.
+                    pair.elapse(PROBE_TIMEOUT_BOUND)
+                    val afterRetirement = pair.sends(pair.client)
+                    assertTrue(
+                        afterRetirement.isNotEmpty(),
+                        "the client must still send after the peer retired its ids; quiche_conn_send answered " +
+                            "${pair.lastSendEnd(
+                                pair.client,
+                            )} (QUICHE_ERR_DONE is ${QuicheDriver.QUICHE_ERR_DONE}), client ${pair.closed(pair.client)}",
+                    )
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(afterRetirement, pair.server)
+                    assertEquals(2, pair.streamSend(pair.client, stream, "p1", fin = true))
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    assertEquals("open", pair.closed(pair.client), "the client's connection must stay open")
+                    assertEquals(
+                        QuicheDriver.QUICHE_ERR_DONE,
+                        pair.lastSendEnd(pair.client),
+                        "every client send must end on DONE, not a refusal",
+                    )
+                    assertEquals(
+                        "p0p1" to true,
+                        pair.readText(pair.server, stream),
+                        "the server must read everything the client wrote, and its end",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * The window between those two: quiche has already queued the lost NEW_CONNECTION_ID frames again, but
+     * the congestion window — just cut by the loss, with a full flight still out — leaves no room to send
+     * them, and the peer's retirement arrives while they wait. Under `handshakeloss` the window is exactly
+     * this state. The retirement itself must take the ids out of the queue.
+     */
+    @Test
+    fun theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    val issued = pair.scidsLeft(pair.client)
+                    assertTrue(
+                        issued >= RETIRED_BY_THE_PEER,
+                        "the client must be able to issue $RETIRED_BY_THE_PEER ids, could issue $issued",
+                    )
+                    pair.issueSpareCids(pair.client)
+
+                    // The ids leave and are held back; three small packets follow; then a write fills the
+                    // congestion window and that whole flight is held too.
+                    val advertised = pair.sends(pair.client)
+                    assertEquals(1, advertised.size, "the client's ids must leave in one datagram")
+                    val later =
+                        (0 until PACKET_THRESHOLD).flatMap { i ->
+                            assertEquals(2, pair.streamSend(pair.client, stream, "p$i", fin = false))
+                            pair.sends(pair.client)
+                        }
+                    val bulk = "b".repeat(CONGESTION_WINDOW_FILL_BYTES)
+                    val accepted = pair.streamSend(pair.client, stream, bulk, fin = false)
+                    assertTrue(accepted > 0, "the stream must take the bulk write")
+                    val flight = pair.sends(pair.client)
+                    assertTrue(accepted > flight.sumOf { it.bytes.size }, "the bulk write must outrun the congestion window")
+
+                    // The three small packets are acknowledged: the ids' packet is declared lost and the
+                    // window cut, with the bulk flight still in it. The client queues the ids again, and
+                    // has no room to send them.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(later, pair.server)
+                    pair.elapse(SERVER_ACK_DELAY)
+                    val acks = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(acks, pair.client)
+                    pair.sends(pair.client)
+
+                    // The held packet arrives after all; the server retires ids it carried.
+                    pair.deliver(advertised, pair.server)
+                    (1L..RETIRED_BY_THE_PEER).forEach { seq ->
+                        assertEquals(0, pair.retireDcid(seq, pair.server), "the server must retire the client's id $seq")
+                    }
+                    val retirement = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(retirement, pair.client)
+
+                    // The bulk flight is released and acknowledged, opening the window.
+                    pair.deliver(flight, pair.server)
+                    pair.elapse(SERVER_ACK_DELAY)
+                    val flightAcks = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(flightAcks, pair.client)
+                    val afterRetirement = pair.sends(pair.client)
+                    assertTrue(
+                        afterRetirement.isNotEmpty(),
+                        "the client must still send after the peer retired its ids; quiche_conn_send answered " +
+                            "${pair.lastSendEnd(
+                                pair.client,
+                            )} (QUICHE_ERR_DONE is ${QuicheDriver.QUICHE_ERR_DONE}), client ${pair.closed(pair.client)}",
+                    )
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(afterRetirement, pair.server)
+                    assertEquals(0, pair.streamSend(pair.client, stream, "", fin = true))
+                    val expected = "p0p1p2" + bulk.take(accepted)
+                    var received = pair.readText(pair.server, stream).first
+                    repeat(DELIVERY_ROUNDS) {
+                        pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                        received += pair.readText(pair.server, stream).first
+                    }
+                    assertEquals("open", pair.closed(pair.client), "the client's connection must stay open")
+                    assertEquals(
+                        QuicheDriver.QUICHE_ERR_DONE,
+                        pair.lastSendEnd(pair.client),
+                        "every client send must end on DONE, not a refusal",
+                    )
+                    assertEquals(expected.length, received.length, "the server must read everything the client wrote")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * Stream data sent on a path the client has migrated away from still reaches the server when a later
      * probe makes quiche evict that path from its table.
      *
@@ -4076,6 +4326,24 @@ abstract class MigrationSimTestSuite {
 
         /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
         const val INITIAL_DCID_SEQ = 0L
+
+        /** Later packets acknowledged before an earlier one is declared lost (RFC 9002 §6.1.1, kPacketThreshold). */
+        const val PACKET_THRESHOLD = 3
+
+        /** The client ids the server retires, as quinn retired sequence numbers 1 to 3 in the interop trace. */
+        const val RETIRED_BY_THE_PEER = 3L
+
+        /** Longer than quiche's default max_ack_delay (25 ms), so the server's delayed ACK is due. */
+        val SERVER_ACK_DELAY = 30.milliseconds
+
+        /** Past the client's first probe timeout at [DEFAULT_PATH_LATENCY] round trips, short of its second. */
+        val PROBE_TIMEOUT_BOUND = 600.milliseconds
+
+        /** Several times quiche's initial congestion window (10 datagrams), so one write fills it. */
+        const val CONGESTION_WINDOW_FILL_BYTES = 64_000
+
+        /** Exchange rounds to drain a write of [CONGESTION_WINDOW_FILL_BYTES] after the window reopens. */
+        const val DELIVERY_ROUNDS = 8
 
         /**
          * Stream writes the old path holds in flight in [streamDataInFlightOnAnEvictedPathIsStillDelivered],

@@ -135,12 +135,23 @@ internal class QuichePairByHand private constructor(
         now = until
     }
 
-    /** Every datagram [from] writes now, until quiche has nothing more to send. */
+    private val sendEnds = mutableMapOf<QuicheConn, Int>()
+
+    /**
+     * What [conn]'s last `quiche_conn_send` in [sends] answered: [QuicheDriver.QUICHE_ERR_DONE] when it had
+     * nothing more to send, any other negative code when quiche refused to send at all.
+     */
+    fun lastSendEnd(conn: QuicheConn): Int = sendEnds[conn] ?: QuicheDriver.QUICHE_ERR_DONE
+
+    /** Every datagram [from] writes now, until quiche has nothing more to send (or refuses: [lastSendEnd]). */
     fun sends(from: QuicheConn): List<Datagram> =
         buildList {
             while (true) {
                 val n = at { api.connSend(from, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), MAX_DATAGRAM, sendInfo) }
-                if (n <= 0) break
+                if (n <= 0) {
+                    sendEnds[from] = n
+                    break
+                }
                 val clientSide = if (from == client) api.sendInfoFromAddr(sendInfo) else api.sendInfoToAddr(sendInfo)
                 datagram.position(0)
                 add(Datagram(datagram.readByteArray(n), endpointAt(api.sockAddrPort(clientSide))))
@@ -225,8 +236,11 @@ internal class QuichePairByHand private constructor(
     fun migrate(endpoint: Int): MigrateOutcome =
         at { api.connMigrate(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length) }
 
-    /** The client retires the destination connection ID with sequence number [seq]. */
-    fun retireDcid(seq: Long): Int = at { api.connRetireDcid(client, seq) }
+    /** [conn] (the client unless named) retires the destination connection ID with sequence number [seq]. */
+    fun retireDcid(
+        seq: Long,
+        conn: QuicheConn = client,
+    ): Int = at { api.connRetireDcid(conn, seq) }
 
     /** Spare destination connection IDs [conn] holds. */
     fun spareDcids(conn: QuicheConn): Long = at { api.connAvailableDcids(conn) }

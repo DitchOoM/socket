@@ -250,6 +250,10 @@ fun downloadQuicheSource(
     // reordered in-flight packet from a path the peer just migrated away from cannot kill a healthy
     // connection (#437 residue). Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheRetiredCidRecvIsDrop(sourceDir)
+    // Never queue a NEW_CONNECTION_ID for a source id the peer has retired, so a lost advertisement the peer
+    // answered with RETIRE_CONNECTION_ID cannot make every later send fail with InvalidState (the interop
+    // runner's handshakeloss / handshakecorruption against quinn). Idempotent, fails loudly on drift.
+    patchQuicheRetiredScidIsNotAdvertised(sourceDir)
     // Send a CONNECTION_CLOSE made before the handshake is confirmed in a 1-RTT packet as well as the
     // Handshake one, so a peer that has already confirmed and discarded its Handshake keys can read it.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -977,6 +981,107 @@ fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
         """.trimMargin()
 
     libRs.writeText(text.replaceFirst(anchor, replacement))
+}
+
+/**
+ * Make sure quiche never has a NEW_CONNECTION_ID queued for a source connection ID the peer has retired.
+ *
+ * **The defect.** quiche keeps the sequence numbers of the source IDs it still has to advertise in a
+ * queue (`ConnectionIdentifiers::advertise_new_scid_seqs`). Two things put a number there and neither
+ * asks whether the ID still exists: issuing a new ID, and declaring lost a packet that carried a
+ * NEW_CONNECTION_ID (`Frame::NewConnectionId` in the loss handler re-queues it). A RETIRE_CONNECTION_ID
+ * from the peer removes the ID (`retire_scid`) but leaves its number in the queue. `send_single` then
+ * builds the frame for the head of the queue with `get_new_connection_id_frame_for(seq)?`, which answers
+ * `InvalidState` for a missing ID, and the `?` returns that out of `send()`. The head never leaves the
+ * queue, so every later `quiche_conn_send` fails the same way: the connection sends nothing at all, not
+ * even an ACK, while `recv()` keeps accepting the peer's packets, until the idle timer ends it.
+ *
+ * **Seen in the quic-interop-runner** (`handshakeloss` and `handshakecorruption`, client against quinn,
+ * run 41385368697): a packet carrying our NEW_CONNECTION_ID frames for IDs 1 to 3 was declared lost, and
+ * quinn, which had received those IDs (that packet or another copy of its frames), retired them: in the `handshakeloss` trace the ACK that
+ * declared the loss and the RETIRE_CONNECTION_ID frames arrived in the same packet, in the
+ * `handshakecorruption` trace the retirement arrived 30 ms before the loss. Either way the client's qlog
+ * has no `packet_sent` from then until `connection_closed` 30 s later, across a dozen ack-eliciting
+ * packets from quinn.
+ *
+ * quiche moves a lost packet's frames into the queue only when it next builds a packet, so the loss
+ * writer is the one both traces hit: edit 2 re-queues only an ID that is still live. Edit 1 covers the
+ * window after that move: the frames are queued, a congestion window just cut by the loss has no room to
+ * send them, and the retirement arrives while they wait — a retirement drops the number from the queue.
+ * RFC 9000 §19.15/§19.16: a retired ID is never used again, so advertising it again is pointless as well
+ * as fatal here.
+ *
+ * Regression guards, outliving this patch, in `MigrationSimTestSuite` — each edit reverted alone turns
+ * its guard red (`quiche_conn_send` answering -6, InvalidState):
+ *  - edit 2: `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss`
+ *    order) and `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the
+ *    `handshakecorruption` order);
+ *  - edit 1: `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`.
+ * Upstream at the time of writing has the same code. Idempotent and loud in both directions (the
+ * [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
+    val marker = "socket-retired-scid-is-not-advertised"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
+    if (!libRs.exists() || !cidRs.exists()) return
+
+    fun missingAnchor(what: String): Nothing =
+        throw GradleException(
+            "$marker: $what was not found. A quiche bump moved or reshaped it — possibly fixing this " +
+                "upstream (a retired source connection id left queued for NEW_CONNECTION_ID makes every " +
+                "send() fail with InvalidState). If upstream fixed it: DELETE this patch and its call site, " +
+                "and KEEP the MigrationSimTestSuite.theClientKeepsSending* tests, the regression guards. " +
+                "Otherwise re-fit the anchor and re-run those tests before shipping.",
+        )
+
+    // Edit 1 (cid.rs): a retirement takes the id's number out of the advertise queue — every copy, since a
+    // NEW_CONNECTION_ID lost twice is queued twice.
+    val cidText = cidRs.readText()
+    if (!cidText.contains(marker)) {
+        val anchor =
+            """
+            |            // Notifies the application.
+            |            self.retired_scids.push_back(e.cid);
+            """.trimMargin()
+        if (cidText.split(anchor).size != 2) missingAnchor("the retired-scid notification in retire_scid (quiche/src/cid.rs)")
+        val replacement =
+            """
+            |            // $marker: the peer has retired this id, so it must
+            |            // never be advertised again. Leaving its number queued makes send_single's
+            |            // get_new_connection_id_frame_for(seq)? fail every send() with InvalidState.
+            |            self.advertise_new_scid_seqs.retain(|s| *s != seq);
+            |
+            |            // Notifies the application.
+            |            self.retired_scids.push_back(e.cid);
+            """.trimMargin()
+        cidRs.writeText(cidText.replaceFirst(anchor, replacement))
+    }
+
+    // Edit 2 (lib.rs): a lost NEW_CONNECTION_ID is sent again only for an id that is still live — the peer
+    // may have retired it after receiving the very packet we have now declared lost.
+    val libText = libRs.readText()
+    if (!libText.contains(marker)) {
+        val anchor =
+            """
+            |                    frame::Frame::NewConnectionId { seq_num, .. } => {
+            |                        self.ids.mark_advertise_new_scid_seq(seq_num, true);
+            |                    },
+            """.trimMargin()
+        if (libText.split(anchor).size != 2) missingAnchor("the NEW_CONNECTION_ID arm of the loss handler (quiche/src/lib.rs)")
+        val replacement =
+            """
+            |                    frame::Frame::NewConnectionId { seq_num, .. } => {
+            |                        // $marker: not for an id the peer has
+            |                        // already retired; see cid.rs retire_scid.
+            |                        if self.ids.get_scid(seq_num).is_ok() {
+            |                            self.ids.mark_advertise_new_scid_seq(seq_num, true);
+            |                        }
+            |                    },
+            """.trimMargin()
+        libRs.writeText(libText.replaceFirst(anchor, replacement))
+    }
+    logger.lifecycle("Patched quiche source: a retired source connection id is never advertised again")
 }
 
 /**
@@ -2638,7 +2743,7 @@ fun createBuildQuicheSharedTask(
                 requireAlignedMachOStringPool(destLib)
             }
 
-            markerFile.writeText("quiche $quicheVersion built on ${System.currentTimeMillis()}")
+            writeSoleBuildMarker(markerFile, "quiche $quicheVersion built on ${System.currentTimeMillis()}")
 
             val sizeKb = destLib.length() / 1024
             logger.lifecycle("quiche $quicheVersion built successfully (shared, $os-$arch, ${sizeKb}KB)")
@@ -2707,6 +2812,22 @@ fun patchQuicheBuildRsForIosSim(sourceDir: File) {
     }
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs for arm64 iOS-simulator BoringSSL asm")
+}
+
+/**
+ * Write [marker] as the only `.built-…` marker beside the library it vouches for. The marker names the
+ * [quichePatchDigest] the library was built from, and the build task is skipped when its marker exists —
+ * so a marker from an earlier digest, left beside a library since rebuilt from another, vouches for a
+ * binary it does not describe. Any patch edit that is later undone (a mutation check, a reverted
+ * experiment) reaches that: the digest returns to one whose marker never left, the task is skipped, and
+ * the tests run against the other build's library — a false green or a false red.
+ */
+fun writeSoleBuildMarker(
+    marker: File,
+    text: String,
+) {
+    marker.parentFile.listFiles { f -> f.name.startsWith(".built-") && f != marker }?.forEach { it.delete() }
+    marker.writeText(text)
 }
 
 /**
@@ -2806,7 +2927,7 @@ fun createBuildQuicheAppleStaticTask(
                 sourceDir.resolve("quiche/include/quiche.h").copyTo(headerDest, overwrite = true)
             }
 
-            markerFile.writeText("quiche $quicheVersion built on ${System.currentTimeMillis()}")
+            writeSoleBuildMarker(markerFile, "quiche $quicheVersion built on ${System.currentTimeMillis()}")
             logger.lifecycle("quiche $quicheVersion built successfully (static, $libSubdir)")
         }
     }
