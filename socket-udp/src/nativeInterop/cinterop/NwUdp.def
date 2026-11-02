@@ -36,15 +36,28 @@ static void nw_udp_describe_error(nw_error_t _Nullable error,
     }
 }
 
+// DISABLE_PROTOCOL on the TLS configure slot = plain UDP (raw datagrams, no DTLS). Default UDP
+// configuration otherwise.
+static nw_parameters_t nw_udp_parameters(void)
+{
+    return nw_parameters_create_secure_udp(
+        NW_PARAMETERS_DISABLE_PROTOCOL,
+        NW_PARAMETERS_DEFAULT_CONFIGURATION);
+}
+
 nw_connection_t _Nullable nw_udp_create(const char * _Nonnull host, const char * _Nonnull port)
 {
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port);
     if (endpoint == NULL) return NULL;
-    // DISABLE_PROTOCOL on the TLS configure slot = plain UDP (raw datagrams, no DTLS). Default UDP
-    // configuration otherwise.
-    nw_parameters_t params = nw_parameters_create_secure_udp(
-        NW_PARAMETERS_DISABLE_PROTOCOL,
-        NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    return nw_connection_create(endpoint, nw_udp_parameters());
+}
+
+nw_connection_t _Nullable nw_udp_create_requiring(const char * _Nonnull host, const char * _Nonnull port, int32_t interface_type)
+{
+    nw_endpoint_t endpoint = nw_endpoint_create_host(host, port);
+    if (endpoint == NULL) return NULL;
+    nw_parameters_t params = nw_udp_parameters();
+    nw_parameters_set_required_interface_type(params, (nw_interface_type_t)interface_type);
     return nw_connection_create(endpoint, params);
 }
 

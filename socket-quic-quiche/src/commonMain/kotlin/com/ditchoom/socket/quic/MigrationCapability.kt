@@ -33,8 +33,8 @@ sealed interface MigrationCapability {
     data object ServerConnection : MigrationCapability
 
     /**
-     * The caller chose [MigrationPolicy.Forbidden], so this endpoint advertised
-     * `disable_active_migration` and must not move its own path either. Answers
+     * The caller chose [MigrationPolicy.Forbidden] or [MigrationPolicy.Pinned], so this endpoint
+     * advertised `disable_active_migration` and must not move its own path either. Answers
      * [MigrationResult.Unmoved.Impossible.PolicyForbids].
      */
     data object PolicyForbids : MigrationCapability
@@ -65,8 +65,8 @@ sealed interface MigrationCapability {
  * [MigrationPolicy] is translated into the driver seam, shared by all three platform connection setups
  * so they cannot drift.
  *
- * [wiring] is called only when the policy permits migration, so a [MigrationPolicy.Forbidden]
- * connection never builds a `UdpChannelFactory` it would refuse to use. [MigrationPolicy.Manual] and
+ * [wiring] is called only when the policy permits migration, so a [MigrationPolicy.Forbidden] or
+ * [MigrationPolicy.Pinned] connection never builds a `UdpChannelFactory` it would refuse to use. [MigrationPolicy.Manual] and
  * [MigrationPolicy.Automatic] produce the same capability on purpose: they differ in *who* calls
  * `migrate()`, not in whether the connection can.
  */
@@ -75,7 +75,7 @@ internal fun clientMigrationCapability(
     wiring: () -> MigrationCapability.Supported,
 ): MigrationCapability =
     when (policy) {
-        MigrationPolicy.Forbidden -> MigrationCapability.PolicyForbids
+        MigrationPolicy.Forbidden, is MigrationPolicy.Pinned -> MigrationCapability.PolicyForbids
         MigrationPolicy.Manual, MigrationPolicy.Automatic -> wiring()
     }
 

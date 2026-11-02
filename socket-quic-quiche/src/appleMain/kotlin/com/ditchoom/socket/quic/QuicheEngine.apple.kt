@@ -24,6 +24,7 @@ object QuicheEngine : QuicEngine {
             // quiche reads whatever channel it is handed, so a demultiplexed port is no different
             // to it than one it bound itself.
             supportsSharedPort = true,
+            pinnableRadios = applePinnableRadios,
         )
 
     override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(SecurityFrameworkPeerCertificateBackend)
@@ -36,6 +37,7 @@ object QuicheEngine : QuicEngine {
         transport: TransportConfig,
         timeout: Duration,
     ): QuicConnection {
+        capabilities.requirePinnable(binding, quicOptions)
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
         val capture = traceRecorderFor(quicOptions)

@@ -10,9 +10,15 @@ package com.ditchoom.socket.transport
  * The concrete links ([Wifi]/[Cellular]/[Ethernet]) stay data objects.
  */
 sealed interface NetworkKind {
-    data object Wifi : NetworkKind
+    /**
+     * A link a connection can be pinned to, so its traffic rides that radio whatever the OS default
+     * network is — `Network.bindSocket` on Android, a required interface type on Apple.
+     */
+    sealed interface Radio : NetworkKind
 
-    data object Cellular : NetworkKind
+    data object Wifi : Radio
+
+    data object Cellular : Radio
 
     data object Ethernet : NetworkKind
 

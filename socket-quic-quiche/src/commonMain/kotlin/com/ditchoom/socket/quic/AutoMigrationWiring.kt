@@ -465,7 +465,7 @@ internal fun wireAutoMigration(
     standby: StandbyPaths = StandbyPaths.None,
 ) {
     when (quicOptions.migration) {
-        MigrationPolicy.Forbidden, MigrationPolicy.Manual -> return
+        MigrationPolicy.Forbidden, MigrationPolicy.Manual, is MigrationPolicy.Pinned -> return
         MigrationPolicy.Automatic -> Unit
     }
     // AlwaysAvailable never changes network identity (Android without an installed Context, Wasm) —

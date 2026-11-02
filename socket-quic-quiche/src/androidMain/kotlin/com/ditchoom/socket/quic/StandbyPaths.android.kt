@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic
 
-import android.net.Network
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.CellularStandbyHold
@@ -11,8 +10,6 @@ import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.transport.NetworkId
-import com.ditchoom.socket.udp.DatagramSocketPin
-import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.job
@@ -30,7 +27,7 @@ internal actual fun standbyPathsFor(
     connection: JvmQuicConnection,
 ): StandbyPaths {
     when (options.migration) {
-        MigrationPolicy.Forbidden, MigrationPolicy.Manual -> return StandbyPaths.None
+        MigrationPolicy.Forbidden, MigrationPolicy.Manual, is MigrationPolicy.Pinned -> return StandbyPaths.None
         MigrationPolicy.Automatic -> Unit
     }
     when (options.standbyLink) {
@@ -74,12 +71,4 @@ private class CellularStandbyPaths(
                 }
             CellularStandbyState.Released, is CellularStandbyState.Requesting, is CellularStandbyState.Refused -> StandbyPath.Unavailable
         }
-}
-
-/** Opens every socket pinned to [network] with `Network.bindSocket`, whatever the default network is. */
-private fun pinnedTo(network: Network): ConnectedUdpOpener {
-    val pin = DatagramSocketPin { socket -> network.bindSocket(socket) }
-    return ConnectedUdpOpener { remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory ->
-        UdpSocket.connect(remoteHost, remotePort, localHost, localPort, receiveBufferSize, bufferFactory, pin)
-    }
 }

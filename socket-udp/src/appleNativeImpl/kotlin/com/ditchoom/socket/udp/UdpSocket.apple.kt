@@ -132,11 +132,21 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): ConnectedDatagramChannel {
+    ): ConnectedDatagramChannel =
         // NWConnection assigns the local endpoint itself; localHost/localPort are advisory here (matching
         // the quiche NW client path, which does not bind a specific local address).
+        connectNw(remoteHost, remotePort, receiveBufferSize, bufferFactory, nw_udp_create(remoteHost, remotePort.toString()))
+
+    /** Await NW readiness on [created] and wrap it — every Apple connect, confined to an interface or not. */
+    internal suspend fun connectNw(
+        remoteHost: String,
+        remotePort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+        created: platform.Network.nw_connection_t,
+    ): ConnectedDatagramChannel {
         val conn =
-            nw_udp_create(remoteHost, remotePort.toString())
+            created
                 // NW would not create the connection at all: no error object exists yet, so the
                 // reason is the one thing this can be — the platform declined to make a socket.
                 ?: throw UdpConnectException(UdpConnectError.SocketUnavailable(ERRNO_NOT_SURFACED))

@@ -45,6 +45,7 @@ suspend fun QuicEngine.connectRacing(
     transport: TransportConfig,
     timeout: Duration,
 ): QuicRacedConnect {
+    capabilities.requirePinnable(binding, quicOptions)
     val candidates =
         when (peer) {
             is QuicPeer.Named ->
@@ -90,13 +91,26 @@ suspend fun QuicEngine.connect(
  * built from the one [QuicOptions] the caller passed, so a connect it does not permit is refused
  * identically at every endpoint. [EarlyDataProtocolNotOfferedException] is that case — it is raised
  * before an attempt opens a socket, so retrying it would open none either, just report the same
- * programming error once per candidate.
+ * programming error once per candidate. [PinnedRadioRefusedException] is another.
+ *
+ * A pinned radio the platform never produced ([PinnedRadioUnavailableException] for anything but
+ * [PinnedRadioUnavailable.NoPath]) is the same radio at every endpoint, so it is fatal too; a path the
+ * radio does not carry to one address may exist to another, so [PinnedRadioUnavailable.NoPath] is not.
  */
 fun quicConnectVerdict(error: Throwable): AttemptVerdict =
     when {
         error is QuicCloseException && error.quicError.isAboutThePeersIdentity() -> AttemptVerdict.Fatal
         error is EarlyDataProtocolNotOfferedException -> AttemptVerdict.Fatal
+        error is PinnedRadioRefusedException -> AttemptVerdict.Fatal
+        error is PinnedRadioUnavailableException -> error.reason.verdict()
         else -> AttemptVerdict.of(error)
+    }
+
+private fun PinnedRadioUnavailable.verdict(): AttemptVerdict =
+    when (this) {
+        is PinnedRadioUnavailable.NoPath -> AttemptVerdict.TryOthers
+        is PinnedRadioUnavailable.NotAttached, is PinnedRadioUnavailable.NotPermitted, PinnedRadioUnavailable.NoPlatformContext ->
+            AttemptVerdict.Fatal
     }
 
 /**

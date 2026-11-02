@@ -7,6 +7,7 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.ScriptedNetworkMonitor
 import com.ditchoom.socket.networkMonitorScript
+import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
@@ -85,6 +86,36 @@ class OsNetWatchTests {
             ),
             recording.events,
         )
+    }
+
+    /**
+     * Adaptive pace snaps to the fast rate on a change of the device's network, so what counts as one
+     * matters: the link coming up does, and a reading where only the address list moved — iOS
+     * re-reports links every few seconds — must not, or the radio never gets to sleep.
+     */
+    @Test
+    fun onlyAChangeOfNetworkStateSignalsTheDevice() {
+        val recording = Recording()
+        val signals = DeviceSignals()
+        val registered = OsNetworkFixtures.registeredNoBearer
+        val source = FakeSource(readingOf(registered))
+        var now = Duration.ZERO
+        val watch = OsNetWatch(source, { now }, { recording.lines += it }, recording.sink, signals)
+
+        watch.sample(registered.state)
+        assertEquals(Duration.ZERO, signals.networkChangedAt)
+
+        now = 5.seconds
+        val addressesOnly = registered.copy(links = OsNetworkFixtures.wifiNoGlobalV6.links)
+        source.reading = readingOf(addressesOnly)
+        watch.sample(addressesOnly.state)
+        assertEquals(2, recording.lines.size, "the address change is still recorded: ${recording.lines}")
+        assertEquals(Duration.ZERO, signals.networkChangedAt, "an address-only change is not a network change")
+
+        now = 9.seconds
+        source.reading = readingOf(OsNetworkFixtures.wifiNoGlobalV6)
+        watch.sample(OsNetworkFixtures.wifiNoGlobalV6.state)
+        assertEquals(9.seconds, signals.networkChangedAt)
     }
 
     @Test

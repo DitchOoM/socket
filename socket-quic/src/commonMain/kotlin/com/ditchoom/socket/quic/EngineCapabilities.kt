@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.transport.NetworkKind
+
 /**
  * Static description of what a [QuicEngine] supports, queryable before any connection exists.
  *
@@ -23,4 +25,10 @@ data class EngineCapabilities(
      * shared ports existed inherits that default, and its `false` here is the honest advertisement.
      */
     val supportsSharedPort: Boolean = false,
+    /**
+     * The radios a [MigrationPolicy.Pinned] client connection can be pinned to on this platform. A
+     * connect pinned to any other is refused with [PinnedRadioRefusal.EngineCannotPin] before a socket
+     * opens.
+     */
+    val pinnableRadios: Set<NetworkKind.Radio> = emptySet(),
 )

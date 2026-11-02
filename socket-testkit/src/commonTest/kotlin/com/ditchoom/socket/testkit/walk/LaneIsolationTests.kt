@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.walk
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLoop
 import com.ditchoom.socket.testkit.echo.EchoLoopEvent
+import com.ditchoom.socket.testkit.echo.EchoPace
 import com.ditchoom.socket.testkit.echo.EchoSession
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
@@ -48,7 +49,7 @@ class LaneIsolationTests {
                     EchoLoop(
                         stream = stream,
                         session = session,
-                        interval = interval,
+                        pace = EchoPace.Fixed(interval),
                         clock = clock,
                         emit = lane.log { lines += "t=${clock().inWholeMilliseconds}ms $it" },
                         closedBy = { EchoFailure.Exchange },

@@ -33,6 +33,13 @@ nw_connection_t _Nullable nw_udp_create(
     const char * _Nonnull host,
     const char * _Nonnull port);
 
+// nw_udp_create, but the connection may only use an interface of [interface_type] (nw_interface_type_t:
+// 1=wifi, 2=cellular). With no such interface NW parks it `waiting` on an unsatisfied path.
+nw_connection_t _Nullable nw_udp_create_requiring(
+    const char * _Nonnull host,
+    const char * _Nonnull port,
+    int32_t interface_type);
+
 // State handler. state (nw_connection_state_t): 0=invalid,1=waiting,2=preparing,3=ready,4=failed,
 // 5=cancelled. error_domain: 0=none,1=posix,2=dns,3=tls,4=unknown. path_status (nw_path_status_t of the
 // connection's current path at this change): 0=none/invalid,1=satisfied,2=unsatisfied,3=satisfiable.

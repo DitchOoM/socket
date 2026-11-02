@@ -154,6 +154,7 @@ internal suspend fun buildAppleQuicConnection(
             // was resolved once at the connect entry and every candidate reaches here as an address.
             val peer = UdpSocket.resolve(endpoint.address.ip, endpoint.port)
             val codec = SocketAddressCodec(appleSockAddrLayout)
+            val opener = quicOptions.migration.pathOpener { radio -> pinnedTo(radio) }
             val path =
                 try {
                     withTimeout(timeout) {
@@ -169,12 +170,13 @@ internal suspend fun buildAppleQuicConnection(
                                 // refuses an explicit endpoint instead of silently binding somewhere else
                                 // and reporting success.
                                 localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                                openChannel = opener,
                             )
                         }
                     }
                 } catch (e: UdpConnectException) {
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused(endpoint.address.ip, endpoint.port, platformError = e.message)
+                    throw primaryPathFailure(quicOptions.migration, endpoint, e)
                 } catch (t: Throwable) {
                     quiche_config_free(config)
                     throw t

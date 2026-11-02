@@ -1,5 +1,8 @@
 import CoreLocation
+import CoreMotion
 import SwiftUI
+import UIKit
+import UserNotifications
 import probe
 
 /// Host app for the Kotlin/Native handoff probe.
@@ -19,9 +22,55 @@ import probe
 /// Location data itself is never read, stored, or logged: only the number of updates.
 @main
 struct QuicProbeApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
     var body: some Scene {
         WindowGroup { ProbeView() }
     }
+}
+
+/// Decides, on every launch, whether a walk begins, resumes, or waits for a tap — including a launch
+/// iOS makes in the background for a significant location change, which brings no window with it.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        let byLocation = launchOptions?[.location] != nil
+        MainActor.assumeIsolated { ProbeRunner.shared.launched(byLocation: byLocation) }
+        return true
+    }
+}
+
+/// The walk this phone is on, kept across launches so a process that died can pick it back up.
+struct WalkRecord {
+    static let startedAtKey = "walk.startedAt"
+    static let endsAtKey = "walk.endsAt"
+    static let pinnedKey = "walk.pinned"
+
+    let startedAt: Double
+    let endsAt: Double
+    /// Radios each target also gets a pinned lane on (`cellular`), kept so a resumed walk keeps its lanes.
+    let pinned: String
+
+    /// The walk still running at [now], if there is one.
+    static func active(at now: Double, _ defaults: UserDefaults = .standard) -> WalkRecord? {
+        let endsAt = defaults.double(forKey: endsAtKey)
+        guard endsAt > now else { return nil }
+        return WalkRecord(
+            startedAt: defaults.double(forKey: startedAtKey),
+            endsAt: endsAt,
+            pinned: defaults.string(forKey: pinnedKey) ?? ""
+        )
+    }
+
+    func save(_ defaults: UserDefaults = .standard) {
+        defaults.set(startedAt, forKey: WalkRecord.startedAtKey)
+        defaults.set(endsAt, forKey: WalkRecord.endsAtKey)
+        defaults.set(pinned, forKey: WalkRecord.pinnedKey)
+    }
+
+    func minutesLeft(at now: Double) -> Int32 { Int32(((endsAt - now) / 60).rounded(.up)) }
 }
 
 /// Where the walk connects. There is no built-in server: `launch.sh` passes `-host` (and `-port`) from
@@ -56,6 +105,8 @@ enum ServerConfig {
 
 @MainActor
 final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
+    static let shared = ProbeRunner()
+
     @Published var status: String = "not started"
     @Published var locUpdates: Int = 0
     @Published var authorization: String = "not requested"
@@ -63,6 +114,10 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private var ticker: Timer?
+    private var walk: WalkRecord?
+    private var lastWatchdogAt: Double = 0
+    private let activity = CMMotionActivityManager()
+    private var moving = false
 
     // The server is set per launch without a rebuild: `devicectl device process launch … -- -host
     // <addr> -port <n>` lands in UserDefaults' argument domain (launch.sh does this from
@@ -87,29 +142,133 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
         manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
         manager.distanceFilter = 50
         manager.pausesLocationUpdatesAutomatically = false
+        for (name, label) in [
+            (UIApplication.didEnterBackgroundNotification, "background"),
+            (UIApplication.willEnterForegroundNotification, "foreground"),
+        ] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                IosHandoffProbe.shared.noteRun(line: "APP-STATE \(label)")
+            }
+        }
+    }
+
+    /// Every launch: `-autostart` (launch.sh's WALK_AUTOSTART) begins a new walk; otherwise a walk the
+    /// phone is still on resumes, whatever brought the app up; otherwise it waits for the button.
+    func launched(byLocation: Bool) {
+        let now = Date().timeIntervalSince1970
+        if UserDefaults.standard.bool(forKey: "autostart") {
+            begin()
+        } else if let active = WalkRecord.active(at: now) {
+            resume(active, reason: byLocation ? "location-relaunch" : "relaunch", now: now)
+        }
     }
 
     func begin() {
         guard !started, case let .configured(hosts, port) = server else { return }
         started = true
-        manager.requestAlwaysAuthorization()
-        applyAuthorization(manager.authorizationStatus)
-
+        let now = Date().timeIntervalSince1970
+        // `-pinned cellular` on the launch (launch.sh's WALK_PINNED): a pinned lane per target as well.
+        let pinned = UserDefaults.standard.string(forKey: "pinned") ?? ""
+        let record = WalkRecord(startedAt: now, endsAt: now + Double(minutes) * 60, pinned: pinned)
+        record.save()
+        walk = record
         IosHandoffProbe.shared.start(
             hosts: hosts,
             port: port,
             minutes: minutes,
-            echoIntervalMs: 250
+            echoIntervalMs: 250,
+            pinned: pinned
         )
+        keepResident()
+    }
+
+    private func resume(_ record: WalkRecord, reason: String, now: Double) {
+        guard !started, case let .configured(hosts, port) = server else { return }
+        started = true
+        walk = record
+        minutes = record.minutesLeft(at: now)
+        IosHandoffProbe.shared.resume(
+            hosts: hosts,
+            port: port,
+            minutes: minutes,
+            echoIntervalMs: 250,
+            startedAtEpoch: record.startedAt,
+            reason: reason,
+            pinned: record.pinned
+        )
+        keepResident()
+    }
+
+    /// Location keeps the process scheduled; significant-change monitoring is what lets iOS relaunch it
+    /// after it was terminated; the watchdog notification says when neither worked.
+    private func keepResident() {
+        manager.requestAlwaysAuthorization()
+        applyAuthorization(manager.authorizationStatus)
+        manager.startMonitoringSignificantLocationChanges()
+        followMotion()
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            IosHandoffProbe.shared.noteRun(line: "NOTIFICATIONS \(granted ? "granted" : "denied")")
+        }
 
         ticker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.status = IosHandoffProbe.shared.status()
+                self?.feedWatchdog()
+                if self?.moving == true { IosHandoffProbe.shared.noteMovement() }
             }
         }
     }
 
+    /// A dead man's switch: a notification always pending five minutes out, pushed back once a minute
+    /// while this process runs. If it crashes, is terminated or suspended, nothing pushes it back and it
+    /// fires; tapping it opens the app, which resumes the walk. Withdrawn once the walk is over.
+    private func feedWatchdog() {
+        let now = Date().timeIntervalSince1970
+        guard now - lastWatchdogAt >= 60 else { return }
+        lastWatchdogAt = now
+        let center = UNUserNotificationCenter.current()
+        guard let walk, now < walk.endsAt else {
+            center.removePendingNotificationRequests(withIdentifiers: [ProbeRunner.watchdogId])
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "QUIC walk probe stopped"
+        content.body = "No heartbeat for 5 minutes. Open the app to resume the walk."
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: ProbeRunner.watchdogAfter, repeats: false)
+        center.add(UNNotificationRequest(identifier: ProbeRunner.watchdogId, content: content, trigger: trigger))
+    }
+
+    /// Core Motion's activity classifier as the walk's sign of movement: what keeps the echo pace fast
+    /// while the phone travels, and lets it idle while it sits still.
+    private func followMotion() {
+        guard CMMotionActivityManager.isActivityAvailable() else {
+            IosHandoffProbe.shared.noteRun(line: "MOTION-SOURCE none — pace sees no movement on this device")
+            return
+        }
+        IosHandoffProbe.shared.noteRun(line: "MOTION-SOURCE core-motion-activity")
+        activity.startActivityUpdates(to: .main) { [weak self] a in
+            guard let self, let a else { return }
+            let now = a.confidence != .low && (a.walking || a.running || a.cycling || a.automotive)
+            if now != self.moving {
+                self.moving = now
+                IosHandoffProbe.shared.noteRun(line: "MOTION \(now ? "moving" : "still") \(ProbeRunner.describe(a))")
+            }
+        }
+    }
+
+    private static func describe(_ a: CMMotionActivity) -> String {
+        let kinds = [(a.walking, "walking"), (a.running, "running"), (a.cycling, "cycling"),
+                     (a.automotive, "automotive"), (a.stationary, "stationary")]
+        let names = kinds.filter { $0.0 }.map { $0.1 }
+        return "activity=\(names.isEmpty ? "unknown" : names.joined(separator: "+")) confidence=\(a.confidence.rawValue)"
+    }
+
+    static let watchdogId = "probe-stopped"
+    static let watchdogAfter: TimeInterval = 300
+
     private func applyAuthorization(_ s: CLAuthorizationStatus) {
+        IosHandoffProbe.shared.noteRun(line: "LOCATION-AUTH \(ProbeRunner.token(s))")
         switch s {
         case .authorizedAlways:
             authorization = "always ✅ (survives a locked screen)"
@@ -136,6 +295,17 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
         manager.startUpdatingLocation()
     }
 
+    private static func token(_ s: CLAuthorizationStatus) -> String {
+        switch s {
+        case .authorizedAlways: return "always"
+        case .authorizedWhenInUse: return "when-in-use"
+        case .notDetermined: return "not-determined"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        @unknown default: return "unknown"
+        }
+    }
+
     nonisolated func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
         Task { @MainActor in self.applyAuthorization(m.authorizationStatus) }
     }
@@ -154,7 +324,7 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
 }
 
 struct ProbeView: View {
-    @StateObject private var runner = ProbeRunner()
+    @ObservedObject private var runner = ProbeRunner.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -192,8 +362,5 @@ struct ProbeView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding()
-        // `-autostart 1` on the launch (launch.sh's WALK_AUTOSTART): the walk begins without a tap, so a
-        // launch from the Mac is the whole start. Location authorization still has to be Always.
-        .onAppear { if UserDefaults.standard.bool(forKey: "autostart") { runner.begin() } }
     }
 }

@@ -1,7 +1,9 @@
 package com.ditchoom.socket.testkit.walk
 
+import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -127,5 +129,23 @@ class WalkTargetsTests {
     fun theSeparatorIsNotAColonBecauseALiteralIsFullOfThem() {
         assertTrue(v6.host.contains(':'), "the v6 literal this rig walks: ${v6.host}")
         assertEquals(',', WalkTargets.SEPARATOR)
+    }
+
+    @Test
+    fun aPinnedRadioAddsOneLanePerTargetAfterTheDefaultLanes() {
+        val targets =
+            WalkTargets(WalkTarget("192.0.2.1", 44433), listOf(WalkTarget("2001:db8::1", 44433)), pinned = listOf(NetworkKind.Cellular))
+        assertEquals(listOf("v4", "v6", "v4-cellular", "v6-cellular"), targets.lanes.map { it.label })
+        assertEquals(listOf(0, 1, 2, 3), targets.lanes.map { it.index })
+        assertEquals(LaneRadio.Default, targets.lanes[1].radio)
+        assertEquals(LaneRadio.Pinned(NetworkKind.Cellular), targets.lanes[3].radio)
+        assertEquals("conn-v6-cellular-0002", targets.lanes[3].fileStem(2))
+    }
+
+    @Test
+    fun aLauncherNamesRadiosByToken() {
+        assertEquals(listOf(NetworkKind.Cellular, NetworkKind.Wifi), WalkTargets.radios(" cellular, WIFI "))
+        assertEquals(emptyList(), WalkTargets.radios(""))
+        assertFailsWith<IllegalStateException> { WalkTargets.radios("lte") }
     }
 }

@@ -160,7 +160,7 @@ internal fun applyQuicOptions(
     // tells the peer.
     calls.setDisableActiveMigration(
         when (options.migration) {
-            MigrationPolicy.Forbidden -> true
+            MigrationPolicy.Forbidden, is MigrationPolicy.Pinned -> true
             MigrationPolicy.Manual, MigrationPolicy.Automatic -> false
         },
     )

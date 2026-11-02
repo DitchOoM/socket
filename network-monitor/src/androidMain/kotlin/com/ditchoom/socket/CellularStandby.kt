@@ -314,12 +314,7 @@ internal interface StandbyRegistrar {
 }
 
 /** The cellular + `INTERNET` request every [CellularStandby] registers. */
-internal fun cellularStandbyRequest(): NetworkRequest =
-    NetworkRequest
-        .Builder()
-        .addTransportType(AndroidNetworkCapabilities.TRANSPORT_CELLULAR)
-        .addCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET)
-        .build()
+internal fun cellularStandbyRequest(): NetworkRequest = internetRequestOn(AndroidNetworkCapabilities.TRANSPORT_CELLULAR)
 
 /** [StandbyRegistrar] over one [ConnectivityManager]. */
 internal class ConnectivityManagerRegistrar(

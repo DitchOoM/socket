@@ -1,11 +1,18 @@
 package com.ditchoom.socket.quic
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.Sensor
+import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -25,6 +32,7 @@ import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.TrafficSecretsLog
+import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
 import com.ditchoom.socket.testkit.echo.EchoLivenessVerdict
@@ -32,6 +40,7 @@ import com.ditchoom.socket.testkit.echo.EchoLoop
 import com.ditchoom.socket.testkit.echo.EchoLoopEnd
 import com.ditchoom.socket.testkit.echo.EchoLoopEvent
 import com.ditchoom.socket.testkit.echo.EchoOutcome
+import com.ditchoom.socket.testkit.echo.EchoPace
 import com.ditchoom.socket.testkit.echo.EchoRead
 import com.ditchoom.socket.testkit.echo.EchoStream
 import com.ditchoom.socket.testkit.echo.EchoWrite
@@ -53,6 +62,7 @@ import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.ConnectAttempt
 import com.ditchoom.socket.testkit.walk.ConnectFailure
 import com.ditchoom.socket.testkit.walk.DiskFree
+import com.ditchoom.socket.testkit.walk.LaneRadio
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.StallBounds
 import com.ditchoom.socket.testkit.walk.WalkLane
@@ -133,9 +143,19 @@ class DeviceHandoffProbe {
                     throw AssumptionViolatedException(
                         "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
                     )
-                is WalkTargetsParse.Parsed -> parsed.targets
+                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(arg("probePinned", "")))
             }
-        val minutes = arg("probeMinutes", "12").toInt()
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+        // -e probeResume 1 (start.sh resume): continue the walk this device is on rather than begin one.
+        val begin =
+            WalkBegin.of(
+                arg("probeResume", ""),
+                arg("probeMinutes", "12").toInt(),
+                File(dir, WALK_RECORD),
+                System.currentTimeMillis(),
+            )
+        val minutes = begin.minutes
         // The read deadline is not an argument: each connection's [EchoSession] derives it from the
         // round trips it measures, the path's own probe timeout (#599). That keeps the #393 salvage
         // path armed by the path's real tail rather than by a guess about it.
@@ -146,10 +166,8 @@ class DeviceHandoffProbe {
         // ~100ms and every migration happens with traffic actually crossing it.
         val echoIntervalMs = arg("probeEchoIntervalMs", "2000").toLong()
 
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
         val log = File(dir, "quic-handoff-probe.log")
-        val started = System.currentTimeMillis()
+        val started = begin.startedAt
 
         fun now() = (System.currentTimeMillis() - started).milliseconds
 
@@ -167,7 +185,11 @@ class DeviceHandoffProbe {
 
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Every walk this rig has lost was lost by a START.
-        val kept = PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog"))
+        val kept =
+            when (begin) {
+                is WalkBegin.Fresh -> PreviousRun.rotate(dir, listOf(log.name, "traces", "qlog")).line
+                is WalkBegin.Resume -> "PREVIOUS-RUN none — resuming this walk in place"
+            }
 
         // The replay trace's budget follows this run's own duration, cadence and lanes (see
         // [TraceBudget]) and is shared by every lane; -e probeTraceBudgetMb overrides the ceiling for a
@@ -206,7 +228,11 @@ class DeviceHandoffProbe {
         // The TLS secrets that let a lane's traces be decrypted without this library: conn-v6-0003.keys
         // beside conn-v6-0003.trace. They decrypt the walk, so they go to the app's PRIVATE files dir,
         // never external storage, and pull.sh collects them through run-as. Off unless -e probeKeyLog.
-        val keptKeys = PreviousRun.rotate(ctx.filesDir, listOf("keys"))
+        val keptKeys =
+            when (begin) {
+                is WalkBegin.Fresh -> PreviousRun.rotate(ctx.filesDir, listOf("keys")).line
+                is WalkBegin.Resume -> "PREVIOUS-RUN none — resuming this walk in place"
+            }
         val keyLog =
             when (arg("probeKeyLog", "")) {
                 "" -> WalkKeyLog.Off
@@ -222,11 +248,17 @@ class DeviceHandoffProbe {
                 else -> error("-e probeStandbyLink must be KeepCellularReady or OnDemand, was '$requested'")
             }
 
-        log.writeText("")
-        emit(kept.line)
-        emit("KEYS ${keptKeys.line}")
+        when (begin) {
+            is WalkBegin.Fresh -> {
+                log.writeText("")
+                begin.save()
+            }
+            is WalkBegin.Resume -> Unit
+        }
+        emit(kept)
+        emit("KEYS $keptKeys")
         emit(
-            "START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
+            "${begin.verb} device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} ${targets.line} " +
                 "minutes=$minutes echoIntervalMs=$echoIntervalMs qlog=$qlog keys=$keyLog standbyLink=$standbyLink " +
                 "${BuildRevision.parse(PROBE_BUILD_STAMP).line} " +
                 diskFreeAtStart.line,
@@ -259,7 +291,11 @@ class DeviceHandoffProbe {
                 )
             }
 
-        val deadline = started + minutes * 60_000L
+        val deadline = begin.endsAt
+        // A dead man's switch: an alarm kept a few minutes out and pushed back by every heartbeat. If
+        // this process dies nothing pushes it back, and its receiver posts a notification that says so.
+        val watchdog = ProbeWatchdog(ctx, arg("probeWatchdogMinutes", "5").toLong() * 60_000L)
+        watchdog.feed()
 
         // A coroutine `delay` does NOT wake the application processor from suspend, so both the echo
         // loop and the QUIC keepalive stall the moment the screen locks — i.e. exactly when this probe
@@ -291,7 +327,16 @@ class DeviceHandoffProbe {
         NetworkMonitor.installAndroidApplicationContext(ctx)
         val monitor = NetworkMonitor.processDefault()
         val osSource = AndroidOsNetworkSource(ctx)
-        val osNet = OsNetWatch(osSource, ::now, ::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } })
+        // The device's network changes and movement, which every lane's echo pace reads.
+        val signals = DeviceSignals()
+        val osNet = OsNetWatch(osSource, ::now, ::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } }, signals)
+        val motion =
+            SignificantMotion(ctx) {
+                emit("MOTION significant-motion")
+                signals.moved(now())
+            }
+        emit(motion.line)
+        motion.arm()
         // The radio can move while the connectivity callbacks stay silent — a SIM registering, data
         // roaming coming up — and that is a state the ladder alone cannot tell from airplane mode.
         // Where the platform will push it (API 31+), it is recorded when it happens.
@@ -338,7 +383,7 @@ class DeviceHandoffProbe {
                     // Keepalive keeps an idle connection honest.
                     idleTimeout = IDLE_TIMEOUT,
                     keepAliveInterval = 5.seconds,
-                    migration = MigrationPolicy.Automatic,
+                    migration = lane.radio.migration,
                     standbyLink = standbyLink,
                 )
             var retryDelayMs = RECONNECT_MIN_MS
@@ -369,6 +414,7 @@ class DeviceHandoffProbe {
                                 val stream = openStream()
                                 var lastWire = identity.wire
                                 probe.watch.connected()
+                                val pace = EchoPace.Adaptive(signals, fast = echoIntervalMs.milliseconds)
 
                                 // A DEDICATED collector rather than a poll inside the echo loop. Phase 4 bounds
                                 // an unanswered path probe at ~3s (RFC 9000 §8.2.4), so a whole Probing ->
@@ -379,6 +425,7 @@ class DeviceHandoffProbe {
                                 launch {
                                     pathState.collect {
                                         laneEmit("PATH $it")
+                                        pace.pathChanged(now())
                                         status.onPath(lane, it.toString())
                                         ledger.onPath(it)
                                     }
@@ -388,7 +435,7 @@ class DeviceHandoffProbe {
                                     EchoLoop(
                                         stream = QuicEchoStream(stream),
                                         session = session,
-                                        interval = echoIntervalMs.milliseconds,
+                                        pace = pace,
                                         clock = ::now,
                                         emit = laneEmit,
                                         // The typed reason, side included: "we sent a frame the peer rejected" and
@@ -473,6 +520,7 @@ class DeviceHandoffProbe {
                         // change on a device that cannot push one is recorded within a minute rather
                         // than never. Nothing is written unless something actually moved.
                         osNet.sample(monitor.state.value)
+                        watchdog.feed()
                         val vitals = "${processMemory()} ${battery(ctx)} ${DiskFree.ofReading(dir.usableSpace).line}"
                         lanes.forEach { probe ->
                             probe.emit("HEARTBEAT attempt=${probe.watch.attempt} $vitals")
@@ -507,6 +555,8 @@ class DeviceHandoffProbe {
                     }
                 }.joinAll()
             osFollow.cancel()
+            motion.cancel()
+            watchdog.cancel()
             standbyFollow.cancel()
             heartbeat.cancel()
         }
@@ -1130,7 +1180,9 @@ private class WalkTraceFiles(
     private val budgetBytes: Long,
     private val onBudgetSpent: (Long) -> Unit,
 ) {
-    private val connections: Map<String, AtomicInteger> = lanes.associate { it.label to AtomicInteger() }
+    // Numbered on from the files already here: a resumed walk appends to this directory, and reusing a
+    // stem would append one connection's events onto another's trace.
+    private val connections: Map<String, AtomicInteger> = lanes.associate { it.label to AtomicInteger(lastConnection(dir, it)) }
     private val budget = AtomicReference<TraceSpend>(TraceSpend.Live(0L))
 
     /** Lock-free: the thread whose CAS moves the budget to [TraceSpend.Spent] is the one that reports it. */
@@ -1189,6 +1241,182 @@ private val STALL_BOUNDS = StallBounds.forConnect(echoSilence = 120.seconds, han
 private val PROBE_CLOCK = TimeSource.Monotonic.markNow()
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
+
+/** The walk this device is on: `<startedAt> <endsAt>` in epoch ms, beside the log. */
+private const val WALK_RECORD = "walk-record"
+
+/** How a run begins: a new walk, or the rest of the one [WALK_RECORD] says this device is on. */
+private sealed interface WalkBegin {
+    val startedAt: Long
+    val endsAt: Long
+
+    /** What the run's first line is called. */
+    val verb: String
+
+    val minutes: Int get() = ((endsAt - startedAt) / 60_000L).toInt()
+
+    data class Fresh(
+        override val startedAt: Long,
+        override val endsAt: Long,
+        private val record: File,
+    ) : WalkBegin {
+        override val verb: String get() = "START"
+
+        fun save() = record.writeText("$startedAt $endsAt")
+    }
+
+    /** [startedAt] is the walk's first START, so `t=` keeps counting across the gap. */
+    data class Resume(
+        override val startedAt: Long,
+        override val endsAt: Long,
+        val now: Long,
+    ) : WalkBegin {
+        override val verb: String get() = "RESUME minutesLeft=${(endsAt - now) / 60_000L}"
+    }
+
+    companion object {
+        fun of(
+            resume: String,
+            minutes: Int,
+            record: File,
+            now: Long,
+        ): WalkBegin =
+            when (resume) {
+                "" -> Fresh(now, now + minutes * 60_000L, record)
+                "1" -> {
+                    val fields =
+                        record
+                            .takeIf { it.exists() }
+                            ?.readText()
+                            ?.trim()
+                            ?.split(" ")
+                            ?.mapNotNull { it.toLongOrNull() }
+                            .orEmpty()
+                    check(fields.size == 2 && fields[1] > now) {
+                        "-e probeResume 1, but ${record.path} names no walk still running (${fields.joinToString(" ")})"
+                    }
+                    Resume(fields[0], fields[1], now)
+                }
+                else -> error("-e probeResume must be 1 or absent, was '$resume'")
+            }
+    }
+}
+
+/** The highest connection number [lane] already has a trace for in [dir]; 0 when it has none. */
+private fun lastConnection(
+    dir: File,
+    lane: WalkLane,
+): Int {
+    val prefix = "conn-${lane.label}-"
+    return dir
+        .list()
+        .orEmpty()
+        .filter { it.startsWith(prefix) && it.endsWith(".trace") }
+        .maxOfOrNull { it.removePrefix(prefix).removeSuffix(".trace").toIntOrNull() ?: 0 } ?: 0
+}
+
+/**
+ * The probe's dead man's switch: an alarm [after] ms out, moved back by every [feed]. The alarm lives
+ * in the system, so it outlives this process; if it fires, [ProbeStoppedReceiver] says the probe
+ * stopped. A force-stop cancels it too — but that is an operator's own act, not a failure.
+ */
+private class ProbeWatchdog(
+    private val ctx: Context,
+    private val after: Long,
+) {
+    private val alarms = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    private val fire =
+        PendingIntent.getBroadcast(
+            ctx,
+            0,
+            Intent(ctx, ProbeStoppedReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    fun feed() = alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + after, fire)
+
+    fun cancel() = alarms.cancel(fire)
+}
+
+/** Posts "the walk probe stopped" when [ProbeWatchdog]'s alarm was not pushed back in time. */
+class ProbeStoppedReceiver : BroadcastReceiver() {
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(NotificationChannel(WATCHDOG_CHANNEL, "QUIC probe stopped", NotificationManager.IMPORTANCE_HIGH))
+        manager.notify(
+            WATCHDOG_ID,
+            Notification
+                .Builder(context, WATCHDOG_CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle("QUIC walk probe stopped")
+                .setContentText("No heartbeat for a few minutes. Resume from the Mac: device-probe/start.sh resume")
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    private companion object {
+        const val WATCHDOG_CHANNEL = "probe-watchdog"
+        const val WATCHDOG_ID = 4242
+    }
+}
+
+/**
+ * Android's significant-motion sensor as the walk's sign of movement. It is a one-shot wake-up
+ * trigger — it fires once the device has moved for a few seconds and then disarms — so each trigger
+ * re-arms it. No permission is needed.
+ */
+private class SignificantMotion(
+    ctx: Context,
+    private val moved: () -> Unit,
+) {
+    private sealed interface Source {
+        data object Absent : Source
+
+        class Present(
+            val sensor: Sensor,
+        ) : Source
+    }
+
+    private val sensors = ctx.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val source: Source =
+        when (val sensor = sensors.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)) {
+            null -> Source.Absent
+            else -> Source.Present(sensor)
+        }
+    private val listener =
+        object : TriggerEventListener() {
+            override fun onTrigger(event: TriggerEvent) {
+                moved()
+                arm()
+            }
+        }
+
+    val line: String
+        get() =
+            when (source) {
+                Source.Absent -> "MOTION-SOURCE none — pace sees no movement on this device"
+                is Source.Present -> "MOTION-SOURCE significant-motion"
+            }
+
+    fun arm() {
+        when (source) {
+            Source.Absent -> Unit
+            is Source.Present -> sensors.requestTriggerSensor(listener, source.sensor)
+        }
+    }
+
+    fun cancel() {
+        when (source) {
+            Source.Absent -> Unit
+            is Source.Present -> sensors.cancelTriggerSensor(listener, source.sensor)
+        }
+    }
+}
+
 private const val RECONNECT_MIN_MS = 3_000L
 private const val RECONNECT_MAX_MS = 60_000L
 
@@ -1271,3 +1499,11 @@ private sealed interface PreviousRun {
         }
     }
 }
+
+/** A lane's radio as the connection's policy: the default lane migrates with the OS, a pinned lane never leaves its radio. */
+private val LaneRadio.migration: MigrationPolicy
+    get() =
+        when (this) {
+            LaneRadio.Default -> MigrationPolicy.Automatic
+            is LaneRadio.Pinned -> MigrationPolicy.Pinned(radio)
+        }
