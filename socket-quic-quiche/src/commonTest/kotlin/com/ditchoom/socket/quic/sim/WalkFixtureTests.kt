@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.sim
 
+import com.ditchoom.socket.BlockReason
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.DatagramIngress
@@ -12,6 +13,8 @@ import com.ditchoom.socket.quic.sim.fixtures.walk20260912Conn7DeadLinkHandoff
 import com.ditchoom.socket.quic.sim.fixtures.walk20260920Leg3Conn1DownlinkBlackout
 import com.ditchoom.socket.quic.sim.fixtures.walk20260924V4Conn1CellularNotYetPassing
 import com.ditchoom.socket.quic.sim.fixtures.walk20260924V4Conn2AbruptHandoff
+import com.ditchoom.socket.quic.sim.fixtures.walk20261031V4CellularConn165DataSuspended
+import com.ditchoom.socket.quic.sim.fixtures.walk20261031V4Conn187LandingHandoff
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.test.TestScope
@@ -107,6 +110,26 @@ class WalkFixtureTests {
             }
         }
 
+    /** The connection never closes inside [fixture]'s window, is up at its end, and every datagram is fed, some after the handoff. */
+    private fun QuicSimRun.assertReHomed(fixture: SimFixture) {
+        // The run's own teardown closes the driver at the window's end, which the trace's
+        // whole-millisecond clock stamps at the fixture's duration truncated; before that is the replay's.
+        val teardown = fixture.duration.inWholeMilliseconds.milliseconds
+        val states =
+            trace.events
+                .filterIsInstance<Observed.StateChange>()
+                .filter { it.at < teardown }
+        assertEquals(emptyList(), states.filter { it.state is QuicConnectionState.Closed }, "the connection re-homed in the field")
+        assertIs<QuicConnectionState.Established>(states.last().state, "the connection must be up at the end of the window")
+        val fed = trace.events.filterIsInstance<Observed.DatagramFed>()
+        assertEquals(fixture.events.count { it is SimEvent.DatagramIn }, fed.size, "a datagram the phone received was not fed")
+        val cellular =
+            trace.events.filterIsInstance<Observed.NetworkChanged>().first {
+                ((it.state as? NetworkState.Routable)?.id as? NetworkId.Link)?.kind == NetworkKind.Cellular
+            }
+        assertTrue(fed.any { it.at > cellular.at }, "no datagram arrived after the handoff: ${trace.render()}")
+    }
+
     /**
      * 2026-09-24 Samsung walk, lane v4, connection 2: the positive control. Wi-Fi's downlink went
      * silent 10.9 s before the OS reported `Offline`; 0.2 s later cellular was reported, and the first
@@ -115,25 +138,36 @@ class WalkFixtureTests {
      */
     @Test
     fun walk20260924V4Conn2_anAbruptHandoffThatReHomedKeepsTheConnectionUp() =
+        runTest { runWalk(walk20260924V4Conn2AbruptHandoff).assertReHomed(walk20260924V4Conn2AbruptHandoff) }
+
+    /**
+     * 2026-10-31 iPhone flight, lane v4, connection 187: opened on the plane's Wi-Fi, which it kept for
+     * 44 minutes; after landing the OS reported cellular 4.5 s after the last datagram over Wi-Fi, and
+     * traffic flowed over cellular within 0.1 s. The same connection went on through an airport Wi-Fi,
+     * cellular again and home Wi-Fi without reconnecting. This window is the landing handoff.
+     */
+    @Test
+    fun walk20261031V4Conn187_theLandingHandoffFromPlaneWifiToCellularKeepsTheConnectionUp() =
+        runTest { runWalk(walk20261031V4Conn187LandingHandoff).assertReHomed(walk20261031V4Conn187LandingHandoff) }
+
+    /**
+     * 2026-10-31 Samsung flight, lane v4-cellular (pinned to cellular), connection 165: in the air the
+     * modem kept dropping out of service, and Android reported the cellular network blocked with its
+     * data suspended 23.8 s after the last datagram in. Nothing more arrived and the connection ended
+     * on its idle deadline; a `Blocked(Suspended)` report alone does not end it sooner.
+     */
+    @Test
+    fun walk20261031V4CellularConn165_aSuspendedDataReportEndsOnTheIdleDeadline() =
         runTest {
-            val fixture = walk20260924V4Conn2AbruptHandoff
-            val run = runWalk(fixture)
-            // The run's own teardown closes the driver at the window's end, which the trace's
-            // whole-millisecond clock stamps at the fixture's duration truncated; before that is the replay's.
-            val teardown = fixture.duration.inWholeMilliseconds.milliseconds
-            val states =
-                run.trace.events
-                    .filterIsInstance<Observed.StateChange>()
-                    .filter { it.at < teardown }
-            assertEquals(emptyList(), states.filter { it.state is QuicConnectionState.Closed }, "the connection re-homed in the field")
-            assertIs<QuicConnectionState.Established>(states.last().state, "the connection must be up at the end of the window")
-            val fed = run.trace.events.filterIsInstance<Observed.DatagramFed>()
-            assertEquals(fixture.events.count { it is SimEvent.DatagramIn }, fed.size, "a datagram the phone received was not fed")
-            val cellular =
-                run.trace.events.filterIsInstance<Observed.NetworkChanged>().first {
-                    ((it.state as? NetworkState.Routable)?.id as? NetworkId.Link)?.kind == NetworkKind.Cellular
+            val run = runWalk(walk20261031V4CellularConn165DataSuspended)
+            run.assertDiesOnItsOwnDeadline(walk20261031V4CellularConn165DataSuspended)
+            run.trace.assertSequence {
+                anyTime("cellular reported blocked, data suspended") {
+                    it is Observed.NetworkChanged &&
+                        (it.state as? NetworkState.Routable)?.internet == InternetAccess.Observed.Blocked(BlockReason.Suspended)
                 }
-            assertTrue(fed.any { it.at > cellular.at }, "no datagram arrived after the handoff: ${run.trace.render()}")
+                at(SIM_IDLE_TIMEOUT, "then the idle close") { it is Observed.StateChange && it.state is QuicConnectionState.Closed }
+            }
         }
 
     @Test
@@ -145,6 +179,8 @@ class WalkFixtureTests {
                 walk20260920Leg3Conn1DownlinkBlackout,
                 walk20260924V4Conn1CellularNotYetPassing,
                 walk20260924V4Conn2AbruptHandoff,
+                walk20261031V4Conn187LandingHandoff,
+                walk20261031V4CellularConn165DataSuspended,
             )) {
                 val golden = runWalk(fixture).trace.events
                 repeat(3) { assertEquals(golden, runWalk(fixture).trace.events, "${fixture.name} is not deterministic") }
