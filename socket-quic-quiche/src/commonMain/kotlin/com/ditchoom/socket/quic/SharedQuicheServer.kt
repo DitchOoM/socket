@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -6,7 +6,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
@@ -28,6 +30,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.decrementAndFetch
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
@@ -155,6 +161,9 @@ internal class SharedQuicheServer(
 
     @Volatile
     private var closed = false
+
+    /** Version Negotiation replies sent beside the receive loop and not yet returned; see [answerUnsupportedVersion]. */
+    private val versionNegotiationsInFlight = AtomicInt(0)
 
     /**
      * The server-level half of trace capture: what no *connection's* recorder can ever see.
@@ -341,6 +350,16 @@ internal class SharedQuicheServer(
                     }
                     val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
+                    // A version this server does not speak is never routed to a connection (RFC 9000
+                    // §5.2.2), and must be decided on the version-invariant header alone, before
+                    // quiche_header_info applies version 1's rules to it.
+                    val versioned = VersionInvariantHeader.of(recvBuf, received)
+                    if (versioned is VersionInvariantHeader.UnsupportedVersion) {
+                        answerUnsupportedVersion(versioned, recvBuf, received, peer, datagram.localAddress)
+                        recvBuf.freeNativeMemory()
+                        continue@loop
+                    }
+
                     writeNativeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
                     writeNativeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
                     writeNativeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
@@ -469,6 +488,88 @@ internal class SharedQuicheServer(
                 tokenLenBuf.freeNativeMemory()
             }
         }
+
+    /**
+     * Answer a packet naming a version this server does not support with a Version Negotiation packet
+     * (RFC 9000 §5.2.2, §6.1, §17.2.1), or drop it when its datagram is too small to have opened a
+     * connection. Creates no connection state: the reply echoes the packet's connection IDs, read in
+     * place from [recvBuf], which the caller still owns.
+     *
+     * Without the reply, a client offering another version waits out its own timeout instead of
+     * learning which version to use. The quic-interop-runner's network simulator probes a server with
+     * exactly such a packet and starts no test until this reply arrives.
+     *
+     * The reply is written here and sent beside the receive loop, never on it: a platform send can wait
+     * indefinitely (io_uring and Network.framework await a completion), and the loop routes every
+     * connection's datagrams. At most [MAX_VERSION_NEGOTIATIONS_IN_FLIGHT] wait at once; past that a
+     * packet is dropped unanswered, which §6.1 allows ("A server MAY limit the number of Version
+     * Negotiation packets it sends").
+     */
+    private fun answerUnsupportedVersion(
+        header: VersionInvariantHeader.UnsupportedVersion,
+        recvBuf: PlatformBuffer,
+        received: Int,
+        peer: SocketAddress,
+        arrivedOn: LocalAddress,
+    ) {
+        // §5.2.2: "Servers MUST drop smaller packets that specify unsupported versions."
+        if (received < MIN_INITIAL_DATAGRAM_SIZE) {
+            serverCapture.record { it.error(ServerDatagramDrop.RuntUnsupportedVersion(received, peer, header.version)) }
+            return
+        }
+        if (versionNegotiationsInFlight.incrementAndFetch() > MAX_VERSION_NEGOTIATIONS_IN_FLIGHT) {
+            versionNegotiationsInFlight.decrementAndFetch()
+            serverCapture.record { it.drop(ServerDatagramDrop.VersionNegotiationLimited(received, peer, header.version)) }
+            return
+        }
+        val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+        val out = bufferFactory.allocate(VersionInvariantHeader.MAX_VERSION_NEGOTIATION_LEN)
+        // The reply's DCID is the packet's SCID and its SCID the packet's DCID (§17.2.1);
+        // quiche_negotiate_version takes them in that order and lists the versions it accepts.
+        val written =
+            api.negotiateVersion(
+                recvAddr + header.scidOffset,
+                header.scidLen,
+                recvAddr + header.dcidOffset,
+                header.dcidLen,
+                out.nativeMemoryAccess!!.nativeAddress.toLong(),
+                VersionInvariantHeader.MAX_VERSION_NEGOTIATION_LEN,
+            )
+        if (written <= 0) {
+            versionNegotiationsInFlight.decrementAndFetch()
+            out.freeNativeMemory()
+            serverCapture.record { it.error(ServerDatagramDrop.VersionNegotiationNotWritten(received, peer, header.version, written)) }
+            return
+        }
+        out.position(0)
+        out.setLimit(written)
+        val options =
+            when (replySourcePinning) {
+                ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress ->
+                    // Unknown only where the platform reports no arrival address; then the platform
+                    // picks the source, as it does for every reply on such a channel.
+                    arrivedOn.orNull()?.let { DatagramSendOptions(fromLocal = it) } ?: DatagramSendOptions.Default
+                ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses -> DatagramSendOptions.Default
+            }
+        scope.launch(serverReceiveDispatcher + CoroutineName("quic-server/version-negotiation/$port")) {
+            try {
+                val sent = sendOutcomeOf { channel.send(out, to = peer, options = options) }
+                // Freed only once the send has returned. A cancelled send is no proof the platform has
+                // finished reading the buffer, so a reply cancelled mid-send (the server closing) is
+                // left to the collector rather than freed under the platform.
+                out.freeNativeMemory()
+                val version = header.version
+                when (sent) {
+                    SendOutcome.Sent ->
+                        serverCapture.record { it.drop(ServerDatagramDrop.AnsweredWithVersionNegotiation(received, peer, version)) }
+                    else ->
+                        serverCapture.record { it.error(ServerDatagramDrop.VersionNegotiationNotSent(received, peer, version, sent)) }
+                }
+            } finally {
+                versionNegotiationsInFlight.decrementAndFetch()
+            }
+        }
+    }
 
     /**
      * Accept a new QUIC connection. [recvBuf] ownership is consumed: it is freed after the initial
@@ -632,6 +733,9 @@ internal class SharedQuicheServer(
     companion object {
         private const val MAX_TOKEN_LEN = 256
 
+        /** How many Version Negotiation replies may wait on the socket at once; see [answerUnsupportedVersion]. */
+        private const val MAX_VERSION_NEGOTIATIONS_IN_FLIGHT = 16
+
         /** RFC 9000 §14.1: the smallest UDP payload a server may accept an Initial from. */
         internal const val MIN_INITIAL_DATAGRAM_SIZE = 1200
     }
@@ -668,7 +772,7 @@ internal sealed interface AcceptOutcome {
 internal sealed class ServerDatagramDrop(
     message: String,
 ) : Exception(message) {
-    /** `quiche_header_info` rejected the datagram — not a parseable QUIC packet (or a version we do not speak). */
+    /** `quiche_header_info` rejected the datagram — not a parseable QUIC version 1 packet. */
     class Unparseable(
         len: Int,
         peer: SocketAddress,
@@ -708,6 +812,53 @@ internal sealed class ServerDatagramDrop(
     ) : ServerDatagramDrop("$len B from $peer: an Initial for a new connection must arrive in a datagram of at least 1200 bytes")
 
     /**
+     * A long header naming a [version] this server does not speak, answered with a Version Negotiation
+     * packet (RFC 9000 §6.1). The normal first exchange with a client that offers another version first,
+     * so it is recorded as a `DROP`.
+     */
+    class AnsweredWithVersionNegotiation(
+        len: Int,
+        peer: SocketAddress,
+        val version: Long,
+    ) : ServerDatagramDrop("$len B from $peer: version ${versionHex(version)} is not supported; answered with Version Negotiation")
+
+    /** A long header naming an unsupported [version] in a datagram below 1200 bytes (RFC 9000 §5.2.2). */
+    class RuntUnsupportedVersion(
+        len: Int,
+        peer: SocketAddress,
+        val version: Long,
+    ) : ServerDatagramDrop(
+            "$len B from $peer: version ${versionHex(version)} is not supported and the datagram is too small to answer",
+        )
+
+    /** A Version Negotiation reply was due but as many as the server allows were already waiting to send. */
+    class VersionNegotiationLimited(
+        len: Int,
+        peer: SocketAddress,
+        val version: Long,
+    ) : ServerDatagramDrop(
+            "$len B from $peer: version ${versionHex(version)} is not supported; too many Version Negotiation replies in flight",
+        )
+
+    /** `quiche_negotiate_version` returned [rc] instead of a packet length. */
+    class VersionNegotiationNotWritten(
+        len: Int,
+        peer: SocketAddress,
+        val version: Long,
+        val rc: Int,
+    ) : ServerDatagramDrop("$len B from $peer: version ${versionHex(version)} is not supported; quiche_negotiate_version failed (rc=$rc)")
+
+    /** The Version Negotiation reply was written but the socket did not send it: [outcome] says why. */
+    class VersionNegotiationNotSent(
+        len: Int,
+        peer: SocketAddress,
+        val version: Long,
+        val outcome: SendOutcome,
+    ) : ServerDatagramDrop(
+            "$len B from $peer: version ${versionHex(version)} is not supported; the Version Negotiation reply was not sent: $outcome",
+        )
+
+    /**
      * The DCID belonged to a connection this server closed within its draining period: a packet the peer
      * sent before it learned of the close, or its own CONNECTION_CLOSE crossing ours. An expected part of
      * every close (RFC 9000 §10.2), so it is recorded as a `DROP`, never an `ERROR`.
@@ -717,3 +868,5 @@ internal sealed class ServerDatagramDrop(
         peer: SocketAddress,
     ) : ServerDatagramDrop("$len B from $peer: for a connection this server closed within its draining period")
 }
+
+private fun versionHex(version: Long): String = "0x" + version.toString(16).padStart(8, '0')
