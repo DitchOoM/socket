@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.junit.AssumptionViolatedException
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.net.NetworkInterface
@@ -28,7 +29,11 @@ class P2pEchoServerProbe {
     @Test
     fun serve() {
         val port = arg("p2pPort", "44433").toInt()
-        val minutes = arg("p2pMinutes", "30").toLong()
+        // Hand-driven, like DeviceHandoffProbe: a suite run passes no arguments, and serving for the
+        // default half hour there would hang the emulator lanes until their step timed out.
+        val minutes =
+            arg("p2pMinutes", "").toLongOrNull()
+                ?: throw AssumptionViolatedException("hand-driven probe — run it with device-probe/p2p-server.sh (see class KDoc)")
         val options =
             QuicOptions(
                 alpnProtocols = listOf("test"),
