@@ -449,6 +449,91 @@ abstract class SessionResumptionTestSuite {
             }
         }
 
+    /**
+     * An early-data block that opens more streams than the remembered peer limit allows must not deadlock.
+     *
+     * The first flight is held while the block runs, so that its writes leave together with the
+     * ClientHello. The open past the limit waits for the peer's MAX_STREAMS, and the peer can send one only
+     * after hearing from us. So the waiting open has to release the held flight. If the driver treated it
+     * as queued-only, like an open it served at once, nothing would ever leave: the block would wait on
+     * the open, the open on the peer, and the peer on the flight, until the connect timed out.
+     */
+    @Test
+    fun anEarlyDataBlockOpeningPastTheRememberedStreamLimitReleasesTheFlightAndEveryOpenCompletes() =
+        runQuicTest(timeout = 60.seconds) {
+            wrapTestBody {
+                val limited =
+                    acceptsEarlyData.copy(
+                        flowControl = acceptsEarlyData.flowControl.copy(initialMaxStreamsBidi = EARLY_STREAM_LIMIT),
+                    )
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = limited) {
+                    val seen = Channel<ServerSeen>(Channel.UNLIMITED)
+                    val serving =
+                        launch {
+                            connections {
+                                // Serve every stream of the connection, each completely, so the peer's quiche
+                                // collects it and grants the credit the waiting open is waiting for.
+                                while (true) {
+                                    val stream =
+                                        try {
+                                            acceptStream()
+                                        } catch (_: QuicCloseException) {
+                                            break
+                                        }
+                                    val payload = stream.readToEnd()
+                                    stream.writeText("ack:$payload")
+                                    stream.shutdownSend()
+                                    val driver = (this as QuicheBackedConnection).quicheDriver
+                                    seen.send(ServerSeen(resumption, driver.earlyStreamData, payload))
+                                }
+                            }
+                        }
+                    try {
+                        val ticket = firstConnection(port)
+                        withTimeout(15.seconds) { seen.receive() }
+
+                        val opened = Channel<QuicByteStream>(Channel.UNLIMITED)
+                        val options =
+                            clientOptions.copy(
+                                resumption =
+                                    QuicResumption.ResumeWithEarlyData(ticket) {
+                                        // One more than the ticket's remembered initial_max_streams_bidi. The
+                                        // first ones are written and finished as 0-RTT before the last open,
+                                        // which has to wait for credit.
+                                        repeat(EARLY_STREAM_LIMIT.toInt() + 1) { index ->
+                                            val stream = openStream()
+                                            stream.writeText("$EARLY_PAYLOAD-$index")
+                                            stream.shutdownSend()
+                                            opened.send(stream)
+                                        }
+                                    },
+                            )
+                        val (outcome, replies) =
+                            withQuicConnection("127.0.0.1", port, options, timeout = 10.seconds) {
+                                val streams = List(EARLY_STREAM_LIMIT.toInt() + 1) { withTimeout(10.seconds) { opened.receive() } }
+                                resumption to streams.map { it.readToEnd() }
+                            }
+
+                        assertEquals(
+                            List(EARLY_STREAM_LIMIT.toInt() + 1) { "ack:$EARLY_PAYLOAD-$it" },
+                            replies,
+                            "every stream the early-data block opened, including the one past the limit, must " +
+                                "complete its exchange",
+                        )
+                        assertEquals(QuicResumptionOutcome.Resumed(QuicEarlyDataOutcome.Accepted), outcome)
+                        val firstEarly = withTimeout(15.seconds) { seen.receive() }
+                        assertIs<QuicheDriver.EarlyStreamData.Received>(
+                            firstEarly.earlyStreamData,
+                            "the streams written before the waiting open must still travel as 0-RTT in the first " +
+                                "flight. Saw: $firstEarly",
+                        )
+                    } finally {
+                        serving.cancel()
+                    }
+                }
+            }
+        }
+
     private suspend fun firstConnection(port: Int): QuicSessionTicket =
         withQuicConnection("127.0.0.1", port, clientOptions, timeout = 10.seconds) {
             assertEquals(QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered), resumption, "no ticket was offered")
@@ -528,6 +613,9 @@ abstract class SessionResumptionTestSuite {
         const val FIRST_PAYLOAD = "first"
         const val EARLY_PAYLOAD = "early-hello"
         const val LATE_PAYLOAD = "late-hello"
+
+        /** The server's initial_max_streams_bidi, which the ticket remembers for the 0-RTT reconnect. */
+        const val EARLY_STREAM_LIMIT = 2L
         val STREAM_DEADLINE: Duration = 10.seconds
 
         /** Far longer than a loopback handshake takes, so a first flight sent early would complete it. */
