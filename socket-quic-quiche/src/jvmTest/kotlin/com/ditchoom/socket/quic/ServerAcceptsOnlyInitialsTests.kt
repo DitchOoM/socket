@@ -289,10 +289,11 @@ class ServerAcceptsOnlyInitialsTests {
                         assertTrue(listOf<Byte>(0, 0, 0, 1) in versions, "the reply must list version 1: $versions")
                         assertEquals(0, record.acceptTimeInitials(), "no accept-time datagram may be recorded: ${record.events}")
                         assertEquals(0, record.connectionStates(), "no connection may have been created: ${record.events}")
-                        val answered =
-                            synchronized(record.events) {
-                                record.events.filterIsInstance<TraceEvent.Drop>().map { it.type }
-                            }
+                        // The reply can reach the probe before the server's send has returned, and the
+                        // server records the answer only once it has, so the record is awaited, not read.
+                        fun answered() = synchronized(record.events) { record.events.filterIsInstance<TraceEvent.Drop>().map { it.type } }
+                        withTimeoutOrNull(DROP_WAIT) { while (answered().isEmpty()) delay(POLL) }
+                        val answered = answered()
                         assertEquals(listOf(ServerDatagramDrop.AnsweredWithVersionNegotiation::class.qualifiedName), answered)
                     } finally {
                         acceptJob.cancel()
