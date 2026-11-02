@@ -492,6 +492,96 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A RETIRE_CONNECTION_ID for an id the client has already retired is ignored, even when the client has
+     * a single id left — the connection stays open and keeps sending.
+     *
+     * The quic-interop-runner's `handshakecorruption` and `handshakeloss` against quinn (run 41433270213):
+     * quinn retired our ids 1, 2, 3 and 0, leaving one, and in the same packet retired 1 again. quiche's
+     * id set refused any removal once a single id was left — before looking whether the id was even there —
+     * so the repeat failed with OutOfIdentifiers and the client closed the connection with
+     * PROTOCOL_VIOLATION. RFC 9000 allows the repeat: a RETIRE_CONNECTION_ID is retransmitted like any
+     * other frame, and its copies can arrive after the first one took effect.
+     *
+     * Staged with the retransmission quinn's repeat stands in for, and a real one-way delay between legs:
+     * the server retires every client id but the newest, the packet that carries that is held back, three
+     * later packets are acknowledged so the server declares it lost and sends the retirements again, and
+     * the held packet then arrives after its retransmission.
+     */
+    @Test
+    fun aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    val issued = pair.scidsLeft(pair.client)
+                    assertTrue(
+                        issued >= RETIRED_BY_THE_PEER,
+                        "the client must be able to issue $RETIRED_BY_THE_PEER ids, could issue $issued",
+                    )
+                    pair.issueSpareCids(pair.client)
+                    assertEquals(2, pair.streamSend(pair.client, stream, "p0", fin = false))
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    assertEquals("p0" to false, pair.readText(pair.server, stream))
+
+                    // The server retires every client id but the newest — the spares first, then the one in
+                    // use, as quinn did (1, 2, 3, 0) — and the packet carrying that is held back.
+                    val newest = issued
+                    (1L until newest).forEach { seq ->
+                        assertEquals(0, pair.retireDcid(seq, pair.server), "the server must retire the client's id $seq")
+                    }
+                    assertEquals(0, pair.retireDcid(INITIAL_DCID_SEQ, pair.server), "the server must retire the client's id 0")
+                    val retirement = pair.sends(pair.server)
+                    assertEquals(1, retirement.size, "the retirements must leave in one datagram")
+
+                    // Three later packets reach the client and are acknowledged: the server declares the
+                    // held one lost and sends its retirements again, which reach the client.
+                    val later =
+                        (0 until PACKET_THRESHOLD).flatMap { i ->
+                            assertEquals(2, pair.streamSend(pair.server, stream, "s$i", fin = false))
+                            pair.sends(pair.server)
+                        }
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(later, pair.client)
+                    pair.elapse(SERVER_ACK_DELAY)
+                    val acks = pair.sends(pair.client)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(acks, pair.server)
+                    val retransmission = pair.sends(pair.server)
+                    assertTrue(retransmission.isNotEmpty(), "the server must send its retirements again")
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(retransmission, pair.client)
+                    assertEquals("open", pair.closed(pair.client), "the retransmitted retirements alone must not end the connection")
+                    assertEquals(issued, pair.scidsLeft(pair.client), "only the newest client id may remain")
+
+                    // The original arrives after its retransmission: every id it retires is retired already.
+                    pair.deliver(retirement, pair.client)
+                    assertEquals("open", pair.closed(pair.client), "a repeated retirement must not end the connection")
+
+                    // The connection carries on: the client issues replacement ids and data flows both ways.
+                    pair.issueSpareCids(pair.client)
+                    assertEquals(5, pair.streamSend(pair.client, stream, "after", fin = true))
+                    val afterRetirement = pair.sends(pair.client)
+                    assertTrue(
+                        afterRetirement.isNotEmpty(),
+                        "the client must still send; quiche_conn_send answered ${pair.lastSendEnd(pair.client)}, " +
+                            "client ${pair.closed(pair.client)}",
+                    )
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(afterRetirement, pair.server)
+                    pair.exchange(DEFAULT_PATH_LATENCY) { true }
+                    assertEquals("open", pair.closed(pair.client), "the client's connection must stay open")
+                    assertEquals("open", pair.closed(pair.server), "the server's connection must stay open")
+                    assertEquals("after" to true, pair.readText(pair.server, stream), "the server must read the client's write and its end")
+                    assertEquals("s0s1s2" to false, pair.readText(pair.client, stream), "the client must read the server's writes")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * Stream data sent on a path the client has migrated away from still reaches the server when a later
      * probe makes quiche evict that path from its table.
      *
