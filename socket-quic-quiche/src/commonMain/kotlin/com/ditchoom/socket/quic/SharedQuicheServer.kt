@@ -362,6 +362,8 @@ internal class SharedQuicheServer(
                         continue@loop
                     }
 
+                    // The id buffers' capacity: a long header carries ids the PEER chose, up to the
+                    // RFC 9000 maximum.
                     writeNativeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
                     writeNativeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
                     writeNativeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
@@ -370,7 +372,9 @@ internal class SharedQuicheServer(
                         api.headerInfo(
                             recvAddr,
                             received,
-                            QUIC_MAX_CONN_ID_LEN,
+                            // A short header does not encode its DCID's length: the DCID is an id this
+                            // server issued, so it is exactly the issued length.
+                            QUIC_ISSUED_CONN_ID_LEN,
                             versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                             typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                             scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
@@ -599,7 +603,7 @@ internal class SharedQuicheServer(
             try {
                 api.accept(
                     serverScidAddr,
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     0L, // no retry / odcid
                     0,
                     localSockAddr.address,
@@ -728,7 +732,7 @@ internal class SharedQuicheServer(
         registry.trackLiveDriver(driver)
         driver.start(scope)
 
-        val scidKey = ConnectionIdKey.from(serverScid, offset = 0, length = QUIC_MAX_CONN_ID_LEN)
+        val scidKey = ConnectionIdKey.from(serverScid, offset = 0, length = QUIC_ISSUED_CONN_ID_LEN)
         serverScid.freeNativeMemory()
         return AcceptOutcome.Accepted(driver, scidKey)
     }

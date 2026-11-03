@@ -81,7 +81,7 @@ internal class QuichePairByHand private constructor(
                     serverName.nativeMemoryAccess!!.nativeAddress.toLong(),
                     "localhost".length,
                     clientScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     primary.address,
                     primary.length,
                     serverAddr.address,
@@ -96,7 +96,7 @@ internal class QuichePairByHand private constructor(
             at {
                 api.accept(
                     serverScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     0L,
                     0,
                     serverAddr.address,
@@ -216,7 +216,7 @@ internal class QuichePairByHand private constructor(
                     api.connNewScid(
                         conn,
                         scid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        QUIC_MAX_CONN_ID_LEN,
+                        QUIC_ISSUED_CONN_ID_LEN,
                         token.nativeMemoryAccess!!.nativeAddress.toLong(),
                         true,
                         seqOut.nativeMemoryAccess!!.nativeAddress.toLong(),

@@ -345,7 +345,9 @@ class ServerCloseRoutedDatagramOwnershipTest {
     }
 
     private companion object {
-        val CONNECTION_ID = ByteArray(QUIC_MAX_CONN_ID_LEN) { (0xA0 + it).toByte() }
+        // The client chooses it for its Initial; the server then routes short headers by it too, and
+        // parses a short header's DCID at the length of the ids it issues — so it must be that long.
+        val CONNECTION_ID = ByteArray(QUIC_ISSUED_CONN_ID_LEN) { (0xA0 + it).toByte() }
         const val MIN_INITIAL = SharedQuicheServer.MIN_INITIAL_DATAGRAM_SIZE
         const val SHORT_LEN = 64
         const val HOLD_SECONDS = 20L

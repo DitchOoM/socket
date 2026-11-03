@@ -51,8 +51,6 @@ import platform.posix.sockaddr
 import platform.posix.unlink
 import kotlin.time.Duration
 
-private const val MAX_CONN_ID_LEN = 20
-
 /**
  * Build + establish a Linux quiche-backed [LinuxQuicConnection] over io_uring, returning it ready
  * to use. The returned connection owns its teardown via [LinuxQuicConnection.close] (driver destroy
@@ -168,7 +166,7 @@ internal suspend fun buildLinuxQuicConnection(
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
             progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
 
-            // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
+            // SCID — shared generator (QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read), seeded via the tuning.
             val scidBuf = generateScid(bufferFactory, tuning.random)
             val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
 
@@ -178,7 +176,7 @@ internal suspend fun buildLinuxQuicConnection(
                     // endpoint the datagrams go to.
                     serverName,
                     scidPtr,
-                    MAX_CONN_ID_LEN.convert(),
+                    QUIC_ISSUED_CONN_ID_LEN.convert(),
                     localSockAddr.address.toCPointer<sockaddr>(),
                     localSockAddr.length.convert(),
                     peerSockAddr.address.toCPointer<sockaddr>(),

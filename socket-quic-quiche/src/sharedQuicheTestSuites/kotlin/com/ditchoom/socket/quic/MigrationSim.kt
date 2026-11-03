@@ -495,14 +495,14 @@ internal class ServerIngress(
 /**
  * The destination CID of a 1-RTT (short-header) packet, or null for a long-header one. A short header
  * carries no CID length, so the reader must already know it — every source CID this server issues is
- * [QUIC_MAX_CONN_ID_LEN] bytes (`generateScid`). Same decode as `HoldbackDatagramChannel`.
+ * [QUIC_ISSUED_CONN_ID_LEN] bytes (`generateScid`). Same decode as `HoldbackDatagramChannel`.
  */
 internal fun shortHeaderDcidHex(datagram: PipeDatagram): String? {
-    if (datagram.length < 1 + QUIC_MAX_CONN_ID_LEN) return null
+    if (datagram.length < 1 + QUIC_ISSUED_CONN_ID_LEN) return null
     val buffer = datagram.readable()
     if (buffer.readByte().toInt() and 0x80 != 0) return null // long header — DCID is length-prefixed instead
-    val hex = StringBuilder(QUIC_MAX_CONN_ID_LEN * 2)
-    repeat(QUIC_MAX_CONN_ID_LEN) {
+    val hex = StringBuilder(QUIC_ISSUED_CONN_ID_LEN * 2)
+    repeat(QUIC_ISSUED_CONN_ID_LEN) {
         val b = buffer.readByte().toInt() and 0xFF
         hex.append(HEX_DIGITS[b shr 4]).append(HEX_DIGITS[b and 0x0F])
     }
@@ -767,7 +767,7 @@ internal suspend fun <R> withMigrationSim(
                     serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                     serverName.length,
                     clientScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     primaryPath.sockAddr.address,
                     primaryPath.sockAddr.length,
                     clientPeerSock.address,
@@ -789,7 +789,7 @@ internal suspend fun <R> withMigrationSim(
             try {
                 api.accept(
                     serverScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     0L,
                     0,
                     serverLocalSock.address,

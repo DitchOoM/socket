@@ -9,8 +9,9 @@
 The path column is the LOCAL endpoint the datagram left from or arrived on (`family:port:hi:lo`, the
 recorder's `PathKey` projection) — a migration probe shows up as a new local port. The DCID is read
 from the plaintext header, so it is the one number that ties a recorded datagram to the CID
-accounting on both sides: a short-header packet's first 20 bytes after the flags byte (every CID this
-library mints is 20 bytes), or the length-prefixed field of a long header.
+accounting on both sides: a short-header packet's first 16 bytes after the flags byte (every CID this
+library mints is QUIC_ISSUED_CONN_ID_LEN = 16 bytes; pass --cid-len 20 for a trace recorded by
+v4.24.0 or earlier, which minted 20), or the length-prefixed field of a long header.
 
 Repeated ERROR / STATS / SILENCE lines are thinned so a 30-second stall reads as a page, not a scroll;
 `--all` prints every one.
@@ -23,7 +24,7 @@ splits on the first four spaces and prints any kind it does not know verbatim.
 import argparse
 import sys
 
-CID_LEN = 20
+CID_LEN = 16  # QUIC_ISSUED_CONN_ID_LEN
 
 
 def parse_args():
@@ -32,16 +33,17 @@ def parse_args():
     p.add_argument("--from", dest="lo", type=float, default=0.0, help="window start, seconds")
     p.add_argument("--to", dest="hi", type=float, default=float("inf"), help="window end, seconds")
     p.add_argument("--datagrams", action="store_true", help="print every datagram in the window")
+    p.add_argument("--cid-len", type=int, default=CID_LEN, help="short-header DCID length (default %(default)s)")
     p.add_argument("--all", action="store_true", help="do not thin repeated ERROR/STATS/SILENCE lines")
     return p.parse_args()
 
 
-def header_of(hex_payload):
+def header_of(hex_payload, cid_len):
     first = int(hex_payload[:2], 16)
     if first & 0x80:
         dcid_len = int(hex_payload[10:12], 16)
         return "LONG", hex_payload[12 : 12 + 2 * dcid_len]
-    return "SHORT", hex_payload[2 : 2 + 2 * CID_LEN]
+    return "SHORT", hex_payload[2 : 2 + 2 * cid_len]
 
 
 def main():
@@ -69,7 +71,7 @@ def main():
                 counts = tally.setdefault(path, [0, 0])
                 counts[0 if kind == "DGRAM_OUT" else 1] += 1
                 if args.datagrams:
-                    form, dcid = header_of(payload)
+                    form, dcid = header_of(payload, args.cid_len)
                     print(f"{secs:12.3f} {kind:<9} {size:>5} {path:<24} {form:<5} dcid={dcid}")
                 continue
             if at_ns < lo_ns or at_ns > hi_ns:

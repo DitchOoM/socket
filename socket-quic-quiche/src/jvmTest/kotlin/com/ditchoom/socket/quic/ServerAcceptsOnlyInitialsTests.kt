@@ -319,7 +319,7 @@ class ServerAcceptsOnlyInitialsTests {
         return head + ByteArray(size - head.size)
     }
 
-    /** `0x40` fixed bit, then 20 bytes of DCID (the server parses `dcil = 20`), then a few more. */
+    /** `0x40` fixed bit, then the server's issued-length DCID (`dcil = QUIC_ISSUED_CONN_ID_LEN`), then a few more. */
     private fun shortHeaderPacket(): ByteArray = ByteArray(40) { if (it == 0) 0x40 else 0x2a }
 
     /**

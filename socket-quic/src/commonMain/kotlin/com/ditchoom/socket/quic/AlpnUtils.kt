@@ -56,8 +56,8 @@ fun encodeAlpnList(
 }
 
 /**
- * Generate a QUIC source connection ID using bulk writes.
- * 20 bytes = 2 longs (16 bytes) + 1 int (4 bytes) — 3 write ops instead of 20.
+ * Generate a connection ID for this endpoint to issue: [QUIC_ISSUED_CONN_ID_LEN] bytes, written as
+ * 2 longs — 2 write ops instead of 16, and 128 random bits.
  *
  * Allocated from [factory] for pooling. Caller must free.
  *
@@ -69,13 +69,30 @@ fun generateScid(
     factory: BufferFactory,
     random: Random = Random.Default,
 ): PlatformBuffer {
-    val buf = factory.allocate(QUIC_MAX_CONN_ID_LEN)
+    val buf = factory.allocate(QUIC_ISSUED_CONN_ID_LEN)
     buf.writeLong(random.nextLong())
     buf.writeLong(random.nextLong())
-    buf.writeInt(random.nextInt())
     buf.resetForRead()
     return buf
 }
 
-/** QUIC connection-ID max length (RFC 9000 §17.2 — 20 bytes). Read by engine backends. */
+/**
+ * QUIC connection-ID max length (RFC 9000 §17.2 — 20 bytes): the most a PEER may choose. Size every
+ * buffer that receives a peer-chosen id with this; size nothing this endpoint issues with it — that is
+ * [QUIC_ISSUED_CONN_ID_LEN].
+ */
 const val QUIC_MAX_CONN_ID_LEN = 20
+
+/**
+ * Length of every connection ID this endpoint issues — the client's SCID, the server's SCID, and each
+ * spare id sent in NEW_CONNECTION_ID. 16 bytes still carries 128 random bits, and saves 4 bytes in
+ * every short-header packet the peer sends us.
+ *
+ * Not the 20-byte maximum because packet analysers follow a migrated path by connection ID, and
+ * Wireshark's QUIC dissector links a new 4-tuple to its connection only after a first lookup that
+ * assumes a 20-byte DCID has missed. With a 20-byte id that lookup hits, the new path is never
+ * linked, and a peer using zero-length ids has its packets on that path left undecryptable — so a
+ * capture of a rebind (the interop runner's rebind-port / rebind-addr checks) shows no
+ * PATH_CHALLENGE. Ids of any other length from 4 to 19 bytes link correctly.
+ */
+const val QUIC_ISSUED_CONN_ID_LEN = 16

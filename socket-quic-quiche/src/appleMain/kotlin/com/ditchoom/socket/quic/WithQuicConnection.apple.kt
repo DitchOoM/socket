@@ -57,8 +57,6 @@ import kotlin.native.OsFamily
 import kotlin.native.Platform
 import kotlin.time.Duration
 
-private const val MAX_CONN_ID_LEN = 20
-
 /**
  * Build + establish an Apple quiche-backed [AppleQuicConnection] over a `:socket-udp` NWConnection-UDP
  * datapath (Phase 6 adapter-first cutover), returning it ready to use. The returned connection owns its
@@ -196,7 +194,7 @@ internal suspend fun buildAppleQuicConnection(
             val localSockAddr = codec.encodeToNative(local, bufferFactory)
             progress = ConnectProgress.SockAddrsPinned(udpChannel, peerSockAddr, localSockAddr)
 
-            // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
+            // SCID — shared generator (QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read), seeded via the tuning.
             val scidBuf = generateScid(bufferFactory, tuning.random)
             val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
 
@@ -206,7 +204,7 @@ internal suspend fun buildAppleQuicConnection(
                     // endpoint the datagrams go to.
                     serverName,
                     scidPtr,
-                    MAX_CONN_ID_LEN.convert(),
+                    QUIC_ISSUED_CONN_ID_LEN.convert(),
                     localSockAddr.address.toCPointer<sockaddr>(),
                     localSockAddr.length.convert(),
                     peerSockAddr.address.toCPointer<sockaddr>(),
