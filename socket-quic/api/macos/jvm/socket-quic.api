@@ -15,6 +15,7 @@ public final class com/ditchoom/socket/quic/AlpnProtocol {
 }
 
 public final class com/ditchoom/socket/quic/AlpnUtilsKt {
+	public static final field QUIC_ISSUED_CONN_ID_LEN I
 	public static final field QUIC_MAX_CONN_ID_LEN I
 	public static final fun encodeAlpnList (Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static final fun generateScid (Lcom/ditchoom/buffer/BufferFactory;Lkotlin/random/Random;)Lcom/ditchoom/buffer/PlatformBuffer;

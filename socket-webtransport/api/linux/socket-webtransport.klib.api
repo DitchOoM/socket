@@ -1,0 +1,355 @@
+// Klib ABI Dump
+// Targets: [js, linuxArm64, linuxX64, wasmJs]
+// Alias: linux => [linuxArm64, linuxX64]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <com.ditchoom:socket-webtransport>
+final enum class com.ditchoom.socket.webtransport/TransportKind : kotlin/Enum<com.ditchoom.socket.webtransport/TransportKind> { // com.ditchoom.socket.webtransport/TransportKind|null[0]
+    enum entry QUIC // com.ditchoom.socket.webtransport/TransportKind.QUIC|null[0]
+    enum entry TCP // com.ditchoom.socket.webtransport/TransportKind.TCP|null[0]
+    enum entry WEB_SOCKET // com.ditchoom.socket.webtransport/TransportKind.WEB_SOCKET|null[0]
+    enum entry WEB_TRANSPORT // com.ditchoom.socket.webtransport/TransportKind.WEB_TRANSPORT|null[0]
+
+    final val entries // com.ditchoom.socket.webtransport/TransportKind.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.webtransport/TransportKind> // com.ditchoom.socket.webtransport/TransportKind.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.webtransport/TransportKind // com.ditchoom.socket.webtransport/TransportKind.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.webtransport/TransportKind> // com.ditchoom.socket.webtransport/TransportKind.values|values#static(){}[0]
+}
+
+abstract interface com.ditchoom.socket.webtransport/MultiplexedWebTransport { // com.ditchoom.socket.webtransport/MultiplexedWebTransport|null[0]
+    abstract suspend fun close() // com.ditchoom.socket.webtransport/MultiplexedWebTransport.close|close(){}[0]
+    abstract suspend fun openSession(kotlin/String, com.ditchoom.socket.webtransport/WebTransportOptions = ...): com.ditchoom.socket.webtransport/WebTransportSession // com.ditchoom.socket.webtransport/MultiplexedWebTransport.openSession|openSession(kotlin.String;com.ditchoom.socket.webtransport.WebTransportOptions){}[0]
+}
+
+abstract interface com.ditchoom.socket.webtransport/WebTransportSession { // com.ditchoom.socket.webtransport/WebTransportSession|null[0]
+    abstract val closeInfo // com.ditchoom.socket.webtransport/WebTransportSession.closeInfo|{}closeInfo[0]
+        abstract fun <get-closeInfo>(): com.ditchoom.socket.webtransport/WebTransportCloseInfo? // com.ditchoom.socket.webtransport/WebTransportSession.closeInfo.<get-closeInfo>|<get-closeInfo>(){}[0]
+    abstract val datagrams // com.ditchoom.socket.webtransport/WebTransportSession.datagrams|{}datagrams[0]
+        abstract fun <get-datagrams>(): kotlinx.coroutines.flow/Flow<com.ditchoom.buffer/ReadBuffer> // com.ditchoom.socket.webtransport/WebTransportSession.datagrams.<get-datagrams>|<get-datagrams>(){}[0]
+    abstract val incomingBidiStreams // com.ditchoom.socket.webtransport/WebTransportSession.incomingBidiStreams|{}incomingBidiStreams[0]
+        abstract fun <get-incomingBidiStreams>(): kotlinx.coroutines.flow/Flow<com.ditchoom.buffer.flow/ByteStream> // com.ditchoom.socket.webtransport/WebTransportSession.incomingBidiStreams.<get-incomingBidiStreams>|<get-incomingBidiStreams>(){}[0]
+    abstract val incomingUniStreams // com.ditchoom.socket.webtransport/WebTransportSession.incomingUniStreams|{}incomingUniStreams[0]
+        abstract fun <get-incomingUniStreams>(): kotlinx.coroutines.flow/Flow<com.ditchoom.buffer.flow/ByteSource> // com.ditchoom.socket.webtransport/WebTransportSession.incomingUniStreams.<get-incomingUniStreams>|<get-incomingUniStreams>(){}[0]
+    abstract val isClosed // com.ditchoom.socket.webtransport/WebTransportSession.isClosed|{}isClosed[0]
+        abstract fun <get-isClosed>(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportSession.isClosed.<get-isClosed>|<get-isClosed>(){}[0]
+
+    abstract suspend fun awaitClosed(): com.ditchoom.socket.webtransport/WebTransportCloseInfo // com.ditchoom.socket.webtransport/WebTransportSession.awaitClosed|awaitClosed(){}[0]
+    abstract suspend fun close(kotlin/UInt = ..., kotlin/String = ...) // com.ditchoom.socket.webtransport/WebTransportSession.close|close(kotlin.UInt;kotlin.String){}[0]
+    abstract suspend fun openBidiStream(): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.webtransport/WebTransportSession.openBidiStream|openBidiStream(){}[0]
+    abstract suspend fun openUniStream(): com.ditchoom.buffer.flow/ByteSink // com.ditchoom.socket.webtransport/WebTransportSession.openUniStream|openUniStream(){}[0]
+    abstract suspend fun sendDatagram(com.ditchoom.buffer/ReadBuffer) // com.ditchoom.socket.webtransport/WebTransportSession.sendDatagram|sendDatagram(com.ditchoom.buffer.ReadBuffer){}[0]
+}
+
+abstract interface com.ditchoom.socket.webtransport/WebTransportSupport { // com.ditchoom.socket.webtransport/WebTransportSupport|null[0]
+    abstract suspend fun connect(kotlin/String, com.ditchoom.socket.webtransport/WebTransportOptions = ...): com.ditchoom.socket.webtransport/WebTransportSession // com.ditchoom.socket.webtransport/WebTransportSupport.connect|connect(kotlin.String;com.ditchoom.socket.webtransport.WebTransportOptions){}[0]
+
+    abstract interface Multiplexed : com.ditchoom.socket.webtransport/WebTransportSupport { // com.ditchoom.socket.webtransport/WebTransportSupport.Multiplexed|null[0]
+        abstract suspend fun connectMultiplexed(kotlin/String, com.ditchoom.socket.webtransport/WebTransportOptions = ...): com.ditchoom.socket.webtransport/MultiplexedWebTransport // com.ditchoom.socket.webtransport/WebTransportSupport.Multiplexed.connectMultiplexed|connectMultiplexed(kotlin.String;com.ditchoom.socket.webtransport.WebTransportOptions){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure|null[0]
+    abstract fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.describe|describe(){}[0]
+
+    final class ConnectRejected : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.<init>|<init>(kotlin.Int){}[0]
+
+        final val status // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.status|{}status[0]
+            final fun <get-status>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.status.<get-status>|<get-status>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.copy|copy(kotlin.Int){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.ConnectRejected.toString|toString(){}[0]
+    }
+
+    final class SessionError : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.<init>|<init>(kotlin.String){}[0]
+
+        final val detail // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.detail|{}detail[0]
+            final fun <get-detail>(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.detail.<get-detail>|<get-detail>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket.webtransport/WebTransportFailure.SessionError // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.copy|copy(kotlin.String){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.SessionError.toString|toString(){}[0]
+    }
+
+    final class StreamAborted : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted|null[0]
+        constructor <init>(kotlin/UInt) // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.<init>|<init>(kotlin.UInt){}[0]
+
+        final val errorCode // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.errorCode|{}errorCode[0]
+            final fun <get-errorCode>(): kotlin/UInt // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.errorCode.<get-errorCode>|<get-errorCode>(){}[0]
+
+        final fun component1(): kotlin/UInt // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.component1|component1(){}[0]
+        final fun copy(kotlin/UInt = ...): com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.copy|copy(kotlin.UInt){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAborted.toString|toString(){}[0]
+    }
+
+    final class TlsHandshake : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake|null[0]
+        constructor <init>(kotlin/Boolean, kotlin/String) // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.<init>|<init>(kotlin.Boolean;kotlin.String){}[0]
+
+        final val badCertificate // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.badCertificate|{}badCertificate[0]
+            final fun <get-badCertificate>(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.badCertificate.<get-badCertificate>|<get-badCertificate>(){}[0]
+        final val detail // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.detail|{}detail[0]
+            final fun <get-detail>(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.detail.<get-detail>|<get-detail>(){}[0]
+
+        final fun component1(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.component1|component1(){}[0]
+        final fun component2(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.component2|component2(){}[0]
+        final fun copy(kotlin/Boolean = ..., kotlin/String = ...): com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.copy|copy(kotlin.Boolean;kotlin.String){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.TlsHandshake.toString|toString(){}[0]
+    }
+
+    final object DatagramsNotEnabled : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.DatagramsNotEnabled|null[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.DatagramsNotEnabled.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.DatagramsNotEnabled.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.DatagramsNotEnabled.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.DatagramsNotEnabled.toString|toString(){}[0]
+    }
+
+    final object NotEnabledLocally : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.NotEnabledLocally|null[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.NotEnabledLocally.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.NotEnabledLocally.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.NotEnabledLocally.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.NotEnabledLocally.toString|toString(){}[0]
+    }
+
+    final object PeerDoesNotSupport : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.PeerDoesNotSupport|null[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.PeerDoesNotSupport.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.PeerDoesNotSupport.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.PeerDoesNotSupport.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.PeerDoesNotSupport.toString|toString(){}[0]
+    }
+
+    final object StreamAbortedWithoutCode : com.ditchoom.socket.webtransport/WebTransportFailure { // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAbortedWithoutCode|null[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAbortedWithoutCode.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAbortedWithoutCode.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAbortedWithoutCode.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportFailure.StreamAbortedWithoutCode.toString|toString(){}[0]
+    }
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.webtransport/WebTransportStreamMux : com.ditchoom.buffer.flow/StreamMux<#A> { // com.ditchoom.socket.webtransport/WebTransportStreamMux|null[0]
+    constructor <init>(com.ditchoom.socket.webtransport/WebTransportSession, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig, kotlinx.coroutines/CoroutineScope, com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ...) // com.ditchoom.socket.webtransport/WebTransportStreamMux.<init>|<init>(com.ditchoom.socket.webtransport.WebTransportSession;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;kotlinx.coroutines.CoroutineScope;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext){}[0]
+    constructor <init>(com.ditchoom.socket.webtransport/WebTransportSession, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig, kotlinx.coroutines/CoroutineScope, kotlin/Int, com.ditchoom.socket.transport/OverflowPolicy<#A>, com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ...) // com.ditchoom.socket.webtransport/WebTransportStreamMux.<init>|<init>(com.ditchoom.socket.webtransport.WebTransportSession;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;kotlinx.coroutines.CoroutineScope;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<1:0>;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext){}[0]
+
+    final suspend fun acceptBidirectional(): com.ditchoom.buffer.flow/Connection<#A> // com.ditchoom.socket.webtransport/WebTransportStreamMux.acceptBidirectional|acceptBidirectional(){}[0]
+    final suspend fun acceptUnidirectional(): com.ditchoom.buffer.flow/Receiver<#A> // com.ditchoom.socket.webtransport/WebTransportStreamMux.acceptUnidirectional|acceptUnidirectional(){}[0]
+    final suspend fun closeMintedConnections() // com.ditchoom.socket.webtransport/WebTransportStreamMux.closeMintedConnections|closeMintedConnections(){}[0]
+    final suspend fun openBidirectional(): com.ditchoom.buffer.flow/Connection<#A> // com.ditchoom.socket.webtransport/WebTransportStreamMux.openBidirectional|openBidirectional(){}[0]
+    final suspend fun openUnidirectional(): com.ditchoom.buffer.flow/Sender<#A> // com.ditchoom.socket.webtransport/WebTransportStreamMux.openUnidirectional|openUnidirectional(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/NetworkCapabilities { // com.ditchoom.socket.webtransport/NetworkCapabilities|null[0]
+    constructor <init>(kotlin.collections/Set<com.ditchoom.socket.webtransport/TransportKind>) // com.ditchoom.socket.webtransport/NetworkCapabilities.<init>|<init>(kotlin.collections.Set<com.ditchoom.socket.webtransport.TransportKind>){}[0]
+
+    final val transports // com.ditchoom.socket.webtransport/NetworkCapabilities.transports|{}transports[0]
+        final fun <get-transports>(): kotlin.collections/Set<com.ditchoom.socket.webtransport/TransportKind> // com.ditchoom.socket.webtransport/NetworkCapabilities.transports.<get-transports>|<get-transports>(){}[0]
+
+    final fun component1(): kotlin.collections/Set<com.ditchoom.socket.webtransport/TransportKind> // com.ditchoom.socket.webtransport/NetworkCapabilities.component1|component1(){}[0]
+    final fun contains(com.ditchoom.socket.webtransport/TransportKind): kotlin/Boolean // com.ditchoom.socket.webtransport/NetworkCapabilities.contains|contains(com.ditchoom.socket.webtransport.TransportKind){}[0]
+    final fun copy(kotlin.collections/Set<com.ditchoom.socket.webtransport/TransportKind> = ...): com.ditchoom.socket.webtransport/NetworkCapabilities // com.ditchoom.socket.webtransport/NetworkCapabilities.copy|copy(kotlin.collections.Set<com.ditchoom.socket.webtransport.TransportKind>){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/NetworkCapabilities.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/NetworkCapabilities.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/NetworkCapabilities.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportByteStreamMux : com.ditchoom.buffer.flow/ByteStreamMux { // com.ditchoom.socket.webtransport/WebTransportByteStreamMux|null[0]
+    constructor <init>(com.ditchoom.socket.webtransport/WebTransportSession, kotlinx.coroutines/CoroutineScope) // com.ditchoom.socket.webtransport/WebTransportByteStreamMux.<init>|<init>(com.ditchoom.socket.webtransport.WebTransportSession;kotlinx.coroutines.CoroutineScope){}[0]
+
+    final suspend fun acceptBidirectional(): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.webtransport/WebTransportByteStreamMux.acceptBidirectional|acceptBidirectional(){}[0]
+    final suspend fun acceptUnidirectional(): com.ditchoom.buffer.flow/ByteSource // com.ditchoom.socket.webtransport/WebTransportByteStreamMux.acceptUnidirectional|acceptUnidirectional(){}[0]
+    final suspend fun openBidirectional(): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.webtransport/WebTransportByteStreamMux.openBidirectional|openBidirectional(){}[0]
+    final suspend fun openUnidirectional(): com.ditchoom.buffer.flow/ByteSink // com.ditchoom.socket.webtransport/WebTransportByteStreamMux.openUnidirectional|openUnidirectional(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportCertificateHash { // com.ditchoom.socket.webtransport/WebTransportCertificateHash|null[0]
+    constructor <init>(com.ditchoom.buffer/ReadBuffer, kotlin/String = ...) // com.ditchoom.socket.webtransport/WebTransportCertificateHash.<init>|<init>(com.ditchoom.buffer.ReadBuffer;kotlin.String){}[0]
+
+    final val algorithm // com.ditchoom.socket.webtransport/WebTransportCertificateHash.algorithm|{}algorithm[0]
+        final fun <get-algorithm>(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCertificateHash.algorithm.<get-algorithm>|<get-algorithm>(){}[0]
+    final val value // com.ditchoom.socket.webtransport/WebTransportCertificateHash.value|{}value[0]
+        final fun <get-value>(): com.ditchoom.buffer/ReadBuffer // com.ditchoom.socket.webtransport/WebTransportCertificateHash.value.<get-value>|<get-value>(){}[0]
+
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportCertificateHash.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportCertificateHash.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCertificateHash.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportCloseInfo { // com.ditchoom.socket.webtransport/WebTransportCloseInfo|null[0]
+    constructor <init>(kotlin/UInt = ..., kotlin/String = ...) // com.ditchoom.socket.webtransport/WebTransportCloseInfo.<init>|<init>(kotlin.UInt;kotlin.String){}[0]
+
+    final val code // com.ditchoom.socket.webtransport/WebTransportCloseInfo.code|{}code[0]
+        final fun <get-code>(): kotlin/UInt // com.ditchoom.socket.webtransport/WebTransportCloseInfo.code.<get-code>|<get-code>(){}[0]
+    final val reason // com.ditchoom.socket.webtransport/WebTransportCloseInfo.reason|{}reason[0]
+        final fun <get-reason>(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCloseInfo.reason.<get-reason>|<get-reason>(){}[0]
+
+    final fun component1(): kotlin/UInt // com.ditchoom.socket.webtransport/WebTransportCloseInfo.component1|component1(){}[0]
+    final fun component2(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCloseInfo.component2|component2(){}[0]
+    final fun copy(kotlin/UInt = ..., kotlin/String = ...): com.ditchoom.socket.webtransport/WebTransportCloseInfo // com.ditchoom.socket.webtransport/WebTransportCloseInfo.copy|copy(kotlin.UInt;kotlin.String){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportCloseInfo.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportCloseInfo.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCloseInfo.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportOptions { // com.ditchoom.socket.webtransport/WebTransportOptions|null[0]
+    constructor <init>(kotlin/Boolean = ..., kotlin.collections/List<com.ditchoom.socket.webtransport/WebTransportCertificateHash> = ...) // com.ditchoom.socket.webtransport/WebTransportOptions.<init>|<init>(kotlin.Boolean;kotlin.collections.List<com.ditchoom.socket.webtransport.WebTransportCertificateHash>){}[0]
+
+    final val allowPooling // com.ditchoom.socket.webtransport/WebTransportOptions.allowPooling|{}allowPooling[0]
+        final fun <get-allowPooling>(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportOptions.allowPooling.<get-allowPooling>|<get-allowPooling>(){}[0]
+    final val serverCertificateHashes // com.ditchoom.socket.webtransport/WebTransportOptions.serverCertificateHashes|{}serverCertificateHashes[0]
+        final fun <get-serverCertificateHashes>(): kotlin.collections/List<com.ditchoom.socket.webtransport/WebTransportCertificateHash> // com.ditchoom.socket.webtransport/WebTransportOptions.serverCertificateHashes.<get-serverCertificateHashes>|<get-serverCertificateHashes>(){}[0]
+
+    final fun component1(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportOptions.component1|component1(){}[0]
+    final fun component2(): kotlin.collections/List<com.ditchoom.socket.webtransport/WebTransportCertificateHash> // com.ditchoom.socket.webtransport/WebTransportOptions.component2|component2(){}[0]
+    final fun copy(kotlin/Boolean = ..., kotlin.collections/List<com.ditchoom.socket.webtransport/WebTransportCertificateHash> = ...): com.ditchoom.socket.webtransport/WebTransportOptions // com.ditchoom.socket.webtransport/WebTransportOptions.copy|copy(kotlin.Boolean;kotlin.collections.List<com.ditchoom.socket.webtransport.WebTransportCertificateHash>){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportOptions.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportOptions.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportOptions.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportSessionTransport : com.ditchoom.socket.transport/SessionTransport<com.ditchoom.socket.webtransport/WebTransportSession> { // com.ditchoom.socket.webtransport/WebTransportSessionTransport|null[0]
+    constructor <init>(kotlin/String = ..., com.ditchoom.socket.webtransport/WebTransportOptions = ..., com.ditchoom.socket.webtransport/WebTransportSupport = ...) // com.ditchoom.socket.webtransport/WebTransportSessionTransport.<init>|<init>(kotlin.String;com.ditchoom.socket.webtransport.WebTransportOptions;com.ditchoom.socket.webtransport.WebTransportSupport){}[0]
+
+    final suspend fun close(com.ditchoom.socket.webtransport/WebTransportSession) // com.ditchoom.socket.webtransport/WebTransportSessionTransport.close|close(com.ditchoom.socket.webtransport.WebTransportSession){}[0]
+    final suspend fun establish(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.socket.webtransport/WebTransportSession // com.ditchoom.socket.webtransport/WebTransportSessionTransport.establish|establish(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportStreamAbortedWithoutCodeException : com.ditchoom.socket.webtransport/WebTransportStreamAbortException { // com.ditchoom.socket.webtransport/WebTransportStreamAbortedWithoutCodeException|null[0]
+    constructor <init>(kotlin/Throwable? = ...) // com.ditchoom.socket.webtransport/WebTransportStreamAbortedWithoutCodeException.<init>|<init>(kotlin.Throwable?){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportStreamException : com.ditchoom.socket.webtransport/WebTransportStreamAbortException { // com.ditchoom.socket.webtransport/WebTransportStreamException|null[0]
+    constructor <init>(kotlin/UInt, kotlin/Throwable? = ...) // com.ditchoom.socket.webtransport/WebTransportStreamException.<init>|<init>(kotlin.UInt;kotlin.Throwable?){}[0]
+
+    final val errorCode // com.ditchoom.socket.webtransport/WebTransportStreamException.errorCode|{}errorCode[0]
+        final fun <get-errorCode>(): kotlin/UInt // com.ditchoom.socket.webtransport/WebTransportStreamException.errorCode.<get-errorCode>|<get-errorCode>(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportTransport : com.ditchoom.socket.transport/MultiplexingTransport, com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.webtransport/WebTransportTransport|null[0]
+    constructor <init>(kotlin/String = ..., com.ditchoom.socket.webtransport/WebTransportOptions = ..., com.ditchoom.socket.webtransport/WebTransportSupport = ...) // com.ditchoom.socket.webtransport/WebTransportTransport.<init>|<init>(kotlin.String;com.ditchoom.socket.webtransport.WebTransportOptions;com.ditchoom.socket.webtransport.WebTransportSupport){}[0]
+
+    final val family // com.ditchoom.socket.webtransport/WebTransportTransport.family|{}family[0]
+        final fun <get-family>(): com.ditchoom.socket.transport/TransportFamily // com.ditchoom.socket.webtransport/WebTransportTransport.family.<get-family>|<get-family>(){}[0]
+
+    final suspend fun <#A1: kotlin/Any?, #B1: kotlin/Any?> withMux(kotlin/String, kotlin/Int, com.ditchoom.buffer.codec/Codec<#A1>, kotlin/Int, com.ditchoom.socket.transport/OverflowPolicy<#A1>, com.ditchoom.socket/TransportConfig, kotlin.coroutines/SuspendFunction1<com.ditchoom.buffer.flow/StreamMux<#A1>, #B1>): #B1 // com.ditchoom.socket.webtransport/WebTransportTransport.withMux|withMux(kotlin.String;kotlin.Int;com.ditchoom.buffer.codec.Codec<0:0>;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<0:0>;com.ditchoom.socket.TransportConfig;kotlin.coroutines.SuspendFunction1<com.ditchoom.buffer.flow.StreamMux<0:0>,0:1>){0§<kotlin.Any?>;1§<kotlin.Any?>}[0]
+    final suspend fun connect(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.webtransport/WebTransportTransport.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+}
+
+open class com.ditchoom.socket.webtransport/WebTransportException : kotlin/Exception { // com.ditchoom.socket.webtransport/WebTransportException|null[0]
+    constructor <init>(com.ditchoom.socket.webtransport/WebTransportFailure, kotlin/Throwable? = ...) // com.ditchoom.socket.webtransport/WebTransportException.<init>|<init>(com.ditchoom.socket.webtransport.WebTransportFailure;kotlin.Throwable?){}[0]
+    constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket.webtransport/WebTransportException.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+
+    final val failure // com.ditchoom.socket.webtransport/WebTransportException.failure|{}failure[0]
+        final fun <get-failure>(): com.ditchoom.socket.webtransport/WebTransportFailure // com.ditchoom.socket.webtransport/WebTransportException.failure.<get-failure>|<get-failure>(){}[0]
+}
+
+sealed class com.ditchoom.socket.webtransport/WebTransportStreamAbortException : com.ditchoom.socket.webtransport/WebTransportException // com.ditchoom.socket.webtransport/WebTransportStreamAbortException|null[0]
+
+final fun com.ditchoom.socket.webtransport/networkCapabilities(): com.ditchoom.socket.webtransport/NetworkCapabilities // com.ditchoom.socket.webtransport/networkCapabilities|networkCapabilities(){}[0]
+final fun com.ditchoom.socket.webtransport/webTransportSupport(): com.ditchoom.socket.webtransport/WebTransportSupport // com.ditchoom.socket.webtransport/webTransportSupport|webTransportSupport(){}[0]
+
+// Targets: [linux]
+final class com.ditchoom.socket.webtransport/Http3WebTransportConfig { // com.ditchoom.socket.webtransport/Http3WebTransportConfig|null[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicOptions? = ..., com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket.webtransport/Http3WebTransportConfig.<init>|<init>(com.ditchoom.socket.quic.QuicOptions?;com.ditchoom.socket.TransportConfig){}[0]
+
+    final val connectionOptions // com.ditchoom.socket.webtransport/Http3WebTransportConfig.connectionOptions|{}connectionOptions[0]
+        final fun <get-connectionOptions>(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket.webtransport/Http3WebTransportConfig.connectionOptions.<get-connectionOptions>|<get-connectionOptions>(){}[0]
+    final val quicOptions // com.ditchoom.socket.webtransport/Http3WebTransportConfig.quicOptions|{}quicOptions[0]
+        final fun <get-quicOptions>(): com.ditchoom.socket.quic/QuicOptions? // com.ditchoom.socket.webtransport/Http3WebTransportConfig.quicOptions.<get-quicOptions>|<get-quicOptions>(){}[0]
+}
+
+// Targets: [linux]
+final suspend fun (com.ditchoom.socket.webtransport/WebTransportSupport).com.ditchoom.socket.webtransport/connect(kotlin/String, com.ditchoom.socket.webtransport/Http3WebTransportConfig): com.ditchoom.socket.webtransport/WebTransportSession // com.ditchoom.socket.webtransport/connect|connect@com.ditchoom.socket.webtransport.WebTransportSupport(kotlin.String;com.ditchoom.socket.webtransport.Http3WebTransportConfig){}[0]
+
+// Targets: [linux]
+final suspend fun (com.ditchoom.socket.webtransport/WebTransportSupport.Multiplexed).com.ditchoom.socket.webtransport/connectMultiplexed(kotlin/String, com.ditchoom.socket.webtransport/Http3WebTransportConfig): com.ditchoom.socket.webtransport/MultiplexedWebTransport // com.ditchoom.socket.webtransport/connectMultiplexed|connectMultiplexed@com.ditchoom.socket.webtransport.WebTransportSupport.Multiplexed(kotlin.String;com.ditchoom.socket.webtransport.Http3WebTransportConfig){}[0]
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/ReadChunkJs { // com.ditchoom.socket.webtransport/ReadChunkJs|null[0]
+    abstract val done // com.ditchoom.socket.webtransport/ReadChunkJs.done|{}done[0]
+        abstract fun <get-done>(): kotlin/Boolean // com.ditchoom.socket.webtransport/ReadChunkJs.done.<get-done>|<get-done>(){}[0]
+    abstract val value // com.ditchoom.socket.webtransport/ReadChunkJs.value|{}value[0]
+        abstract fun <get-value>(): dynamic // com.ditchoom.socket.webtransport/ReadChunkJs.value.<get-value>|<get-value>(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/ReadableStreamDefaultReaderJs { // com.ditchoom.socket.webtransport/ReadableStreamDefaultReaderJs|null[0]
+    abstract fun cancel(dynamic = ...): kotlin.js/Promise<kotlin/Unit> // com.ditchoom.socket.webtransport/ReadableStreamDefaultReaderJs.cancel|cancel(<dynamic>){}[0]
+    abstract fun read(): kotlin.js/Promise<com.ditchoom.socket.webtransport/ReadChunkJs> // com.ditchoom.socket.webtransport/ReadableStreamDefaultReaderJs.read|read(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/ReadableStreamJs { // com.ditchoom.socket.webtransport/ReadableStreamJs|null[0]
+    abstract fun getReader(): com.ditchoom.socket.webtransport/ReadableStreamDefaultReaderJs // com.ditchoom.socket.webtransport/ReadableStreamJs.getReader|getReader(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs { // com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs|null[0]
+    abstract val readable // com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs.readable|{}readable[0]
+        abstract fun <get-readable>(): com.ditchoom.socket.webtransport/ReadableStreamJs // com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs.readable.<get-readable>|<get-readable>(){}[0]
+    abstract val writable // com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs.writable|{}writable[0]
+        abstract fun <get-writable>(): com.ditchoom.socket.webtransport/WritableStreamJs // com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs.writable.<get-writable>|<get-writable>(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/WebTransportCloseInfoJs { // com.ditchoom.socket.webtransport/WebTransportCloseInfoJs|null[0]
+    abstract val closeCode // com.ditchoom.socket.webtransport/WebTransportCloseInfoJs.closeCode|{}closeCode[0]
+        abstract fun <get-closeCode>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportCloseInfoJs.closeCode.<get-closeCode>|<get-closeCode>(){}[0]
+    abstract val reason // com.ditchoom.socket.webtransport/WebTransportCloseInfoJs.reason|{}reason[0]
+        abstract fun <get-reason>(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportCloseInfoJs.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream { // com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream|null[0]
+    abstract val readable // com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream.readable|{}readable[0]
+        abstract fun <get-readable>(): com.ditchoom.socket.webtransport/ReadableStreamJs // com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream.readable.<get-readable>|<get-readable>(){}[0]
+    abstract val writable // com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream.writable|{}writable[0]
+        abstract fun <get-writable>(): com.ditchoom.socket.webtransport/WritableStreamJs // com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream.writable.<get-writable>|<get-writable>(){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs { // com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs|null[0]
+    abstract fun abort(dynamic = ...): kotlin.js/Promise<kotlin/Unit> // com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs.abort|abort(<dynamic>){}[0]
+    abstract fun close(): kotlin.js/Promise<kotlin/Unit> // com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs.close|close(){}[0]
+    abstract fun write(dynamic): kotlin.js/Promise<kotlin/Unit> // com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs.write|write(<dynamic>){}[0]
+}
+
+// Targets: [js]
+abstract interface com.ditchoom.socket.webtransport/WritableStreamJs { // com.ditchoom.socket.webtransport/WritableStreamJs|null[0]
+    abstract fun getWriter(): com.ditchoom.socket.webtransport/WritableStreamDefaultWriterJs // com.ditchoom.socket.webtransport/WritableStreamJs.getWriter|getWriter(){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket.webtransport/WebTransport { // com.ditchoom.socket.webtransport/WebTransport|null[0]
+    constructor <init>(kotlin/String, dynamic = ...) // com.ditchoom.socket.webtransport/WebTransport.<init>|<init>(kotlin.String;<dynamic>){}[0]
+
+    final val closed // com.ditchoom.socket.webtransport/WebTransport.closed|{}closed[0]
+        final fun <get-closed>(): kotlin.js/Promise<com.ditchoom.socket.webtransport/WebTransportCloseInfoJs> // com.ditchoom.socket.webtransport/WebTransport.closed.<get-closed>|<get-closed>(){}[0]
+    final val datagrams // com.ditchoom.socket.webtransport/WebTransport.datagrams|{}datagrams[0]
+        final fun <get-datagrams>(): com.ditchoom.socket.webtransport/WebTransportDatagramDuplexStream // com.ditchoom.socket.webtransport/WebTransport.datagrams.<get-datagrams>|<get-datagrams>(){}[0]
+    final val incomingBidirectionalStreams // com.ditchoom.socket.webtransport/WebTransport.incomingBidirectionalStreams|{}incomingBidirectionalStreams[0]
+        final fun <get-incomingBidirectionalStreams>(): com.ditchoom.socket.webtransport/ReadableStreamJs // com.ditchoom.socket.webtransport/WebTransport.incomingBidirectionalStreams.<get-incomingBidirectionalStreams>|<get-incomingBidirectionalStreams>(){}[0]
+    final val incomingUnidirectionalStreams // com.ditchoom.socket.webtransport/WebTransport.incomingUnidirectionalStreams|{}incomingUnidirectionalStreams[0]
+        final fun <get-incomingUnidirectionalStreams>(): com.ditchoom.socket.webtransport/ReadableStreamJs // com.ditchoom.socket.webtransport/WebTransport.incomingUnidirectionalStreams.<get-incomingUnidirectionalStreams>|<get-incomingUnidirectionalStreams>(){}[0]
+    final val ready // com.ditchoom.socket.webtransport/WebTransport.ready|{}ready[0]
+        final fun <get-ready>(): kotlin.js/Promise<kotlin/Unit> // com.ditchoom.socket.webtransport/WebTransport.ready.<get-ready>|<get-ready>(){}[0]
+
+    final fun close(dynamic = ...) // com.ditchoom.socket.webtransport/WebTransport.close|close(<dynamic>){}[0]
+    final fun createBidirectionalStream(): kotlin.js/Promise<com.ditchoom.socket.webtransport/WebTransportBidirectionalStreamJs> // com.ditchoom.socket.webtransport/WebTransport.createBidirectionalStream|createBidirectionalStream(){}[0]
+    final fun createUnidirectionalStream(): kotlin.js/Promise<com.ditchoom.socket.webtransport/WritableStreamJs> // com.ditchoom.socket.webtransport/WebTransport.createUnidirectionalStream|createUnidirectionalStream(){}[0]
+}

@@ -2932,6 +2932,8 @@ final value class com.ditchoom.socket.quic/QuicStreamId : kotlin/Comparable<com.
 
 final const val com.ditchoom.socket.quic/P256_MAX_SIGNATURE_BYTES // com.ditchoom.socket.quic/P256_MAX_SIGNATURE_BYTES|{}P256_MAX_SIGNATURE_BYTES[0]
     final fun <get-P256_MAX_SIGNATURE_BYTES>(): kotlin/Int // com.ditchoom.socket.quic/P256_MAX_SIGNATURE_BYTES.<get-P256_MAX_SIGNATURE_BYTES>|<get-P256_MAX_SIGNATURE_BYTES>(){}[0]
+final const val com.ditchoom.socket.quic/QUIC_ISSUED_CONN_ID_LEN // com.ditchoom.socket.quic/QUIC_ISSUED_CONN_ID_LEN|{}QUIC_ISSUED_CONN_ID_LEN[0]
+    final fun <get-QUIC_ISSUED_CONN_ID_LEN>(): kotlin/Int // com.ditchoom.socket.quic/QUIC_ISSUED_CONN_ID_LEN.<get-QUIC_ISSUED_CONN_ID_LEN>|<get-QUIC_ISSUED_CONN_ID_LEN>(){}[0]
 final const val com.ditchoom.socket.quic/QUIC_MAX_CONN_ID_LEN // com.ditchoom.socket.quic/QUIC_MAX_CONN_ID_LEN|{}QUIC_MAX_CONN_ID_LEN[0]
     final fun <get-QUIC_MAX_CONN_ID_LEN>(): kotlin/Int // com.ditchoom.socket.quic/QUIC_MAX_CONN_ID_LEN.<get-QUIC_MAX_CONN_ID_LEN>|<get-QUIC_MAX_CONN_ID_LEN>(){}[0]
 
