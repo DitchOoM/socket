@@ -1,0 +1,1503 @@
+public final class com/ditchoom/data/BitKt {
+	public static final fun get (BI)Z
+	public static final fun last4Bits (B)B
+	public static final fun toBooleanArray (B)[Z
+	public static final fun toByte ([Z)B
+}
+
+public final class com/ditchoom/data/ByteStreamSugarKt {
+	public static final fun freeIfData (Lcom/ditchoom/buffer/flow/ReadResult;)V
+	public static final fun readBuffer-8Mi8wO0 (Lcom/ditchoom/buffer/flow/ByteSource;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun readBuffer-8Mi8wO0$default (Lcom/ditchoom/buffer/flow/ByteSource;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun readFlow-HG0u8IE (Lcom/ditchoom/buffer/flow/ByteSource;J)Lkotlinx/coroutines/flow/Flow;
+	public static synthetic fun readFlow-HG0u8IE$default (Lcom/ditchoom/buffer/flow/ByteSource;JILjava/lang/Object;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun readFlowLines-SxA4cEA (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;J)Lkotlinx/coroutines/flow/Flow;
+	public static synthetic fun readFlowLines-SxA4cEA$default (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;JILjava/lang/Object;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun readFlowString-SxA4cEA (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;J)Lkotlinx/coroutines/flow/Flow;
+	public static synthetic fun readFlowString-SxA4cEA$default (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;JILjava/lang/Object;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun readInto-exY8QGI (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/WriteBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun readInto-exY8QGI$default (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/WriteBuffer;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun readString-exY8QGI (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun readString-exY8QGI$default (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/Charset;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun writeString-zkXUZaI (Lcom/ditchoom/buffer/flow/ByteSink;Ljava/lang/String;Lcom/ditchoom/buffer/Charset;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun writeString-zkXUZaI$default (Lcom/ditchoom/buffer/flow/ByteSink;Ljava/lang/String;Lcom/ditchoom/buffer/Charset;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/AttemptVerdict {
+	public static final field Companion Lcom/ditchoom/socket/AttemptVerdict$Companion;
+}
+
+public final class com/ditchoom/socket/AttemptVerdict$Companion {
+	public final fun of (Ljava/lang/Throwable;)Lcom/ditchoom/socket/AttemptVerdict;
+}
+
+public final class com/ditchoom/socket/AttemptVerdict$Fatal : com/ditchoom/socket/AttemptVerdict {
+	public static final field INSTANCE Lcom/ditchoom/socket/AttemptVerdict$Fatal;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AttemptVerdict$TryOthers : com/ditchoom/socket/AttemptVerdict {
+	public static final field INSTANCE Lcom/ditchoom/socket/AttemptVerdict$TryOthers;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningException : com/ditchoom/socket/SSLSocketException {
+	public fun <init> (Lcom/ditchoom/socket/CertificateHashPinningFailure;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/CertificateHashPinningFailure;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getFailure ()Lcom/ditchoom/socket/CertificateHashPinningFailure;
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public abstract interface class com/ditchoom/socket/CertificateHashPinningFailure {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$CertificateParseFailed : com/ditchoom/socket/CertificateHashPinningFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateParseFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateParseFailed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateParseFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$CertificateTooLarge : com/ditchoom/socket/CertificateHashPinningFailure {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateTooLarge;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateTooLarge;IIILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$CertificateTooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getMaxBytes ()I
+	public final fun getSizeBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$HashMismatch : com/ditchoom/socket/CertificateHashPinningFailure {
+	public fun <init> (ILjava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;)Lcom/ditchoom/socket/CertificateHashPinningFailure$HashMismatch;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$HashMismatch;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$HashMismatch;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getComputedLeafHash ()Ljava/lang/String;
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getPinnedCount ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$NoPeerCertificate : com/ditchoom/socket/CertificateHashPinningFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/CertificateHashPinningFailure$NoPeerCertificate;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$NotTemporallyValid : com/ditchoom/socket/CertificateHashPinningFailure {
+	public fun <init> (Lkotlin/time/Instant;Lkotlin/time/Instant;Lkotlin/time/Instant;)V
+	public final fun component1 ()Lkotlin/time/Instant;
+	public final fun component2 ()Lkotlin/time/Instant;
+	public final fun component3 ()Lkotlin/time/Instant;
+	public final fun copy (Lkotlin/time/Instant;Lkotlin/time/Instant;Lkotlin/time/Instant;)Lcom/ditchoom/socket/CertificateHashPinningFailure$NotTemporallyValid;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$NotTemporallyValid;Lkotlin/time/Instant;Lkotlin/time/Instant;Lkotlin/time/Instant;ILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$NotTemporallyValid;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getNotAfter ()Lkotlin/time/Instant;
+	public final fun getNotBefore ()Lkotlin/time/Instant;
+	public final fun getNow ()Lkotlin/time/Instant;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$UnsupportedPublicKey : com/ditchoom/socket/CertificateHashPinningFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/CertificateHashPinningFailure$UnsupportedPublicKey;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$UnsupportedPublicKey;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$UnsupportedPublicKey;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CertificateHashPinningFailure$ValidityPeriodTooLong : com/ditchoom/socket/CertificateHashPinningFailure {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-QTBD994 (JJ)Lcom/ditchoom/socket/CertificateHashPinningFailure$ValidityPeriodTooLong;
+	public static synthetic fun copy-QTBD994$default (Lcom/ditchoom/socket/CertificateHashPinningFailure$ValidityPeriodTooLong;JJILjava/lang/Object;)Lcom/ditchoom/socket/CertificateHashPinningFailure$ValidityPeriodTooLong;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getMaxValidity-UwyO8pc ()J
+	public final fun getValidity-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/ClientSocket : com/ditchoom/socket/SocketController {
+	public static final field Companion Lcom/ditchoom/socket/ClientSocket$Companion;
+}
+
+public final class com/ditchoom/socket/ClientSocket$Companion {
+}
+
+public final class com/ditchoom/socket/ClientSocket$DefaultImpls {
+	public static fun read (Lcom/ditchoom/socket/ClientSocket;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun write-egxuoLU (Lcom/ditchoom/socket/ClientSocket;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-OVV_2m0 (Lcom/ditchoom/socket/ClientSocket;Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-egxuoLU (Lcom/ditchoom/socket/ClientSocket;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/ClientSocketKt {
+	public static final fun connect (Lcom/ditchoom/socket/ClientSocket$Companion;ILjava/lang/String;Lcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connect (Lcom/ditchoom/socket/ClientSocket$Companion;ILjava/lang/String;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/ClientSocket$Companion;ILjava/lang/String;Lcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/ClientSocket$Companion;ILjava/lang/String;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/ClientToServerSocket : com/ditchoom/socket/ClientSocket {
+	public abstract fun open (ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun open$default (Lcom/ditchoom/socket/ClientToServerSocket;ILjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/ClientToServerSocket$DefaultImpls {
+	public static synthetic fun open$default (Lcom/ditchoom/socket/ClientToServerSocket;ILjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun read (Lcom/ditchoom/socket/ClientToServerSocket;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun write-egxuoLU (Lcom/ditchoom/socket/ClientToServerSocket;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-OVV_2m0 (Lcom/ditchoom/socket/ClientToServerSocket;Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-egxuoLU (Lcom/ditchoom/socket/ClientToServerSocket;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/ConnectPacing {
+}
+
+public final class com/ditchoom/socket/ConnectPacing$Sequential : com/ditchoom/socket/ConnectPacing {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectPacing$Sequential;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectPacing$Simultaneous : com/ditchoom/socket/ConnectPacing {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectPacing$Simultaneous;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectPacing$Staggered : com/ditchoom/socket/ConnectPacing {
+	public static final field Companion Lcom/ditchoom/socket/ConnectPacing$Staggered$Companion;
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/ConnectPacing$Staggered;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/ConnectPacing$Staggered;JILjava/lang/Object;)Lcom/ditchoom/socket/ConnectPacing$Staggered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttemptDelay-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectPacing$Staggered$Companion {
+	public final fun getRECOMMENDED ()Lcom/ditchoom/socket/ConnectPacing$Staggered;
+}
+
+public final class com/ditchoom/socket/ConnectRaceKt {
+	public static final fun connectRace (Ljava/util/List;Lcom/ditchoom/socket/ConnectPacing;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/ConnectionFailure {
+	public abstract fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public abstract interface class com/ditchoom/socket/ConnectionFailureReason {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$AccessDenied : com/ditchoom/socket/ConnectionFailureReason {
+	public fun <init> (Lcom/ditchoom/socket/NetworkAccess;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NetworkAccess;
+	public final fun copy (Lcom/ditchoom/socket/NetworkAccess;)Lcom/ditchoom/socket/ConnectionFailureReason$AccessDenied;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ConnectionFailureReason$AccessDenied;Lcom/ditchoom/socket/NetworkAccess;ILjava/lang/Object;)Lcom/ditchoom/socket/ConnectionFailureReason$AccessDenied;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$HostUnreachable : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$HostUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$NetworkUnreachable : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$NetworkUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$OutOfMemory : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$OutOfMemory;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$Refused : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$Refused;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$Timeout : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$Timeout;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$TlsBadCertificate : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$TlsBadCertificate;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$TlsHandshake : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$TlsHandshake;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$TlsProtocolMismatch : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$TlsProtocolMismatch;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$Unknown : com/ditchoom/socket/ConnectionFailureReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/ConnectionFailureReason$Unknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ConnectionFailureReason$Unknown;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/ConnectionFailureReason$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getRaw ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionFailureReason$UnknownHost : com/ditchoom/socket/ConnectionFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionFailureReason$UnknownHost;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/ConnectionState {
+}
+
+public final class com/ditchoom/socket/ConnectionState$Connected : com/ditchoom/socket/ConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionState$Connected;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ConnectionState$Connecting : com/ditchoom/socket/ConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionState$Connecting;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public class com/ditchoom/socket/ConnectionState$Disconnected : com/ditchoom/socket/ConnectionState {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getT ()Ljava/lang/Throwable;
+}
+
+public final class com/ditchoom/socket/ConnectionState$Initialized : com/ditchoom/socket/ConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/socket/ConnectionState$Initialized;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/DefaultReconnectionClassifier : com/ditchoom/socket/ReconnectionClassifier {
+	public static final field Companion Lcom/ditchoom/socket/DefaultReconnectionClassifier$Companion;
+	public synthetic fun <init> (JJDILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJDLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun classify (Ljava/lang/Throwable;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun reset ()V
+}
+
+public final class com/ditchoom/socket/DefaultReconnectionClassifier$Companion {
+	public final fun isNonRecoverable (Ljava/lang/Throwable;)Z
+}
+
+public abstract interface class com/ditchoom/socket/HostResolver {
+	public static final field Companion Lcom/ditchoom/socket/HostResolver$Companion;
+	public abstract fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/HostResolver$Companion {
+	public final fun platform ()Lcom/ditchoom/socket/HostResolver;
+}
+
+public final class com/ditchoom/socket/HostResolverKt {
+	public static final fun candidatesFor (Lcom/ditchoom/socket/NameResolution;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun happyEyeballsOrder (Ljava/util/List;)Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/IoTuning {
+	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Boolean;
+	public final fun component10 ()I
+	public final fun component11-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/Boolean;
+	public final fun component3 ()Ljava/lang/Boolean;
+	public final fun component4 ()Ljava/lang/Integer;
+	public final fun component5 ()Ljava/lang/Integer;
+	public final fun component6 ()I
+	public final fun component7 ()I
+	public final fun component8-UwyO8pc ()J
+	public final fun component9 ()I
+	public final fun copy-Q7Jq7ks (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJ)Lcom/ditchoom/socket/IoTuning;
+	public static synthetic fun copy-Q7Jq7ks$default (Lcom/ditchoom/socket/IoTuning;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJILjava/lang/Object;)Lcom/ditchoom/socket/IoTuning;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDefaultBufferSize ()I
+	public final fun getIoQueueDepth ()I
+	public final fun getIoQueueRetries ()I
+	public final fun getIoRetryDelay-UwyO8pc ()J
+	public final fun getKeepAlive ()Ljava/lang/Boolean;
+	public final fun getOutboundDrainOnClose-UwyO8pc ()J
+	public final fun getReadBufferSize ()I
+	public final fun getReceiveBuffer ()Ljava/lang/Integer;
+	public final fun getReuseAddress ()Ljava/lang/Boolean;
+	public final fun getSendBuffer ()Ljava/lang/Integer;
+	public final fun getTcpNoDelay ()Ljava/lang/Boolean;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/IpFamily : java/lang/Enum {
+	public static final field V4 Lcom/ditchoom/socket/IpFamily;
+	public static final field V6 Lcom/ditchoom/socket/IpFamily;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/IpFamily;
+	public static fun values ()[Lcom/ditchoom/socket/IpFamily;
+}
+
+public abstract interface class com/ditchoom/socket/NameResolution {
+}
+
+public final class com/ditchoom/socket/NameResolution$Platform : com/ditchoom/socket/NameResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/NameResolution$Platform;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NameResolution$Via : com/ditchoom/socket/NameResolution {
+	public fun <init> (Lcom/ditchoom/socket/HostResolver;)V
+	public final fun component1 ()Lcom/ditchoom/socket/HostResolver;
+	public final fun copy (Lcom/ditchoom/socket/HostResolver;)Lcom/ditchoom/socket/NameResolution$Via;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NameResolution$Via;Lcom/ditchoom/socket/HostResolver;ILjava/lang/Object;)Lcom/ditchoom/socket/NameResolution$Via;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResolver ()Lcom/ditchoom/socket/HostResolver;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkAccess : java/lang/Enum {
+	public static final field CellularData Lcom/ditchoom/socket/NetworkAccess;
+	public static final field LocalNetwork Lcom/ditchoom/socket/NetworkAccess;
+	public static final field WifiData Lcom/ditchoom/socket/NetworkAccess;
+	public final fun getDescription ()Ljava/lang/String;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/NetworkAccess;
+	public static fun values ()[Lcom/ditchoom/socket/NetworkAccess;
+}
+
+public final class com/ditchoom/socket/NetworkCapabilities {
+	public fun <init> (Ljava/util/Set;)V
+	public final fun component1 ()Ljava/util/Set;
+	public final fun copy (Ljava/util/Set;)Lcom/ditchoom/socket/NetworkCapabilities;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NetworkCapabilities;Ljava/util/Set;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkCapabilities;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTransports ()Ljava/util/Set;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkCapabilitiesKt {
+	public static final fun networkCapabilities ()Lcom/ditchoom/socket/NetworkCapabilities;
+}
+
+public final class com/ditchoom/socket/OutboundQueueFullException : com/ditchoom/socket/SocketException {
+	public fun <init> (I)V
+	public final fun getCapacity ()I
+}
+
+public abstract class com/ditchoom/socket/PlatformIOException : java/io/IOException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+}
+
+public final class com/ditchoom/socket/ReadBufferSource {
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public final fun acquire (I)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public abstract interface class com/ditchoom/socket/ReconnectDecision {
+}
+
+public final class com/ditchoom/socket/ReconnectDecision$GiveUp : com/ditchoom/socket/ReconnectDecision {
+	public static final field INSTANCE Lcom/ditchoom/socket/ReconnectDecision$GiveUp;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ReconnectDecision$RetryAfter : com/ditchoom/socket/ReconnectDecision {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/ReconnectDecision$RetryAfter;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getDelay-UwyO8pc ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public abstract interface class com/ditchoom/socket/ReconnectionClassifier {
+	public abstract fun classify (Ljava/lang/Throwable;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/Resolution {
+}
+
+public final class com/ditchoom/socket/Resolution$Failed : com/ditchoom/socket/Resolution {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/String;Ljava/lang/Throwable;)Lcom/ditchoom/socket/Resolution$Failed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/Resolution$Failed;Ljava/lang/String;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/Resolution$Failed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public final fun getHost ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/Resolution$NoAddress : com/ditchoom/socket/Resolution {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/Resolution$NoAddress;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/Resolution$NoAddress;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/Resolution$NoAddress;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHost ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/Resolution$Resolved : com/ditchoom/socket/Resolution {
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/socket/Resolution$Resolved;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/Resolution$Resolved;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/Resolution$Resolved;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidates ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ResolvedAddress {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/IpFamily;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/socket/IpFamily;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/socket/IpFamily;)Lcom/ditchoom/socket/ResolvedAddress;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ResolvedAddress;Ljava/lang/String;Lcom/ditchoom/socket/IpFamily;ILjava/lang/Object;)Lcom/ditchoom/socket/ResolvedAddress;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFamily ()Lcom/ditchoom/socket/IpFamily;
+	public final fun getIp ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SSLHandshakeFailedException : com/ditchoom/socket/SSLSocketException {
+	public fun <init> (Ljava/lang/Exception;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lcom/ditchoom/socket/ConnectionFailureReason;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lcom/ditchoom/socket/ConnectionFailureReason;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SSLProtocolException : com/ditchoom/socket/SSLSocketException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lcom/ditchoom/socket/ConnectionFailureReason;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lcom/ditchoom/socket/ConnectionFailureReason;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public abstract class com/ditchoom/socket/SSLSocketException : com/ditchoom/socket/SocketException, com/ditchoom/socket/ConnectionFailure {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejectedException : com/ditchoom/socket/SSLSocketException {
+	public fun <init> (Lcom/ditchoom/socket/ServerCertificateRejection;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+	public final fun getRejection ()Lcom/ditchoom/socket/ServerCertificateRejection;
+}
+
+public abstract interface class com/ditchoom/socket/ServerCertificateRejection {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejection$CertificateTooLarge : com/ditchoom/socket/ServerCertificateRejection {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/ServerCertificateRejection$CertificateTooLarge;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ServerCertificateRejection$CertificateTooLarge;IIILjava/lang/Object;)Lcom/ditchoom/socket/ServerCertificateRejection$CertificateTooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getMaxBytes ()I
+	public final fun getSizeBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejection$ChainTooLong : com/ditchoom/socket/ServerCertificateRejection {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/ServerCertificateRejection$ChainTooLong;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ServerCertificateRejection$ChainTooLong;IILjava/lang/Object;)Lcom/ditchoom/socket/ServerCertificateRejection$ChainTooLong;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getMaxCertificates ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejection$NoPeerCertificate : com/ditchoom/socket/ServerCertificateRejection {
+	public static final field INSTANCE Lcom/ditchoom/socket/ServerCertificateRejection$NoPeerCertificate;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejection$RejectedByVerifier : com/ditchoom/socket/ServerCertificateRejection {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/ServerCertificateRejection$RejectedByVerifier;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ServerCertificateRejection$RejectedByVerifier;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/ServerCertificateRejection$RejectedByVerifier;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ServerCertificateRejection$UntrustedBySystem : com/ditchoom/socket/ServerCertificateRejection {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/SystemTrustFailure;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/socket/SystemTrustFailure;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/socket/SystemTrustFailure;)Lcom/ditchoom/socket/ServerCertificateRejection$UntrustedBySystem;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ServerCertificateRejection$UntrustedBySystem;Ljava/lang/String;Lcom/ditchoom/socket/SystemTrustFailure;ILjava/lang/Object;)Lcom/ditchoom/socket/ServerCertificateRejection$UntrustedBySystem;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getFailure ()Lcom/ditchoom/socket/SystemTrustFailure;
+	public final fun getServerName ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/ServerSocket {
+	public static final field Companion Lcom/ditchoom/socket/ServerSocket$Companion;
+	public abstract fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun bind$default (Lcom/ditchoom/socket/ServerSocket;ILjava/lang/String;ILkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun isListening ()Z
+	public abstract fun port ()I
+}
+
+public final class com/ditchoom/socket/ServerSocket$Companion {
+}
+
+public final class com/ditchoom/socket/ServerSocket$DefaultImpls {
+	public static synthetic fun bind$default (Lcom/ditchoom/socket/ServerSocket;ILjava/lang/String;ILkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/SocketClosedException : com/ditchoom/socket/SocketException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public fun getMessage ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SocketClosedException$BrokenPipe : com/ditchoom/socket/SocketClosedException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/SocketClosedException$ConnectionReset : com/ditchoom/socket/SocketClosedException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/SocketClosedException$EndOfStream : com/ditchoom/socket/SocketClosedException {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/SocketClosedException$General : com/ditchoom/socket/SocketClosedException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public abstract class com/ditchoom/socket/SocketConnectionException : com/ditchoom/socket/SocketException, com/ditchoom/socket/ConnectionFailure {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public fun getMessage ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SocketConnectionException$HostUnreachable : com/ditchoom/socket/SocketConnectionException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SocketConnectionException$NetworkUnreachable : com/ditchoom/socket/SocketConnectionException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SocketConnectionException$Other : com/ditchoom/socket/SocketConnectionException {
+	public fun <init> (Lcom/ditchoom/socket/ConnectionFailureReason;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/ConnectionFailureReason;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SocketConnectionException$Refused : com/ditchoom/socket/SocketConnectionException {
+	public fun <init> (Ljava/lang/String;ILjava/lang/Throwable;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;ILjava/lang/Throwable;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPlatformError ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public abstract interface class com/ditchoom/socket/SocketController : com/ditchoom/buffer/flow/ByteStream {
+	public abstract fun localPort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun remotePort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/SocketController$DefaultImpls {
+	public static fun read (Lcom/ditchoom/socket/SocketController;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun write-egxuoLU (Lcom/ditchoom/socket/SocketController;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-OVV_2m0 (Lcom/ditchoom/socket/SocketController;Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-egxuoLU (Lcom/ditchoom/socket/SocketController;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/SocketDataRead {
+	public fun <init> (Ljava/lang/Object;I)V
+	public final fun component1 ()Ljava/lang/Object;
+	public final fun component2 ()I
+	public final fun copy (Ljava/lang/Object;I)Lcom/ditchoom/socket/SocketDataRead;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/SocketDataRead;Ljava/lang/Object;IILjava/lang/Object;)Lcom/ditchoom/socket/SocketDataRead;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBytesRead ()I
+	public final fun getResult ()Ljava/lang/Object;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class com/ditchoom/socket/SocketException : com/ditchoom/socket/PlatformIOException {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public fun getMessage ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SocketIOException : com/ditchoom/socket/SocketException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public fun getMessage ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SocketKt {
+	public static final fun allocate (Lcom/ditchoom/socket/ClientSocket$Companion;Lcom/ditchoom/socket/TransportConfig;)Lcom/ditchoom/socket/ClientToServerSocket;
+	public static final fun allocate (Lcom/ditchoom/socket/ServerSocket$Companion;Lcom/ditchoom/socket/TransportConfig;)Lcom/ditchoom/socket/ServerSocket;
+	public static synthetic fun allocate$default (Lcom/ditchoom/socket/ClientSocket$Companion;Lcom/ditchoom/socket/TransportConfig;ILjava/lang/Object;)Lcom/ditchoom/socket/ClientToServerSocket;
+	public static synthetic fun allocate$default (Lcom/ditchoom/socket/ServerSocket$Companion;Lcom/ditchoom/socket/TransportConfig;ILjava/lang/Object;)Lcom/ditchoom/socket/ServerSocket;
+	public static final fun getUseAsyncChannels ()Z
+	public static final fun getUseNioBlocking ()Z
+	public static final fun setUseAsyncChannels (Z)V
+	public static final fun setUseNioBlocking (Z)V
+}
+
+public final class com/ditchoom/socket/SocketTimeoutException : com/ditchoom/socket/SocketException, com/ditchoom/socket/ConnectionFailure {
+	public fun <init> (Lcom/ditchoom/socket/TimeoutContext;Ljava/lang/String;ILjava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TimeoutContext;Ljava/lang/String;ILjava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;ILjava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;ILjava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public final fun getContext ()Lcom/ditchoom/socket/TimeoutContext;
+	public final fun getHost ()Ljava/lang/String;
+	public fun getMessage ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SocketUnknownHostException : com/ditchoom/socket/SocketException, com/ditchoom/socket/ConnectionFailure {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public final fun getHostname ()Ljava/lang/String;
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/socket/SocketWriteStalledException : com/ditchoom/socket/SocketException {
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteSinkStalledException;)V
+	public final fun getAccepted ()I
+	public final fun getPending ()I
+	public final fun getStall ()Lcom/ditchoom/buffer/flow/ByteSinkStalledException;
+}
+
+public final class com/ditchoom/socket/SuspendingSocketInputStream {
+	public synthetic fun <init> (JLcom/ditchoom/buffer/flow/ByteSource;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun readBuffer (Ljava/lang/Integer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun readBuffer$default (Lcom/ditchoom/socket/SuspendingSocketInputStream;Ljava/lang/Integer;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun readByte (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun readUnsignedByte-Wa3L5BU (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/SystemTrustFailure {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SystemTrustFailure$CopyFailed : com/ditchoom/socket/SystemTrustFailure {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/SystemTrustFailure$CopyFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/SystemTrustFailure$CopyFailed;IILjava/lang/Object;)Lcom/ditchoom/socket/SystemTrustFailure$CopyFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getIndex ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SystemTrustFailure$Refused : com/ditchoom/socket/SystemTrustFailure {
+	public fun <init> (JLjava/lang/String;)V
+	public final fun component1 ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (JLjava/lang/String;)Lcom/ditchoom/socket/SystemTrustFailure$Refused;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/SystemTrustFailure$Refused;JLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/SystemTrustFailure$Refused;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()J
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getPlatformDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SystemTrustFailure$RefusedWithoutError : com/ditchoom/socket/SystemTrustFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/SystemTrustFailure$RefusedWithoutError;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SystemTrustFailure$TrustCreationFailed : com/ditchoom/socket/SystemTrustFailure {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/SystemTrustFailure$TrustCreationFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/SystemTrustFailure$TrustCreationFailed;IILjava/lang/Object;)Lcom/ditchoom/socket/SystemTrustFailure$TrustCreationFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getOsStatus ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/SystemTrustFailure$UnreadableCertificate : com/ditchoom/socket/SystemTrustFailure {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/SystemTrustFailure$UnreadableCertificate;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/SystemTrustFailure$UnreadableCertificate;IILjava/lang/Object;)Lcom/ditchoom/socket/SystemTrustFailure$UnreadableCertificate;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getIndex ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/TimeoutContext {
+	public abstract fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TimeoutContext$Connect : com/ditchoom/socket/TimeoutContext {
+	public synthetic fun <init> (JLjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()I
+	public final fun copy-KLykuaI (JLjava/lang/String;I)Lcom/ditchoom/socket/TimeoutContext$Connect;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/socket/TimeoutContext$Connect;JLjava/lang/String;IILjava/lang/Object;)Lcom/ditchoom/socket/TimeoutContext$Connect;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TimeoutContext$Platform : com/ditchoom/socket/TimeoutContext {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/TimeoutContext$Platform;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/TimeoutContext$Platform;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/TimeoutContext$Platform;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TimeoutContext$Read : com/ditchoom/socket/TimeoutContext {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/TimeoutContext$Read;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/TimeoutContext$Read;JILjava/lang/Object;)Lcom/ditchoom/socket/TimeoutContext$Read;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TimeoutContext$StreamOpen : com/ditchoom/socket/TimeoutContext {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/TimeoutContext$StreamOpen;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/TimeoutContext$StreamOpen;JILjava/lang/Object;)Lcom/ditchoom/socket/TimeoutContext$StreamOpen;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TimeoutContext$Write : com/ditchoom/socket/TimeoutContext {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/TimeoutContext$Write;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/TimeoutContext$Write;JILjava/lang/Object;)Lcom/ditchoom/socket/TimeoutContext$Write;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TlsConfig {
+	public static final field Companion Lcom/ditchoom/socket/TlsConfig$Companion;
+	public fun <init> ()V
+	public fun <init> (ZZZZ)V
+	public synthetic fun <init> (ZZZZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Z
+	public final fun component2 ()Z
+	public final fun component3 ()Z
+	public final fun component4 ()Z
+	public final fun copy (ZZZZ)Lcom/ditchoom/socket/TlsConfig;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/TlsConfig;ZZZZILjava/lang/Object;)Lcom/ditchoom/socket/TlsConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAllowExpiredCertificates ()Z
+	public final fun getAllowSelfSigned ()Z
+	public final fun getVerifyCertificates ()Z
+	public final fun getVerifyHostname ()Z
+	public fun hashCode ()I
+	public final fun isInsecure ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TlsConfig$Companion {
+	public final fun getDEFAULT ()Lcom/ditchoom/socket/TlsConfig;
+	public final fun getINSECURE ()Lcom/ditchoom/socket/TlsConfig;
+}
+
+public final class com/ditchoom/socket/TransportConfig {
+	public static final field Companion Lcom/ditchoom/socket/TransportConfig$Companion;
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun component2 ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public final fun component3 ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public final fun component4-UwyO8pc ()J
+	public final fun component5 ()Lcom/ditchoom/socket/TlsConfig;
+	public final fun component6 ()Lcom/ditchoom/socket/IoTuning;
+	public final fun component7 ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun component8 ()Lcom/ditchoom/socket/NameResolution;
+	public final fun component9 ()Lcom/ditchoom/socket/ConnectPacing;
+	public final fun copy-SBKQj6I (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;)Lcom/ditchoom/socket/TransportConfig;
+	public static synthetic fun copy-SBKQj6I$default (Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;ILjava/lang/Object;)Lcom/ditchoom/socket/TransportConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun getConnectPacing ()Lcom/ditchoom/socket/ConnectPacing;
+	public final fun getConnectTimeout-UwyO8pc ()J
+	public final fun getIo ()Lcom/ditchoom/socket/IoTuning;
+	public final fun getNameResolution ()Lcom/ditchoom/socket/NameResolution;
+	public final fun getNetworkId ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public final fun getTls ()Lcom/ditchoom/socket/TlsConfig;
+	public final fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/TransportConfig$Companion {
+	public final fun getLOW_LATENCY ()Lcom/ditchoom/socket/TransportConfig;
+	public final fun tlsDefault ()Lcom/ditchoom/socket/TransportConfig;
+	public final fun tlsInsecure ()Lcom/ditchoom/socket/TransportConfig;
+}
+
+public final class com/ditchoom/socket/TransportKind : java/lang/Enum {
+	public static final field QUIC Lcom/ditchoom/socket/TransportKind;
+	public static final field TCP Lcom/ditchoom/socket/TransportKind;
+	public static final field WEB_SOCKET Lcom/ditchoom/socket/TransportKind;
+	public static final field WEB_TRANSPORT Lcom/ditchoom/socket/TransportKind;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/TransportKind;
+	public static fun values ()[Lcom/ditchoom/socket/TransportKind;
+}
+
+public final class com/ditchoom/socket/TransportsExhausted : com/ditchoom/socket/SocketException {
+	public fun <init> (Ljava/lang/String;ILjava/util/List;)V
+	public final fun getFailures ()Ljava/util/List;
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPort ()I
+}
+
+public abstract class com/ditchoom/socket/nio/BaseClientSocket : com/ditchoom/socket/nio/ByteBufferClientSocket {
+	public fun <init> ()V
+	public fun <init> (ZLcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (ZLcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected final fun getBlocking ()Z
+	public final fun getSelector ()Ljava/nio/channels/Selector;
+	public fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun remotePort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/nio/ByteBufferClientSocket : com/ditchoom/socket/ClientSocket {
+	protected field socket Ljava/nio/channels/NetworkChannel;
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	protected final fun applySocketOptions (Lcom/ditchoom/socket/IoTuning;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected final fun effectiveReadBufferSize (I)I
+	protected final fun getConfig ()Lcom/ditchoom/socket/TransportConfig;
+	protected final fun getReadBufferSource ()Lcom/ditchoom/socket/ReadBufferSource;
+	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	protected final fun getSocket ()Ljava/nio/channels/NetworkChannel;
+	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	protected final fun initTls-zkXUZaI (Ljava/lang/String;ILcom/ditchoom/socket/TlsConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun isOpen ()Z
+	protected final fun isSocketInitialized ()Z
+	public fun localPort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected final fun setSocket (Ljava/nio/channels/NetworkChannel;)V
+	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio/NioClientSocket : com/ditchoom/socket/nio/BaseClientSocket, com/ditchoom/socket/ClientToServerSocket {
+	public fun <init> ()V
+	public fun <init> (ZLcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (ZLcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun open (ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio/NioServerSocket : com/ditchoom/socket/ServerSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun isListening ()Z
+	public fun port ()I
+}
+
+public final class com/ditchoom/socket/nio/NioServerToClientSocket : com/ditchoom/socket/nio/BaseClientSocket {
+	public fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/nio/util/NetworkChannelExtensionsKt {
+	public static final fun aClose (Ljava/nio/channels/NetworkChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun localAddressOrNull (Ljava/nio/channels/NetworkChannel;)Ljava/net/SocketAddress;
+}
+
+public final class com/ditchoom/socket/nio/util/SelectorExtensionsKt {
+	public static final fun aClose (Ljava/nio/channels/Selector;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aSelect-8Mi8wO0 (Ljava/nio/channels/Selector;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio/util/SocketChannelExtensionsKt {
+	public static final fun aConfigureBlocking (Ljava/nio/channels/SelectableChannel;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aConnect-exY8QGI (Ljava/nio/channels/SocketChannel;Ljava/net/SocketAddress;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aFinishConnecting (Ljava/nio/channels/SocketChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun closeOnCancel (Ljava/nio/channels/NetworkChannel;Lkotlinx/coroutines/CancellableContinuation;)V
+	public static final fun connect-zkXUZaI (Ljava/nio/channels/SocketChannel;Ljava/net/SocketAddress;Ljava/nio/channels/Selector;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect-zkXUZaI$default (Ljava/nio/channels/SocketChannel;Ljava/net/SocketAddress;Ljava/nio/channels/Selector;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun openSocketChannel (Ljava/net/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun openSocketChannel$default (Ljava/net/SocketAddress;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun read-zkXUZaI (Ljava/nio/channels/spi/AbstractSelectableChannel;Ljava/nio/ByteBuffer;Ljava/nio/channels/Selector;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun remoteAddressOrNull (Ljava/nio/channels/SocketChannel;)Ljava/net/SocketAddress;
+	public static final fun select-zkXUZaI (Ljava/nio/channels/Selector;Ljava/nio/channels/SelectionKey;Ljava/lang/Object;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun suspendUntilReady-zkXUZaI (Ljava/nio/channels/spi/AbstractSelectableChannel;Ljava/nio/channels/Selector;IJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun write-zkXUZaI (Ljava/nio/channels/spi/AbstractSelectableChannel;Ljava/nio/ByteBuffer;Ljava/nio/channels/Selector;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio/util/WrappedContinuation {
+	public fun <init> (Lkotlinx/coroutines/CancellableContinuation;Ljava/lang/Object;)V
+	public final fun cancel ()Z
+	public final fun component1 ()Lkotlinx/coroutines/CancellableContinuation;
+	public final fun component2 ()Ljava/lang/Object;
+	public final fun copy (Lkotlinx/coroutines/CancellableContinuation;Ljava/lang/Object;)Lcom/ditchoom/socket/nio/util/WrappedContinuation;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/nio/util/WrappedContinuation;Lkotlinx/coroutines/CancellableContinuation;Ljava/lang/Object;ILjava/lang/Object;)Lcom/ditchoom/socket/nio/util/WrappedContinuation;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttachment ()Ljava/lang/Object;
+	public final fun getContinuation ()Lkotlinx/coroutines/CancellableContinuation;
+	public fun hashCode ()I
+	public final fun resume ()V
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class com/ditchoom/socket/nio2/AsyncBaseClientSocket : com/ditchoom/socket/nio/ByteBufferClientSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun remotePort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio2/AsyncClientSocket : com/ditchoom/socket/nio2/AsyncBaseClientSocket, com/ditchoom/socket/ClientToServerSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun open (ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio2/AsyncServerSocket : com/ditchoom/socket/ServerSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun isListening ()Z
+	public fun port ()I
+}
+
+public final class com/ditchoom/socket/nio2/AsyncServerToClientSocket : com/ditchoom/socket/nio2/AsyncBaseClientSocket {
+	public fun <init> (Ljava/nio/channels/AsynchronousSocketChannel;Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Ljava/nio/channels/AsynchronousSocketChannel;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/nio2/util/AcceptCompletionHandler : java/nio/channels/CompletionHandler {
+	public fun <init> (Lkotlinx/coroutines/CancellableContinuation;)V
+	public synthetic fun completed (Ljava/lang/Object;Ljava/lang/Object;)V
+	public fun completed (Ljava/nio/channels/AsynchronousSocketChannel;Lkotlinx/coroutines/CancellableContinuation;)V
+	public final fun component1 ()Lkotlinx/coroutines/CancellableContinuation;
+	public final fun copy (Lkotlinx/coroutines/CancellableContinuation;)Lcom/ditchoom/socket/nio2/util/AcceptCompletionHandler;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/nio2/util/AcceptCompletionHandler;Lkotlinx/coroutines/CancellableContinuation;ILjava/lang/Object;)Lcom/ditchoom/socket/nio2/util/AcceptCompletionHandler;
+	public fun equals (Ljava/lang/Object;)Z
+	public synthetic fun failed (Ljava/lang/Throwable;Ljava/lang/Object;)V
+	public fun failed (Ljava/lang/Throwable;Lkotlinx/coroutines/CancellableContinuation;)V
+	public final fun getContinuation ()Lkotlinx/coroutines/CancellableContinuation;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/nio2/util/AsyncHandlersKt {
+	public static final fun asyncIOHandler ()Ljava/nio/channels/CompletionHandler;
+	public static final fun asyncIOIntHandler ()Ljava/nio/channels/CompletionHandler;
+}
+
+public final class com/ditchoom/socket/nio2/util/AsynchronousChannelGroupExtensionsKt {
+	public static final fun openAsyncServerSocketChannel (Ljava/nio/channels/AsynchronousChannelGroup;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun openAsyncServerSocketChannel$default (Ljava/nio/channels/AsynchronousChannelGroup;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio2/util/AsynchronousServerSocketChannelExtensionsKt {
+	public static final fun aAccept (Ljava/nio/channels/AsynchronousServerSocketChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aBind (Ljava/nio/channels/AsynchronousServerSocketChannel;Ljava/net/SocketAddress;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun aBind$default (Ljava/nio/channels/AsynchronousServerSocketChannel;Ljava/net/SocketAddress;ILkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio2/util/AsynchronousSocketChannelExtensionsKt {
+	public static final fun aClose (Ljava/nio/channels/AsynchronousSocketChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aConnect-exY8QGI (Ljava/nio/channels/AsynchronousSocketChannel;Ljava/net/SocketAddress;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aRead-exY8QGI (Ljava/nio/channels/AsynchronousSocketChannel;Ljava/nio/ByteBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aRemoteAddress (Ljava/nio/channels/AsynchronousSocketChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun aWrite-exY8QGI (Ljava/nio/channels/AsynchronousSocketChannel;Ljava/nio/ByteBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun assignedPort (Ljava/nio/channels/AsynchronousSocketChannel;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun assignedPort$default (Ljava/nio/channels/AsynchronousSocketChannel;ZLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun asyncSocket (Ljava/nio/channels/AsynchronousChannelGroup;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun asyncSocket$default (Ljava/nio/channels/AsynchronousChannelGroup;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/nio2/util/ChannelExtensionsKt {
+	public static final fun blockingClose (Ljava/nio/channels/Channel;)V
+	public static final fun closeOnCancel (Ljava/nio/channels/AsynchronousFileChannel;Lkotlinx/coroutines/CancellableContinuation;)V
+	public static final fun closeOnCancel (Ljava/nio/channels/NetworkChannel;Lkotlinx/coroutines/CancellableContinuation;)V
+}
+
+public final class com/ditchoom/socket/transport/CacheScope : java/lang/Enum {
+	public static final field None Lcom/ditchoom/socket/transport/CacheScope;
+	public static final field PerHost Lcom/ditchoom/socket/transport/CacheScope;
+	public static final field PerNetwork Lcom/ditchoom/socket/transport/CacheScope;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/transport/CacheScope;
+	public static fun values ()[Lcom/ditchoom/socket/transport/CacheScope;
+}
+
+public abstract interface class com/ditchoom/socket/transport/CapabilityCache {
+	public abstract fun order (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Ljava/util/List;)Ljava/util/List;
+	public abstract fun recordSuccess (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+	public abstract fun recordUnsupported (Lcom/ditchoom/socket/transport/CacheScope;Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+}
+
+public final class com/ditchoom/socket/transport/CodecConnection : com/ditchoom/buffer/flow/Connection {
+	public static final field Companion Lcom/ditchoom/socket/transport/CodecConnection$Companion;
+	public static final field DEFAULT_OUTBOUND_CAPACITY I
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;J)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;J)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCodec ()Lcom/ditchoom/buffer/codec/Codec;
+	public fun getId ()J
+	public final fun getLastDataReceived ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getStream ()Lcom/ditchoom/buffer/flow/ByteStream;
+	public final fun preSeed (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public fun receive ()Lkotlinx/coroutines/flow/Flow;
+	public fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/CodecConnection$Companion {
+	public final fun connect (Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/transport/CodecConnection$Companion;Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/CodecReceiver : com/ditchoom/buffer/flow/Receiver {
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;J)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteSource;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getCodec ()Lcom/ditchoom/buffer/codec/Codec;
+	public final fun getId ()J
+	public final fun getSource ()Lcom/ditchoom/buffer/flow/ByteSource;
+	public fun receive ()Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class com/ditchoom/socket/transport/CodecSender : com/ditchoom/buffer/flow/Sender {
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteSink;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/EncodeContext;J)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteSink;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/EncodeContext;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteSink;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/EncodeContext;J)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteSink;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/EncodeContext;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCodec ()Lcom/ditchoom/buffer/codec/Codec;
+	public fun getId ()J
+	public final fun getSink ()Lcom/ditchoom/buffer/flow/ByteSink;
+	public fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/DefaultFallbackPolicy : com/ditchoom/socket/transport/FallbackPolicy {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/DefaultFallbackPolicy;
+	public fun classify (Ljava/lang/Throwable;)Lcom/ditchoom/socket/transport/FallbackVerdict;
+}
+
+public final class com/ditchoom/socket/transport/DefaultTransportChainKt {
+	public static final fun defaultTransportChain (Lcom/ditchoom/socket/transport/TransportSet;)Ljava/util/List;
+}
+
+public abstract interface class com/ditchoom/socket/transport/FallbackPolicy {
+	public abstract fun classify (Ljava/lang/Throwable;)Lcom/ditchoom/socket/transport/FallbackVerdict;
+}
+
+public final class com/ditchoom/socket/transport/FallbackTransport : com/ditchoom/socket/transport/Transport {
+	public static final field Companion Lcom/ditchoom/socket/transport/FallbackTransport$Companion;
+	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/socket/transport/FallbackPolicy;Lcom/ditchoom/socket/transport/CapabilityCache;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/time/Duration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/socket/transport/FallbackPolicy;Lcom/ditchoom/socket/transport/CapabilityCache;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/time/Duration;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public final class com/ditchoom/socket/transport/FallbackTransport$Companion {
+	public final fun getRECOMMENDED_STAGGER-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/transport/FallbackVerdict {
+	public static final field Companion Lcom/ditchoom/socket/transport/FallbackVerdict$Companion;
+	public fun <init> (ZZLcom/ditchoom/socket/transport/CacheScope;)V
+	public final fun component1 ()Z
+	public final fun component2 ()Z
+	public final fun component3 ()Lcom/ditchoom/socket/transport/CacheScope;
+	public final fun copy (ZZLcom/ditchoom/socket/transport/CacheScope;)Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/FallbackVerdict;ZZLcom/ditchoom/socket/transport/CacheScope;ILjava/lang/Object;)Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCacheUnsupported ()Z
+	public final fun getFallback ()Z
+	public final fun getScope ()Lcom/ditchoom/socket/transport/CacheScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/FallbackVerdict$Companion {
+	public final fun capability (Lcom/ditchoom/socket/transport/CacheScope;)Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public final fun getFatal ()Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public final fun getTransient ()Lcom/ditchoom/socket/transport/FallbackVerdict;
+}
+
+public final class com/ditchoom/socket/transport/InMemoryCapabilityCache : com/ditchoom/socket/transport/CapabilityCache {
+	public synthetic fun <init> (JLkotlin/time/TimeSource;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLkotlin/time/TimeSource;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun order (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Ljava/util/List;)Ljava/util/List;
+	public fun recordSuccess (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+	public fun recordUnsupported (Lcom/ditchoom/socket/transport/CacheScope;Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+}
+
+public abstract interface class com/ditchoom/socket/transport/Liveness {
+	public abstract fun probe (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/Liveness$Result : java/lang/Enum {
+	public static final field Alive Lcom/ditchoom/socket/transport/Liveness$Result;
+	public static final field Dead Lcom/ditchoom/socket/transport/Liveness$Result;
+	public static final field Unknown Lcom/ditchoom/socket/transport/Liveness$Result;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/transport/Liveness$Result;
+	public static fun values ()[Lcom/ditchoom/socket/transport/Liveness$Result;
+}
+
+public final class com/ditchoom/socket/transport/MemoryByteStream : com/ditchoom/buffer/flow/ByteStream {
+	public fun <init> (Lkotlinx/coroutines/channels/Channel;Lkotlinx/coroutines/channels/Channel;Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/channels/Channel;Lkotlinx/coroutines/channels/Channel;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public fun isOpen ()Z
+	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/MemoryTransport : com/ditchoom/socket/transport/Transport {
+	public static final field Companion Lcom/ditchoom/socket/transport/MemoryTransport$Companion;
+	public fun <init> ()V
+	public fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public final class com/ditchoom/socket/transport/MemoryTransport$Companion {
+	public final fun createPair (Lcom/ditchoom/socket/TransportConfig;)Lkotlin/Pair;
+	public static synthetic fun createPair$default (Lcom/ditchoom/socket/transport/MemoryTransport$Companion;Lcom/ditchoom/socket/TransportConfig;ILjava/lang/Object;)Lkotlin/Pair;
+}
+
+public abstract interface class com/ditchoom/socket/transport/MultiplexingTransport {
+	public abstract fun withMux (Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withMux$default (Lcom/ditchoom/socket/transport/MultiplexingTransport;Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/MultiplexingTransport$DefaultImpls {
+	public static synthetic fun withMux$default (Lcom/ditchoom/socket/transport/MultiplexingTransport;Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/transport/MuxIdentified {
+	public abstract fun getMuxStreamId ()J
+}
+
+public final class com/ditchoom/socket/transport/NoOpCapabilityCache : com/ditchoom/socket/transport/CapabilityCache {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/NoOpCapabilityCache;
+	public fun order (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Ljava/util/List;)Ljava/util/List;
+	public fun recordSuccess (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+	public fun recordUnsupported (Lcom/ditchoom/socket/transport/CacheScope;Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/transport/Transport;)V
+}
+
+public abstract interface class com/ditchoom/socket/transport/OverflowPolicy {
+}
+
+public final class com/ditchoom/socket/transport/OverflowPolicy$DropNewest : com/ditchoom/socket/transport/OverflowPolicy {
+	public fun <init> (Lkotlin/jvm/functions/Function1;)V
+	public final fun getOnOverflow ()Lkotlin/jvm/functions/Function1;
+}
+
+public final class com/ditchoom/socket/transport/OverflowPolicy$DropOldest : com/ditchoom/socket/transport/OverflowPolicy {
+	public fun <init> (Lkotlin/jvm/functions/Function1;)V
+	public final fun getOnOverflow ()Lkotlin/jvm/functions/Function1;
+}
+
+public final class com/ditchoom/socket/transport/OverflowPolicy$Fail : com/ditchoom/socket/transport/OverflowPolicy {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/OverflowPolicy$Fail;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/OverflowPolicy$Suspend : com/ditchoom/socket/transport/OverflowPolicy {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/OverflowPolicy$Suspend;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/ReconnectingConnection : com/ditchoom/buffer/flow/Connection {
+	public fun <init> (Lkotlin/jvm/functions/Function1;Lcom/ditchoom/socket/ReconnectionClassifier;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/transport/Liveness;)V
+	public synthetic fun <init> (Lkotlin/jvm/functions/Function1;Lcom/ditchoom/socket/ReconnectionClassifier;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/transport/Liveness;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getId ()J
+	public final fun getLastMessageReceived ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun receive ()Lkotlinx/coroutines/flow/Flow;
+	public final fun resetBackoff ()V
+	public fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/SessionOwningByteStream : com/ditchoom/buffer/flow/ByteStream {
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public fun isOpen ()Z
+	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/transport/SessionTransport {
+	public abstract fun close (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun establish (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun establish$default (Lcom/ditchoom/socket/transport/SessionTransport;Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/SessionTransport$DefaultImpls {
+	public static synthetic fun establish$default (Lcom/ditchoom/socket/transport/SessionTransport;Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/SessionTransportKt {
+	public static final fun use (Lcom/ditchoom/socket/transport/SessionTransport;Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun use$default (Lcom/ditchoom/socket/transport/SessionTransport;Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/transport/TcpTransport : com/ditchoom/socket/transport/Transport {
+	public fun <init> ()V
+	public fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public abstract interface class com/ditchoom/socket/transport/Transport {
+	public abstract fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public final class com/ditchoom/socket/transport/Transport$DefaultImpls {
+	public static fun getFamily (Lcom/ditchoom/socket/transport/Transport;)Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public final class com/ditchoom/socket/transport/TransportFailure {
+	public fun <init> (Lcom/ditchoom/socket/transport/Transport;Ljava/lang/Throwable;Lcom/ditchoom/socket/transport/FallbackVerdict;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/Transport;
+	public final fun component2 ()Ljava/lang/Throwable;
+	public final fun component3 ()Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public final fun copy (Lcom/ditchoom/socket/transport/Transport;Ljava/lang/Throwable;Lcom/ditchoom/socket/transport/FallbackVerdict;)Lcom/ditchoom/socket/transport/TransportFailure;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/TransportFailure;Lcom/ditchoom/socket/transport/Transport;Ljava/lang/Throwable;Lcom/ditchoom/socket/transport/FallbackVerdict;ILjava/lang/Object;)Lcom/ditchoom/socket/transport/TransportFailure;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getError ()Ljava/lang/Throwable;
+	public final fun getTransport ()Lcom/ditchoom/socket/transport/Transport;
+	public final fun getVerdict ()Lcom/ditchoom/socket/transport/FallbackVerdict;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/TransportFamily : java/lang/Enum {
+	public static final field Tcp Lcom/ditchoom/socket/transport/TransportFamily;
+	public static final field Udp Lcom/ditchoom/socket/transport/TransportFamily;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/transport/TransportFamily;
+	public static fun values ()[Lcom/ditchoom/socket/transport/TransportFamily;
+}
+
+public final class com/ditchoom/socket/transport/TransportSet {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;Lcom/ditchoom/socket/transport/Transport;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getQuic ()Lcom/ditchoom/socket/transport/Transport;
+	public final fun getTcp ()Lcom/ditchoom/socket/transport/Transport;
+	public final fun getWebSocket ()Lcom/ditchoom/socket/transport/Transport;
+	public final fun getWebTransport ()Lcom/ditchoom/socket/transport/Transport;
+}
+
+public final class com/ditchoom/socket/transport/TypedMuxView : com/ditchoom/buffer/flow/StreamMux {
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStreamMux;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteStreamMux;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStreamMux;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/ByteStreamMux;Lcom/ditchoom/buffer/codec/Codec;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun acceptBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun acceptUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun closeMintedConnections (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCodec ()Lcom/ditchoom/buffer/codec/Codec;
+	public final fun getRaw ()Lcom/ditchoom/buffer/flow/ByteStreamMux;
+	public fun openBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun openUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+

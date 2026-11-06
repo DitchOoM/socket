@@ -1,0 +1,693 @@
+public abstract interface class com/ditchoom/socket/udp/DatagramSendError {
+	public fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$DefaultImpls {
+	public static fun describe (Lcom/ditchoom/socket/udp/DatagramSendError;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$NotPermitted : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/DatagramSendError$NotPermitted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$NotPermitted;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$NotPermitted;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$OsError : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/DatagramSendError$OsError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$OsError;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$OsError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$PlatformError : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/DatagramSendError$PlatformError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$PlatformError;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$PlatformError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()I
+	public final fun getDomain ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$PortUnreachable : com/ditchoom/socket/udp/DatagramSendError {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/DatagramSendError$PortUnreachable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$SourceAddressUnavailable : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/udp/SourceAddressRejection;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/socket/udp/SourceAddressRejection;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/socket/udp/SourceAddressRejection;)Lcom/ditchoom/socket/udp/DatagramSendError$SourceAddressUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$SourceAddressUnavailable;Ljava/lang/String;Lcom/ditchoom/socket/udp/SourceAddressRejection;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$SourceAddressUnavailable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/socket/udp/SourceAddressRejection;
+	public final fun getRequestedHost ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$TooLarge : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/DatagramSendError$TooLarge;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$TooLarge;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$TooLarge;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttempted ()I
+	public final fun getLimit ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$Transport : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/udp/DatagramSendError$Transport;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$Transport;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$Transport;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$Unreachable : com/ditchoom/socket/udp/DatagramSendError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/DatagramSendError$Unreachable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/DatagramSendError$Unreachable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramSendError$Unreachable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendError$WouldBlock : com/ditchoom/socket/udp/DatagramSendError {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/DatagramSendError$WouldBlock;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendErrorKt {
+	public static final field ERRNO_NOT_SURFACED I
+}
+
+public final class com/ditchoom/socket/udp/DatagramSendException : java/lang/RuntimeException {
+	public fun <init> (Lcom/ditchoom/socket/udp/DatagramSendError;)V
+	public final fun getError ()Lcom/ditchoom/socket/udp/DatagramSendError;
+}
+
+public abstract interface class com/ditchoom/socket/udp/DatagramSocketPin {
+	public abstract fun pin (Ljava/net/DatagramSocket;)V
+}
+
+public final class com/ditchoom/socket/udp/DeniedAccess : java/lang/Enum {
+	public static final field CellularData Lcom/ditchoom/socket/udp/DeniedAccess;
+	public static final field LocalNetwork Lcom/ditchoom/socket/udp/DeniedAccess;
+	public static final field WifiData Lcom/ditchoom/socket/udp/DeniedAccess;
+	public final fun describe ()Ljava/lang/String;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/udp/DeniedAccess;
+	public static fun values ()[Lcom/ditchoom/socket/udp/DeniedAccess;
+}
+
+public final class com/ditchoom/socket/udp/InternedJvmSocketAddressKt {
+	public static final fun hostOsSockAddrLayout ()Lcom/ditchoom/socket/udp/SockAddrLayout;
+}
+
+public abstract interface class com/ditchoom/socket/udp/MulticastDatagramChannel : com/ditchoom/buffer/flow/AddressedDatagramChannel {
+	public abstract fun joinGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun leaveGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun setLoopbackEnabled (ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun setOutboundInterface (Lcom/ditchoom/socket/udp/MulticastInterface;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun setTimeToLive (ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/udp/MulticastDatagramChannel$DefaultImpls {
+	public static fun receiveBatch (Lcom/ditchoom/socket/udp/MulticastDatagramChannel;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun sendBatch (Lcom/ditchoom/socket/udp/MulticastDatagramChannel;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/udp/MulticastException : java/lang/RuntimeException {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$ChannelClosed : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun getOperation ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$JoinFailed : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getGroup ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun getNetworkInterface ()Lcom/ditchoom/socket/udp/MulticastInterface;
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$LeaveFailed : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getGroup ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun getNetworkInterface ()Lcom/ditchoom/socket/udp/MulticastInterface;
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$NoSuchInterface : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getNetworkInterface ()Lcom/ditchoom/socket/udp/MulticastInterface;
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$OptionFailed : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getOption ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MulticastException$UnsupportedInterface : com/ditchoom/socket/udp/MulticastException {
+	public fun <init> (Lcom/ditchoom/socket/udp/MulticastInterface;Ljava/lang/String;)V
+	public final fun getNetworkInterface ()Lcom/ditchoom/socket/udp/MulticastInterface;
+}
+
+public abstract interface class com/ditchoom/socket/udp/MulticastInterface {
+}
+
+public final class com/ditchoom/socket/udp/MulticastInterface$ByIndex : com/ditchoom/socket/udp/MulticastInterface {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/MulticastInterface$ByIndex;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/MulticastInterface$ByIndex;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/MulticastInterface$ByIndex;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIndex ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MulticastInterface$ByName : com/ditchoom/socket/udp/MulticastInterface {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/udp/MulticastInterface$ByName;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/MulticastInterface$ByName;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/MulticastInterface$ByName;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MulticastInterface$Default : com/ditchoom/socket/udp/MulticastInterface {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MulticastInterface$Default;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MulticastMembership {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun component2 ()Lcom/ditchoom/socket/udp/MulticastInterface;
+	public final fun copy (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;)Lcom/ditchoom/socket/udp/MulticastMembership;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/MulticastMembership;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/socket/udp/MulticastInterface;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/MulticastMembership;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getGroup ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun getNetworkInterface ()Lcom/ditchoom/socket/udp/MulticastInterface;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedDatagram {
+	public final fun getDatagram ()Lcom/ditchoom/buffer/flow/Datagram;
+	public final fun getProtocol ()Lcom/ditchoom/socket/udp/MultiplexedProtocol$NonQuic;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedDropCounts {
+	public fun <init> ()V
+	public fun <init> (JJJ)V
+	public synthetic fun <init> (JJJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun component3 ()J
+	public final fun copy (JJJ)Lcom/ditchoom/socket/udp/MultiplexedDropCounts;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/MultiplexedDropCounts;JJJILjava/lang/Object;)Lcom/ditchoom/socket/udp/MultiplexedDropCounts;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getNonQuicOverflow ()J
+	public final fun getQuicOverflow ()J
+	public final fun getUnroutable ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/udp/MultiplexedProtocol {
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$Dtls : com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$Dtls;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic : com/ditchoom/socket/udp/MultiplexedProtocol {
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$Quic : com/ditchoom/socket/udp/MultiplexedProtocol {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$Quic;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$RtpRtcp : com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$RtpRtcp;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$Stun : com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$Stun;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$TurnChannel : com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$TurnChannel;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$Unroutable : com/ditchoom/socket/udp/MultiplexedProtocol {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$Unroutable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocol$Zrtp : com/ditchoom/socket/udp/MultiplexedProtocol$NonQuic {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/MultiplexedProtocol$Zrtp;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedProtocolKt {
+	public static final fun classifyMultiplexedDatagram (B)Lcom/ditchoom/socket/udp/MultiplexedProtocol;
+	public static final fun classifyMultiplexedDatagram (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/udp/MultiplexedProtocol;
+}
+
+public abstract interface class com/ditchoom/socket/udp/MultiplexedUdpSocket {
+	public abstract fun close ()V
+	public abstract fun getDatagrams ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getDropped ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun getLocalAddress ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public abstract fun getQuic ()Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;
+	public abstract fun send (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun send$default (Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedUdpSocket$DefaultImpls {
+	public static synthetic fun send$default (Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/udp/MultiplexedUdpSocketKt {
+	public static final fun demultiplex-D8Jn--E (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lkotlinx/coroutines/CoroutineScope;Ljava/util/Set;I)Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;
+	public static synthetic fun demultiplex-D8Jn--E$default (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lkotlinx/coroutines/CoroutineScope;Ljava/util/Set;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;
+}
+
+public final class com/ditchoom/socket/udp/SockAddrLayout {
+	public fun <init> (ZII)V
+	public final fun component1 ()Z
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (ZII)Lcom/ditchoom/socket/udp/SockAddrLayout;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/SockAddrLayout;ZIIILjava/lang/Object;)Lcom/ditchoom/socket/udp/SockAddrLayout;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAfInet ()I
+	public final fun getAfInet6 ()I
+	public final fun getHasLenByte ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SocketAddressCodec : com/ditchoom/buffer/codec/Codec {
+	public fun <init> (Lcom/ditchoom/socket/udp/SockAddrLayout;)V
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/buffer/flow/SocketAddress;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun sizeHint (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun wireSize (Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/udp/SocketAddressCodecKt {
+	public static final field SOCKADDR_IN6_SIZE I
+	public static final field SOCKADDR_IN_SIZE I
+}
+
+public abstract interface class com/ditchoom/socket/udp/SourceAddressRejection {
+	public fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$DefaultImpls {
+	public static fun describe (Lcom/ditchoom/socket/udp/SourceAddressRejection;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$NotAssigned : com/ditchoom/socket/udp/SourceAddressRejection {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/SourceAddressRejection$NotAssigned;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/SourceAddressRejection$NotAssigned;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/SourceAddressRejection$NotAssigned;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$NotBound : com/ditchoom/socket/udp/SourceAddressRejection {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/SourceAddressRejection$NotBound;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$Undetermined : com/ditchoom/socket/udp/SourceAddressRejection {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/SourceAddressRejection$Undetermined;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/SourceAddressRejection$Undetermined;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/SourceAddressRejection$Undetermined;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProbeErrno ()I
+	public final fun getSendErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$UnscopedLinkLocal : com/ditchoom/socket/udp/SourceAddressRejection {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/SourceAddressRejection$UnscopedLinkLocal;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$Unverified : com/ditchoom/socket/udp/SourceAddressRejection {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/SourceAddressRejection$Unverified;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/SourceAddressRejection$Unverified;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/SourceAddressRejection$Unverified;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProbeErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/SourceAddressRejection$WrongFamily : com/ditchoom/socket/udp/SourceAddressRejection {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/SourceAddressRejection$WrongFamily;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/TurnRelays {
+	public static final field Companion Lcom/ditchoom/socket/udp/TurnRelays$Companion;
+	public static final synthetic fun box-impl (Ljava/util/Set;)Lcom/ditchoom/socket/udp/TurnRelays;
+	public static final fun classify-impl (Ljava/util/Set;BLcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/socket/udp/MultiplexedProtocol;
+	public static final fun classify-impl (Ljava/util/Set;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/socket/udp/MultiplexedProtocol;
+	public static fun constructor-impl (Ljava/util/Set;)Ljava/util/Set;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/util/Set;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/util/Set;Ljava/util/Set;)Z
+	public final fun getAddresses ()Ljava/util/Set;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/util/Set;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/util/Set;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/util/Set;
+}
+
+public final class com/ditchoom/socket/udp/TurnRelays$Companion {
+	public final fun getNone-ZHfpdcs ()Ljava/util/Set;
+}
+
+public abstract interface class com/ditchoom/socket/udp/UdpBindError {
+	public fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$AddressInUse : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpBindError$AddressInUse;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$AddressInUse;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$AddressInUse;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$DefaultImpls {
+	public static fun describe (Lcom/ditchoom/socket/udp/UdpBindError;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$LocalAddressUnavailable : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpBindError$LocalAddressUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$LocalAddressUnavailable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$LocalAddressUnavailable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$NotPermitted : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpBindError$NotPermitted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$NotPermitted;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$NotPermitted;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$OsError : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpBindError$OsError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$OsError;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$OsError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$SocketUnavailable : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpBindError$SocketUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$SocketUnavailable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$SocketUnavailable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindError$Transport : com/ditchoom/socket/udp/UdpBindError {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/udp/UdpBindError$Transport;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpBindError$Transport;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpBindError$Transport;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpBindException : java/lang/RuntimeException {
+	public fun <init> (Ljava/lang/String;ILcom/ditchoom/socket/udp/UdpBindError;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;ILcom/ditchoom/socket/udp/UdpBindError;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getError ()Lcom/ditchoom/socket/udp/UdpBindError;
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPort ()I
+}
+
+public abstract interface class com/ditchoom/socket/udp/UdpConnectError {
+	public fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$AddressInUse : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$AddressInUse;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$AddressInUse;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$AddressInUse;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$DefaultImpls {
+	public static fun describe (Lcom/ditchoom/socket/udp/UdpConnectError;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$Denied : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (Lcom/ditchoom/socket/udp/DeniedAccess;)V
+	public final fun component1 ()Lcom/ditchoom/socket/udp/DeniedAccess;
+	public final fun copy (Lcom/ditchoom/socket/udp/DeniedAccess;)Lcom/ditchoom/socket/udp/UdpConnectError$Denied;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$Denied;Lcom/ditchoom/socket/udp/DeniedAccess;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$Denied;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAccess ()Lcom/ditchoom/socket/udp/DeniedAccess;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$LocalAddressUnavailable : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$LocalAddressUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$LocalAddressUnavailable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$LocalAddressUnavailable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$NotPermitted : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$NotPermitted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$NotPermitted;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$NotPermitted;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$OsError : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$OsError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$OsError;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$OsError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$PlatformError : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/UdpConnectError$PlatformError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$PlatformError;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$PlatformError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()I
+	public final fun getDomain ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$SocketUnavailable : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$SocketUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$SocketUnavailable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$SocketUnavailable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$Transport : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/udp/UdpConnectError$Transport;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$Transport;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$Transport;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectError$Unreachable : com/ditchoom/socket/udp/UdpConnectError {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/UdpConnectError$Unreachable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/UdpConnectError$Unreachable;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/UdpConnectError$Unreachable;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrno ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/UdpConnectException : java/lang/RuntimeException {
+	public fun <init> (Lcom/ditchoom/socket/udp/UdpConnectError;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/udp/UdpConnectError;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getError ()Lcom/ditchoom/socket/udp/UdpConnectError;
+}
+
+public final class com/ditchoom/socket/udp/UdpSocket {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/UdpSocket;
+	public final fun bind (Ljava/lang/String;IILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun bind$default (Lcom/ditchoom/socket/udp/UdpSocket;Ljava/lang/String;IILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun bindMulticast (ILcom/ditchoom/buffer/flow/AddressFamily;ILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun bindMulticast$default (Lcom/ditchoom/socket/udp/UdpSocket;ILcom/ditchoom/buffer/flow/AddressFamily;ILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun connect (Ljava/lang/String;ILjava/lang/String;IILcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/socket/udp/DatagramSocketPin;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun connect (Ljava/lang/String;ILjava/lang/String;IILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/udp/UdpSocket;Ljava/lang/String;ILjava/lang/String;IILcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun resolve (Ljava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/udp/UdpSocketKt {
+	public static final field MAX_UDP_DATAGRAM_SIZE I
+}
+

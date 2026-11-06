@@ -6,6 +6,7 @@ name: "Build & Test (Linux)"
 #             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI)
 #             ├── link ──┬── integration-linux-x64
 #             │          └── integration-linux-arm64
+#             ├── abi-linux      (checkKotlinAbi against the api/linux/ dumps)
 #             ├── publish        (publishToMavenLocal + the JDK-25 MR-jar link-check)
 #             ├── malloc-check
 #             ├── fuzz-jvm (matrix) / fuzz-native (matrix) / fuzz-boringssl-asan
@@ -1171,6 +1172,69 @@ jobs:
             socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
           retention-days: 7
           if-no-files-found: ignore
+
+  # ── Stage 2a': binary-compatibility gate for the Linux host's target set ─────────────────────
+  # The Linux twin of build-apple.yaml's "ABI (binary compatibility)" lane. A klib ABI dump records
+  # the exact target set it was taken from, and this host declares linuxX64 + linuxArm64 (arm64 is
+  # cross-compiled from x64; Kotlin/Native has no linux-aarch64 host, which is why there is no
+  # ubuntu-24.04-arm leg — that runner only executes the kexes `link` built) where macOS declares the
+  # Apple targets. So every multiplatform module keeps a Linux dump under api/linux/ (jvm, android, and
+  # a klib dump of JS + Wasm + linuxX64 + linuxArm64) and this job checks it. Without it, Linux-only
+  # public API — the io_uring / epoll / netlink code in linuxMain — had no ABI gate at all.
+  #
+  # When the check fails, the job regenerates the dumps (updateKotlinAbi) and uploads them as the
+  # `abi-dumps-linux` artifact, still failing. After an INTENTIONAL ABI change, download it and
+  # commit its api/linux/ files: that is how the Linux dumps are produced, on the host that owns them.
+  abi-linux:
+    name: "ABI (binary compatibility, Linux)"
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/linux-quiche-env
+
+      # Same reason as checks-tests: the action's built-in all-licenses pass is the flaky part.
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+
+      - name: Accept Android SDK licenses (retry transient package prep)
+        run: |
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            if printf 'y\n%.0s' $(seq 1 50) | sdkmanager --licenses; then
+              exit 0
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              sleep $((i * 15))
+            fi
+          done
+          echo "::error::Android SDK license acceptance failed after $attempts attempts"
+          exit 1
+
+      - name: checkKotlinAbi (jvm, android, js, wasm, linuxX64, linuxArm64)
+        id: check
+        run: ./gradlew checkKotlinAbi --no-scan --continue
+
+      - name: Regenerate the Linux ABI dumps (on failure)
+        if: failure() && steps.check.outcome == 'failure'
+        run: |
+          ./gradlew updateKotlinAbi --no-scan
+          echo "::error title=ABI changed on Linux::The public ABI differs from the committed api/linux/ dumps. If the change is intentional, download the abi-dumps-linux artifact from this run and commit its files (paths are relative to the repo root)."
+          git status --short -- '*/api/linux/**' 'api/linux/**'
+
+      - name: Upload the regenerated Linux ABI dumps (on failure)
+        if: failure() && steps.check.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: abi-dumps-linux
+          path: |
+            api/linux/
+            */api/linux/
+          retention-days: 14
+          if-no-files-found: error
 
   # ── Stage 2b: the three :socket-quic-quiche JVM backends ─────────────────────────────────────
   # These were three sequential steps in the monolith purely because they shared a job. They are

@@ -54,6 +54,50 @@ val linuxTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
         providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 
+// Binary-compatibility gate for every published module: `checkKotlinAbi` (part of `check`) compares
+// the public ABI against the dumps committed under each module's `api/` directory, and
+// `updateKotlinAbi` rewrites them after an intentional change.
+//
+// A multiplatform module's klib dump records the exact target set it was taken from, and the target
+// set is host-dependent: macOS declares the Apple targets, Linux declares linuxX64 + linuxArm64
+// (linuxArm64 is cross-compiled from x64 — Kotlin/Native has no linux-aarch64 host). Neither host can
+// build the other family, and they are not merely "unsupported" targets the plugin could infer
+// (keepLocallyUnsupportedTargets): they are not declared at all. So each host family keeps its OWN
+// committed dump under `api/<host>/` and verifies exactly what it builds:
+//   api/macos/  jvm, android, and a klib dump of JS + Wasm + every Apple target  (macos-latest CI lane)
+//   api/linux/  jvm, android, and a klib dump of JS + Wasm + linuxX64 + linuxArm64 (ubuntu-24.04 lane)
+// The JVM/Android dumps appear in both and must agree. After an intentional ABI change run
+// `./gradlew updateKotlinAbi` on a Mac for api/macos; for api/linux take the `abi-dumps-linux`
+// artifact the failing Linux `ABI` job uploads (or run updateKotlinAbi on a Linux x64 host).
+// A host that declares neither family (`-PappleTargets=false -PlinuxTargets=false`) does not validate
+// the multiplatform modules. The JVM-only socket-quic-trace-tools is host-independent and keeps `api/`.
+val abiHost =
+    when {
+        appleTargets -> "macos"
+        linuxTargets -> "linux"
+        else -> null
+    }
+allprojects {
+    pluginManager.withPlugin("com.vanniktech.maven.publish") {
+        if (abiHost != null) {
+            pluginManager.withPlugin("org.jetbrains.kotlin.multiplatform") {
+                extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension> {
+                    @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+                    abiValidation {
+                        referenceDumpDir.set(layout.projectDirectory.dir("api/$abiHost"))
+                    }
+                }
+            }
+        }
+        pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
+            extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
+                @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+                abiValidation()
+            }
+        }
+    }
+}
+
 // The host OS: a Linux host builds the harness's quic-echo image from its own natives (see composeArgs).
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
