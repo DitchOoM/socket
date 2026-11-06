@@ -169,7 +169,7 @@ class LinuxQuicSmokeTest {
             )
 
             val scidBytes =
-                ByteArray(QUIC_MAX_CONN_ID_LEN) {
+                ByteArray(QUIC_ISSUED_CONN_ID_LEN) {
                     kotlin.random.Random
                         .nextInt(256)
                         .toByte()
@@ -183,7 +183,7 @@ class LinuxQuicSmokeTest {
                         // self-signed cert (CN=quic.tech, in socket-quic-quiche/testcerts/).
                         "quic.tech",
                         pinned.addressOf(0).reinterpret(),
-                        QUIC_MAX_CONN_ID_LEN.convert(),
+                        QUIC_ISSUED_CONN_ID_LEN.convert(),
                         localAddr.ptr.reinterpret(),
                         kotlinx.cinterop.sizeOf<sockaddr_in>().convert(),
                         addrInfo.ai_addr,

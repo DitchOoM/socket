@@ -111,7 +111,7 @@ class LinuxCallerClockSimTests {
             quiche_connect(
                 "localhost",
                 scidPtr,
-                20.convert(),
+                QUIC_ISSUED_CONN_ID_LEN.convert(),
                 localSA.address.toCPointer<sockaddr>(),
                 localSA.length.convert(),
                 peerSA.address.toCPointer<sockaddr>(),

@@ -72,7 +72,7 @@ class JvmCallerClockTests {
                 serverNameBuf.nativeMemoryAccess!!.nativeAddress,
                 serverName.length,
                 scid.nativeMemoryAccess!!.nativeAddress,
-                QUIC_MAX_CONN_ID_LEN,
+                QUIC_ISSUED_CONN_ID_LEN,
                 connectLocal.address,
                 connectLocal.length,
                 connectPeer.address,

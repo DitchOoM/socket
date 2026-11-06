@@ -212,18 +212,18 @@ internal class HoldbackDatagramChannel(
     /**
      * The destination CID of a 1-RTT (short-header) packet, or null for a long-header one. A short
      * header carries no CID length, so the reader must already know it — for this server every source
-     * CID it issues is [QUIC_MAX_CONN_ID_LEN] bytes (`generateScid`). Reads are position-neutral: the
+     * CID it issues is [QUIC_ISSUED_CONN_ID_LEN] bytes (`generateScid`). Reads are position-neutral: the
      * server reads the same buffer afterwards by native address and `remaining()`.
      */
     private fun shortHeaderDcid(payload: PlatformBuffer): ByteArray? {
         val start = payload.position()
         return try {
-            if (payload.remaining() < 1 + QUIC_MAX_CONN_ID_LEN) {
+            if (payload.remaining() < 1 + QUIC_ISSUED_CONN_ID_LEN) {
                 null
             } else if (payload.readByte().toInt() and 0x80 != 0) {
                 null // long header (Initial/Handshake/Retry) — its DCID is length-prefixed instead
             } else {
-                payload.readByteArray(QUIC_MAX_CONN_ID_LEN)
+                payload.readByteArray(QUIC_ISSUED_CONN_ID_LEN)
             }
         } finally {
             payload.position(start)

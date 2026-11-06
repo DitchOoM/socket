@@ -173,7 +173,7 @@ internal suspend fun buildJvmQuicConnection(
         serverNameBuf.resetForRead()
         val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-        // 4. SCID — bulk random writes (2 longs + 1 int = 20 bytes in 3 ops)
+        // 4. SCID — the issued length (2 random longs = QUIC_ISSUED_CONN_ID_LEN bytes)
         val scidBuf = generateScid(bufferFactory, tuning.random)
         val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
@@ -195,7 +195,7 @@ internal suspend fun buildJvmQuicConnection(
                     serverNameAddr,
                     serverName.length,
                     scidAddr,
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     localSockAddr.address,
                     localSockAddr.length,
                     peerSockAddr.address,

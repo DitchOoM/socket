@@ -165,14 +165,14 @@ class LinuxQuicAddressMarshallingTest {
                 peerAddr.sin_port = htons(443u)
                 peerAddr.sin_addr.s_addr = htonl(0x01010101u) // 1.1.1.1
 
-                val scidBytes = ByteArray(QUIC_MAX_CONN_ID_LEN) { it.toByte() }
+                val scidBytes = ByteArray(QUIC_ISSUED_CONN_ID_LEN) { it.toByte() }
 
                 val conn =
                     scidBytes.usePinned { pinned ->
                         quiche_connect(
                             "127.0.0.1",
                             pinned.addressOf(0).reinterpret(),
-                            QUIC_MAX_CONN_ID_LEN.convert(),
+                            QUIC_ISSUED_CONN_ID_LEN.convert(),
                             localAddr.ptr.reinterpret(),
                             sizeOf<sockaddr_in>().convert(),
                             peerAddr.ptr.reinterpret(),

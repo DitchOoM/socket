@@ -36,8 +36,8 @@ class AppleQuicheStatsBindingTest {
             val api: QuicheApi = CinteropQuicheApi
             val config = api.configNew(1)
             try {
-                val scid = allocArray<UByteVar>(QUIC_MAX_CONN_ID_LEN)
-                for (i in 0 until QUIC_MAX_CONN_ID_LEN) scid[i] = (i + 1).convert()
+                val scid = allocArray<UByteVar>(QUIC_ISSUED_CONN_ID_LEN)
+                for (i in 0 until QUIC_ISSUED_CONN_ID_LEN) scid[i] = (i + 1).convert()
                 val local = alloc<sockaddr_in>()
                 val peer = alloc<sockaddr_in>()
                 for (sa in listOf(local, peer)) {
@@ -52,7 +52,7 @@ class AppleQuicheStatsBindingTest {
                         serverName.rawValue.toLong(),
                         "localhost".length,
                         scid.rawValue.toLong(),
-                        QUIC_MAX_CONN_ID_LEN,
+                        QUIC_ISSUED_CONN_ID_LEN,
                         local.ptr.rawValue.toLong(),
                         sizeOf<sockaddr_in>().toInt(),
                         peer.ptr.rawValue.toLong(),
