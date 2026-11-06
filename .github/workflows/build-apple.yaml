@@ -402,8 +402,8 @@ jobs:
           - name: "ktlint"
             tasks: "ktlintCheck"
           # Binary-compatibility gate: compares every published module's public ABI against the
-          # committed api/ dumps. This host covers the JVM, Android, JS, Wasm and every Apple klib;
-          # Linux klibs are not declared on macOS, so they are not in the dumps.
+          # committed api/macos/ dumps (JVM, Android, JS, Wasm and every Apple klib). Linux klibs are
+          # not declared on macOS; build-linux.yaml's abi-linux job checks them against api/linux/.
           - name: "ABI (binary compatibility)"
             tasks: "checkKotlinAbi"
           # Compile (can't run — no device) the test sources for the Apple *device* targets that
