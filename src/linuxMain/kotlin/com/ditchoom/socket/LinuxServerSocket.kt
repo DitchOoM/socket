@@ -23,6 +23,8 @@ import kotlin.coroutines.coroutineContext
 @OptIn(ExperimentalForeignApi::class)
 class LinuxServerSocket(
     private val config: TransportConfig = TransportConfig(),
+    // SCRATCH: deliberate Linux-only ABI break to prove abi-linux goes red. Never merge.
+    @Suppress("unused") private val abiRedProof: Int = 0,
 ) : ServerSocket {
     private val descriptor = SocketDescriptor()
     private var boundPort: Int = -1
