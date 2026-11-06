@@ -90,6 +90,12 @@ jobs:
           ./gradlew :socket-quic-quiche:quicInteropJar -PlinuxTargets=false --no-configuration-cache
           docker build -t "$IMAGE" test-harness/quic-interop
 
+      # The runner judges rebind-port/rebind-addr from tshark's decryption of the capture. tshark
+      # links a rebound 4-tuple to its connection only when its first short-header lookup, which
+      # assumes a 20-byte DCID, misses. A 20-byte server id hits it, the link never forms, and
+      # against a zero-length-CID client (quic-go, msquic) the server's packets on the new path
+      # stay encrypted, so the test fails with "no PATH_CHALLENGE". QUIC_ISSUED_CONN_ID_LEN must
+      # therefore stay below 20.
       - name: Install the runner and tshark
         run: |
           set -euo pipefail

@@ -226,7 +226,7 @@ internal suspend fun <R> withSemanticSim(
                     serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                     serverName.length,
                     clientScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     connectLocal.address,
                     connectLocal.length,
                     connectPeer.address,
@@ -255,7 +255,7 @@ internal suspend fun <R> withSemanticSim(
             try {
                 api.accept(
                     serverScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     0L,
                     0,
                     serverLocalSock.address,

@@ -3557,7 +3557,7 @@ class QuicheDriver(
     private fun issueSpareCids(): Int {
         var count = 0
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
-            val scid = generateScid(bufferFactory, random) // 20 random bytes, reset for read
+            val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
             val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
             repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(random.nextInt(256).toByte()) }
             token.resetForRead()
@@ -3565,7 +3565,7 @@ class QuicheDriver(
                 api.connNewScid(
                     conn,
                     scid.driverOwnedNativeAddress(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     token.driverOwnedNativeAddress(),
                     true,
                     addr(seqScratch),

@@ -227,7 +227,7 @@ private fun runUnansweredProbe(useVirtualClock: Boolean): ProbeOutcomeMeasuremen
             serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
             serverName.length,
             clientScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-            QUIC_MAX_CONN_ID_LEN,
+            QUIC_ISSUED_CONN_ID_LEN,
             connectLocal.address,
             connectLocal.length,
             connectPeer.address,
@@ -245,7 +245,7 @@ private fun runUnansweredProbe(useVirtualClock: Boolean): ProbeOutcomeMeasuremen
     val serverConn =
         api.accept(
             serverScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-            QUIC_MAX_CONN_ID_LEN,
+            QUIC_ISSUED_CONN_ID_LEN,
             0L,
             0,
             serverLocalSock.address,
@@ -326,7 +326,7 @@ private fun runUnansweredProbe(useVirtualClock: Boolean): ProbeOutcomeMeasuremen
                 api.connNewScid(
                     conn,
                     spareScid.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    QUIC_MAX_CONN_ID_LEN,
+                    QUIC_ISSUED_CONN_ID_LEN,
                     token.nativeMemoryAccess!!.nativeAddress.toLong(),
                     true,
                     seqScratchAddr,
