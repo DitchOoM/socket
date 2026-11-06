@@ -7,6 +7,7 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -45,15 +46,20 @@ class Http3PublicEndpointInteropTests {
                     // skip; a returned status is asserted below, outside the catch.
                     val status: Int? =
                         try {
-                            withHttp3Connection(host, port, connectionOptions = connectionOptions, timeout = 8.seconds) {
-                                val response = request(Http3Request(method = "GET", authority = host, path = "/"))
-                                try {
-                                    // Confirm the body is readable (Huffman-coded headers were decoded
-                                    // to even parse :status; the body proves the DATA path too).
-                                    response.readFullBody().freeIfNeeded()
-                                    response.status
-                                } finally {
-                                    response.close()
+                            // The connect timeout bounds only the handshake; a server that stalls the
+                            // response would hold the read until the idle timeout, and two of those
+                            // outlast the test's own minute. Each endpoint gets a whole-exchange bound.
+                            withTimeout(ENDPOINT_BUDGET) {
+                                withHttp3Connection(host, port, connectionOptions = connectionOptions, timeout = 8.seconds) {
+                                    val response = request(Http3Request(method = "GET", authority = host, path = "/"))
+                                    try {
+                                        // Confirm the body is readable (Huffman-coded headers were decoded
+                                        // to even parse :status; the body proves the DATA path too).
+                                        response.readFullBody().freeIfNeeded()
+                                        response.status
+                                    } finally {
+                                        response.close()
+                                    }
                                 }
                             }
                         } catch (t: Throwable) {
@@ -81,4 +87,8 @@ class Http3PublicEndpointInteropTests {
                 }
             }
         }
+
+    private companion object {
+        val ENDPOINT_BUDGET = 20.seconds
+    }
 }
