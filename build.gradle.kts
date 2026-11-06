@@ -54,6 +54,31 @@ val linuxTargets =
     org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
         providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 
+// Binary-compatibility gate for every published module: `checkKotlinAbi` (part of `check`) compares
+// the public ABI against the dumps committed under each module's `api/` directory, and
+// `updateKotlinAbi` rewrites them after an intentional change. A multiplatform module's klib dump
+// records the exact target set it was taken from (JS, Wasm and every Apple target), so multiplatform
+// modules are validated only on a host that declares that set: macOS with Apple targets. Linux hosts
+// declare linuxX64/linuxArm64 instead and have no Apple targets, so they do not validate.
+allprojects {
+    pluginManager.withPlugin("com.vanniktech.maven.publish") {
+        if (appleTargets) {
+            pluginManager.withPlugin("org.jetbrains.kotlin.multiplatform") {
+                extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension> {
+                    @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+                    abiValidation()
+                }
+            }
+        }
+        pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
+            extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
+                @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
+                abiValidation()
+            }
+        }
+    }
+}
+
 // The host OS: a Linux host builds the harness's quic-echo image from its own natives (see composeArgs).
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
