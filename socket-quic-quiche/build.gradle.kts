@@ -294,6 +294,9 @@ fun downloadQuicheSource(
     // A server's PTO probe carries HANDSHAKE_DONE while the client has not acknowledged it, rather than a
     // bare PING. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakeDoneRidesEveryProbe(sourceDir)
+    // A server buffers 1-RTT packets that arrive before its handshake completes and processes them once it
+    // does, as it already did 0-RTT ones. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheEarlyOneRttIsBuffered(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1145,6 +1148,130 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
         ),
     )
     logger.lifecycle("Patched quiche source: a server's PTO probe carries an unacknowledged HANDSHAKE_DONE")
+}
+
+/**
+ * Make a server buffer the 1-RTT packets that arrive before its handshake completes, and process them once
+ * it does, rather than dropping them.
+ *
+ * **Why.** A client may send 1-RTT data as soon as it has sent its Finished, often in the same datagram.
+ * A server cannot read it before its handshake completes (RFC 9001 §5.7: it MUST NOT process 1-RTT packets
+ * before then, and MAY buffer them), and quiche dropped it, buffering only 0-RTT packets. When the Finished
+ * was lost, the client's request was lost with it from the client's point of view: it came back only on
+ * the client's next PTO after the handshake was confirmed, by then backed off by every PTO the lossy
+ * handshake had cost. quic-interop-runner `handshakecorruption` with our server against quinn (runs
+ * 42326957428 before this change, 42363016612): the request reached the server at 5 s and was dropped,
+ * the handshake completed at 17.6 s, quinn's next PTO fell at 30 s, and its 30 s idle timeout fired
+ * first. Against quic-go (run 42345499750) the same dropped request left the client waiting on a PTO it
+ * never armed. Reproduced by `MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
+ *
+ * The edit: the existing 0-RTT buffer (`undecryptable_pkts`, `MAX_UNDECRYPTABLE_PACKETS` entries) also takes
+ * a server's short-header packets while it is not established; at completion only the 0-RTT entries are
+ * cleared; and the existing replay at the end of `recv` replays each buffered packet once it can be read —
+ * a 0-RTT one once the 0-RTT key is in, a 1-RTT one once the handshake is complete — keeping the rest.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
+    val marker = "socket-early-one-rtt-is-buffered"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    var text = libRs.readText()
+    if (text.contains(marker)) return
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
+                    "Re-fit patchQuicheEarlyOneRttIsBuffered (or delete it if quiche now buffers 1-RTT packets " +
+                    "that arrive before its handshake completes) and re-verify with " +
+                    "MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        """
+        |                if hdr.ty == Type::ZeroRTT &&
+        |                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
+        |                    !self.is_established()
+        |                {
+        """.trimMargin(),
+        """
+        |                // $marker: a server's 1-RTT packets too (RFC 9001 §5.7).
+        |                if (hdr.ty == Type::ZeroRTT ||
+        |                    (hdr.ty == Type::Short && self.is_server)) &&
+        |                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
+        |                    !self.is_established()
+        |                {
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |            // Once the handshake is completed there's no point in processing
+        |            // 0-RTT packets anymore, so clear the buffer now.
+        |            self.undecryptable_pkts.clear();
+        |
+        """.trimMargin(),
+        """
+        |            // Once the handshake is completed there's no point in processing
+        |            // 0-RTT packets anymore, so clear the buffer now.
+        |            // $marker: keep the 1-RTT ones (short header) for the replay in recv().
+        |            self.undecryptable_pkts
+        |                .retain(|(pkt, _)| pkt.first().is_some_and(|b| b & 0x80 == 0));
+        |
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |        if self.crypto_ctx[packet::Epoch::Application]
+        |            .crypto_0rtt_open
+        |            .is_some()
+        |        {
+        |            while let Some((mut pkt, info)) = self.undecryptable_pkts.pop_front()
+        |            {
+        |                if let Err(e) = self.recv(&mut pkt, info) {
+        |                    self.undecryptable_pkts.clear();
+        |
+        |                    return Err(e);
+        |                }
+        |            }
+        |        }
+        |        Ok(())
+        """.trimMargin(),
+        """
+        |        // $marker: replay each buffered packet once it can be read — a 0-RTT one
+        |        // once the 0-RTT key is in, a 1-RTT one once the handshake is complete —
+        |        // and keep the rest. The nested recv() replays nothing it cannot read, so
+        |        // this cannot recurse without end.
+        |        let pending: Vec<_> = self.undecryptable_pkts.drain(..).collect();
+        |        for (mut pkt, info) in pending {
+        |            let ready = if pkt.first().is_some_and(|b| b & 0x80 == 0) {
+        |                self.handshake_completed
+        |            } else {
+        |                self.crypto_ctx[packet::Epoch::Application]
+        |                    .crypto_0rtt_open
+        |                    .is_some()
+        |            };
+        |            if !ready {
+        |                self.undecryptable_pkts.push_back((pkt, info));
+        |                continue;
+        |            }
+        |            if let Err(e) = self.recv(&mut pkt, info) {
+        |                self.undecryptable_pkts.clear();
+        |
+        |                return Err(e);
+        |            }
+        |        }
+        |        Ok(())
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
+    logger.lifecycle("Patched quiche source: a server buffers 1-RTT packets that arrive before its handshake completes")
 }
 
 /**

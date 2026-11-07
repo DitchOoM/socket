@@ -27,6 +27,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -488,6 +489,50 @@ abstract class MigrationSimTestSuite {
                         probe.any { "1-RTT" in it.packetTypes } && probe.none { "Handshake" in it.packetTypes },
                         "the server's second probe must carry HANDSHAKE_DONE, so the confirmed client's PTO re-sends its " +
                             "lost request; it sent ${probe.map { it.packetTypes }}",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A request that reaches the server before the client's Finished is served once the Finished arrives,
+     * without the client sending it again.
+     *
+     * A server cannot read 1-RTT data before its handshake completes (RFC 9001 §5.7, which lets it buffer
+     * the packets), and quiche dropped it. The quic-interop-runner `handshakecorruption` with our server
+     * against quinn (runs 42326957428, 42363016612): the Finished was lost, the request beside it reached
+     * the server and was dropped, and quinn's next PTO after the handshake completed fell after its idle
+     * timeout.
+     */
+    @Test
+    fun aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    val finished = pair.sends(pair.client)
+                    assertTrue(finished.any { "Handshake" in it.packetTypes }, "the client sends its Finished")
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    val request = pair.sends(pair.client)
+                    assertTrue(
+                        request.isNotEmpty() && request.all { it.packetTypes == listOf("1-RTT") },
+                        "the request leaves in 1-RTT packets of its own, was ${request.map { it.packetTypes }}",
+                    )
+
+                    // The request overtakes the Finished.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(request, pair.server)
+                    assertFalse(pair.established(pair.server), "the server has not completed its handshake yet")
+                    pair.deliver(finished, pair.server)
+                    assertTrue(pair.established(pair.server), "the Finished completes the server's handshake")
+
+                    assertEquals(
+                        7 to true,
+                        pair.readAll(pair.server, QuicStreamId(0)),
+                        "the server must serve the request that arrived before its handshake completed",
                     )
                 } finally {
                     pair.close()
