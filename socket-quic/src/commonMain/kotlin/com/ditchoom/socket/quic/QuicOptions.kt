@@ -372,8 +372,10 @@ data class QuicOptions(
     val enablePmtuDiscovery: Boolean = false,
     /**
      * **Server-side**: accept 0-RTT from resuming clients, and issue session tickets that permit it
-     * (RFC 9001 §4.6.1). Off by default: 0-RTT data can be replayed (RFC 8446 §8, RFC 9001 §9.2), so
-     * enable it only for an application protocol whose early requests are safe to process twice.
+     * (RFC 9001 §4.6.1). 0-RTT data can be replayed (RFC 8446 §8, RFC 9001 §9.2): a stream the client
+     * opens early is [QuicStreamOrigin.Early], and its reads wait for the handshake to be confirmed
+     * unless the handler marks it [replay-safe][QuicByteStream.markReplaySafe]. The handler itself starts
+     * once 0-RTT is accepted, so work it does before reading can run for a replayed handshake too.
      *
      * Ignored for the client role, which asks for 0-RTT per connection through [resumption].
      */

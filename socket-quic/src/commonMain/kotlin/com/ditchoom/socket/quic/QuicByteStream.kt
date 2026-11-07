@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.transport.MuxIdentified
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
@@ -33,15 +34,42 @@ import kotlin.time.Duration
  * usefully to fabricate scripted streams in their tests. Production code obtains
  * instances from [QuicScope.openStream]/[openUniStream]/[acceptStream], not by
  * constructing them directly.
+ *
+ * [origin] says whether what arrives on the stream can be a 0-RTT replay. Reads of a
+ * [QuicStreamOrigin.Early] stream wait for the handshake to be confirmed unless [markReplaySafe] is called.
  */
 class QuicByteStream(
     val streamId: QuicStreamId,
     private val delegate: ByteStream,
+    val origin: QuicStreamOrigin,
 ) : ByteStream,
     HalfCloseable,
     Resettable,
     MuxIdentified {
+    /** A stream nothing can replay: opened locally, or by the peer on a confirmed handshake. */
+    constructor(streamId: QuicStreamId, delegate: ByteStream) : this(streamId, delegate, QuicStreamOrigin.Confirmed)
+
     override val muxStreamId: Long get() = streamId.id
+
+    @Volatile
+    private var earlyReads: EarlyReads =
+        when (origin) {
+            QuicStreamOrigin.Confirmed -> EarlyReads.Open
+            is QuicStreamOrigin.Early -> EarlyReads.AwaitConfirmation(origin)
+        }
+
+    /**
+     * Read this stream without waiting for the handshake to be confirmed — **only if processing what it
+     * carries twice is harmless**. An attacker who captured the client's first flight can replay a
+     * [QuicStreamOrigin.Early] stream's bytes on a connection that will never be confirmed; a read that
+     * waits never hands them over, one marked replay-safe does.
+     *
+     * A no-op on a [QuicStreamOrigin.Confirmed] stream and once the handshake is confirmed. A read already
+     * waiting keeps waiting; mark the stream before reading it.
+     */
+    fun markReplaySafe() {
+        earlyReads = EarlyReads.Open
+    }
 
     @Volatile
     private var closed = false
@@ -79,6 +107,11 @@ class QuicByteStream(
      * [ReadResult.End] means the peer sent FIN; [ReadResult.Reset] means the peer sent RESET_STREAM.
      * Bytes the transport accepted before either are delivered first.
      *
+     * ### Early streams
+     * The first read of a [QuicStreamOrigin.Early] stream not [marked replay-safe][markReplaySafe] waits
+     * for the handshake to be confirmed, then reads under [deadline]. The handshake bounds that wait
+     * itself: it ends confirmed, or closed with the reason this throws.
+     *
      * @throws QuicCloseException when the connection ends without the peer's FIN or reset for this
      *   stream — an idle timeout, a CONNECTION_CLOSE from either side — after any bytes the transport
      *   already accepted have been delivered. [QuicCloseException.closeReason] says why.
@@ -86,6 +119,13 @@ class QuicByteStream(
      */
     override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicByteStream($streamId) is closed" }
+        when (val gate = earlyReads) {
+            EarlyReads.Open -> Unit
+            is EarlyReads.AwaitConfirmation -> {
+                gate.origin.awaitConfirmation()
+                earlyReads = EarlyReads.Open
+            }
+        }
         return delegate.read(deadline)
     }
 
@@ -128,6 +168,33 @@ class QuicByteStream(
         return delegate.writeGathered(buffers, deadline)
     }
 
+    /**
+     * Write all of [buffer] and finish the send side, with the FIN carried by the last bytes rather than
+     * sent after them: a reply that fits one packet leaves in one. Equivalent to `writeFully` followed by
+     * [shutdownSend] otherwise, and the same zero-copy, no-ownership contract as [write].
+     *
+     * @throws IllegalStateException after [close] or [shutdownSend].
+     * @throws QuicStreamException if the peer aborted this stream (STOP_SENDING / RESET_STREAM).
+     * @throws QuicCloseException if the connection closed.
+     */
+    suspend fun writeFullyAndShutdownSend(
+        buffer: ReadBuffer,
+        deadline: Duration = writePolicy.toDeadline(),
+    ) {
+        check(!closed) { "QuicByteStream($streamId) is closed" }
+        check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
+        when (val sink = delegate) {
+            is FinishingWrite -> {
+                sink.writeFullyAndShutdownSend(buffer, deadline)
+                sendFinished = true
+            }
+            else -> {
+                delegate.writeFully(buffer, deadline)
+                shutdownSend()
+            }
+        }
+    }
+
     override suspend fun shutdownSend() {
         if (closed || sendFinished) return
         sendFinished = true
@@ -150,4 +217,25 @@ class QuicByteStream(
         // STOP_SENDING; a scripted test delegate that isn't resettable just gets a graceful close.
         (delegate as? Resettable)?.reset(errorCode) ?: delegate.close()
     }
+}
+
+/** Whether reads of a [QuicByteStream] still wait for the handshake its [QuicStreamOrigin.Early] origin awaits. */
+private sealed interface EarlyReads {
+    data object Open : EarlyReads
+
+    class AwaitConfirmation(
+        val origin: QuicStreamOrigin.Early,
+    ) : EarlyReads
+}
+
+/**
+ * A send side that can carry its last bytes and its FIN in one write. [QuicByteStream.writeFullyAndShutdownSend]
+ * uses it when the stream it wraps offers it; an engine's stream implements it.
+ */
+interface FinishingWrite : HalfCloseable {
+    /** Write all of [buffer] and finish the send side with its last bytes. */
+    suspend fun writeFullyAndShutdownSend(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    )
 }
