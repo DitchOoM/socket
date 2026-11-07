@@ -40,19 +40,29 @@ internal class QuichePairByHand private constructor(
          * which always ends a datagram. Zero bytes after the last packet are padding, not a packet.
          */
         val packetTypes: List<String>
+            get() = packets.map { it.first }
+
+        /** The bytes of the first coalesced packet of [type] (one of [packetTypes]), header included. */
+        fun packet(type: String): ByteArray = packets.first { it.first == type }.second.let { bytes.copyOfRange(it.first, it.last + 1) }
+
+        /** Each coalesced packet's type and the bytes it spans, as [packetTypes] reads them. */
+        private val packets: List<Pair<String, IntRange>>
             get() =
                 buildList {
                     var at = 0
                     while (at < bytes.size) {
+                        val start = at
                         val first = bytes[at].toInt() and 0xFF
                         if (first and 0x80 == 0) {
                             // A short header has the fixed bit set; zeros are padding after the last packet.
-                            if (first and 0x40 != 0) add("1-RTT")
+                            if (first and 0x40 != 0) add("1-RTT" to (start until bytes.size))
                             return@buildList
                         }
                         val type = (first shr 4) and 0x03
-                        add(LONG_HEADER_TYPES[type])
-                        if (type == RETRY) return@buildList
+                        if (type == RETRY) {
+                            add(LONG_HEADER_TYPES[type] to (start until bytes.size))
+                            return@buildList
+                        }
                         at += 5 // flags, version
                         at += 1 + (bytes[at].toInt() and 0xFF) // DCID
                         at += 1 + (bytes[at].toInt() and 0xFF) // SCID
@@ -62,6 +72,7 @@ internal class QuichePairByHand private constructor(
                         }
                         val (length, width) = varint(at)
                         at += width + length.toInt()
+                        add(LONG_HEADER_TYPES[type] to (start until at))
                     }
                 }
 
@@ -185,6 +196,12 @@ internal class QuichePairByHand private constructor(
 
     /** Whether [conn]'s handshake has completed. */
     fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
+
+    /** [conn] closes the connection with [error]; its CONNECTION_CLOSE is in its next [sends]. */
+    fun closeWith(
+        conn: QuicheConn,
+        error: QuicError,
+    ): Int = at { api.connClose(conn, error) }
 
     private val sendEnds = mutableMapOf<QuicheConn, Int>()
 
