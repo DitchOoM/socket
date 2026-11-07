@@ -68,6 +68,47 @@ class LinuxAcceptHandOffTests {
         }
 
     /**
+     * Reproducer for the CI timeout of the test above: the listener's release runs on another thread, and when it
+     * finishes before the collection suspends to wait for it, `withContext` returns without dispatching, so the
+     * test's `stepped.next()` for the way back never gets a task. [RunsAtOnce] makes that interleaving certain.
+     */
+    @Test
+    fun theReleaseFinishingBeforeTheCollectionSuspendsDispatchesNothingBack() =
+        runTestNoTimeSkipping(timeout = 30.seconds) {
+            val baseline = IoUringManager.activeSockets
+            val server = LinuxServerSocket(TransportConfig(), releaseContext = RunsAtOnce)
+            val accepted = server.bind()
+            val stepped = SteppedDispatcher()
+            val delivered = AtomicInt(0)
+            val collection =
+                CoroutineScope(stepped).launch {
+                    accepted.collect {
+                        delivered.incrementAndGet()
+                        it.close()
+                    }
+                }
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            try {
+                stepped.next().run()
+                client.open(server.port(), "127.0.0.1")
+                val acceptCompleted = stepped.next()
+                server.close()
+                acceptCompleted.run()
+                val backFromRelease = stepped.next()
+                collection.cancel()
+                backFromRelease.run()
+                stepped.runQueued()
+                client.close()
+                assertEquals(baseline, IoUringManager.activeSockets, "delivered=${delivered.value}")
+            } finally {
+                collection.cancel()
+                stepped.runQueued()
+                client.close()
+                server.close()
+            }
+        }
+
+    /**
      * The accept completes with a descriptor, and the collection is cancelled before the accept resumes, so the
      * accept's caller sees only its cancellation. The descriptor must be closed: left open, the client's read
      * never ends, because nothing will ever close the server side of its connection.
@@ -133,4 +174,12 @@ private class SteppedDispatcher : CoroutineDispatcher() {
             task.run()
         }
     }
+}
+
+/** Runs each dispatched task at once, on the dispatching thread: a release that finishes before its caller suspends. */
+private object RunsAtOnce : CoroutineDispatcher() {
+    override fun dispatch(
+        context: CoroutineContext,
+        block: Runnable,
+    ) = block.run()
 }
