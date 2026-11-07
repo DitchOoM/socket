@@ -242,6 +242,119 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * Both probes of a PTO carry a lost ClientHello, not just the first.
+     *
+     * quic-interop-runner `handshakeloss` / `handshakecorruption` with our client against msquic (runs
+     * 42300097213, 42307875620, 42317450511, 42319967477): quiche answers its second PTO with two probes
+     * but put the ClientHello only in the first and a bare PING in the second. When the first was lost
+     * and the PING arrived, msquic acknowledged it in an Initial from one connection ID and answered the
+     * ClientHello, when it came, from another. The client had switched to the first (RFC 9000 §7.2), so
+     * the server's `initial_source_connection_id` named the wrong one and the client closed with
+     * TRANSPORT_PARAMETER_ERROR. When that acknowledgement was lost instead, the connection survived but
+     * the runner counted two server connection IDs as two handshakes ("Expected 50 handshakes. Got: 51").
+     */
+    @Test
+    fun bothProbesOfAPtoCarryALostClientHello() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    // The ClientHello is lost, and so is the one probe of the first PTO.
+                    assertTrue(pair.sends(pair.client).isNotEmpty())
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    assertEquals(1, pair.sends(pair.client).size, "the first PTO sends one probe")
+                    // The second PTO sends two, and only the second arrives.
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val probes = pair.sends(pair.client)
+                    assertEquals(2, probes.size, "the second PTO sends two probes")
+                    pair.deliver(listOf(probes.last()), pair.server)
+
+                    val answer = pair.sends(pair.server)
+                    assertTrue(
+                        answer.any { "Handshake" in it.packetTypes },
+                        "the server must answer the second probe with its handshake flight, which it can only do " +
+                            "if the probe carried the ClientHello; it answered ${answer.map { it.packetTypes }}",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A client whose Finished is lost sends it again at every PTO until the handshake is confirmed, rather
+     * than spending every other PTO on 1-RTT data the server cannot use yet.
+     *
+     * RFC 9002 §6.2.1: an endpoint MUST NOT arm the PTO for the Application Data space until the handshake
+     * is confirmed. quiche armed it once the handshake was complete, which a client is the moment it sends
+     * its Finished, so with a request in flight its PTOs alternated: Finished, request, Finished, request,
+     * each a doubling of the last. The quic-interop-runner `handshakeloss` with our client against quic-go
+     * (runs 42296178366, 42311415265, 42317450511, 42319967477): the Finished went out again 1, 5 and 21 s
+     * after it was lost; quic-go abandons a handshake that has not completed in 10 s, so the one copy
+     * that arrived at 24 s found no connection, and the client gave up on its idle timeout at 30 s.
+     */
+    @Test
+    fun aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    // The Finished is lost, and so is the request behind it.
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    val finished = pair.sends(pair.client)
+                    assertTrue(finished.any { "Handshake" in it.packetTypes }, "the client sends its Finished")
+
+                    repeat(LOST_FINISHED_PTOS) { pto ->
+                        pair.elapse(pair.nextTimer(pair.client)!!)
+                        val probes = pair.sends(pair.client)
+                        assertTrue(
+                            probes.isNotEmpty() && probes.all { "Handshake" in it.packetTypes },
+                            "PTO ${pto + 1} must probe with the Finished (Handshake packets) while the handshake is " +
+                                "unconfirmed; it sent ${probes.map { it.packetTypes }}",
+                        )
+                    }
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * Both probes of a PTO carry a lost Finished, so the server completes its handshake when only the
+     * second arrives. Before, the second was a bare PING: the same loss pattern that strands a ClientHello
+     * ([bothProbesOfAPtoCarryALostClientHello]) one flight later.
+     */
+    @Test
+    fun bothProbesOfAPtoCarryALostFinished() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    // The Finished is lost, and so is the one probe of the first PTO.
+                    assertTrue(pair.sends(pair.client).isNotEmpty())
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    assertEquals(1, pair.sends(pair.client).size, "the first PTO sends one probe")
+                    // The second PTO sends two, and only the second arrives.
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val probes = pair.sends(pair.client)
+                    assertEquals(2, probes.size, "the second PTO sends two probes")
+                    pair.deliver(listOf(probes.last()), pair.server)
+
+                    assertTrue(
+                        pair.established(pair.server),
+                        "the server must complete its handshake on the second probe alone, which it can only do " +
+                            "if the probe carried the Finished; the probes were ${probes.map { it.packetTypes }}",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * A client keeps sending after the peer retires connection IDs whose NEW_CONNECTION_ID frames the
      * client has queued to send again.
      *
@@ -4413,6 +4526,9 @@ abstract class MigrationSimTestSuite {
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
+
+        /** PTOs in a row that lose the client's Finished; the second is the first one quiche gave to 1-RTT. */
+        const val LOST_FINISHED_PTOS = 3
 
         /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
         const val INITIAL_DCID_SEQ = 0L

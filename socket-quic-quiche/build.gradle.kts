@@ -279,6 +279,14 @@ fun downloadQuicheSource(
     // ever arrives on such a retransmission still ends the stream. Idempotent, fails loudly on drift OR
     // on an upstream fix. See the KDoc.
     patchQuicheDuplicateDataFinIsKept(sourceDir)
+    // Arm the Application Data PTO only once the handshake is CONFIRMED (RFC 9002 §6.2.1), not once it is
+    // complete, so a client whose Finished is lost re-sends it at every PTO instead of every other one.
+    // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuichePtoWaitsForConfirmation(sourceDir)
+    // Make every PTO probe in the Initial and Handshake spaces carry the oldest unacknowledged CRYPTO
+    // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
+    // datagram. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakeProbesCarryCrypto(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -787,6 +795,120 @@ fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
             "                        if fin {\n                            stream.send.socket_fin_lost();\n                        }\n",
     )
     logger.lifecycle("Patched quiche source: a stream's FIN stays queued until sent and owed until acknowledged")
+}
+
+/**
+ * Arm the PTO for the Application Data space only once the handshake is **confirmed**, as RFC 9002
+ * §6.2.1 requires ("An endpoint MUST NOT set its PTO timer for the Application Data packet number space
+ * until the handshake is confirmed"), not once it is complete.
+ *
+ * **Why.** quiche's recovery reads `HandshakeStatus::completed` for that gate (and for when to clamp a
+ * peer's ack delay, where `RttStats::update_rtt` even names the parameter `handshake_confirmed`), but
+ * `Connection::handshake_status` fills it from `is_established()`. A client is established the moment it
+ * sends its Finished and confirmed only when HANDSHAKE_DONE arrives, so in between — exactly when its
+ * Finished may be lost — a client with a request in flight split its PTOs between the Finished and 1-RTT
+ * data the server cannot read yet: Finished, request, Finished, request, each interval double the last.
+ * The quic-interop-runner's `handshakeloss` against quic-go: the lost Finished went out again 1, 5 and
+ * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Reproduced by
+ * `MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`.
+ *
+ * A server confirms when it completes, so only a client's timing changes. Nothing is stranded meanwhile:
+ * with no Handshake data in flight the server's own PTO re-sends HANDSHAKE_DONE, and its arrival
+ * re-arms the timer (dropping the Handshake space recomputes it).
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
+    val marker = "socket-pto-waits-for-confirmation"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor = "            completed: self.is_established(),\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `completed: self.is_established(),` not found exactly once in quiche's lib.rs — a quiche " +
+                "bump moved it, or upstream now gates the Application Data PTO on confirmation. If so, DELETE " +
+                "patchQuichePtoWaitsForConfirmation and KEEP " +
+                "MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
+                "re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            "            // $marker: RFC 9002 §6.2.1 gates the Application Data PTO on confirmation.\n" +
+                "            completed: self.handshake_confirmed,\n",
+        ),
+    )
+    logger.lifecycle("Patched quiche source: the Application Data PTO waits for handshake confirmation")
+}
+
+/**
+ * Make every PTO probe sent in the Initial or Handshake space carry the oldest CRYPTO bytes the peer has
+ * not acknowledged, rather than a bare PING once the first probe has taken them.
+ *
+ * **Why.** From its second PTO quiche sends two probes (RFC 9002 §6.2.4), but it re-queues the lost
+ * CRYPTO range once: the first probe carries it and the second, finding nothing left to send, is a
+ * PING. Lose the first and the PING arrives alone, and a handshake flight is only as resilient as one
+ * datagram per PTO. Two interop failures came from exactly that (quic-interop-runner `handshakeloss` /
+ * `handshakecorruption`):
+ *  - msquic answered a PING-only Initial from one connection id and the ClientHello, when it came, from
+ *    another. Our client had switched to the first (RFC 9000 §7.2) and closed with
+ *    TRANSPORT_PARAMETER_ERROR on the server's `initial_source_connection_id`; or, its acknowledgement
+ *    lost, the runner counted two handshakes for one connection.
+ *  - A lost Finished likewise reached quic-go once per PTO, too rarely to beat its 10 s handshake limit.
+ * RFC 9002 §6.2.4 has a probe carry unacknowledged data when there is any, and lets both probes carry
+ * the same data. Reproduced by `MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello` and
+ * `bothProbesOfAPtoCarryALostFinished`.
+ *
+ * The edit: just before `send_single` builds its CRYPTO frame, a probe (`loss_probes(epoch) > 0`) in a
+ * handshake space whose crypto stream has nothing queued marks the oldest unacknowledged bytes, at most
+ * what the packet has room for, for retransmission. With nothing unacknowledged it is a PING as before.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
+    val marker = "socket-handshake-probes-carry-crypto"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor = "        // Create CRYPTO frame.\n        if crypto_ctx.crypto_stream.is_flushable() &&\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the CRYPTO frame block of send_single was not found exactly once in quiche's lib.rs — a " +
+                "quiche bump moved it. Re-fit patchQuicheHandshakeProbesCarryCrypto (or delete it if quiche's " +
+                "PTO probes now all carry unacknowledged CRYPTO data) and re-verify with " +
+                "MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |        // $marker: a PTO probe in a handshake space re-sends the oldest
+            |        // unacknowledged CRYPTO bytes instead of a bare PING (RFC 9002 §6.2.4).
+            |        if epoch != packet::Epoch::Application &&
+            |            path.recovery.loss_probes(epoch) > 0 &&
+            |            !crypto_ctx.crypto_stream.is_flushable() &&
+            |            left > frame::MAX_CRYPTO_OVERHEAD &&
+            |            !is_closing
+            |        {
+            |            let send = &mut crypto_ctx.crypto_stream.send;
+            |            let unacked = send.off_back().saturating_sub(send.ack_off());
+            |            if unacked > 0 {
+            |                let room = (left - frame::MAX_CRYPTO_OVERHEAD) as u64;
+            |                let ack_off = send.ack_off();
+            |                send.retransmit(ack_off, cmp::min(unacked, room) as usize);
+            |            }
+            |        }
+            |
+            |
+            """.trimMargin() + anchor,
+        ),
+    )
+    logger.lifecycle("Patched quiche source: every handshake PTO probe carries unacknowledged CRYPTO data")
 }
 
 /**
