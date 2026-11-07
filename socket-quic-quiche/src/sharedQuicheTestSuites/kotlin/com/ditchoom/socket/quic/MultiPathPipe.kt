@@ -245,6 +245,12 @@ internal class MultiPathPipe(
         /** Datagrams this path actually handed to the client — [sentToClient] less everything the link swallowed. */
         @Volatile var deliveredToClient = 0
 
+        /**
+         * When each datagram this path handed the client arrived, on the sim's clock, oldest first. Written
+         * under the pipe's lock; read through [MultiPathPipe.lastHeardByClient].
+         */
+        internal val deliveredToClientAt = ArrayList<Duration>()
+
         /** Datagrams the link swallowed for exceeding its [LinkMtu.Bounded.bytes] — #637's observable. */
         @Volatile var oversized = 0
 
@@ -302,6 +308,12 @@ internal class MultiPathPipe(
 
     /** Every path opened so far, in open order — path 0 is the primary. */
     fun paths(): List<Path> = synchronized(lock) { pathsByAddr.values.toList() }
+
+    /** When any path last handed the client a datagram at or before [at], or null if none ever had. */
+    fun lastHeardByClient(at: Duration): Duration? =
+        synchronized(lock) {
+            (pathsByKey.values + rebound).mapNotNull { p -> p.stats.deliveredToClientAt.lastOrNull { it <= at } }.maxOrNull()
+        }
 
     fun pathAt(local: SocketAddress): Path = synchronized(lock) { requireNotNull(pathsByAddr[local]) { "no path at $local" } }
 
@@ -581,6 +593,7 @@ internal class MultiPathPipe(
                     ledger.release(it)
                 } else {
                     path.stats.deliveredToClient++
+                    synchronized(lock) { path.stats.deliveredToClientAt += now() }
                 }
             }
             return SendOutcome.Sent

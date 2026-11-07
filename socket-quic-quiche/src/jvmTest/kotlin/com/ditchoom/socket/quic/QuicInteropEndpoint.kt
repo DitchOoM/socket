@@ -127,6 +127,9 @@ private suspend fun QuicScope.serveRequest(
     www: File,
 ) {
     try {
+        // hq-interop GETs are replay-safe: serving a file twice changes nothing, so a request that
+        // arrived as 0-RTT is answered at once rather than after the handshake is confirmed.
+        stream.markReplaySafe()
         val request = StringBuilder()
         while (true) {
             when (val r = stream.read(30.seconds)) {
@@ -154,7 +157,6 @@ private suspend fun QuicScope.serveRequest(
             return
         }
         sendFile(stream, file)
-        stream.shutdownSend()
     } catch (e: Exception) {
         System.err.println("request failed: $e")
     } finally {
@@ -162,6 +164,7 @@ private suspend fun QuicScope.serveRequest(
     }
 }
 
+/** Send [file] and FIN the stream, the FIN riding the last chunk so a small file is one packet. */
 private suspend fun QuicScope.sendFile(
     stream: QuicByteStream,
     file: File,
@@ -169,15 +172,18 @@ private suspend fun QuicScope.sendFile(
     val chunk = 64 * 1024
     val buf = bufferFactory.allocate(chunk)
     try {
+        var left = file.length()
+        if (left == 0L) return stream.shutdownSend()
         file.inputStream().use { input ->
             val bytes = ByteArray(chunk)
-            while (true) {
+            while (left > 0) {
                 val n = input.read(bytes)
-                if (n <= 0) break
+                if (n <= 0) error("${file.path} ended $left bytes early")
+                left -= n
                 buf.resetForWrite()
                 buf.writeBytes(bytes, 0, n)
                 buf.resetForRead()
-                stream.writeFully(buf, 60.seconds)
+                if (left > 0) stream.writeFully(buf, 60.seconds) else stream.writeFullyAndShutdownSend(buf, 60.seconds)
             }
         }
     } finally {
@@ -316,11 +322,10 @@ private suspend fun writeRequest(
     try {
         buf.writeString(request, Charset.UTF8)
         buf.resetForRead()
-        stream.writeFully(buf, 30.seconds)
+        stream.writeFullyAndShutdownSend(buf, 30.seconds)
     } finally {
         buf.freeIfNeeded()
     }
-    stream.shutdownSend()
 }
 
 private suspend fun receive(

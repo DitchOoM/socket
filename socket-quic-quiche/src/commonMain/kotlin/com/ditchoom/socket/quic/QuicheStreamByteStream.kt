@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
-import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
@@ -84,6 +83,23 @@ interface QuicheStreamAdapter {
     suspend fun streamClose(streamId: QuicStreamId)
 
     /**
+     * Write all of [buffer] and send FIN — with its last bytes where the implementation can, else after
+     * them. The default writes, then closes.
+     */
+    suspend fun streamWriteAndFinish(
+        streamId: QuicStreamId,
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ) {
+        while (buffer.remaining() > 0) {
+            val before = buffer.position()
+            val written = streamWrite(streamId, buffer, timeout)
+            buffer.position(before + written)
+        }
+        streamClose(streamId)
+    }
+
+    /**
      * Shut down [direction] of the stream with application error code [errorCode]:
      * 0 = read (sends STOP_SENDING), 1 = write (sends RESET_STREAM). Used to abruptly abort a stream.
      */
@@ -122,7 +138,7 @@ class QuicheStreamByteStream(
     override val readPolicy: ReadPolicy = ReadPolicy.Bounded(DEFAULT_STREAM_DEADLINE),
     override val writePolicy: WritePolicy = WritePolicy.Bounded(DEFAULT_STREAM_DEADLINE),
 ) : ByteStream,
-    HalfCloseable,
+    FinishingWrite,
     Resettable {
     @Volatile
     private var closed = false
@@ -166,6 +182,16 @@ class QuicheStreamByteStream(
         check(!sendFinished) { "QuicheStreamByteStream($streamId) send side is finished" }
         val written = adapter.streamWrite(streamId, buffer, deadline)
         return BytesWritten(written)
+    }
+
+    override suspend fun writeFullyAndShutdownSend(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ) {
+        check(!closed) { "QuicheStreamByteStream($streamId) is closed" }
+        check(!sendFinished) { "QuicheStreamByteStream($streamId) send side is finished" }
+        adapter.streamWriteAndFinish(streamId, buffer, deadline)
+        sendFinished = true
     }
 
     override suspend fun shutdownSend() {

@@ -145,6 +145,10 @@ kotlin {
                 implementation(project(":socket-testkit"))
             }
         }
+        // The 0-RTT tests bind the server's UDP socket themselves, to drop the client's Handshake packets.
+        jvmTest.dependencies {
+            implementation(project(":socket-udp"))
+        }
         // Android instrumented (on-device) HTTP/3 loopback conformance — the 27-test parity gap vs
         // JVM/Linux/Apple. Android runs the same quiche backing as the JVM; the quiche JNI `.so` merges
         // into the test APK transitively from :socket-quic-quiche's androidMain/jniLibs (via
