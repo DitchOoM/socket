@@ -90,6 +90,104 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A client's handshake is confirmed when the server's HANDSHAKE_DONE arrives, one round trip after it
+     * completes; a server's as it completes (RFC 9001 §4.1.2). The read the migration gate depends on.
+     */
+    @Test
+    fun aClientIsConfirmedOnlyWhenHandshakeDoneArrives() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    assertTrue(pair.established(pair.client))
+                    assertFalse(pair.confirmed(pair.client), "a client that has only sent its Finished is not confirmed")
+                    val finished = pair.sends(pair.client)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(finished, pair.server)
+                    assertTrue(pair.confirmed(pair.server), "a server is confirmed as its handshake completes")
+                    assertFalse(pair.confirmed(pair.client), "the client is not confirmed before HANDSHAKE_DONE arrives")
+                    val handshakeDone = pair.sends(pair.server)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(handshakeDone, pair.client)
+                    assertTrue(pair.confirmed(pair.client), "HANDSHAKE_DONE confirms the client")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A network change that arrives after the client's handshake completes but before it is confirmed
+     * moves the connection once it is confirmed, and not before. RFC 9000 §9: an endpoint MUST NOT
+     * initiate migration before the handshake is confirmed, and a client confirms only when
+     * HANDSHAKE_DONE arrives (RFC 9001 §4.1.2), one round trip after it completes.
+     *
+     * The link holds the server's HANDSHAKE_DONE, and every retransmission of it, for seconds, but carries
+     * its first NEW_CONNECTION_IDs: the client knows the server's transport parameters and has spare
+     * connection ids, so nothing but the missing confirmation stands in the way. While held, the
+     * migration the change asked for opens no socket and is not answered; once HANDSHAKE_DONE arrives,
+     * that same migration completes.
+     */
+    @Test
+    fun aNetworkChangeBeforeTheHandshakeIsConfirmedMigratesOnceItIs() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                // The server's first 1-RTT datagram, which carries HANDSHAKE_DONE, leaves as its handshake
+                // completes — before the scenario body runs — so it is held from the start.
+                val first = PathReach.HeldBetween(from = DEFAULT_PATH_LATENCY * 2 + 30.milliseconds, until = CONFIRMATION_HELD_UNTIL)
+                withMigrationSim(
+                    simEnv(),
+                    seed = 781_001L,
+                    primaryImpairment = PathImpairment(latency = DEFAULT_PATH_LATENCY, reach = LinkReach(PathReach.Open, first)),
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+                    quicOptions =
+                        migrationSimOptions(
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                ) {
+                    val link = pipe.paths().first().local
+                    assertTrue(
+                        currentTime.milliseconds < first.from + DEFAULT_PATH_LATENCY * 2,
+                        "the scenario must start while HANDSHAKE_DONE is still held; it started at ${currentTime}ms",
+                    )
+                    // Let the server's NEW_CONNECTION_IDs through, then hold everything after them, which
+                    // includes every retransmission of HANDSHAKE_DONE.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY))
+                    awaitSpareDcids()
+                    pipe.impair(
+                        link,
+                        PathImpairment(
+                            latency = DEFAULT_PATH_LATENCY,
+                            reach = LinkReach(PathReach.Open, PathReach.HeldUntil(CONFIRMATION_HELD_UNTIL)),
+                        ),
+                    )
+                    monitor.setNetworkId(CELLULAR)
+
+                    delay(CONFIRMATION_HELD_UNTIL - currentTime.milliseconds - 100.milliseconds)
+                    assertTrue(clientAvailableDcids() > 0, "the client must hold a spare connection id, so only confirmation is missing")
+                    assertEquals(
+                        emptyList(),
+                        clientPaths(),
+                        "no path may be opened for a migration before the handshake is confirmed; traffic ${pipeTraffic()}",
+                    )
+                    assertEquals(emptyList(), client.timeline, "the migration must wait for confirmation, not answer before it")
+
+                    val moved =
+                        withTimeoutOrNull(MIGRATION_AFTER_CONFIRMATION_WITHIN) {
+                            while (client.timeline.isEmpty()) delay(10.milliseconds)
+                        }
+                    assertEquals(Unit, moved, "the migration must be answered once confirmed; traffic ${pipeTraffic()}")
+                    val attempt = client.timeline.single()
+                    assertIs<MigrationResult.Succeeded>(attempt.result, "the waiting migration must move the connection: $attempt")
+                    assertTrue(attempt.ended >= CONFIRMATION_HELD_UNTIL, "it must complete after confirmation: $attempt")
+                }
+            }
+        }
+
+    /**
      * A FIN that arrives on a retransmission of bytes the reader has already consumed still ends the
      * stream.
      *
@@ -4687,6 +4785,12 @@ abstract class MigrationSimTestSuite {
          * the server's draining period (3 × PTO), with room — and far below the sim's 120 s idle timeout.
          */
         val CLOSE_REACHES_SERVER_WITHIN = 5.seconds
+
+        /** When the link releases the server's HANDSHAKE_DONE in [aNetworkChangeBeforeTheHandshakeIsConfirmedMigratesOnceItIs]. */
+        val CONFIRMATION_HELD_UNTIL = 3.seconds
+
+        /** Release, one-way latency and the validation round trip, with room. */
+        val MIGRATION_AFTER_CONFIRMATION_WITHIN = 5.seconds
 
         /**
          * How long each phase of the FIN's loss lasts: several of the client's PTOs at the 60 ms path,

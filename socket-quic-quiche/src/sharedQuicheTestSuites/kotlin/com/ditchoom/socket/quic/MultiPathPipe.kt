@@ -134,6 +134,16 @@ internal sealed interface PathReach {
     data class HeldUntil(
         val at: Duration,
     ) : PathReach
+
+    /**
+     * Open before [from]; everything offered from [from] until [until] is held and delivered, in order,
+     * [until] plus the path's latency; open again from [until] on. A link that stalls mid-connection and
+     * queues through the stall rather than dropping.
+     */
+    data class HeldBetween(
+        val from: Duration,
+        val until: Duration,
+    ) : PathReach
 }
 
 /** Whether the client has closed a path's socket. The link outlives it: the peer can still send to it. */
@@ -408,7 +418,7 @@ internal class MultiPathPipe(
             if (len > path.stats.largestOffered) path.stats.largestOffered = len
             val dark =
                 when (reach) {
-                    PathReach.Open, is PathReach.HeldUntil -> false
+                    PathReach.Open, is PathReach.HeldUntil, is PathReach.HeldBetween -> false
                     PathReach.Dark -> true
                     is PathReach.DarkUntil -> now() < reach.at
                 }
@@ -439,6 +449,14 @@ internal class MultiPathPipe(
             val held =
                 when (reach) {
                     is PathReach.HeldUntil -> (reach.at - now()).coerceAtLeast(Duration.ZERO)
+                    is PathReach.HeldBetween ->
+                        if (now() <
+                            reach.from
+                        ) {
+                            Duration.ZERO
+                        } else {
+                            (reach.until - now()).coerceAtLeast(Duration.ZERO)
+                        }
                     PathReach.Open, PathReach.Dark, is PathReach.DarkUntil -> Duration.ZERO
                 }
             delay = maxOf(held, withheld) + impairment.latency + impairment.jitter * jitterFraction

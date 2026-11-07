@@ -569,6 +569,7 @@ class AutoMigrationReactorTests {
      * that the retry actually reaches it.
      */
     @Test
+    @Suppress("DEPRECATION") // HandshakeNotConfirmed: never returned, still a leaf.
     fun everyRetryableLeafIsRetriedWithNoFurtherNetworkEvent() {
         val retryable: List<MigrationResult.Unmoved.Failed> =
             listOf(

@@ -375,6 +375,9 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connIsEstablished(conn: QuicheConn) = established
 
+    // A stub's handshake confirms the moment it completes, as a server's does.
+    override fun connIsHandshakeConfirmed(conn: QuicheConn) = established
+
     /**
      * When true, [connIsClosed] also reports closed once [connClose] has been called, so a test's own
      * Close command closes the connection. Arming [closed] from the test thread instead races the driver

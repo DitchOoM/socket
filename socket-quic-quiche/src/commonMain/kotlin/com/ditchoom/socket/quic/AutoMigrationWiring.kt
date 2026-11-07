@@ -646,9 +646,9 @@ internal fun wireAutoMigration(
  * roughly one attempt a minute, so *never giving up* costs about one probe per minute.
  *
  * The 250ms floor is a spin guard for the leaves that return *immediately* — `AlreadyInProgress`
- * resolves as the in-flight move completes, `HandshakeNotConfirmed` as the handshake confirms. For the
- * leaf that matters most, `PathNotValidated`, the attempt has already spent its RFC 9000 §8.2.4
- * abandon budget (~3s) inside quiche and the wait here is a rounding error on top.
+ * resolves as the in-flight move completes. For the leaf that matters most, `PathNotValidated`, the
+ * attempt has already spent its RFC 9000 §8.2.4 abandon budget (~3s) inside quiche and the wait here is
+ * a rounding error on top.
  */
 private fun backoffBeforeAttempt(attempt: Int): Duration =
     minOf(250.milliseconds * (1 shl (attempt - 1).coerceAtMost(BACKOFF_SHIFT_CAP)), RETRY_BACKOFF_CEILING)
@@ -881,9 +881,10 @@ private fun routeFor(
  * rather than inherit whichever one this function happened to default to; the whole point of the
  * sealed family is that the compiler asks.
  */
+@Suppress("DEPRECATION") // HandshakeNotConfirmed: never returned, still a leaf.
 private fun MigrationResult.Unmoved.Failed.retryableWithoutNewInformation(): Boolean =
     when (this) {
-        // Resolves on its own as the handshake confirms; the next attempt is the entire point.
+        // Never returned (a migration waits for confirmation); kept retryable as it was.
         MigrationResult.Unmoved.Failed.HandshakeNotConfirmed -> true
         // One path move at a time — the in-flight one completes and frees the lane.
         MigrationResult.Unmoved.Failed.AlreadyInProgress -> true

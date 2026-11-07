@@ -1109,11 +1109,17 @@ class QuicheDriver(
     private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
     /**
-     * Three states, exhaustive: nothing in flight; the platform is opening the socket beside the
-     * loop; the socket is probed and the peer's answer is being timed (RFC 9000 §8.2.4).
+     * Four states, exhaustive: nothing in flight; a migration waiting for the handshake to confirm;
+     * the platform is opening the socket beside the loop; the socket is probed and the peer's answer
+     * is being timed (RFC 9000 §8.2.4).
      */
     private sealed interface MigrationLane {
         data object Idle : MigrationLane
+
+        /** [cmd] arrived before the handshake confirmed (RFC 9000 §9) and starts once it has. */
+        class AwaitingConfirmation(
+            val cmd: QuicheCmd.Migrate,
+        ) : MigrationLane
 
         /** [job] is opening the socket beside the loop and will post [PathOpened] when it settles. */
         class Opening(
@@ -1132,7 +1138,7 @@ class QuicheDriver(
     /** The migration being validated, if that is where the lane stands — a projection, never state. */
     private fun validating(): PendingMigration? =
         when (val l = lane) {
-            MigrationLane.Idle, is MigrationLane.Opening -> null
+            MigrationLane.Idle, is MigrationLane.AwaitingConfirmation, is MigrationLane.Opening -> null
             is MigrationLane.Validating -> l.pending
         }
 
@@ -2319,11 +2325,27 @@ class QuicheDriver(
         flushOutgoing()
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
+        resumeMigrationAwaitingConfirmation()
         discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
         updateState()
+    }
+
+    /**
+     * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
+     * the turn whose packet carried HANDSHAKE_DONE. Costs one lane check when nothing waits.
+     */
+    private fun resumeMigrationAwaitingConfirmation() {
+        val waiting =
+            when (val l = lane) {
+                is MigrationLane.AwaitingConfirmation -> l.cmd
+                MigrationLane.Idle, is MigrationLane.Opening, is MigrationLane.Validating -> return
+            }
+        if (api.connIsClosed(conn) || !api.connIsHandshakeConfirmed(conn)) return
+        lane = MigrationLane.Idle
+        handleMigrate(waiting)
     }
 
     /**
@@ -3134,24 +3156,6 @@ class QuicheDriver(
                 }
                 is MigrationCapability.Supported -> migration
             }
-        // What the peer's transport parameters (RFC 9000 §18.2) say about moving to a new local address.
-        // Exhaustive over three states, with no boolean and no null: "the peer forbids it" and "we have
-        // not read the peer's parameters yet" are facts of different kinds — one permanent, one a timing
-        // state that resolves on its own — and a nullable Boolean made them share a token.
-        when (api.connPeerMigrationPermission(conn)) {
-            // Probing would burn a spare DCID only to fail validation.
-            PeerMigrationPermission.Forbidden -> {
-                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
-                return
-            }
-            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
-            // Retryable, so `Failed` — the very next attempt, once the handshake completes, can succeed.
-            PeerMigrationPermission.NotYetNegotiated -> {
-                cmd.result.complete(MigrationResult.Unmoved.Failed.HandshakeNotConfirmed)
-                return
-            }
-            PeerMigrationPermission.Permitted -> Unit
-        }
         val factory =
             when (val via = cmd.via) {
                 PathVia.DefaultRoute -> wiring.channelFactory
@@ -3170,10 +3174,25 @@ class QuicheDriver(
         }
         when (lane) {
             MigrationLane.Idle -> Unit
-            is MigrationLane.Opening, is MigrationLane.Validating -> {
+            is MigrationLane.AwaitingConfirmation, is MigrationLane.Opening, is MigrationLane.Validating -> {
                 cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
                 return
             }
+        }
+        when (api.connMigrationReadiness(conn)) {
+            // Probing would burn a spare DCID only to fail validation.
+            MigrationReadiness.PeerForbids -> {
+                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
+                return
+            }
+            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
+            // Confirmation is one round trip away, so the move waits for it instead of failing:
+            // [resumeMigrationAwaitingConfirmation] runs this again on the turn that confirms.
+            MigrationReadiness.AwaitingConfirmation -> {
+                lane = MigrationLane.AwaitingConfirmation(cmd)
+                return
+            }
+            MigrationReadiness.Ready -> Unit
         }
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
@@ -3233,7 +3252,7 @@ class QuicheDriver(
         val expected =
             when (val l = lane) {
                 is MigrationLane.Opening -> l.cmd === cmd
-                MigrationLane.Idle, is MigrationLane.Validating -> false
+                MigrationLane.Idle, is MigrationLane.AwaitingConfirmation, is MigrationLane.Validating -> false
             }
         if (!expected) {
             releaseIfOpened(opened.outcome)
@@ -3763,6 +3782,7 @@ class QuicheDriver(
         // whatever the platform produced after this point.
         when (val l = lane) {
             MigrationLane.Idle -> Unit
+            is MigrationLane.AwaitingConfirmation -> l.cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
             is MigrationLane.Opening -> {
                 l.job.cancel()
                 l.cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
