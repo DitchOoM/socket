@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.data.readBuffer
 import java.io.File
 import java.nio.file.Files
 import java.security.KeyStore
@@ -18,6 +19,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A TLS [ClientSocket.write] reports the PLAINTEXT bytes it consumed from the caller's buffer, as the
@@ -34,7 +36,7 @@ open class JvmTlsWriteTests {
         runTestNoTimeSkipping {
             val payload = pattern(SMALL_WRITE)
             LoopbackTlsServer(expectedBytes = payload.size).use { server ->
-                ClientSocket.connect(server.port, LOOPBACK, TransportConfig.tlsInsecure()) { socket ->
+                server.connectClient { socket ->
                     val buffer = payload.toReadBuffer()
                     val written = socket.write(buffer).count
                     assertEquals(payload.size, written, "a TLS write must report plaintext bytes, not ciphertext")
@@ -50,7 +52,7 @@ open class JvmTlsWriteTests {
             val writes = listOf(pattern(SMALL_WRITE), pattern(7), pattern(NOT_A_RECORD_MULTIPLE), pattern(3))
             val expected = writes.fold(ByteArray(0)) { acc, bytes -> acc + bytes }
             LoopbackTlsServer(expectedBytes = expected.size).use { server ->
-                ClientSocket.connect(server.port, LOOPBACK, TransportConfig.tlsInsecure()) { socket ->
+                server.connectClient { socket ->
                     writes.forEach { socket.writeFully(it.toReadBuffer()) }
                 }
                 assertContentEquals(expected, server.received())
@@ -62,7 +64,7 @@ open class JvmTlsWriteTests {
         runTestNoTimeSkipping {
             val payload = pattern(NOT_A_RECORD_MULTIPLE)
             LoopbackTlsServer(expectedBytes = payload.size).use { server ->
-                ClientSocket.connect(server.port, LOOPBACK, TransportConfig.tlsInsecure()) { socket ->
+                server.connectClient { socket ->
                     val buffer = payload.toReadBuffer()
                     val written = socket.write(buffer).count
                     assertEquals(buffer.position(), written, "the reported count must equal the cursor advance")
@@ -84,7 +86,13 @@ open class JvmTlsWriteTests {
         init {
             thread(isDaemon = true, name = "loopback-tls-server") {
                 try {
-                    serverSocket.accept().use { peer -> receivedBytes.complete(peer.getInputStream().readNBytes(expectedBytes)) }
+                    serverSocket.accept().use { peer ->
+                        receivedBytes.complete(peer.getInputStream().readNBytes(expectedBytes))
+                        peer.getOutputStream().apply {
+                            write(ACK)
+                            flush()
+                        }
+                    }
                 } catch (e: Exception) {
                     receivedBytes.completeExceptionally(e)
                 }
@@ -93,6 +101,18 @@ open class JvmTlsWriteTests {
 
         fun received(): ByteArray = receivedBytes.get(10, TimeUnit.SECONDS)
 
+        /**
+         * Runs [writes] over a TLS client, then waits for the server's ack before closing: closing with
+         * the server's unread bytes still queued makes Windows reset the connection, discarding data the
+         * server has not read yet.
+         */
+        suspend fun connectClient(writes: suspend (ClientSocket) -> Unit) =
+            ClientSocket.connect(port, LOOPBACK, TransportConfig.tlsInsecure()) { socket ->
+                writes(socket)
+                val ack = socket.readBuffer(10.seconds)
+                assertEquals(ACK.toByte(), ack.readByte())
+            }
+
         override fun close() {
             serverSocket.close()
             keyStoreDir.deleteRecursively()
@@ -100,6 +120,7 @@ open class JvmTlsWriteTests {
 
         private companion object {
             const val PASSWORD = "loopback"
+            const val ACK = 1
 
             fun serverContext(dir: File): SSLContext {
                 val keyStoreFile = File(dir, "server.p12")
