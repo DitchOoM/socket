@@ -343,6 +343,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = nConnIsEstablished(conn.handle)
 
+    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = nConnIsHandshakeConfirmed(conn.handle)
+
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
@@ -1037,6 +1039,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnEarlyDataReason(conn: Long): Int
 
     @JvmStatic private external fun nConnStreamDataUnacknowledged(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnIsHandshakeConfirmed(conn: Long): Boolean
 
     @JvmStatic private external fun nConnTimeoutAsNanos(conn: Long): Long
 

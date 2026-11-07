@@ -106,9 +106,7 @@ sealed interface MigrationResult {
              * why this is a knowable state rather than a probe that mysteriously fails validation.
              *
              * Every backend binds that accessor, so this is never a guess and never degrades to
-             * [Failed.PathNotValidated]. Distinguish it from [Failed.HandshakeNotConfirmed], which is the
-             * *other* answer that read can give: there the parameters have not arrived yet, and a later
-             * attempt may well succeed.
+             * [Failed.PathNotValidated].
              */
             data object PeerForbids : Impossible
 
@@ -122,17 +120,13 @@ sealed interface MigrationResult {
         /** …this time. A later attempt, or a different target, may move it. */
         sealed interface Failed : Unmoved {
             /**
-             * The handshake has not confirmed yet, so the peer's transport parameters are unknown and
-             * RFC 9000 §9 forbids initiating migration: *"An endpoint MUST NOT initiate connection
-             * migration before the handshake is confirmed."*
-             *
-             * Emphatically **not** [Impossible.PeerForbids]. Both come from the same
-             * `quiche_conn_peer_transport_params` read, but this one is the accessor saying *not yet* —
-             * it resolves on its own as the handshake completes, and the next attempt may succeed. That
-             * distinction is the whole reason the backend accessor returns a three-state type instead of
-             * a `Boolean?`: a nullable would have made "the peer said no" and "nobody has said anything
-             * yet" share one token.
+             * The handshake had not confirmed yet (RFC 9000 §9). No backend answers this: a migration
+             * asked for before confirmation waits for it and then proceeds.
              */
+            @Deprecated(
+                "Never returned: a migration asked for before the handshake confirms waits for confirmation instead.",
+                level = DeprecationLevel.WARNING,
+            )
             data object HandshakeNotConfirmed : Failed
 
             /**

@@ -197,6 +197,9 @@ internal class QuichePairByHand private constructor(
     /** Whether [conn]'s handshake has completed. */
     fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
 
+    /** Whether [conn]'s handshake is confirmed (RFC 9001 §4.1.2). */
+    fun confirmed(conn: QuicheConn): Boolean = at { api.connIsHandshakeConfirmed(conn) }
+
     /** [conn] closes the connection with [error]; its CONNECTION_CLOSE is in its next [sends]. */
     fun closeWith(
         conn: QuicheConn,
