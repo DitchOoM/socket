@@ -301,6 +301,10 @@ fun downloadQuicheSource(
     // migrate before it (RFC 9000 §9), and is complete one round trip earlier. Idempotent, fails loudly on
     // drift OR on an upstream export. See the KDoc.
     patchQuicheHandshakeConfirmedFfi(sourceDir)
+    // Read a datagram on past a coalesced long-header packet quiche cannot process (RFC 9000 §12.2), so a
+    // 1-RTT CONNECTION_CLOSE behind a Handshake packet whose keys are gone is not dropped with it.
+    // Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1318,6 +1322,121 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
     )
     libRs.writeText(text)
     logger.lifecycle("Patched quiche source: a server buffers 1-RTT packets that arrive before its handshake completes")
+}
+
+/**
+ * Keep reading a datagram past a coalesced long-header packet quiche cannot process, instead of dropping
+ * the rest of the datagram with it.
+ *
+ * **Why.** RFC 9000 §12.2: a receiver that fails to process one coalesced packet (keys unavailable or
+ * discarded, AEAD failure, a duplicate) still processes the packets after it, and §17.2's Length field
+ * says where the next one starts. quiche's `Connection::recv` answered every `Error::Done` from
+ * `recv_single` by consuming everything `left` in the datagram. Observed in the quic-interop-runner with
+ * quinn as the client: quinn, not yet sure the handshake was confirmed, sent its CONNECTION_CLOSE
+ * coalesced as Handshake + 1-RTT (RFC 9000 §10.2.3). Our server had confirmed and discarded its
+ * Handshake keys, so the Handshake packet was undecryptable, the 1-RTT packet behind it was dropped too,
+ * and the server never saw the close: it retransmitted until its idle timeout. Reproduced by
+ * `MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
+ * `aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
+ *
+ * The edit: in `recv`'s `Err(Error::Done)` arm, re-read the unprotected long header of the packet that
+ * failed (header protection covers neither the type bits nor the Length) and, for an Initial, 0-RTT or
+ * Handshake packet of the connection's version whose Length ends before the datagram does, consume just
+ * that packet and go on to the next. Everything else is upstream's behaviour unchanged: a short header
+ * has no Length and runs to the end of the datagram, Retry and Version Negotiation packets have none
+ * either, and the last packet of a datagram still gets the stateless-reset check. An error other than
+ * `Done` still closes the connection.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline): the anchor is the whole upstream
+ * arm, so a quiche bump that changes it throws.
+ */
+fun patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir: File) {
+    val marker = "socket-coalesced-after-undecryptable"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |                Err(Error::Done) => {
+        |                    // If the packet can't be processed or decrypted, check if
+        |                    // it's a stateless reset.
+        |                    if self.is_stateless_reset(&buf[len - left..len]) {
+        |                        trace!("{} packet is a stateless reset", self.trace_id);
+        |
+        |                        self.mark_closed();
+        |                    }
+        |
+        |                    left
+        |                },
+        |
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the `Err(Error::Done)` arm of Connection::recv was not found exactly once in quiche's " +
+                "lib.rs — a quiche bump changed it. If upstream now skips an unprocessable coalesced packet by " +
+                "its Length (RFC 9000 §12.2), DELETE patchQuicheCoalescedPacketsAfterAnUndecryptableOne and KEEP " +
+                "MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
+                "re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |                Err(Error::Done) => {
+            |                    // $marker: RFC 9000 §12.2 has a receiver go on to
+            |                    // the packets coalesced after one it cannot process. A
+            |                    // long header's Length (not header-protected) says where
+            |                    // the next starts; a short header runs to the end.
+            |                    let dcid_len = self.source_id().len();
+            |                    let version = self.version;
+            |                    let skip = {
+            |                        let mut b =
+            |                            octets::OctetsMut::with_slice(&mut buf[len - left..len]);
+            |                        match Header::from_bytes(&mut b, dcid_len) {
+            |                            Ok(hdr)
+            |                                if hdr.ty != Type::Short &&
+            |                                    hdr.ty != Type::Retry &&
+            |                                    hdr.ty != Type::VersionNegotiation &&
+            |                                    hdr.version == version =>
+            |                                b.get_varint()
+            |                                    .ok()
+            |                                    .and_then(|l| usize::try_from(l).ok())
+            |                                    .and_then(|l| b.off().checked_add(l)),
+            |                            _ => None,
+            |                        }
+            |                    };
+            |
+            |                    match skip.filter(|&n| n > 0 && n < left) {
+            |                        Some(n) => {
+            |                            trace!(
+            |                                "{} skipped unprocessable coalesced packet len={}",
+            |                                self.trace_id,
+            |                                n
+            |                            );
+            |
+            |                            n
+            |                        },
+            |
+            |                        None => {
+            |                            // If the packet can't be processed or decrypted, check if
+            |                            // it's a stateless reset.
+            |                            if self.is_stateless_reset(&buf[len - left..len]) {
+            |                                trace!("{} packet is a stateless reset", self.trace_id);
+            |
+            |                                self.mark_closed();
+            |                            }
+            |
+            |                            left
+            |                        },
+            |                    }
+            |                },
+            |
+            """.trimMargin(),
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a datagram is read past a coalesced packet that cannot be processed")
 }
 
 /**
