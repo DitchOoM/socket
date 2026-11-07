@@ -2490,6 +2490,7 @@ class QuicheDriver(
      * A stream the peer opens on a server whose handshake is still in progress arrived in 0-RTT: the
      * client's 1-RTT packets cannot be read before the server's handshake completes.
      */
+    @OptIn(QuicEngineSpi::class)
     private fun originOfPeerStream(): QuicStreamOrigin =
         when (role) {
             QuicRole.Client -> QuicStreamOrigin.Confirmed

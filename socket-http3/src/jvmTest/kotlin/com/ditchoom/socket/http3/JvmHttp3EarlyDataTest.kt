@@ -64,7 +64,11 @@ class JvmHttp3EarlyDataTest {
             val status =
                 earlyRequests(port, ticket, listOf(Request("GET", "/index"))) { streams ->
                     val status = readStatus(streams.single())
-                    assertTrue(channel.dropping && channel.dropped > 0, "the response arrived while the Finished was dropped")
+                    // Every Handshake datagram since dropHandshakes() was dropped, so the server's handshake is
+                    // incomplete. The client's Finished can still be in flight to the hold when the response
+                    // arrives, so the drop that proves the hold caught it is awaited, not asserted.
+                    assertTrue(channel.dropping, "the response arrived while the Finished was dropped")
+                    withTimeout(STEP) { channel.awaitFirstDrop() }
                     channel.release()
                     status
                 }
@@ -270,11 +274,11 @@ private class HandshakeDropChannel(
     @Volatile
     private var drop: Drop = Drop.Passing
 
-    @Volatile
-    var dropped: Int = 0
-        private set
-
     val dropping: Boolean get() = drop is Drop.Dropping
+
+    private val firstDrop = CompletableDeferred<Unit>()
+
+    suspend fun awaitFirstDrop(): Unit = firstDrop.await()
 
     fun dropHandshakes() {
         drop = Drop.Dropping
@@ -289,7 +293,7 @@ private class HandshakeDropChannel(
             val result = delegate.receive()
             if (result is DatagramReadResult.Received && drop is Drop.Dropping && carriesHandshake(result.datagram.payload)) {
                 result.datagram.payload.freeNativeMemory()
-                dropped++
+                firstDrop.complete(Unit)
                 continue
             }
             return result

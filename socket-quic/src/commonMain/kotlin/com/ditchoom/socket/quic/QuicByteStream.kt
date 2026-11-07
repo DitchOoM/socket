@@ -10,6 +10,10 @@ import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.transport.MuxIdentified
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
@@ -51,11 +55,10 @@ class QuicByteStream(
 
     override val muxStreamId: Long get() = streamId.id
 
-    @Volatile
-    private var earlyReads: EarlyReads =
+    private val earlyReads: EarlyReads =
         when (origin) {
             QuicStreamOrigin.Confirmed -> EarlyReads.Open
-            is QuicStreamOrigin.Early -> EarlyReads.AwaitConfirmation(origin)
+            is QuicStreamOrigin.Early -> EarlyReads.Gated(origin)
         }
 
     /**
@@ -64,11 +67,14 @@ class QuicByteStream(
      * [QuicStreamOrigin.Early] stream's bytes on a connection that will never be confirmed; a read that
      * waits never hands them over, one marked replay-safe does.
      *
-     * A no-op on a [QuicStreamOrigin.Confirmed] stream and once the handshake is confirmed. A read already
-     * waiting keeps waiting; mark the stream before reading it.
+     * A no-op on a [QuicStreamOrigin.Confirmed] stream and once the handshake is confirmed; a read already
+     * waiting for confirmation proceeds at once.
      */
     fun markReplaySafe() {
-        earlyReads = EarlyReads.Open
+        when (val gate = earlyReads) {
+            EarlyReads.Open -> Unit
+            is EarlyReads.Gated -> gate.open.complete(Unit)
+        }
     }
 
     @Volatile
@@ -121,10 +127,7 @@ class QuicByteStream(
         check(!closed) { "QuicByteStream($streamId) is closed" }
         when (val gate = earlyReads) {
             EarlyReads.Open -> Unit
-            is EarlyReads.AwaitConfirmation -> {
-                gate.origin.awaitConfirmation()
-                earlyReads = EarlyReads.Open
-            }
+            is EarlyReads.Gated -> if (!gate.open.isCompleted) gate.awaitOpen()
         }
         return delegate.read(deadline)
     }
@@ -219,13 +222,28 @@ class QuicByteStream(
     }
 }
 
-/** Whether reads of a [QuicByteStream] still wait for the handshake its [QuicStreamOrigin.Early] origin awaits. */
+/** Whether reads of a [QuicByteStream] wait for the handshake its [QuicStreamOrigin.Early] origin awaits. */
 private sealed interface EarlyReads {
+    /** Nothing to wait for: the stream is [QuicStreamOrigin.Confirmed]. */
     data object Open : EarlyReads
 
-    class AwaitConfirmation(
-        val origin: QuicStreamOrigin.Early,
-    ) : EarlyReads
+    /** An early stream; [open] completes when the handshake is confirmed or the stream is marked replay-safe. */
+    class Gated(
+        private val origin: QuicStreamOrigin.Early,
+    ) : EarlyReads {
+        val open = CompletableDeferred<Unit>()
+
+        /** Suspend until [open]; throws the connection's [QuicCloseException] if the handshake fails first. */
+        suspend fun awaitOpen(): Unit =
+            coroutineScope {
+                val confirmed = async { origin.awaitConfirmation() }
+                select {
+                    confirmed.onAwait { open.complete(Unit) }
+                    open.onAwait { }
+                }
+                confirmed.cancel()
+            }
+    }
 }
 
 /**

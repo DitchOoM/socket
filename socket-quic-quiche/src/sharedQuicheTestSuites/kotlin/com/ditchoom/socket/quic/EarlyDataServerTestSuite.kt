@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalCoroutinesApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -9,18 +9,22 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.udp.UdpSocket
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -92,11 +96,12 @@ abstract class EarlyDataServerTestSuite {
                         val reply =
                             earlyReconnect(server.port, ticket) { stream ->
                                 val reply = stream.readToEnd()
-                                assertTrue(
-                                    channel.holding && channel.dropped > 0,
-                                    "the reply must arrive while the client's Finished is still being dropped, so " +
-                                        "the server answered without its handshake completing. dropped=${channel.dropped}",
-                                )
+                                // Every Handshake datagram since holdHandshakes() has been dropped, so the server
+                                // cannot have completed its handshake. The reply can reach the client before its
+                                // own Finished reaches the hold — both leave the client's same flight — so the
+                                // drop that proves the hold intercepted it is awaited after, not asserted here.
+                                assertTrue(channel.holding, "the reply arrived while the client's Finished was held")
+                                withTimeout(STEP) { channel.awaitFirstDrop() }
                                 channel.release()
                                 reply
                             }
@@ -184,7 +189,16 @@ abstract class EarlyDataServerTestSuite {
                                 stream.writeFullyAndShutdownSend(text("ack:$payload"), STREAM_DEADLINE)
                                 outcomes.send(HandlerOutcome.Served(stateAtStart, payload))
                             } catch (e: QuicCloseException) {
-                                outcomes.send(HandlerOutcome.Closed(stateAtStart, e))
+                                outcomes.trySend(HandlerOutcome.Closed(stateAtStart, e))
+                                throw e
+                            } catch (e: CancellationException) {
+                                // The other typed path: runUntilClosed cancels a handler on a dead connection with
+                                // the QuicCloseException as the cause. Which of the two reaches the handler is a
+                                // race between its parked read and the close watcher.
+                                val close = generateSequence<Throwable>(e) { it.cause }.filterIsInstance<QuicCloseException>().firstOrNull()
+                                outcomes.trySend(
+                                    close?.let { HandlerOutcome.Closed(stateAtStart, it) } ?: HandlerOutcome.Cancelled(stateAtStart, e),
+                                )
                                 throw e
                             }
                         }
@@ -194,15 +208,20 @@ abstract class EarlyDataServerTestSuite {
 
                         channel.holdHandshakes()
                         coroutineScope {
+                            val client = CompletableDeferred<Throwable>()
                             val abandoned =
                                 launch {
                                     try {
                                         earlyReconnect(server.port, ticket) { stream -> stream.readToEnd() }
-                                    } catch (_: Exception) {
-                                        // The server gives up on this connection; what the client makes of it is not under test.
+                                    } catch (e: Exception) {
+                                        // The client idles out too (the server's idle timeout bounds both ends);
+                                        // what it saw is kept only to explain a stall.
+                                        client.complete(e)
                                     }
                                 }
-                            val failed = withTimeout(STEP) { outcomes.receive() }
+                            val failed =
+                                withTimeoutOrNull(STEP) { outcomes.receive() }
+                                    ?: fail("no handler outcome; client ended with ${client.takeIf { it.isCompleted }?.getCompleted()}")
                             abandoned.cancel()
                             assertIs<HandlerOutcome.Closed>(failed, "the handler must see its connection end, typed. Saw $failed")
                             assertEquals(
@@ -234,6 +253,11 @@ abstract class EarlyDataServerTestSuite {
         data class Closed(
             val stateAtStart: QuicConnectionState,
             val error: QuicCloseException,
+        ) : HandlerOutcome
+
+        data class Cancelled(
+            val stateAtStart: QuicConnectionState,
+            val cause: CancellationException,
         ) : HandlerOutcome
     }
 

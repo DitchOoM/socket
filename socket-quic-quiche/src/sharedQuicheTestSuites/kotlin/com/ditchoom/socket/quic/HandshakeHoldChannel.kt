@@ -26,10 +26,6 @@ internal class HandshakeHoldChannel(
     @Volatile
     private var hold: Hold = Hold.Passing
 
-    @Volatile
-    var dropped: Int = 0
-        private set
-
     private val firstDrop = CompletableDeferred<Unit>()
 
     /** Whether Handshake datagrams are being dropped right now. */
@@ -53,7 +49,6 @@ internal class HandshakeHoldChannel(
             val result = delegate.receive()
             if (result is DatagramReadResult.Received && hold is Hold.Dropping && carriesHandshake(result.datagram.payload)) {
                 result.datagram.payload.freeNativeMemory()
-                dropped++
                 firstDrop.complete(Unit)
                 continue
             }

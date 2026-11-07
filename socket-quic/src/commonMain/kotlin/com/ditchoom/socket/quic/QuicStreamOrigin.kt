@@ -20,14 +20,17 @@ sealed interface QuicStreamOrigin {
      * Opened by the peer in 0-RTT, before the handshake was confirmed. [awaitConfirmation] returns once it
      * is, and throws the connection's [QuicCloseException] if the handshake fails instead.
      *
-     * Built by an engine for each stream the peer opened early; [confirmation] is that connection's wait.
+     * Built only by an engine, for each stream the peer opened early; [confirmation] is that connection's
+     * wait. Application code reads an origin, it never makes one.
      */
-    class Early(
-        private val confirmation: suspend () -> Unit,
-    ) : QuicStreamOrigin {
-        /** Suspend until the handshake is confirmed; throws [QuicCloseException] if it fails. */
-        suspend fun awaitConfirmation(): Unit = confirmation()
+    class Early
+        @QuicEngineSpi
+        constructor(
+            private val confirmation: suspend () -> Unit,
+        ) : QuicStreamOrigin {
+            /** Suspend until the handshake is confirmed; throws [QuicCloseException] if it fails. */
+            suspend fun awaitConfirmation(): Unit = confirmation()
 
-        override fun toString(): String = "Early"
-    }
+            override fun toString(): String = "Early"
+        }
 }
