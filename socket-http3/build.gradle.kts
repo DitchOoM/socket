@@ -299,6 +299,13 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().con
     }
 }
 
+// The per-target KSP tasks (kspKotlinJvm, kspDebugKotlinAndroid, kspKotlinMacosArm64, ...) also read that commonMain
+// srcDir. Since KSP 2.3.13 they are no longer KotlinCompilationTasks, so the block above misses them and Gradle 9.9 fails
+// the build on the implicit dependency. Order them after the common metadata run explicitly.
+tasks
+    .matching { it.name.startsWith("ksp") && it.name.contains("Kotlin") && it.name != "kspCommonMainKotlinMetadata" }
+    .configureEach { dependsOn("kspCommonMainKotlinMetadata") }
+
 // The ktlint commonMain tasks read the KSP-generated srcDir (even though they filter it out of the
 // lint pass), so Gradle reports an implicit-dependency validation error without this. Declare it
 // explicitly (mirrors buffer's buffer-codec-test).
