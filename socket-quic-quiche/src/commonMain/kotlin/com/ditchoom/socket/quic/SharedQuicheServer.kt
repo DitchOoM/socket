@@ -25,10 +25,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -200,9 +203,14 @@ internal class SharedQuicheServer(
                     val connScope = CoroutineScope(coroutineContext + connJob)
                     val conn = DriverQuicConnection(driver, bufferFactory, accepted.remoteAddress, connScope)
                     try {
-                        conn.state.first { it !is QuicConnectionState.Handshaking }
-                        if (conn.state.value is QuicConnectionState.Established) {
-                            conn.runUntilClosed(idleTimeout) { handler() }
+                        // The handler starts as soon as the client's 0-RTT is accepted, not at the end of the
+                        // handshake: its early requests can then be answered in the server's first flight.
+                        // What it reads early stays behind QuicStreamOrigin.Early's gate unless it opts in.
+                        val start =
+                            combine(driver.state, driver.earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
+                        when (start) {
+                            HandlerStart.Now -> conn.runUntilClosed(idleTimeout) { handler() }
+                            HandlerStart.Never -> Unit
                         }
                     } catch (_: QuicCloseException) {
                         // The connection ended while the handler was still running — cancelled by
@@ -213,8 +221,12 @@ internal class SharedQuicheServer(
                     } finally {
                         try {
                             // Graceful close. Skipped for a connection that never came up or is
-                            // already gone — there is nothing left to deliver on either.
-                            if (conn.state.value is QuicConnectionState.Established) driver.lingerBeforeClose(closeLinger, idleTimeout)
+                            // already gone — there is nothing left to deliver on either. A handler that
+                            // returned during the handshake wrote into it, so the close waits for the
+                            // handshake to settle first; the idle timeout bounds a handshake that stalls.
+                            val settled =
+                                withTimeoutOrNull(idleTimeout) { conn.state.first { it !is QuicConnectionState.Handshaking } }
+                            if (settled is QuicConnectionState.Established) driver.lingerBeforeClose(closeLinger, idleTimeout)
                         } finally {
                             // The linger is a cancellable suspension point, so the teardown that follows
                             // it must not be: a cancelled handler (server shutting down) still has to

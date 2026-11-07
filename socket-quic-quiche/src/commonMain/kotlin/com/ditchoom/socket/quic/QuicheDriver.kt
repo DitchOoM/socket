@@ -336,6 +336,26 @@ class QuicheDriver(
     internal var earlyStreamData: EarlyStreamData = EarlyStreamData.None
         private set
 
+    private val earlyDataLatch = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
+
+    /** Whether this server connection accepted the client's 0-RTT, latched by [updateState]. */
+    internal val earlyData: StateFlow<EarlyDataAcceptance> = earlyDataLatch
+
+    /** How the handshake ended — completed once, at Established or at a close that came first. */
+    private val handshakeSettled = CompletableDeferred<HandshakeSettled>()
+
+    /**
+     * Suspend until the handshake is confirmed; throw this connection's [QuicCloseException] if it closes
+     * first. A server's handshake is confirmed when it completes (RFC 9001 §4.1.2), so this is the wait a
+     * [QuicStreamOrigin.Early] stream's reads make.
+     */
+    internal suspend fun awaitHandshakeConfirmed() {
+        when (handshakeSettled.await()) {
+            HandshakeSettled.Confirmed -> Unit
+            HandshakeSettled.Failed -> throw connectionClosed()
+        }
+    }
+
     /**
      * A close reason this driver decided on itself and that quiche cannot carry back to it.
      *
@@ -2457,7 +2477,7 @@ class QuicheDriver(
                             readPolicy = streamReadPolicy,
                             writePolicy = streamWritePolicy,
                         )
-                    incomingStreams.trySend(QuicByteStream(streamId, byteStream))
+                    incomingStreams.trySend(QuicByteStream(streamId, byteStream, originOfPeerStream()))
                     slot.dataSignal.trySend(Unit)
                 }
             }
@@ -2466,7 +2486,41 @@ class QuicheDriver(
         }
     }
 
+    /**
+     * A stream the peer opens on a server whose handshake is still in progress arrived in 0-RTT: the
+     * client's 1-RTT packets cannot be read before the server's handshake completes.
+     */
+    @OptIn(QuicEngineSpi::class)
+    private fun originOfPeerStream(): QuicStreamOrigin =
+        when (role) {
+            QuicRole.Client -> QuicStreamOrigin.Confirmed
+            QuicRole.Server ->
+                when (_state.value) {
+                    QuicConnectionState.Handshaking -> QuicStreamOrigin.Early(::awaitHandshakeConfirmed)
+                    QuicConnectionState.Idle, is QuicConnectionState.Established, QuicConnectionState.Draining,
+                    is QuicConnectionState.Closed,
+                    -> QuicStreamOrigin.Confirmed
+                }
+        }
+
+    /**
+     * Latch [earlyData] the first time quiche reports this server connection in early data: the TLS stack
+     * accepted the client's 0-RTT, so the protocol and resumption the handshake settled on are known now,
+     * before it completes.
+     */
+    private fun latchEarlyDataAcceptance() {
+        if (role !is QuicRole.Server) return
+        if (_state.value !is QuicConnectionState.Handshaking || earlyDataLatch.value is EarlyDataAcceptance.Accepted) return
+        if (api.connIsClosed(conn) || !api.connIsInEarlyData(conn)) return
+        earlyDataLatch.value =
+            EarlyDataAcceptance.Accepted(
+                readNegotiatedAlpn(),
+                QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
+            )
+    }
+
     private fun updateState() {
+        latchEarlyDataAcceptance()
         // quiche marks the handshake complete before it validates the peer's transport parameters, so a
         // handshake that ends in TRANSPORT_PARAMETER_ERROR reads as established AND closed in the same
         // wake, with none of the peer's limits applied (its stream limit is still 0). That connection
@@ -2478,6 +2532,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
+            handshakeSettled.complete(HandshakeSettled.Confirmed)
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
@@ -2583,6 +2638,7 @@ class QuicheDriver(
         settleUnreadAtClose()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())
+        handshakeSettled.complete(HandshakeSettled.Failed)
     }
 
     /**
@@ -2593,11 +2649,17 @@ class QuicheDriver(
      * but the close itself.
      */
     private fun settleUnreadAtClose() {
+        // A handshake that never completed owes the application nothing: every byte it received arrived
+        // as 0-RTT, which a connection that is never confirmed may have been replayed into.
         val unread =
-            streams.values
-                .filter { it.holdsUnread() }
-                .map { it.id }
-                .toSet()
+            when (_state.value) {
+                QuicConnectionState.Idle, QuicConnectionState.Handshaking -> emptySet()
+                is QuicConnectionState.Established, QuicConnectionState.Draining, is QuicConnectionState.Closed ->
+                    streams.values
+                        .filter { it.holdsUnread() }
+                        .map { it.id }
+                        .toSet()
+            }
         _unreadAtClose.value = if (unread.isEmpty()) QuicUnreadAtClose.AllRead else QuicUnreadAtClose.Unread(unread)
         streams.values.forEach(::reconsiderUnread)
     }
@@ -3681,6 +3743,8 @@ class QuicheDriver(
         measureDrainingPeriod()
         wireIdScratch.freeNativeMemory()
         commands.close()
+        // A driver torn down mid-handshake never confirms it: release whatever waits for that.
+        handshakeSettled.complete(HandshakeSettled.Failed)
 
         while (true) {
             val cmd = commands.tryReceive().getOrNull() ?: break
@@ -4646,6 +4710,30 @@ class DriverStreamAdapter(
         streamId: QuicStreamId,
         buffer: ReadBuffer,
         timeout: Duration,
+    ): Int = send(streamId, buffer, timeout, fin = false)
+
+    /**
+     * Every write offers quiche the FIN with it, which quiche applies only to a write it accepts whole: the
+     * last bytes and the FIN leave in one STREAM frame.
+     */
+    override suspend fun streamWriteAndFinish(
+        streamId: QuicStreamId,
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ) {
+        if (buffer.remaining() == 0) return streamClose(streamId)
+        while (buffer.remaining() > 0) {
+            val before = buffer.position()
+            val written = send(streamId, buffer, timeout, fin = true)
+            buffer.position(before + written)
+        }
+    }
+
+    private suspend fun send(
+        streamId: QuicStreamId,
+        buffer: ReadBuffer,
+        timeout: Duration,
+        fin: Boolean,
     ): Int {
         val remaining = buffer.remaining()
         // Empty input: nothing to send (quiche would report 0). Return before touching the buffer's
@@ -4679,7 +4767,7 @@ class DriverStreamAdapter(
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
                     // buffered-yet-cancelled state that could skip the finally's join.
-                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, false, deferred)).getOrThrow()
+                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, fin, deferred)).getOrThrow()
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
                     inFlight = deferred
                     val sent = deferred.await()

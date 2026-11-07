@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamOrigin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -58,6 +59,8 @@ class Http3ServerConnection internal constructor(
     // Handles incoming Extended CONNECT (`:protocol=webtransport`) requests when [webTransport] is
     // enabled — accept() or reject() the session inside. Null ⇒ every WebTransport CONNECT is refused.
     private val onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    // Which requests that arrived as 0-RTT run before the handshake is confirmed; the rest wait for it.
+    private val replaySafety: Http3ReplaySafety = Http3ReplaySafety.SafeMethods,
 ) {
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
     private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = config.bufferFactory)
@@ -153,6 +156,10 @@ class Http3ServerConnection internal constructor(
     }
 
     private suspend fun handleUniStream(stream: QuicByteStream) {
+        // Read at once even when it arrived as 0-RTT: the control and QPACK streams carry this connection's
+        // own state, which an early request's field section may need, and a WebTransport stream reaches
+        // no application until its session's CONNECT — never replay-safe — has been accepted.
+        stream.markReplaySafe()
         val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
         // A peer-initiated unidirectional WebTransport stream outlives this call — the mux owns the
         // processor + stream lifetime, so the generic finally must not release the processor.
@@ -469,6 +476,9 @@ class Http3ServerConnection internal constructor(
 
     /** Read one request off a client bidi [stream], run [onRequest], then drain the body + FIN. */
     private suspend fun handleRequest(stream: QuicByteStream) {
+        // An early request's HEADERS are read at once — whether it may run before the handshake is
+        // confirmed depends on what they say ([replaySafety]); what runs on it is held below until then.
+        stream.markReplaySafe()
         // Explicit processor so a WebTransport bidirectional stream's buffered prefix can be handed to
         // the mux (Http3StreamReader.create would hide the processor).
         val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
@@ -493,6 +503,7 @@ class Http3ServerConnection internal constructor(
             // Extended CONNECT (RFC 9220): a CONNECT carrying `:protocol` is routed to WebTransport,
             // not the normal request handler.
             if (pseudoOrNull(fields, ":method") == "CONNECT" && pseudoOrNull(fields, ":protocol") != null) {
+                awaitHandshakeConfirmed(stream)
                 handlerOwnsReader = handleWebTransport(stream, reader, fields)
                 return
             }
@@ -512,6 +523,7 @@ class Http3ServerConnection internal constructor(
                 Http3ServerResponse(stream, pool, config, streamId) { sectionFields, sid -> encodeSection(sectionFields, sid) }
             val exchange =
                 Http3ServerExchange(request, response) { spec, respond -> pushResource(stream, spec, respond) }
+            if (!replaySafety.isReplaySafe(request)) awaitHandshakeConfirmed(stream)
             try {
                 exchange.onRequest()
             } finally {
@@ -554,6 +566,17 @@ class Http3ServerConnection internal constructor(
             throw e
         } finally {
             if (!handlerOwnsReader) reader.release()
+        }
+    }
+
+    /**
+     * Hold a request that arrived as 0-RTT until the handshake is confirmed (RFC 8470 §3); throws the
+     * connection's [QuicCloseException] if the handshake fails instead.
+     */
+    private suspend fun awaitHandshakeConfirmed(stream: QuicByteStream) {
+        when (val origin = stream.origin) {
+            QuicStreamOrigin.Confirmed -> Unit
+            is QuicStreamOrigin.Early -> origin.awaitConfirmation()
         }
     }
 
