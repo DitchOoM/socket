@@ -935,6 +935,45 @@ allprojects {
     }
 }
 
+// ─── KSP: one analysis at a time per build ───────────────────────────────────
+//
+// KSP2 runs inside the Gradle daemon, and every KSP task in a build runs on the SAME Analysis API
+// classloader: the KSP plugin's IsolatedClassLoaderCache is keyed by the symbol-processing-aa
+// classpath, which is one set of jars for every module. Overlapping KSP tasks therefore share the
+// IntelliJ application environment that classloader holds, and when one of them finishes and
+// disposes its session, a sibling still mid-analysis can lose its resolution: every reference
+// unresolved, the Kotlin stdlib and the JDK included (`listOf`, `Test`, `assertEquals`,
+// `DatagramChannel`), and ProtocolMessageProcessor reports "Cannot resolve
+// com.ditchoom.buffer.codec.Payload — buffer-codec must be on the classpath". buffer-codec IS on that
+// classpath (an `api` dependency of :socket-quic-quiche's main source set); nothing resolved at all.
+//
+// Seen as ~14,000 such errors from :socket-quic-quiche:kspDebugUnitTestKotlinAndroid in the K/N ktlint
+// lane (runs 42303021364, 42345536285, 42387874081). In all three its first error lands 3-5 s after
+// its sibling kspDebugAndroidTestKotlinAndroid finishes. Those two and kspTestKotlinJvm all run the
+// codec processor over the shared commonJvmTest protocol and become ready at the same moment, so they
+// start together; the unit-test one analyses the most sources and is the one still running. ktlintCheck
+// executes them at all because the ktlint tasks consume each source set's srcDirs, KSP's output dir
+// among them. Not specific to Android or to ktlint: locally, re-running the three tasks together failed
+// kspTestKotlinJvm the same way (rarely: once in ~55 builds).
+//
+// So KSP tasks take a single-slot build service and never overlap. Each is seconds long, and every
+// other kind of task keeps running in parallel around them. Matched by class name: the KSP plugin is
+// not on the root build script's classpath.
+abstract class KspAnalysisSlot : BuildService<BuildServiceParameters.None>
+
+val kspAnalysisSlot =
+    gradle.sharedServices.registerIfAbsent("kspAnalysisSlot", KspAnalysisSlot::class) {
+        maxParallelUsages.set(1)
+    }
+
+allprojects {
+    tasks.configureEach {
+        if (javaClass.name.startsWith("com.google.devtools.ksp.gradle.KspAATask")) {
+            usesService(kspAnalysisSlot)
+        }
+    }
+}
+
 // ─── Apple simulator test lanes: env vars need the SIMCTL_CHILD_ prefix ───────
 //
 // `simctl spawn` does NOT pass the ambient environment to the process it launches: only variables
