@@ -291,6 +291,9 @@ fun downloadQuicheSource(
     // ClientHello shows it was lost and on every PTO before confirmation, instead of one space per PTO.
     // Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheLostFlightIsResentWhole(sourceDir)
+    // A server's PTO probe carries HANDSHAKE_DONE while the client has not acknowledged it, rather than a
+    // bare PING. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakeDoneRidesEveryProbe(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1082,6 +1085,66 @@ fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
     )
     libRs.writeText(text)
     logger.lifecycle("Patched quiche source: a lost handshake flight is re-sent whole, early on a repeated ClientHello")
+}
+
+/**
+ * Make every PTO probe a server sends in the Application Data space carry HANDSHAKE_DONE until the client
+ * has acknowledged it, instead of a bare PING.
+ *
+ * **Why.** quiche re-sends HANDSHAKE_DONE only once the packet carrying it is declared lost, which takes
+ * an acknowledgement of a later packet. Its PTO probes re-queue the frames of unacknowledged packets
+ * that carried CRYPTO or STREAM data only, so a probe after a lost HANDSHAKE_DONE was a PING. A client
+ * that never gets HANDSHAKE_DONE never confirms the handshake, so it never arms its Application Data PTO
+ * (RFC 9002 §6.2.1) and never re-sends a lost request. quic-interop-runner `handshakeloss` with our server
+ * against quic-go (run 42345499750): HANDSHAKE_DONE and the server's next packet were lost, quic-go's
+ * request had arrived before the handshake completed and been dropped, the server probed with PINGs at
+ * 1, 3, 7 and 15 s, and quic-go's three acknowledgements of them were lost as well. quic-go re-sent only
+ * its Finished, which the confirmed server could no longer read, and the connection idled out at 30 s.
+ * RFC 9002 §6.2.4 has a probe carry new or previously sent data when there is any. Reproduced by
+ * `MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
+    val marker = "socket-handshake-done-rides-every-probe"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |            if self.handshake_completed &&
+        |                !self.handshake_done_sent &&
+        |                self.is_server
+        |            {
+        |                let frame = frame::Frame::HandshakeDone;
+        |
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the HANDSHAKE_DONE block of send_single was not found exactly once in quiche's lib.rs — a " +
+                "quiche bump moved it. Re-fit patchQuicheHandshakeDoneRidesEveryProbe (or delete it if quiche's " +
+                "PTO probes now carry an unacknowledged HANDSHAKE_DONE) and re-verify with " +
+                "MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |            // $marker: a PTO probe re-sends HANDSHAKE_DONE until it is acknowledged.
+            |            if self.handshake_completed &&
+            |                (!self.handshake_done_sent ||
+            |                    (!self.handshake_done_acked &&
+            |                        path.recovery.loss_probes(epoch) > 0)) &&
+            |                self.is_server
+            |            {
+            |                let frame = frame::Frame::HandshakeDone;
+            |
+            """.trimMargin(),
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a server's PTO probe carries an unacknowledged HANDSHAKE_DONE")
 }
 
 /**

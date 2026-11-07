@@ -438,6 +438,64 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * Every PTO probe of a server carries a HANDSHAKE_DONE the client has not acknowledged, so whichever
+     * probe reaches the client confirms its handshake. Before, only a probe that re-sent the packet
+     * HANDSHAKE_DONE first rode in did, and only when that packet also carried CRYPTO or STREAM data:
+     * quiche's probes re-queue the frames of such packets alone, and otherwise send a PING.
+     *
+     * The quic-interop-runner `handshakeloss` with our server against quic-go (run 42345499750): quic-go
+     * takes no session ticket, so HANDSHAKE_DONE went out in a packet of its own, and it was lost. The
+     * server probed with PINGs at 1, 3, 7 and 15 s, and quic-go's acknowledgements of them — which would
+     * have declared HANDSHAKE_DONE lost — were lost as well. Unconfirmed, quic-go never armed its
+     * Application Data PTO (RFC 9002 §6.2.1), so it never re-sent the request the server had dropped
+     * before its handshake completed, and the connection idled out. Here the server issues a ticket, so
+     * the first probe of each PTO re-sends HANDSHAKE_DONE with it; the second probe is the one that was
+     * a PING.
+     */
+    @Test
+    fun everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    val finished = pair.sends(pair.client)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(finished, pair.server)
+                    assertTrue(pair.established(pair.server), "the server completes its handshake on the Finished")
+                    // HANDSHAKE_DONE is lost, and so is the one probe of the first PTO.
+                    assertTrue(pair.sends(pair.server).isNotEmpty(), "the server sends HANDSHAKE_DONE")
+                    pair.elapse(pair.nextTimer(pair.server)!!)
+                    assertEquals(1, pair.sends(pair.server).size, "the first PTO sends one probe")
+                    // The second PTO sends two, and only the second arrives; the client's answer is lost.
+                    pair.elapse(pair.nextTimer(pair.server)!!)
+                    val probes = pair.sends(pair.server)
+                    assertEquals(2, probes.size, "the second PTO sends two probes")
+                    pair.deliver(listOf(probes.last()), pair.client)
+                    pair.sends(pair.client)
+
+                    // The client writes more, and that is lost too. Only a confirmed client spends its next PTO
+                    // on it (RFC 9002 §6.2.1); an unconfirmed one re-sends its Finished in a Handshake packet,
+                    // which a confirmed server can no longer read.
+                    assertEquals(4, pair.streamSend(pair.client, QuicStreamId(4), "more", fin = true))
+                    assertTrue(pair.sends(pair.client).isNotEmpty(), "the client sends its second request")
+                    val due = pair.nextTimer(pair.client)
+                    assertTrue(due != null && due < CLIENT_PTO_CEILING, "the client arms a PTO; its next timer was $due")
+                    pair.elapse(due)
+                    val probe = pair.sends(pair.client)
+                    assertTrue(
+                        probe.any { "1-RTT" in it.packetTypes } && probe.none { "Handshake" in it.packetTypes },
+                        "the server's second probe must carry HANDSHAKE_DONE, so the confirmed client's PTO re-sends its " +
+                            "lost request; it sent ${probe.map { it.packetTypes }}",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * A client keeps sending after the peer retires connection IDs whose NEW_CONNECTION_ID frames the
      * client has queued to send again.
      *
@@ -4622,6 +4680,9 @@ abstract class MigrationSimTestSuite {
 
         /** PTOs in a row that lose the client's Finished; the second is the first one quiche gave to 1-RTT. */
         const val LOST_FINISHED_PTOS = 3
+
+        /** Well above any PTO of the pair's 120 ms round trip, and far below its idle timeout. */
+        val CLIENT_PTO_CEILING = 10.seconds
 
         /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
         const val INITIAL_DCID_SEQ = 0L
