@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
@@ -89,10 +90,34 @@ internal class JvmTlsHandler(
         }
     }
 
+    /**
+     * Encrypts every remaining byte of [plainText] and sends the resulting TLS records, returning the
+     * PLAINTEXT bytes consumed — the count the `ByteSink.write` contract reports, since callers resume
+     * from the cursor advance. The ciphertext each record adds is drained to the wire by [sendRecord]
+     * and never surfaces in the count. A record that produces no ciphertext means the engine cannot
+     * make progress, so the write returns the partial count for the caller to resume or report.
+     */
     suspend fun wrap(
         plainText: BaseJvmBuffer,
         timeout: Duration,
-    ): Int {
+    ): BytesWritten {
+        var plaintextConsumed = 0
+        while (plainText.hasRemaining()) {
+            val record = sendRecord(plainText, timeout)
+            plaintextConsumed += record.plaintextConsumed.count
+            if (record.ciphertextSent.count == 0) break
+        }
+        return BytesWritten(plaintextConsumed)
+    }
+
+    /**
+     * Seals at most one TLS record from [plainText] (none for a handshake message) and writes all of
+     * its ciphertext through [rawWrite].
+     */
+    private suspend fun sendRecord(
+        plainText: BaseJvmBuffer,
+        timeout: Duration,
+    ): SentRecord {
         val encrypted = allocateBuffer(engine.session.packetBufferSize)
         try {
             val result =
@@ -103,26 +128,23 @@ internal class JvmTlsHandler(
                 } catch (e: javax.net.ssl.SSLException) {
                     throw SSLProtocolException(e.message ?: "TLS wrap error", e)
                 }
-            when (result.status!!) {
+            when (checkNotNull(result.status)) {
                 SSLEngineResult.Status.BUFFER_UNDERFLOW ->
                     throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
                 SSLEngineResult.Status.BUFFER_OVERFLOW ->
                     throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
                 SSLEngineResult.Status.CLOSED,
                 SSLEngineResult.Status.OK,
-                -> {
-                    encrypted.resetForRead()
-                    var writtenBytes = 0
-                    while (encrypted.hasRemaining()) {
-                        val bytesWrote = rawWrite(encrypted, timeout)
-                        if (bytesWrote < 0) {
-                            return -1
-                        }
-                        writtenBytes += bytesWrote
-                    }
-                    return writtenBytes
-                }
+                -> Unit
             }
+            encrypted.resetForRead()
+            while (encrypted.hasRemaining()) {
+                rawWrite(encrypted, timeout)
+            }
+            return SentRecord(
+                plaintextConsumed = BytesWritten(result.bytesConsumed()),
+                ciphertextSent = BytesWritten(result.bytesProduced()),
+            )
         } finally {
             encrypted.freeIfNeeded()
         }
@@ -191,7 +213,7 @@ internal class JvmTlsHandler(
         val emptyBuffer = EMPTY_BUFFER.unwrapFully() as BaseJvmBuffer
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
-                SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
+                SSLEngineResult.HandshakeStatus.NEED_WRAP -> sendRecord(emptyBuffer, timeout)
                 SSLEngineResult.HandshakeStatus.NEED_TASK ->
                     withContext(Dispatchers.IO) { engine.delegatedTask.run() }
                 else -> { // UNWRAP + UNWRAP AGAIN
@@ -229,6 +251,12 @@ internal class JvmTlsHandler(
             }
         }
     }
+
+    /** One TLS record: the caller's bytes it sealed, and the encrypted bytes it put on the wire. */
+    private class SentRecord(
+        val plaintextConsumed: BytesWritten,
+        val ciphertextSent: BytesWritten,
+    )
 
     private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size).unwrapFully() as BaseJvmBuffer
 

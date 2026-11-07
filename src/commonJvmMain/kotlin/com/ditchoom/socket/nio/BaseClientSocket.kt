@@ -191,7 +191,7 @@ abstract class BaseClientSocket(
         deadline: Duration,
     ): BytesWritten {
         if (!isOpen) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return BytesWritten(it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline)) }
+        tlsHandler?.let { return it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline) }
         return BytesWritten(rawSocketWrite(buffer, deadline))
     }
 
