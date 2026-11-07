@@ -639,6 +639,87 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A 1-RTT packet coalesced behind a Handshake packet the server can no longer decrypt is still read.
+     *
+     * RFC 9000 §12.2: a receiver that cannot process one coalesced packet still processes the ones after
+     * it, and a long header's Length field says where the next one starts. quiche stopped at the first
+     * packet it could not decrypt and dropped the rest of the datagram. Here the client's own Finished
+     * packet, replayed once the server has confirmed the handshake and discarded its Handshake keys, sits
+     * in front of a request.
+     */
+    @Test
+    fun aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val handshakePacket = pair.confirmHandshakeKeepingTheClientsFinished()
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    val request = pair.sends(pair.client).single()
+                    assertEquals(listOf("1-RTT"), request.packetTypes)
+
+                    pair.deliver(listOf(QuichePairByHand.Datagram(handshakePacket + request.bytes, request.clientEndpoint)), pair.server)
+
+                    assertEquals(
+                        "request" to true,
+                        pair.readText(pair.server, QuicStreamId(0)),
+                        "the server must read the 1-RTT packet that follows the Handshake packet it cannot decrypt",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A CONNECTION_CLOSE in a 1-RTT packet coalesced behind an undecryptable Handshake packet closes the
+     * connection.
+     *
+     * The quic-interop-runner case, with quinn as the client: quinn, not yet sure the handshake was
+     * confirmed, sent its CONNECTION_CLOSE in a Handshake and a 1-RTT packet in one datagram (RFC 9000
+     * §10.2.3). Our server had confirmed and discarded its Handshake keys, so it could not decrypt the
+     * first, dropped the second with it, never saw the close, and retransmitted until its idle timeout.
+     */
+    @Test
+    fun aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val handshakePacket = pair.confirmHandshakeKeepingTheClientsFinished()
+                    assertEquals(0, pair.closeWith(pair.client, QuicError.ApplicationError(CLOSE_CODE)))
+                    val close = pair.sends(pair.client).single()
+                    assertEquals(listOf("1-RTT"), close.packetTypes)
+
+                    pair.deliver(listOf(QuichePairByHand.Datagram(handshakePacket + close.bytes, close.clientEndpoint)), pair.server)
+
+                    val ended = pair.closed(pair.server)
+                    assertTrue(
+                        "peer=" in ended && "peer=null" !in ended,
+                        "the server must see the client's CONNECTION_CLOSE behind the Handshake packet it cannot " +
+                            "decrypt; it is $ended",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * Run the handshake to confirmation on both sides, losing nothing, and return the Handshake packet
+     * that carried the client's Finished: a real packet the server can no longer decrypt.
+     */
+    private fun QuichePairByHand.confirmHandshakeKeepingTheClientsFinished(): ByteArray {
+        handshakeUpToTheClientsFinished()
+        val finished = sends(client)
+        val handshakePacket = finished.first { "Handshake" in it.packetTypes }.packet("Handshake")
+        deliver(finished, server)
+        settle()
+        assertTrue(established(client) && established(server), "the handshake must complete")
+        return handshakePacket
+    }
+
+    /**
      * A client keeps sending after the peer retires connection IDs whose NEW_CONNECTION_ID frames the
      * client has queued to send again.
      *
@@ -4832,6 +4913,9 @@ abstract class MigrationSimTestSuite {
 
         /** Well above any PTO of the pair's 120 ms round trip, and far below its idle timeout. */
         val CLIENT_PTO_CEILING = 10.seconds
+
+        /** The application error code a client closes with when the close itself is under test. */
+        const val CLOSE_CODE = 0x0L
 
         /** The sequence number of the connection ID a client connects with (RFC 9000 §5.1.1). */
         const val INITIAL_DCID_SEQ = 0L
