@@ -228,6 +228,10 @@ class FfmQuicheApi private constructor(
         // uint32_t quiche_conn_early_data_reason(const quiche_conn *conn) — patched-in export
         downcall("quiche_conn_early_data_reason", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     }
+    private val hIsHandshakeConfirmed by lazy {
+        // bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_is_handshake_confirmed", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+    }
     private val hStreamDataUnacknowledged by lazy {
         // bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn) — patched-in export
         downcall("quiche_conn_stream_data_unacknowledged", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
@@ -928,6 +932,8 @@ class FfmQuicheApi private constructor(
     }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(seg(conn.handle)) as Boolean
+
+    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = hIsHandshakeConfirmed.invokeExact(seg(conn.handle)) as Boolean
 
     override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(seg(conn.handle)) as Boolean
 

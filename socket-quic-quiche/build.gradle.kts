@@ -287,6 +287,10 @@ fun downloadQuicheSource(
     // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
     // datagram. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakeProbesCarryCrypto(sourceDir)
+    // Export whether the handshake is CONFIRMED (RFC 9001 §4.1.2), which the C API lacks: a client must not
+    // migrate before it (RFC 9000 §9), and is complete one round trip earlier. Idempotent, fails loudly on
+    // drift OR on an upstream export. See the KDoc.
+    patchQuicheHandshakeConfirmedFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -572,6 +576,48 @@ fun patchQuichePeerCertChainFfi(sourceDir: File) {
         """.trimMargin()
     ffiRs.appendText("\n" + export + "\n")
     logger.lifecycle("Patched quiche source: quiche_conn_peer_cert_chain_at FFI export")
+}
+
+/**
+ * Export `quiche_conn_is_handshake_confirmed`: whether the handshake is confirmed (RFC 9001 §4.1.2). A
+ * server confirms when it completes; a client only when HANDSHAKE_DONE arrives, one round trip after it
+ * completes. `quiche_conn_is_established` answers completion, and RFC 9000 §9 forbids initiating a
+ * migration until confirmation, so the driver needs this fact and quiche's C API has no way to read it.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the fact itself throws, telling you to delete this patch.
+ */
+fun patchQuicheHandshakeConfirmedFfi(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-handshake-confirmed"
+    if (text.contains(marker)) return
+    if (text.contains("handshake_confirmed")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already reads handshake_confirmed — upstream exported it. DELETE " +
+                "patchQuicheHandshakeConfirmedFfi and its call site, and check the upstream signature against " +
+                "libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "pub extern \"C\" fn quiche_conn_is_established(conn: &Connection) -> bool {"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `$anchor` not found exactly once in quiche/src/ffi.rs — a quiche bump moved the " +
+                "handshake-state FFI. Re-fit patchQuicheHandshakeConfirmedFfi next to it.",
+        )
+    }
+    val export =
+        """
+        |
+        |// $marker: whether the handshake is confirmed (RFC 9001 §4.1.2), not merely complete.
+        |#[no_mangle]
+        |pub extern "C" fn quiche_conn_is_handshake_confirmed(conn: &Connection) -> bool {
+        |    conn.handshake_confirmed
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: quiche_conn_is_handshake_confirmed FFI export")
 }
 
 /**

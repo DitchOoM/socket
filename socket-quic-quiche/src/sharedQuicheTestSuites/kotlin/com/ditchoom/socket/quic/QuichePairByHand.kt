@@ -186,6 +186,9 @@ internal class QuichePairByHand private constructor(
     /** Whether [conn]'s handshake has completed. */
     fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
 
+    /** Whether [conn]'s handshake is confirmed (RFC 9001 §4.1.2). */
+    fun confirmed(conn: QuicheConn): Boolean = at { api.connIsHandshakeConfirmed(conn) }
+
     private val sendEnds = mutableMapOf<QuicheConn, Int>()
 
     /**

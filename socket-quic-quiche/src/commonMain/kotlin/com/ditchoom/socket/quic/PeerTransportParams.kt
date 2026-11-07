@@ -90,10 +90,8 @@ sealed interface PeerMigrationPermission {
     data object Forbidden : PeerMigrationPermission
 
     /**
-     * The handshake has not processed the peer's transport parameters yet. RFC 9000 §9 forbids
-     * initiating migration before the handshake is confirmed anyway, so this is a **retryable**
-     * condition — [com.ditchoom.socket.quic.MigrationResult.Unmoved.Failed.HandshakeNotConfirmed], never
-     * an `Impossible`.
+     * The handshake has not processed the peer's transport parameters yet. It cannot be confirmed either,
+     * so a migration asked for now waits ([MigrationReadiness.AwaitingConfirmation]), never `Impossible`.
      */
     data object NotYetNegotiated : PeerMigrationPermission
 }
@@ -119,3 +117,28 @@ internal val PeerTransportParams.migrationPermission: PeerMigrationPermission
 /** [migrationPermission] read straight off [conn]. */
 internal fun QuicheApi.connPeerMigrationPermission(conn: QuicheConn): PeerMigrationPermission =
     connPeerTransportParams(conn).migrationPermission
+
+/**
+ * Whether this endpoint may initiate a migration now (RFC 9000 §9): the peer must allow it, and the
+ * handshake must be **confirmed** (RFC 9001 §4.1.2), not merely complete. A client completes one round
+ * trip before it confirms, and in between it knows the peer's parameters but must not move.
+ */
+internal sealed interface MigrationReadiness {
+    /** Confirmed, and the peer permits migration. */
+    data object Ready : MigrationReadiness
+
+    /** The peer set `disable_active_migration`. Permanent, and known as soon as its parameters are read. */
+    data object PeerForbids : MigrationReadiness
+
+    /** Not confirmed yet. Resolves on its own as HANDSHAKE_DONE arrives, so a migration waits for it. */
+    data object AwaitingConfirmation : MigrationReadiness
+}
+
+/** [MigrationReadiness] read off [conn]: the peer's permission first, since a refusal is final either way. */
+internal fun QuicheApi.connMigrationReadiness(conn: QuicheConn): MigrationReadiness =
+    when (connPeerMigrationPermission(conn)) {
+        PeerMigrationPermission.Forbidden -> MigrationReadiness.PeerForbids
+        PeerMigrationPermission.NotYetNegotiated -> MigrationReadiness.AwaitingConfirmation
+        PeerMigrationPermission.Permitted ->
+            if (connIsHandshakeConfirmed(conn)) MigrationReadiness.Ready else MigrationReadiness.AwaitingConfirmation
+    }

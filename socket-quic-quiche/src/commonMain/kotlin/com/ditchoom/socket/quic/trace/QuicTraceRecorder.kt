@@ -425,6 +425,7 @@ internal class SendStalledException(
 ) : RuntimeException("send did not answer within $after")
 
 /** Exhaustive by construction: a new [MigrationResult] leaf is a compile error here. */
+@Suppress("DEPRECATION") // HandshakeNotConfirmed: never returned, still a leaf.
 private fun MigrationResult.toTraceOutcome(): TraceMigrationOutcome =
     when (this) {
         is MigrationResult.Succeeded -> TraceMigrationOutcome.Succeeded

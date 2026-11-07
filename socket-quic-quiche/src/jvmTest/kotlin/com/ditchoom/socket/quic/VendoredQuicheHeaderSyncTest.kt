@@ -157,8 +157,8 @@ private val TYPES_AND_MACROS =
 /**
  * Declarations this repository adds on purpose, absent upstream: the caller-clock and caller-entropy
  * patches' FFI, the `early_data_reason` export (`patchQuicheEarlyDataReasonFfi`), the send-side
- * acknowledgement export (`patchQuicheStreamDataUnacknowledgedFfi`) and the peer certificate chain
- * export (`patchQuichePeerCertChainFfi`).
+ * acknowledgement export (`patchQuicheStreamDataUnacknowledgedFfi`), the peer certificate chain
+ * export (`patchQuichePeerCertChainFfi`) and the handshake-confirmed export (`patchQuicheHandshakeConfirmedFfi`).
  */
 private val OURS =
     setOf(
@@ -169,4 +169,5 @@ private val OURS =
         "quiche_conn_early_data_reason",
         "quiche_conn_stream_data_unacknowledged",
         "quiche_conn_peer_cert_chain_at",
+        "quiche_conn_is_handshake_confirmed",
     )
