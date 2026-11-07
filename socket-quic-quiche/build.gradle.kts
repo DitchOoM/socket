@@ -287,6 +287,10 @@ fun downloadQuicheSource(
     // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
     // datagram. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakeProbesCarryCrypto(sourceDir)
+    // A server re-sends a lost handshake flight, both spaces at once, when the client's repeated
+    // ClientHello shows it was lost and on every PTO before confirmation, instead of one space per PTO.
+    // Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheLostFlightIsResentWhole(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -909,6 +913,175 @@ fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
         ),
     )
     logger.lifecycle("Patched quiche source: every handshake PTO probe carries unacknowledged CRYPTO data")
+}
+
+/**
+ * Re-send a lost handshake flight whole — the oldest unacknowledged CRYPTO bytes of the Initial **and**
+ * the Handshake space, coalesced — at the two moments it is known or suspected lost:
+ *  1. **A server receives an Initial packet that brings no new CRYPTO data** (a repeated ClientHello, or
+ *     a client's PING probe) while its own Initial CRYPTO data is unacknowledged. RFC 9002 §6.2.3: the
+ *     client evidently did not get the server's Initial packets, and the server MAY re-send its
+ *     unacknowledged CRYPTO data before the PTO, a limited number of times per connection. quiche
+ *     answered with a bare ACK. Capped at `SOCKET_MAX_FLIGHT_RESENDS` per connection, so a peer that
+ *     answers every undecryptable packet with an Initial cannot drive an endless exchange (the
+ *     anti-amplification limit bounds each answer as well).
+ *  2. **A server's PTO before the handshake is confirmed.** RFC 9002 §6.2.4: besides the space whose
+ *     timer expired, a sender SHOULD send ack-eliciting packets in the other spaces with data in flight,
+ *     coalescing them. quiche probed one space per PTO, so a server whose ServerHello and Handshake
+ *     packets were lost re-sent the ServerHello on one PTO and the Handshake packets on the next — each
+ *     useless to the client without the other. Server only: a client never holds unacknowledged CRYPTO
+ *     data in both spaces (it discards its Initial keys when it first sends a Handshake packet), and the
+ *     crypto streams are connection-wide, so marking them on a client PTO would make a long-header
+ *     packet due on whatever path sends next — a migration probe path has no source connection id for
+ *     one, and quiche refuses the send (`InvalidState`).
+ *
+ * **Why.** The quic-interop-runner `handshakeloss` / `handshakecorruption` with our server against
+ * quic-go (runs 42324644154, 42326957428, 42329439382, 42331807229): the ServerHello was lost, quic-go
+ * re-sent its ClientHello at 106 ms and PING probes at 0.3, 0.7, 1.3, 2 and 4 s, each answered by an ACK
+ * alone; the server's first PTO (1 s) re-sent only the ServerHello, lost again, and its second (2 s) only
+ * the Handshake packets, which arrived and could not be decrypted. quic-go abandons a handshake at 10 s.
+ * Reproduced by `MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
+ * `aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
+ *
+ * Each space re-sends at most `SOCKET_FLIGHT_RESEND_CHUNK` bytes from its oldest unacknowledged offset —
+ * one packet's worth, the bytes the peer is missing first — so a large certificate chain does not turn a
+ * hint into a burst; the rest follows as the peer acknowledges. The retransmissions are ordinary data:
+ * congestion control and the anti-amplification limit still apply.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
+    val marker = "socket-lost-flight-resent-whole"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    var text = libRs.readText()
+    if (text.contains(marker)) return
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
+                    "Re-fit patchQuicheLostFlightIsResentWhole (or delete it if quiche now re-sends its " +
+                    "unacknowledged handshake CRYPTO data on a repeated ClientHello and coalesces every handshake " +
+                    "space into its PTO probes) and re-verify with " +
+                    "MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
+                    "aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        "\n    handshake_confirmed: bool,\n",
+        "\n    handshake_confirmed: bool,\n\n" +
+            "    // $marker: early re-sends of the handshake flight on a repeated ClientHello.\n" +
+            "    socket_flight_resends: u8,\n",
+    )
+    edit(
+        "\n            handshake_confirmed: false,\n",
+        "\n            handshake_confirmed: false,\n\n            socket_flight_resends: 0,\n",
+    )
+    edit(
+        "        // Process packet payload.\n        while payload.cap() > 0 {\n",
+        "        // $marker: where the peer's CRYPTO data in this space stood before this packet.\n" +
+            "        let socket_crypto_rx_before = self.socket_crypto_rx(epoch);\n\n" +
+            "        // Process packet payload.\n        while payload.cap() > 0 {\n",
+    )
+    edit(
+        "                frame_processing_err = Some(e);\n                break;\n            }\n        }\n\n",
+        """
+        |                frame_processing_err = Some(e);
+        |                break;
+        |            }
+        |        }
+        |
+        |        // $marker: an ack-eliciting Initial that brings no new CRYPTO data
+        |        // while ours is unacknowledged: the client lacks our Initial (RFC 9002 §6.2.3).
+        |        if frame_processing_err.is_none() &&
+        |            self.is_server &&
+        |            epoch == packet::Epoch::Initial &&
+        |            ack_elicited &&
+        |            self.socket_flight_resends < Self::SOCKET_MAX_FLIGHT_RESENDS &&
+        |            self.socket_crypto_rx(epoch) == socket_crypto_rx_before &&
+        |            self.socket_crypto_unacked(packet::Epoch::Initial) > 0
+        |        {
+        |            self.socket_flight_resends += 1;
+        |            self.socket_resend_flight();
+        |        }
+        |
+        |
+        """.trimMargin(),
+    )
+    edit(
+        "        // Notify timeout events to the application.\n        self.paths.notify_failed_validations();\n",
+        """
+        |        // $marker: a server's PTO before confirmation re-sends every handshake
+        |        // space's unacknowledged CRYPTO data, coalesced, not only its own (RFC 9002 §6.2.4).
+        |        if self.is_server &&
+        |            !self.handshake_confirmed &&
+        |            self.paths.iter().any(|(_, p)| {
+        |                p.recovery.loss_probes(packet::Epoch::Initial) > 0 ||
+        |                    p.recovery.loss_probes(packet::Epoch::Handshake) > 0
+        |            })
+        |        {
+        |            self.socket_resend_flight();
+        |        }
+        |
+        |        // Notify timeout events to the application.
+        |        self.paths.notify_failed_validations();
+        |
+        """.trimMargin(),
+    )
+    edit(
+        "    /// Selects the packet type for the next outgoing packet.\n",
+        """
+        |    // $marker: early re-sends per connection; a peer answering every packet it
+        |    // cannot decrypt with an Initial must not drive an endless exchange (RFC 9002 §6.2.3).
+        |    const SOCKET_MAX_FLIGHT_RESENDS: u8 = 8;
+        |
+        |    // $marker: at most one packet's worth per space, oldest bytes first.
+        |    const SOCKET_FLIGHT_RESEND_CHUNK: u64 = 1200;
+        |
+        |    // $marker: how far the peer's CRYPTO data in `epoch` has been read, and its end.
+        |    fn socket_crypto_rx(&self, epoch: packet::Epoch) -> (u64, u64) {
+        |        let recv = &self.crypto_ctx[epoch].crypto_stream.recv;
+        |        (recv.off_front(), recv.max_off())
+        |    }
+        |
+        |    // $marker: our CRYPTO bytes in `epoch` the peer has not acknowledged.
+        |    fn socket_crypto_unacked(&self, epoch: packet::Epoch) -> u64 {
+        |        let ctx = &self.crypto_ctx[epoch];
+        |        if !ctx.has_keys() {
+        |            return 0;
+        |        }
+        |        let send = &ctx.crypto_stream.send;
+        |        send.off_back().saturating_sub(send.ack_off())
+        |    }
+        |
+        |    // $marker: queue the oldest unacknowledged CRYPTO bytes of the Initial and
+        |    // Handshake spaces to be sent again, so the next datagram coalesces both.
+        |    fn socket_resend_flight(&mut self) {
+        |        for epoch in [packet::Epoch::Initial, packet::Epoch::Handshake] {
+        |            let unacked = self.socket_crypto_unacked(epoch);
+        |            if unacked == 0 {
+        |                continue;
+        |            }
+        |            let send = &mut self.crypto_ctx[epoch].crypto_stream.send;
+        |            let ack_off = send.ack_off();
+        |            let len = cmp::min(unacked, Self::SOCKET_FLIGHT_RESEND_CHUNK);
+        |            send.retransmit(ack_off, len as usize);
+        |        }
+        |    }
+        |
+        |    /// Selects the packet type for the next outgoing packet.
+        |
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
+    logger.lifecycle("Patched quiche source: a lost handshake flight is re-sent whole, early on a repeated ClientHello")
 }
 
 /**

@@ -355,6 +355,89 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A server whose first flight is lost sends it again as soon as the client's ClientHello arrives a
+     * second time, not on its own PTO a second or more later.
+     *
+     * RFC 9002 §6.2.3: a server that receives an Initial packet carrying CRYPTO data it already has can
+     * assume the client did not get its Initial, and MAY re-send its unacknowledged CRYPTO data before
+     * the PTO. quiche answered such a packet with a bare ACK. The quic-interop-runner `handshakeloss` /
+     * `handshakecorruption` with our server against quic-go (runs 42324644154, 42326957428, 42329439382,
+     * 42331807229): the ServerHello was lost, quic-go re-sent its ClientHello at 106 ms and then a PING-only
+     * Initial at 0.3, 0.7, 1.3, 2 and 4 s, each answered by an ACK alone; the server re-sent the ServerHello
+     * only on its PTOs, and quic-go abandoned the handshake at 10 s.
+     */
+    @Test
+    fun aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val hello = pair.sends(pair.client)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(hello, pair.server)
+                    // The server's whole first flight is lost.
+                    val flight = pair.sends(pair.server)
+                    assertTrue(flight.any { "Handshake" in it.packetTypes }, "the server answers the ClientHello with its flight")
+
+                    // The client's PTO sends its ClientHello again, and it arrives before the server's own PTO.
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val again = pair.sends(pair.client)
+                    assertTrue(again.isNotEmpty(), "the client's PTO re-sends its ClientHello")
+                    assertTrue(pair.nextTimer(pair.server)!!.isPositive(), "the server's own PTO has not fired yet")
+                    pair.deliver(again, pair.server)
+
+                    val answer = pair.sends(pair.server)
+                    assertTrue(
+                        answer.any { "Initial" in it.packetTypes } && answer.any { "Handshake" in it.packetTypes },
+                        "the server must answer a repeated ClientHello with its lost flight, Initial and Handshake; " +
+                            "it answered ${answer.map { it.packetTypes }}",
+                    )
+                    pair.deliver(answer, pair.client)
+                    assertTrue(pair.established(pair.client), "the re-sent flight alone completes the client's handshake")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A server's PTO re-sends its whole lost flight — the ServerHello in an Initial packet coalesced with
+     * the Handshake packets behind it — not one packet number space at a time.
+     *
+     * RFC 9002 §6.2.4: besides the space whose timer expired, a sender SHOULD send ack-eliciting packets in
+     * the other spaces with data in flight, coalescing them. quiche probed one space per PTO. In the
+     * quic-interop-runner trace of [aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce] the server's
+     * first PTO re-sent only the ServerHello (lost again), and its second only the Handshake packets: both
+     * reached quic-go, which could not decrypt them without the ServerHello.
+     */
+    @Test
+    fun aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val hello = pair.sends(pair.client)
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(hello, pair.server)
+                    // The server's first flight is lost.
+                    assertTrue(pair.sends(pair.server).any { "Handshake" in it.packetTypes })
+
+                    pair.elapse(pair.nextTimer(pair.server)!!)
+                    val probes = pair.sends(pair.server)
+                    assertTrue(
+                        probes.any { "Initial" in it.packetTypes && "Handshake" in it.packetTypes },
+                        "the server's PTO must send the ServerHello and the Handshake packets behind it, coalesced; " +
+                            "it sent ${probes.map { it.packetTypes }}",
+                    )
+                    pair.deliver(probes, pair.client)
+                    assertTrue(pair.established(pair.client), "the PTO's datagrams alone complete the client's handshake")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * A client keeps sending after the peer retires connection IDs whose NEW_CONNECTION_ID frames the
      * client has queued to send again.
      *
@@ -4132,9 +4215,18 @@ abstract class MigrationSimTestSuite {
      * whose only problem is ordinary loss.
      *
      * Nothing is blackholed here at all: the path drops [LOSSY_RATES] of its datagrams and carries the
-     * rest, throughout. The echoes completing are the proof that it is working; zero migrations are the
-     * assertion. This is the second reason the time floor in [SilenceThreshold.isMetBy] is not optional,
+     * rest, throughout. The echoes completing are the proof that it is working. The assertion is that
+     * every migration attempt, if any, began only after the client had heard **nothing** on the path
+     * for at least [SILENT_PATH_MINIMUM_SILENCE] — a count that ran ahead of the clock would migrate
+     * sooner. This is the second reason the time floor in [SilenceThreshold.isMetBy] is not optional,
      * and it stacks with the first — see `aBlipTheLengthOfThe385ExcursionCostsNoMigration`.
+     *
+     * Not "zero migrations": random loss does silence a path outright now and then. At 30 % loss, where
+     * losses on both legs of an exchange compound the PTO backoff, 7 of the 40 seeds 574100..574139
+     * went 2.6 to 7.9 s without the client hearing a single datagram, and the threshold then migrated,
+     * as it is meant to. Which seeds do so moves with any change to how many datagrams a handshake takes,
+     * because the pipe draws its losses in arrival order: before `patchQuicheLostFlightIsResentWhole` it
+     * was also 7 of 40, but not the same 7, and this test's seed was one of the quiet ones.
      */
     @Test
     fun aLossyPathIsNotASilentOne() =
@@ -4182,16 +4274,17 @@ abstract class MigrationSimTestSuite {
                                 r.buffer.freeIfNeeded()
                                 delay(LOSSY_GAP)
                             }
-                            assertEquals(
-                                0,
-                                client.attempts.size,
-                                "a working path losing ${loss * 100}% of its datagrams bought " +
-                                    "${client.attempts.size} migration attempt(s): ${client.attempts}. " +
-                                    "quiche counts every loss-detection expiry, not only backed-off " +
-                                    "PTOs, so loss alone can reach the expiry threshold — the elapsed " +
-                                    "floor is what keeps that from being a migration. Dropped: " +
-                                    "${primary.stats.dropped}",
-                            )
+                            for (attempt in client.timeline) {
+                                val heard = pipe.lastHeardByClient(attempt.began) ?: Duration.ZERO
+                                assertTrue(
+                                    attempt.began - heard >= SILENT_PATH_MINIMUM_SILENCE,
+                                    "a working path losing ${loss * 100}% of its datagrams bought a migration " +
+                                        "attempt $attempt only ${attempt.began - heard} after the client last heard " +
+                                        "from it. quiche counts every loss-detection expiry, not only backed-off " +
+                                        "PTOs, so loss alone can reach the expiry threshold — the elapsed floor " +
+                                        "is what keeps that from being a migration. Dropped: ${primary.stats.dropped}",
+                                )
+                            }
                             assertTrue(
                                 primary.stats.dropped > 0,
                                 "no datagram was dropped at ${loss * 100}% loss, so this arm measured nothing",
