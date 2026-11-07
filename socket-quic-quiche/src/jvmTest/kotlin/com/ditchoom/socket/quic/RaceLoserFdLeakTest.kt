@@ -9,6 +9,7 @@ import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -28,6 +29,20 @@ import kotlin.time.Duration.Companion.seconds
  * decided by microseconds, which is what makes it land in the cancelled-or-late window rather than in
  * the ordinary failure path every earlier test covers.
  *
+ * ## Why every candidate's first flight goes through a [FirstFlightGate]
+ * [ConnectPacing.Simultaneous] launches both attempts in one pass, but launching is not running: each
+ * attempt is a coroutine that still has to be given a thread. If the first one's whole handshake finishes
+ * before the second is scheduled — one preempted worker on a loaded runner is enough — the race is
+ * decided before the second attempt starts, it is cancelled unstarted, and it is reported, correctly, as
+ * [QuicCandidateLoss.NeverAttempted]. It opened nothing, so it exercises nothing this test is about. That
+ * is how one race in eight came out without two live candidates on a CI runner, with nothing wrong in the
+ * code under test.
+ *
+ * So the test makes "both candidates are live" a fact rather than a likelihood: each server sits behind
+ * a relay that holds every candidate's datagrams until both candidates have sent one. Neither handshake
+ * can complete before the other candidate has opened its socket and sent its Initial, however the
+ * attempts are scheduled — and from then on both handshakes run concurrently, as before.
+ *
  * ## Why descriptors and not a counter
  * The same argument [FailedConnectFdLeakTest] makes: an instrument that counts `close()` calls reports
  * what it is given, and the whole defect class here is a path that never reaches the call. Descriptors
@@ -40,11 +55,6 @@ class RaceLoserFdLeakTest {
     fun theLosingCandidateOfEveryRaceGivesItsDescriptorsBack() =
         runQuicTest(timeout = 120.seconds) {
             val options = QuicOptions(alpnProtocols = listOf("race-fd"), verifyPeer = false)
-            val transport =
-                TransportConfig(
-                    bufferFactory = BufferFactory.deterministic(),
-                    connectPacing = ConnectPacing.Simultaneous,
-                )
             val tls = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
             withQuicServer(port = 0, tlsConfig = tls, quicOptions = options) {
@@ -57,39 +67,25 @@ class RaceLoserFdLeakTest {
                             launch { second.connections { awaitCancellation() } },
                         )
                     try {
-                        val candidates =
-                            listOf(
-                                QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), first.port),
-                                QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), second.port),
+                        FirstFlightGate(listOf(first.port, second.port)).use { gate ->
+                            val outcome = measureRaces(gate, options)
+                            assertEquals(
+                                emptyList<String>(),
+                                outcome.withoutTwoLiveCandidates,
+                                "every race must really have had two live candidates for this measurement to " +
+                                    "mean anything: a race whose loser failed instead of establishing exercises " +
+                                    "the ordinary failure path, not the cancelled-or-late one this is about.",
                             )
-                        val peer = QuicPeer.Candidates(candidates, serverName = "localhost")
-
-                        // Pays for the quiche dlopen, the pools and the dispatcher threads before the
-                        // baseline, so none of it can be mistaken for a leak.
-                        repeat(WARMUP_RACES) { race(peer, options, transport) }
-
-                        val before = openFileDescriptors()
-                        var raced = 0
-                        repeat(RACES) { if (race(peer, options, transport)) raced++ }
-                        val after = openFileDescriptors()
-
-                        assertEquals(
-                            RACES,
-                            raced,
-                            "every race must really have had two live candidates for this measurement to " +
-                                "mean anything: a race whose loser failed instead of establishing exercises " +
-                                "the ordinary failure path, not the cancelled-or-late one this is about.",
-                        )
-                        val leaked = after - before
-                        assertTrue(
-                            leaked <= MAX_TOLERATED_DESCRIPTORS,
-                            "a losing candidate leaks its UDP socket: $RACES races, each with one candidate " +
-                                "that lost after establishing, left $leaked descriptors behind " +
-                                "(before=$before after=$after), ${"%.1f".format(leaked.toDouble() / RACES)} per " +
-                                "race; at most $MAX_TOLERATED_DESCRIPTORS in total is expected. A connect that " +
-                                "is cancelled between establishment and being returned owns a live connection " +
-                                "nobody else will ever close.",
-                        )
+                            assertTrue(
+                                outcome.leaked <= MAX_TOLERATED_DESCRIPTORS,
+                                "a losing candidate leaks its UDP socket: $RACES races, each with one candidate " +
+                                    "that lost after establishing, left ${outcome.leaked} descriptors behind " +
+                                    "(${outcome.counts}), ${"%.1f".format(outcome.leaked.toDouble() / RACES)} per " +
+                                    "race; at most $MAX_TOLERATED_DESCRIPTORS in total is expected. A connect that " +
+                                    "is cancelled between establishment and being returned owns a live connection " +
+                                    "nobody else will ever close.",
+                            )
+                        }
                     } finally {
                         jobs.forEach { it.cancel() }
                     }
@@ -115,11 +111,6 @@ class RaceLoserFdLeakTest {
                     alpnProtocols = listOf("race-fd"),
                     serverCertificateHashes = listOf(fixtureLeafHash("pinned")),
                 )
-            val transport =
-                TransportConfig(
-                    bufferFactory = BufferFactory.deterministic(),
-                    connectPacing = ConnectPacing.Simultaneous,
-                )
 
             withQuicServer(port = 0, tlsConfig = tls, quicOptions = QuicOptions(alpnProtocols = listOf("race-fd"))) {
                 val first = this
@@ -131,36 +122,88 @@ class RaceLoserFdLeakTest {
                             launch { second.connections { awaitCancellation() } },
                         )
                     try {
-                        val peer =
-                            QuicPeer.Candidates(
-                                listOf(
-                                    QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), first.port),
-                                    QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), second.port),
-                                ),
-                                serverName = "localhost",
+                        FirstFlightGate(listOf(first.port, second.port)).use { gate ->
+                            val outcome = measureRaces(gate, options)
+                            assertEquals(
+                                emptyList<String>(),
+                                outcome.withoutTwoLiveCandidates,
+                                "every race must have had two live, pinned candidates",
                             )
-                        repeat(WARMUP_RACES) { race(peer, options, transport) }
-
-                        val before = openFileDescriptors()
-                        var raced = 0
-                        repeat(RACES) { if (race(peer, options, transport)) raced++ }
-                        val after = openFileDescriptors()
-
-                        assertEquals(RACES, raced, "every race must have had two live, pinned candidates")
-                        val leaked = after - before
-                        assertTrue(
-                            leaked <= MAX_TOLERATED_DESCRIPTORS,
-                            "a losing candidate cancelled while verifying the peer's certificate leaks its " +
-                                "whole connection: $RACES races left $leaked descriptors behind " +
-                                "(before=$before after=$after). Establishment hands the connection its own " +
-                                "teardown, but until the builder RETURNS it nothing else will ever call it.",
-                        )
+                            assertTrue(
+                                outcome.leaked <= MAX_TOLERATED_DESCRIPTORS,
+                                "a losing candidate cancelled while verifying the peer's certificate leaks its " +
+                                    "whole connection: $RACES races left ${outcome.leaked} descriptors behind " +
+                                    "(${outcome.counts}). Establishment hands the connection its own " +
+                                    "teardown, but until the builder RETURNS it nothing else will ever call it.",
+                            )
+                        }
                     } finally {
                         jobs.forEach { it.cancel() }
                     }
                 }
             }
         }
+
+    /** What [RACES] measured races left behind, and every one of them that did not have two live candidates. */
+    private class Measured(
+        val before: Long,
+        val after: Long,
+        val withoutTwoLiveCandidates: List<String>,
+    ) {
+        val leaked: Long get() = after - before
+        val counts: String get() = "before=$before after=$after"
+    }
+
+    private suspend fun measureRaces(
+        gate: FirstFlightGate,
+        options: QuicOptions,
+    ): Measured {
+        val peer =
+            QuicPeer.Candidates(
+                gate.ports.map { QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), it) },
+                serverName = "localhost",
+            )
+        val transport =
+            TransportConfig(
+                bufferFactory = BufferFactory.deterministic(),
+                connectPacing = ConnectPacing.Simultaneous,
+            )
+        // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so none
+        // of it can be mistaken for a leak.
+        repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
+
+        val before = openFileDescriptors()
+        val withoutTwoLiveCandidates =
+            (1..RACES).mapNotNull { n ->
+                race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
+            }
+        val after = openFileDescriptors()
+        return Measured(before, after, withoutTwoLiveCandidates)
+    }
+
+    /**
+     * One race, gated so both candidates are live before either can win. Returns how its loser lost —
+     * the whole [QuicCandidateLoss], so a race that did not count says exactly what happened to it.
+     */
+    private suspend fun race(
+        gate: FirstFlightGate,
+        peer: QuicPeer,
+        options: QuicOptions,
+        transport: TransportConfig,
+    ): QuicCandidateLoss {
+        gate.arm()
+        val loss =
+            withQuicConnection(peer, options, transport, timeout = 20.seconds) { race ->
+                (race as QuicCandidateRace.Raced).lost.single()
+            }
+        // The gate opening is what makes the loser live; a race it never opened for proves nothing.
+        assertTrue(gate.opened, "the race finished without both candidates' first flights reaching the gate: $loss")
+        return loss
+    }
+
+    /** The two fates a loser can only meet after it has opened its socket and its handshake was running. */
+    private fun QuicCandidateLoss.hadTwoLiveCandidates(): Boolean =
+        this is QuicCandidateLoss.ClosedAsLate || this is QuicCandidateLoss.Abandoned
 
     private fun fixtureTlsConfig(name: String) = QuicTlsConfig(certChainPath = certPath("$name.crt"), privKeyPath = certPath("$name.key"))
 
@@ -177,17 +220,6 @@ class RaceLoserFdLeakTest {
         buf.resetForRead()
         return CertificateHash(buf)
     }
-
-    /** One race; `true` when both candidates were live, which is what the measurement requires. */
-    private suspend fun race(
-        peer: QuicPeer,
-        options: QuicOptions,
-        transport: TransportConfig,
-    ): Boolean =
-        withQuicConnection(peer, options, transport, timeout = 20.seconds) { race ->
-            val loss = (race as QuicCandidateRace.Raced).lost.single()
-            loss is QuicCandidateLoss.ClosedAsLate || loss is QuicCandidateLoss.Abandoned
-        }
 
     private fun certPath(name: String): String {
         val url =
@@ -206,5 +238,80 @@ class RaceLoserFdLeakTest {
 
         /** Post-fix the measured delta is 0; the tolerance absorbs an unrelated descriptor the JVM may open. */
         const val MAX_TOLERATED_DESCRIPTORS = 4
+    }
+}
+
+/**
+ * One relay in front of each server, holding every candidate's datagrams from [arm] until each candidate
+ * has sent at least one, then releasing them all at once.
+ *
+ * That makes the race's precondition a state rather than a matter of scheduling: no handshake can finish
+ * — its Initial has not even reached its server — until every candidate has opened its socket and sent
+ * its first flight. Once open the gate is a plain pass-through, so the handshakes themselves still race
+ * each other exactly as they would without it.
+ *
+ * Opened and closed outside the measured window: its sockets and selectors are the test's, not a race's.
+ */
+private class FirstFlightGate(
+    serverPorts: List<Int>,
+) : AutoCloseable {
+    private val lock = Any()
+    private val relays = ArrayList<SelectorDatagramRelay>(serverPorts.size)
+    private val held = List(serverPorts.size) { ArrayList<ByteArray>() }
+    private val heard = BooleanArray(serverPorts.size)
+    private var armed = false
+
+    init {
+        serverPorts.forEachIndexed { index, port ->
+            relays +=
+                SelectorDatagramRelay(
+                    serverPort = port,
+                    maxDatagram = MAX_DATAGRAM,
+                    onClientToServer = { buf, _ -> fromCandidate(index, buf) },
+                    onServerToClient = { buf, _ -> relays[index].writeToClient(buf) },
+                )
+        }
+        relays.forEach { it.start() }
+    }
+
+    /** Where the candidates are dialled, in server order. */
+    val ports: List<Int> = relays.map { it.proxyPort }
+
+    /** Whether every candidate has been heard from since the last [arm]. */
+    val opened: Boolean get() = synchronized(lock) { !armed }
+
+    /** Close the gate for the next race. */
+    fun arm() =
+        synchronized(lock) {
+            armed = true
+            heard.fill(false)
+            held.forEach { it.clear() }
+        }
+
+    // On each relay's own pump thread. Under the lock throughout, so a datagram passed straight through
+    // can never overtake one being released from another thread.
+    private fun fromCandidate(
+        index: Int,
+        buf: ByteBuffer,
+    ) = synchronized(lock) {
+        if (!armed) {
+            relays[index].writeToServer(buf)
+            return@synchronized
+        }
+        held[index] += ByteArray(buf.remaining()).also { buf.get(it) }
+        heard[index] = true
+        if (heard.all { it }) {
+            armed = false
+            held.forEachIndexed { i, datagrams ->
+                datagrams.forEach { relays[i].writeToServerBytes(it) }
+                datagrams.clear()
+            }
+        }
+    }
+
+    override fun close() = relays.forEach { it.close() }
+
+    private companion object {
+        const val MAX_DATAGRAM = 65_535
     }
 }
