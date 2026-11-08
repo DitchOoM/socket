@@ -130,6 +130,16 @@ jobs:
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-linux-
+      # The Gradle distribution, so `./gradlew` below does not download it from
+      # services.gradle.org, which redirects to GitHub (504 for hours on 2026-11-08). Restore-only:
+      # build-linux.yaml's `natives` and native-deps-freshness.yaml's `cache-warm` write it on main,
+      # and .github/actions/linux-quiche-env restores it the same way. Keyed on
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
       # W7: bring up the echo + controller subset of the docker harness so the
       # withNetworkHarness consumer smoke (HarnessConsumerSmokeTest, part of jvmTest below)
       # performs a REAL echo round-trip through the PUBLISHED socket-testsuite artifact.
@@ -158,8 +168,13 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
       - name: Add Rust aarch64 target
         run: rustup target add aarch64-unknown-linux-gnu
+      # -PlinuxTargets=false: the controller jar is JVM bytecode plus its runtime jars and no Linux
+      # Kotlin/Native target contributes to it. With the targets declared, the jar's commonMain
+      # metadata chain ran every Linux cinterop: it built liburing from a GitHub archive download
+      # (:buildLiburingArm64 failed on a 504 on 2026-11-08), fetched the K/N toolchain and
+      # commonized. The K/N link gate below is a separate build (.ci/consumer-smoke) and is unaffected.
       - name: Build harness controller jar (harness infrastructure)
-        run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
+        run: ./gradlew :socket-testsuite:controllerJar -PlinuxTargets=false --no-configuration-cache
       - name: Bring up harness (echo + controller)
         run: bash test-harness/compose-up-retry.sh echo controller
       - name: JVM behavioural smoke (HTTP/3 loopback + withNetworkHarness echo)
@@ -558,6 +573,16 @@ jobs:
           path: ~/.konan
           key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-macos-
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org,
+      # which redirects to GitHub. That download returned 504 here for hours on 2026-11-08.
+      # Restore-only: native-deps-freshness.yaml's `cache-warm-apple` and build-apple.yaml's
+      # `natives` (main only) write it, and .github/actions/apple-quiche-env restores it the same
+      # way. Keyed on gradle-wrapper.properties, so a Gradle version bump misses and downloads.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
