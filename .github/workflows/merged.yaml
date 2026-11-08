@@ -359,8 +359,22 @@ jobs:
           packages: >-
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org, which
+      # redirects to GitHub (504 for hours on 2026-11-08). Restore-only, like everything here: the
+      # nightly `cache-warm` and build-linux.yaml's `natives` (main only) write it on main. Keyed on
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # -PlinuxTargets=false: both jars are JVM bytecode plus their runtime jars. With the Linux K/N
+      # targets declared, configuring the build provisions the linuxX64 + linuxArm64 BoringSSL bundles
+      # (GitHub release downloads), and the jars' metadata chain builds liburing (a GitHub archive
+      # download). Same switch and reasoning as review.yaml's consumer-smoke controllerJar step.
       - name: Build harness controller + udp-toxi jars
-        run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar --no-configuration-cache
+        run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar -PlinuxTargets=false --no-configuration-cache
 
       # qemu gives buildx the arm64 emulation it needs for the linux/arm64 halves.
       - name: Set up QEMU

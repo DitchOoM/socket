@@ -44,6 +44,16 @@ jobs:
     # snapshot on shutdown, and a 1-second grace is not enough to flush one.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      # This lane builds Android, the JVM quic-echo jar and the host's libquiche.so. It never
+      # compiles a Linux Kotlin/Native target, but with those targets declared every Gradle call
+      # here still configured them. Configuring them provisions the linuxX64 + linuxArm64 BoringSSL
+      # bundles (GitHub release downloads) while the task graph is built, and the commonMain
+      # metadata chain then built liburing (a GitHub archive download) and fetched the K/N
+      # toolchain. On 2026-11-08 GitHub answered those downloads with 504 for hours, and every leg
+      # of this matrix failed before it compiled anything. The job env also reaches the Gradle
+      # calls in scripts/android-emulator-tests.sh. quic-bench.yaml and the quiche-jvm legs of
+      # build-linux.yaml use the same switch.
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
     strategy:
       # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -69,6 +79,30 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org,
+      # which redirects to GitHub. Restore-only: build-linux.yaml's `natives` job and
+      # native-deps-freshness.yaml's `cache-warm` write this key on main, and every job that uses
+      # .github/actions/linux-quiche-env restores it the same way. The key is the hash of
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # quic-echo's libquiche.so and JNI shim (`:quicEchoJar` → buildQuicheSharedLinuxX64). Building
+      # them from source provisions the linuxX64 BoringSSL bundle, which is a GitHub release download.
+      # Restore-only, with the same key and path as the writers (build-linux.yaml `natives` and
+      # native-deps-freshness.yaml `cache-warm`), so keep the three in step. buildQuicheSharedLinuxX64
+      # skips only when the restored `.built-<quiche>-…-<build-script digest>` marker matches this
+      # tree; otherwise it rebuilds. A miss builds from source, as before.
+      - name: Restore quiche Linux x64 natives (quic-echo)
+        uses: actions/cache/restore@v6
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
