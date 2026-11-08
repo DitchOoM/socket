@@ -654,6 +654,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # Puts the Kotlin/JS + Wasm Node.js distribution into the `gradle-linux-` entry the next steps
+      # save. The Kotlin plugin resolves it as a Gradle artifact (https://nodejs.org/dist/v<ver>/...)
+      # on every run that builds a JS/Wasm task graph, and a Gradle cache that already holds it answers that with no
+      # network at all (checked with every outbound connection refused). This job builds no JS, so
+      # without this step the entry every Linux job restores never contains Node, and each of them
+      # fetches it from nodejs.org live: the same single point of failure GitHub's yarn download
+      # turned out to be on 2026-11-08 (yarn itself is handled by
+      # .github/scripts/provision-kotlin-js-yarn.sh in linux-quiche-env). Same guard as the save, so
+      # it runs only when there is an entry to write. continue-on-error: a nodejs.org outage here
+      # must cost the cache a warm Node, not the merge its natives.
+      - name: Resolve the Kotlin/JS + Wasm Node.js distribution into the Gradle cache (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: ./gradlew kotlinNodeJsSetup kotlinWasmNodeJsSetup --no-configuration-cache
+
       # ── The write half of the restore-only Gradle caches at the top of this job ──────────────
       # Only in main's ref scope. merged.yaml calls this workflow on `pull_request_target: closed`,
       # where github.ref is refs/heads/main, so main is rewritten on every merge and every PR

@@ -1348,3 +1348,34 @@ tasks.register("resolveAllDependencies") {
     group = "build setup"
     dependsOn(allprojects.map { "${it.path}:resolveProjectDependencies" })
 }
+
+// ── Kotlin/JS + Kotlin/Wasm yarn: never fetched from GitHub in CI ─────────────────────────────────
+//
+// By default the Kotlin plugin resolves yarn as an Ivy artifact from
+// https://github.com/yarnpkg/yarn/releases/download/v<ver>/yarn-v<ver>.tar.gz while it builds the task
+// graph, on every run that reaches :kotlinYarnSetup or :kotlinWasmYarnSetup. On 2026-11-08 GitHub
+// answered that URL with 504 Gateway Time-out for long enough to fail two release runs outright.
+// No mirror can stand in for it: the plugin hardcodes the `v[revision]/[artifact](-v[revision]).[ext]`
+// pattern and unpacks the archive as-is, expecting a top-level `yarn-v<ver>/` directory, while the npm
+// registry's copy (`yarn/-/yarn-<ver>.tgz`) unpacks into `package/`.
+//
+// So CI hands the build a yarn that is already on the machine instead:
+// .github/scripts/provision-kotlin-js-yarn.sh exports KOTLIN_JS_YARN (the runner image's yarn when it is
+// this exact version, otherwise one installed from the npm registry — the host `yarn install` needs
+// for every package anyway), and with it set both specs skip the download. Unset (any local build)
+// the plugin downloads yarn as before; the only difference is that the version now comes from
+// `kotlinJsYarnVersion` in gradle.properties, which CI provisions too, instead of the plugin's default.
+val kotlinJsYarnVersion = providers.gradleProperty("kotlinJsYarnVersion")
+val preinstalledYarn = providers.environmentVariable("KOTLIN_JS_YARN")
+
+fun org.jetbrains.kotlin.gradle.targets.web.yarn.BaseYarnRootEnvSpec.useProjectYarn() {
+    version.set(kotlinJsYarnVersion)
+    download.set(preinstalledYarn.map { false }.orElse(true))
+    command.set(preinstalledYarn.orElse("yarn"))
+}
+plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootEnvSpec>().useProjectYarn()
+}
+plugins.withType<org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnRootEnvSpec>().useProjectYarn()
+}
