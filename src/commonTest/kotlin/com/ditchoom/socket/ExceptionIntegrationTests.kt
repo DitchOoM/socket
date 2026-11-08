@@ -55,7 +55,7 @@ class ExceptionIntegrationTests {
             // connect-refused contract is still validated on Linux/macOS JVM
             // + K/Native + JS.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
-            val port = 59000 + kotlin.random.Random.nextInt(999)
+            val port = REFUSED_PORT
             val ex =
                 try {
                     val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
@@ -218,7 +218,7 @@ class ExceptionIntegrationTests {
             if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             // Same Windows NIO2 quirk as connectionRefused_producesSocketConnectionException.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
-            val port = 59100 + kotlin.random.Random.nextInt(899)
+            val port = REFUSED_PORT
             val ex =
                 try {
                     val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
