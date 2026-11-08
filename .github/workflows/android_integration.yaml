@@ -303,54 +303,45 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # Mirror the audit step from build-apple.yaml + build-linux.yaml:
-      # count `harness OK` vs `harness SKIP` markers from
-      # QuicHarnessIntegrationTests' withHarness() across the
-      # connectedAndroidTest report XMLs. Surfaces a regression that
-      # silently breaks the Android QUIC client as a CI warning instead
-      # of letting it pass via the skip-on-failure catch.
+      # Did the emulator really exercise the docker quic-echo harness?
+      #
+      # This step used to copy the Linux/Apple audit and count the `harness OK` / `harness SKIP:`
+      # lines QuicHarnessIntegrationTests prints. That suite is in commonTest, which
+      # androidInstrumentedTest deliberately does not dependsOn, so it is never in the test APK and
+      # the step printed `QuicHarnessIntegrationTests on Android: OK=0, SKIP=0` on every run: a line
+      # that looks like a suite that ran nothing, from a step that validated nothing (and could not
+      # fail: it was continue-on-error). On this lane the harness is reached by the instrumented
+      # classes that resolve HarnessEndpoints.quicEcho; the script finds them in the source and reads
+      # their outcomes from the result XML, quoting each skip's reason from its per-test logcat.
+      # It FAILS when a harness class is missing from the results or none of its tests passed. When
+      # it fails, the upload below carries the XML and per-test logcat it read, plus the quic-echo
+      # container's own log and state.
       - name: Audit QUIC harness coverage on Android
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -I .github/scripts/audit-android-quic-harness.py \
+            --report-root socket-quic-quiche/build/outputs/androidTest-results \
+            --source-dir socket-quic-quiche/src/androidInstrumentedTest \
+            --api-level ${{ matrix.api-level }}
+
+      # The quic-echo side of a harness failure: whether the container was up, and what it logged
+      # (handshakes it saw, or nothing at all). Only the device side was recorded before, so "the
+      # emulator could not reach it" and "it was not running" looked the same.
+      - name: Capture quic-echo harness state on failure
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         run: |
-          REPORT_ROOT=socket-quic-quiche/build/outputs/androidTest-results
-          if [ ! -d "$REPORT_ROOT" ]; then
-            echo "no android instrumented-test results — audit skipped"
-            exit 0
-          fi
-          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          # Distinct skip reasons (dedup + count). Bound to [^<&] so the match
-          # stops at the next XML entity/tag in the androidTest result reports.
-          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
-            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
-          echo "QuicHarnessIntegrationTests on Android: OK=$OK, SKIP=$SKIP"
-          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+          mkdir -p emulator-diagnostics
           {
-            echo "## QUIC harness — Android (emulator)"
-            echo ""
-            echo "| OK | SKIP |"
-            echo "|---|---|"
-            echo "| $OK | $SKIP |"
-            if [ -n "$SKIP_REASONS" ]; then
-              echo ""
-              echo "<details><summary>Skip reasons (Android)</summary>"
-              echo ""
-              echo '```'
-              echo "$SKIP_REASONS"
-              echo '```'
-              echo "</details>"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
-            echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
-          elif [ "$OK" = "0" ]; then
-            # OK=0 AND SKIP=0 means the audit matched NOTHING — the suite never ran on the emulator
-            # (QuicHarnessIntegrationTests lives in commonTest, which connectedAndroidTest does not
-            # execute) or the marker text moved. Either way this step validated nothing, so it has to
-            # say so instead of printing "OK=0, SKIP=0" and passing like a clean result.
-            echo "::warning::No harness OK/SKIP markers on Android — QuicHarnessIntegrationTests never ran on the emulator, so this audit validated nothing"
-          fi
+            echo "--- docker compose ps ---"
+            (cd test-harness && docker compose ps -a) 2>&1 || true
+            echo "--- docker compose logs quic-echo (last 500 lines) ---"
+            (cd test-harness && docker compose logs --no-color --tail 500 quic-echo) 2>&1 || true
+            echo "--- host UDP sockets on 14433 ---"
+            ss -uanp 2>/dev/null | grep -E ':14433\b' || echo "(none)"
+          } > emulator-diagnostics/quic-echo-api${{ matrix.api-level }}.txt
 
       # The instrumented-test record itself. Without this a failure left ONLY the Gradle console
       # stack (run 31027926910): no per-test HTML/XML report, and no logcat — where the Android
