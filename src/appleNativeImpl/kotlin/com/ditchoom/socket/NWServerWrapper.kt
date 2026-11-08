@@ -126,16 +126,22 @@ class NWServerWrapper(
         // to wait until it's ready before sending to the channel.
         // Connection state: 0=invalid, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
         nw_helper_listener_set_new_connection_handler(nwListener) { conn ->
+            // NW calls this on a concurrent queue. Once the connection is handed out, the socket owns
+            // it: cancelling it here when the peer resets made the socket's pending read report
+            // ECANCELED, as if this side had closed, instead of the peer's ECONNRESET.
+            val handedOut = AtomicInt(0)
             nw_helper_set_state_handler(conn) { state, _, _, _ ->
                 when (state) {
                     3 -> { // ready
-                        val clientSocket = NWSocketWrapper(config)
-                        clientSocket.connection = conn
-                        clientSocket.connectionReady = true
-                        channel.trySend(clientSocket)
+                        if (handedOut.compareAndSet(0, 1)) {
+                            val clientSocket = NWSocketWrapper(config)
+                            clientSocket.connection = conn
+                            clientSocket.connectionReady = true
+                            channel.trySend(clientSocket)
+                        }
                     }
-                    1, 4 -> { // waiting or failed
-                        nw_helper_cancel(conn)
+                    1, 4 -> { // waiting or failed before it was ever handed out
+                        if (handedOut.value == 0) nw_helper_cancel(conn)
                     }
                 }
             }
