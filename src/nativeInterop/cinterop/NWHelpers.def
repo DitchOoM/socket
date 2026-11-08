@@ -10,6 +10,9 @@ linkerOpts = -framework Network -framework Foundation -framework Security
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
 
 // ============================================================
 // TCP receive/send helpers
@@ -407,6 +410,61 @@ void nw_helper_listener_cancel(nw_listener_t _Nonnull listener)
 int32_t nw_helper_listener_port(nw_listener_t _Nonnull listener)
 {
     return (int32_t)nw_listener_get_port(listener);
+}
+
+int32_t nw_helper_listen_port_probe(int32_t port)
+{
+    int32_t candidate = port;
+    if (candidate == 0) {
+        // Draw from the IPv6 table, which a dual-stack listener lives in. The IPv4 allocator hands
+        // out ports in sequence and does not see IPv6-only holders (a `::1` connection, a V6ONLY
+        // socket), so a run of its draws can all collide with a busy stretch of the IPv6 table.
+        int fd6 = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+        if (fd6 < 0) return -errno;
+        int zero = 0;
+        setsockopt(fd6, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_len = sizeof(addr6);
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        socklen_t len6 = sizeof(addr6);
+        if (bind(fd6, (struct sockaddr *)&addr6, sizeof(addr6)) != 0
+            || getsockname(fd6, (struct sockaddr *)&addr6, &len6) != 0) {
+            int error = errno;
+            close(fd6);
+            return -error;
+        }
+        candidate = ntohs(addr6.sin6_port);
+        close(fd6);
+    }
+    // The dual-stack socket does not own the port's IPv4 half. Another socket can already hold it as
+    // 0.0.0.0:port, or as 127.0.0.1:port (often an AF_INET6 socket bound to ::ffff:127.0.0.1, which is
+    // how a JVM binds loopback), and it then takes every connection to 127.0.0.1. Ephemeral selection
+    // in the IPv6 table sees neither, and NW's own bind lets both through. Prove both addresses free.
+    // SO_REUSEADDR lets a port whose earlier connections sit in TIME_WAIT through, as a listener's own
+    // bind would; a live socket on the same address still refuses it (measured, macOS 26).
+    static const in_addr_t probed_addrs[] = { INADDR_ANY, INADDR_LOOPBACK };
+    for (size_t i = 0; i < sizeof(probed_addrs) / sizeof(probed_addrs[0]); i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd < 0) return -errno;
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_len = sizeof(addr);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((uint16_t)candidate);
+        addr.sin_addr.s_addr = htonl(probed_addrs[i]);
+        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            int error = errno;
+            close(fd);
+            return -error;
+        }
+        // Bound, never listened or connected: closing it leaves no TIME_WAIT, so the port is free at once.
+        close(fd);
+    }
+    return candidate;
 }
 
 // Note: nw_listener_get_state() is not in the public C API.

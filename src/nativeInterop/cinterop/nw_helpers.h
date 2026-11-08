@@ -150,6 +150,11 @@ typedef void (^nw_helper_listener_state_handler_t)(
 
 nw_listener_t _Nullable nw_helper_create_listener(int32_t port, int32_t backlog);
 
+// A port for a dual-stack listener whose IPv4 half is free too: [port], or for 0 one drawn from the
+// IPv6 table. Probes with throwaway sockets it closes again. Returns the port, or -errno when its
+// IPv4 half (or, for 0, any IPv6 port) cannot be had. See NWServerWrapper.portOwnedForIpv4.
+int32_t nw_helper_listen_port_probe(int32_t port);
+
 void nw_helper_listener_set_new_connection_handler(
     nw_listener_t _Nonnull listener,
     nw_helper_listener_new_connection_t _Nonnull handler);
