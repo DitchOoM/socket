@@ -150,6 +150,11 @@ typedef void (^nw_helper_listener_state_handler_t)(
 
 nw_listener_t _Nullable nw_helper_create_listener(int32_t port, int32_t backlog);
 
+// Binds a throwaway AF_INET TCP socket to 0.0.0.0:port (0 = any free port), reads the port it got and
+// closes it. Returns that port, or -errno when the port's IPv4 half cannot be had. A listener is
+// dual-stack `::`, which on Darwin does not own the IPv4 half of its port: see NWServerWrapper.
+int32_t nw_helper_ipv4_tcp_port_probe(int32_t port);
+
 void nw_helper_listener_set_new_connection_handler(
     nw_listener_t _Nonnull listener,
     nw_helper_listener_new_connection_t _Nonnull handler);

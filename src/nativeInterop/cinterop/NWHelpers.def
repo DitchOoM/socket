@@ -10,6 +10,9 @@ linkerOpts = -framework Network -framework Foundation -framework Security
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
 
 // ============================================================
 // TCP receive/send helpers
@@ -407,6 +410,36 @@ void nw_helper_listener_cancel(nw_listener_t _Nonnull listener)
 int32_t nw_helper_listener_port(nw_listener_t _Nonnull listener)
 {
     return (int32_t)nw_listener_get_port(listener);
+}
+
+int32_t nw_helper_ipv4_tcp_port_probe(int32_t port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) return -errno;
+    // SO_REUSEADDR lets a port whose earlier connections sit in TIME_WAIT through, as a listener's own
+    // bind would; a live socket holding 0.0.0.0:port still refuses it (measured, macOS 26).
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        int error = errno;
+        close(fd);
+        return -error;
+    }
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        int error = errno;
+        close(fd);
+        return -error;
+    }
+    // Bound, never listened or connected: closing it leaves no TIME_WAIT, so the port is free at once.
+    close(fd);
+    return (int32_t)ntohs(addr.sin_port);
 }
 
 // Note: nw_listener_get_state() is not in the public C API.
