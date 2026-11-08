@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+#
+# Stands in for the SDK's `adb` on the emulator lane (installed by scripts/android-emulator-tests.sh,
+# which moves the real binary to `adb.real`). Every command is passed straight through to the real
+# adb, except an APK install, which is bounded, recorded when it stalls, and retried once.
+#
+# WHY
+# ---
+# AGP 9.5's test engine installs each test APK with `adb -s <serial> install -t -g --user 0 <apk>`
+# and waits for it with no deadline: AGP writes the timeout as `android-test.install-timeout-ms[<serial>]`
+# and the engine reads the key without the serial, so `installApkTimeout` never reaches it, and
+# `installation.installOptions` never reaches the command line either. On the API-24 emulator that
+# streamed install (`cmd package install -S <size>`, whose stdin is a PTY that adbd feeds and that
+# system_server reads in PackageManagerShellCommand.doWriteSplit) has stalled four times since the
+# AGP 9.5.1 bump, always the same way. Run 42513600114 has the fullest capture: installd logged
+# `free_cache(<apk size>)` as the install session opened its file, then nothing for two minutes,
+# while the device kept answering `adb shell`, `cmd` sat in its binder call to system_server, and
+# the host `adb install` kept waiting. Which hop stopped moving bytes is not yet known.
+#
+# WHAT
+# ----
+# An install that has not finished after STALL_S seconds is recorded to
+# <diag dir>/install-stall-<n>.txt with what that capture lacked: how many bytes the host adb
+# client has written and whether the count still moves, the TCP queues between the adb client, the
+# adb server and the emulator, where adbd, `cmd` and system_server's threads are (a Java stack dump
+# of system_server), and how much of the APK the device's session file actually holds. The stalled
+# install is then killed, the device is checked again to see what that released, and the install
+# is retried once WITHOUT streaming (`--no-streaming -r`: adb pushes the APK to /data/local/tmp and
+# runs `pm install` on the local file). Its output and exit status are what the caller sees.
+#
+# This is a workaround for the stall, not its fix: the retry takes the stalled stage out of the
+# path, and the capture is there so the next stall says where the stream stopped.
+
+set -uo pipefail
+
+REAL_ADB="@REAL_ADB@"
+DIAG_DIR="@DIAG_DIR@"
+STALL_S="@STALL_S@"
+RETRY_S="@RETRY_S@"
+
+# Global options come before the subcommand; the ones that take a value are listed here.
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    -s | -t | -H | -P | -L) i=$((i + 2)) ;;
+    -a | -d | -e) i=$((i + 1)) ;;
+    *) break ;;
+  esac
+done
+last="${args[${#args[@]} - 1]:-}"
+if [ "${args[$i]:-}" != "install" ] || [[ "$last" != *.apk ]]; then
+  exec "$REAL_ADB" "$@"
+fi
+
+global=("${args[@]:0:$i}")
+install_opts=("${args[@]:$((i + 1))}")
+unset 'install_opts[${#install_opts[@]}-1]'
+apk="$last"
+
+# Device queries are bounded so a wedged adb cannot hang the capture. The test engine's environment
+# is not the CI step's, so do not assume `timeout` is on its PATH.
+if command -v timeout >/dev/null 2>&1; then
+  bounded() { timeout "$@"; }
+else
+  bounded() { shift; "$@"; }
+fi
+dev() { bounded "$1" "$REAL_ADB" "${global[@]}" shell "${@:2}" 2>&1; }
+
+# Runs the real adb with the given arguments in the background; waits up to $1 seconds.
+# Sets RUN_PID, RUN_OUT, and RUN_EXIT (empty if it is still running).
+run_bounded() {
+  local limit="$1"
+  shift
+  RUN_OUT=$(mktemp)
+  "$REAL_ADB" "$@" >"$RUN_OUT" 2>&1 &
+  RUN_PID=$!
+  local deadline=$((SECONDS + limit))
+  while kill -0 "$RUN_PID" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 1
+  done
+  RUN_EXIT=""
+  if ! kill -0 "$RUN_PID" 2>/dev/null; then
+    wait "$RUN_PID"
+    RUN_EXIT=$?
+  fi
+}
+
+finish() {
+  cat "$RUN_OUT"
+  rm -f "$RUN_OUT"
+  exit "$1"
+}
+
+run_bounded "$STALL_S" "${global[@]}" install "${install_opts[@]}" "$apk"
+if [ -n "$RUN_EXIT" ]; then
+  finish "$RUN_EXIT"
+fi
+
+# ── Stalled: record it ───────────────────────────────────────────────────────────────────────────
+mkdir -p "$DIAG_DIR"
+n=1
+while [ -e "$DIAG_DIR/install-stall-$n.txt" ]; do n=$((n + 1)); done
+report="$DIAG_DIR/install-stall-$n.txt"
+stalled_pid="$RUN_PID"
+stalled_out="$RUN_OUT"
+apk_size=$(wc -c <"$apk" | tr -d ' ')
+
+host_proc() {
+  local pid="$1"
+  echo "state: $(grep -E '^State' "/proc/$pid/status" 2>/dev/null)  wchan: $(cat "/proc/$pid/wchan" 2>/dev/null)"
+  echo "io:"
+  sed 's/^/  /' "/proc/$pid/io" 2>/dev/null || echo "  (unreadable)"
+  for t in /proc/"$pid"/task/*; do
+    [ -d "$t" ] || continue
+    echo "  thread ${t##*/} $(cat "$t/comm" 2>/dev/null) $(sed -E 's/^.*\) (.).*$/\1/' "$t/stat" 2>/dev/null) $(cat "$t/wchan" 2>/dev/null)"
+  done
+  echo "kernel stack:"
+  sudo -n cat "/proc/$pid/stack" 2>&1 | sed 's/^/  /' || true
+}
+
+{
+  echo "Install stalled: no result after ${STALL_S}s"
+  echo "command: $REAL_ADB ${args[*]}"
+  echo "apk: $apk ($apk_size bytes)"
+  echo "captured $(date -u +%FT%TZ)"
+
+  echo
+  echo "--- host adb install client (pid $stalled_pid) ---"
+  host_proc "$stalled_pid"
+  wchar1=$(awk '/^wchar/ { print $2 }' "/proc/$stalled_pid/io" 2>/dev/null)
+  sleep 3
+  wchar2=$(awk '/^wchar/ { print $2 }' "/proc/$stalled_pid/io" 2>/dev/null)
+  echo "wchar 3 s apart: ${wchar1:-?} -> ${wchar2:-?} (APK is $apk_size bytes)"
+  echo "output so far:"
+  sed 's/^/  /' "$stalled_out"
+
+  echo
+  echo "--- host adb server ---"
+  for pid in $(pgrep -f 'adb.*(fork-server|nodaemon) server' || true); do
+    echo "pid $pid: $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+    host_proc "$pid"
+  done
+
+  # Send-Q/Recv-Q show where bytes are queued: client -> server on 5037, server -> emulator on the
+  # emulator's adb port (its console port + 1).
+  echo
+  echo "--- host TCP sockets of adb and the emulator (ss -tnpi) ---"
+  ss -tnpi 2>&1 | grep -E -A1 'adb|qemu|:5037|:555[0-9]' || true
+
+  echo
+  echo "--- device: does it answer ---"
+  dev 15 echo alive
+
+  echo
+  echo "--- device: install-related processes ---"
+  dev 15 ps | awk 'NR == 1 || / (cmd|sh|adbd|system_server|installd|logcat)$/'
+
+  echo
+  echo "--- device: where adbd, cmd and their shell wait ---"
+  dev 20 'for p in $(pidof adbd) $(pidof cmd); do
+      echo "pid $p $(cat /proc/$p/cmdline | tr "\0" " ")";
+      for t in /proc/$p/task/*; do echo "  thread ${t##*/} $(cat $t/comm) $(cat $t/wchan)"; done;
+      echo "  fds:"; ls -l /proc/$p/fd 2>&1 | sed "s/^/    /";
+      echo "  kernel stack:"; cat /proc/$p/stack 2>&1 | sed "s/^/    /";
+    done'
+
+  # How much of the APK reached the session file. The file is fallocate()d to the full size up
+  # front, so its length says nothing; comparing 1-MiB blocks with the host's copy does. A block
+  # that differs (normally all zeros) has not arrived.
+  echo
+  echo "--- device: how much of the APK the install session holds (md5 per MiB, host vs device) ---"
+  session_apk=$(dev 10 'ls /data/app/vmdl*.tmp/base.apk 2>/dev/null | head -1' | tr -d '\r' | grep '^/data/app/' || true)
+  echo "session file: ${session_apk:-none}"
+  if [ -n "$session_apk" ]; then
+    blocks=$(((apk_size + 1048575) / 1048576))
+    device_sums=$(dev 60 "k=0; while [ \$k -lt $blocks ]; do dd if=$session_apk bs=1048576 skip=\$k count=1 2>/dev/null | md5sum | cut -d' ' -f1; k=\$((k+1)); done" | tr -d '\r' | grep -E '^[0-9a-f]{32}$')
+    k=0
+    first_missing=""
+    while IFS= read -r device_sum; do
+      host_sum=$(dd if="$apk" bs=1048576 skip="$k" count=1 2>/dev/null | md5sum | cut -d' ' -f1)
+      if [ "$host_sum" != "$device_sum" ] && [ -z "$first_missing" ]; then
+        first_missing=$k
+      fi
+      k=$((k + 1))
+    done <<<"$device_sums"
+    if [ -z "$first_missing" ]; then
+      echo "all $blocks MiB blocks match: the whole APK reached the device"
+    else
+      echo "MiB blocks 0..$((first_missing - 1)) match; block $first_missing is the first that does not"
+      echo "=> the device received between $((first_missing * 1048576)) and $(((first_missing + 1) * 1048576)) of $apk_size bytes"
+    fi
+  fi
+
+  # SIGQUIT makes ART write every thread's Java stack to /data/anr/traces.txt, into an existing file
+  # only. The binder thread that runs `cmd package install` shows whether system_server is reading
+  # the stream or waiting on something else.
+  echo
+  echo "--- device: system_server Java stacks ---"
+  dev 10 'rm -f /data/anr/traces.txt; touch /data/anr/traces.txt && chmod 666 /data/anr/traces.txt; kill -3 $(pidof system_server)'
+  sleep 4
+  dev 30 'cat /data/anr/traces.txt'
+
+  echo
+  echo "--- device logcat, last 200 lines ---"
+  bounded 20 "$REAL_ADB" "${global[@]}" logcat -d -t 200 -v threadtime 2>&1
+} >"$report" 2>&1
+
+# ── Release it, and see what that freed ───────────────────────────────────────────────────────────
+kill "$stalled_pid" 2>/dev/null
+sleep 2
+kill -9 "$stalled_pid" 2>/dev/null
+sleep 3
+{
+  echo
+  echo "--- 5 s after killing the stalled host adb install ---"
+  dev 15 ps | awk 'NR == 1 || / (cmd|sh)$/'
+  dev 10 'ls -la /data/app'
+} >>"$report" 2>&1
+rm -f "$stalled_out"
+
+# ── Retry once, pushed rather than streamed ─────────────────────────────────────────────────────
+run_bounded "$RETRY_S" "${global[@]}" install --no-streaming -r "${install_opts[@]}" "$apk"
+if [ -z "$RUN_EXIT" ]; then
+  kill -9 "$RUN_PID" 2>/dev/null
+  echo "RESULT: the non-streamed retry did not finish within ${RETRY_S}s either" >>"$report"
+  echo "adb install stalled twice (streamed, then pushed); see $report" >>"$RUN_OUT"
+  finish 1
+fi
+{
+  echo
+  echo "--- non-streamed retry: exit $RUN_EXIT ---"
+  cat "$RUN_OUT"
+  if [ "$RUN_EXIT" = "0" ]; then
+    echo "RESULT: recovered by the non-streamed retry"
+  else
+    echo "RESULT: the non-streamed retry failed (exit $RUN_EXIT)"
+  fi
+} >>"$report" 2>&1
+finish "$RUN_EXIT"
