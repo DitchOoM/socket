@@ -1,10 +1,15 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.data.readFlow
+import com.ditchoom.socket.transport.CodecConnection
+import com.ditchoom.socket.transport.TestStringCodec
+import com.ditchoom.socket.transport.testCodecConnection
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -81,6 +86,35 @@ class ReadEndsTruthfullyTests {
             val thrown = outcome.exceptionOrNull() ?: fail("a read after this side's close returned ${outcome.getOrNull()}")
             assertIs<SocketClosedException>(thrown)
             assertTrue(thrown !is SocketClosedException.EndOfStream, "$thrown")
+        }
+
+    /** [readFlow] stays quiet when its collector's owner closes the socket during a read. */
+    @Test
+    fun aReadFlowEndsQuietlyWhenThisSideClosesDuringARead() =
+        withAcceptedRawPeer { accepted, _ ->
+            val collected =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching { accepted.readFlow(5.seconds).toList() }
+                }
+            delay(100.milliseconds) // the read is outstanding in the platform
+            accepted.close()
+            val outcome = withTimeout(5.seconds) { collected.await() }
+            assertEquals(0, outcome.getOrElse { fail("readFlow failed on this side's own close: $it") }.size)
+        }
+
+    /** A [CodecConnection]'s receive stays quiet when the connection itself is closed during a read. */
+    @Test
+    fun aCodecConnectionReceiveEndsQuietlyWhenTheConnectionIsClosedDuringARead() =
+        withAcceptedRawPeer { accepted, _ ->
+            val connection = testCodecConnection(accepted, TestStringCodec)
+            val collected =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching { connection.receive().toList() }
+                }
+            delay(100.milliseconds) // the read is outstanding in the platform
+            connection.close()
+            val outcome = withTimeout(5.seconds) { collected.await() }
+            assertEquals(0, outcome.getOrElse { fail("receive() failed on the connection's own close: $it") }.size)
         }
 
     private fun withAcceptedRawPeer(block: suspend kotlinx.coroutines.CoroutineScope.(ClientSocket, RawTcpPeer) -> Unit) =

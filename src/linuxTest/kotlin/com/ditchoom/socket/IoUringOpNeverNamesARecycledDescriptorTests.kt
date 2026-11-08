@@ -175,15 +175,16 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
         val hold = PollerHold.engage()
         val (impostor, pending) =
             try {
-                val pending = async(Dispatchers.Default) { read() }
+                val pending = async(Dispatchers.Default) { runCatching { read() } }
                 awaitQueuedBehindTheHold()
                 close()
                 Impostor.takeIfFree(number) to pending
             } finally {
                 hold.release()
             }
-        val result = pending.await()
+        val outcome = pending.await()
         try {
+            val result = outcome.getOrNull()
             if (result is ReadResult.Data) {
                 val stolen = result.buffer.remaining()
                 result.buffer.freeIfNeeded()
@@ -192,7 +193,14 @@ class IoUringOpNeverNamesARecycledDescriptorTests {
                         "close" + reused(impostor, number),
                 )
             }
-            assertEquals(ReadResult.End, result, "a read queued when its socket closed must end as closed")
+            // This side's close is not the peer's end-of-stream: the read fails closed (General), it does not
+            // return End or Reset, which would claim the peer ended the connection.
+            val failure = outcome.exceptionOrNull()
+            assertTrue(
+                failure is SocketClosedException && failure !is SocketClosedException.EndOfStream,
+                "a read queued when its socket closed must fail as closed by this side, but " +
+                    (failure?.let { "threw $it" } ?: "returned $result") + reused(impostor, number),
+            )
             impostor?.assertItsBytesAreUnread()
         } finally {
             impostor?.close()
