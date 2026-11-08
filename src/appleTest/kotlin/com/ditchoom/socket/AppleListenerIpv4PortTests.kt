@@ -3,20 +3,27 @@
 package com.ditchoom.socket
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.value
 import platform.posix.AF_INET
+import platform.posix.AF_INET6
+import platform.posix.IPPROTO_IPV6
+import platform.posix.IPV6_V6ONLY
 import platform.posix.SOCK_STREAM
 import platform.posix.bind
 import platform.posix.close
 import platform.posix.getsockname
 import platform.posix.listen
+import platform.posix.setsockopt
 import platform.posix.sockaddr_in
+import platform.posix.sockaddr_in6
 import platform.posix.socket
 import platform.posix.socklen_tVar
 import kotlin.test.Test
@@ -24,27 +31,35 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * An NW listener is dual-stack `::`, which on Darwin does not own the IPv4 half of its port: with a
- * plain `AF_INET` socket already listening on `0.0.0.0:P`, a listener on `P` still starts, and every
- * connect to `127.0.0.1:P` completes against the other socket. The listener hears nothing, and a TLS
- * client waits for a ServerHello that never comes.
+ * An NW listener is dual-stack `::`, which on Darwin does not own the IPv4 half of its port. With
+ * another socket already listening on `0.0.0.0:P`, or on `127.0.0.1:P` the way a JVM binds loopback
+ * (an `AF_INET6` socket on `::ffff:127.0.0.1`), a listener on `P` still started, and every connect to
+ * `127.0.0.1:P` completed against the other socket. The listener heard nothing, and a TLS client waited
+ * for a ServerHello that never came.
  *
- * An ephemeral listen hit this by chance — NW drew the port from the IPv6 table, so another process's
- * IPv4 listener could already hold it — and a named port hits it every time. This test takes the named
- * case because it is deterministic; both now go through the same IPv4-first port choice.
+ * An ephemeral listen hit this by chance: the IPv6 table it draws from sees neither holder, and a host
+ * running Gradle or IDE daemons has loopback listeners across the ephemeral range. On a developer Mac,
+ * a JetBrains and a postgres loopback listener were each measured taking the connection meant for a
+ * dual-stack listener on the same port. A named port hits it every time, so these tests take the named
+ * case; both go through the same port probe.
  */
 class AppleListenerIpv4PortTests {
     @Test
-    fun aListenerRefusesAPortWhoseIpv4HalfAnotherSocketHolds() =
+    fun aListenerRefusesAPortAnIpv4WildcardListenerHolds() = assertRefusedWhileHeld(::ipv4WildcardListener)
+
+    @Test
+    fun aListenerRefusesAPortAJvmStyleLoopbackListenerHolds() = assertRefusedWhileHeld(::v4MappedLoopbackListener)
+
+    private fun assertRefusedWhileHeld(holderFactory: () -> Pair<Int, Int>) =
         runTestNoTimeSkipping {
-            val (holder, port) = ipv4WildcardListener()
+            val (holder, port) = holderFactory()
             try {
                 val server = ServerSocket.allocate()
                 val error =
                     try {
                         server.bind(port = port)
                         server.close()
-                        fail("a listener on $port started while 0.0.0.0:$port is another socket's, so 127.0.0.1:$port never reaches it")
+                        fail("a listener on $port started while another socket holds its IPv4 half, so 127.0.0.1:$port never reaches it")
                     } catch (e: SocketException) {
                         e
                     }
@@ -68,8 +83,34 @@ class AppleListenerIpv4PortTests {
             check(listen(fd, 1) == 0) { "listen failed" }
             val len = alloc<socklen_tVar>().apply { value = sizeOf<sockaddr_in>().convert() }
             check(getsockname(fd, addr.ptr.reinterpret(), len.ptr) == 0) { "getsockname failed" }
-            val networkOrder = addr.sin_port.toInt()
-            return fd to (((networkOrder and 0xFF) shl 8) or ((networkOrder shr 8) and 0xFF))
+            return fd to hostOrder(addr.sin_port.toInt())
         }
     }
+
+    /** An `AF_INET6` socket listening on `::ffff:127.0.0.1`, as a JVM binds loopback: (descriptor, port). */
+    private fun v4MappedLoopbackListener(): Pair<Int, Int> {
+        val fd = socket(AF_INET6, SOCK_STREAM, 0)
+        check(fd >= 0) { "socket(AF_INET6) failed" }
+        memScoped {
+            val off = alloc<IntVar>().apply { value = 0 }
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, off.ptr, sizeOf<IntVar>().convert())
+            val addr = alloc<sockaddr_in6>()
+            addr.sin6_len = sizeOf<sockaddr_in6>().convert()
+            addr.sin6_family = AF_INET6.convert()
+            addr.sin6_port = 0u
+            val bytes = addr.sin6_addr.__u6_addr.__u6_addr8
+            for (i in 0 until 16) bytes[i] = 0u
+            bytes[10] = 0xFFu
+            bytes[11] = 0xFFu
+            bytes[12] = 127u
+            bytes[15] = 1u
+            check(bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert()) == 0) { "bind(::ffff:127.0.0.1:0) failed" }
+            check(listen(fd, 1) == 0) { "listen failed" }
+            val len = alloc<socklen_tVar>().apply { value = sizeOf<sockaddr_in6>().convert() }
+            check(getsockname(fd, addr.ptr.reinterpret(), len.ptr) == 0) { "getsockname failed" }
+            return fd to hostOrder(addr.sin6_port.toInt())
+        }
+    }
+
+    private fun hostOrder(networkOrder: Int) = ((networkOrder and 0xFF) shl 8) or ((networkOrder shr 8) and 0xFF)
 }

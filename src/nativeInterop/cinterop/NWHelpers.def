@@ -438,27 +438,32 @@ int32_t nw_helper_listen_port_probe(int32_t port)
         candidate = ntohs(addr6.sin6_port);
         close(fd6);
     }
-    // The dual-stack socket does not own the port's IPv4 half: an AF_INET socket on 0.0.0.0 can
-    // already hold it, and it would then take every connection to 127.0.0.1. Prove that half free.
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd < 0) return -errno;
+    // The dual-stack socket does not own the port's IPv4 half. Another socket can already hold it as
+    // 0.0.0.0:port, or as 127.0.0.1:port (often an AF_INET6 socket bound to ::ffff:127.0.0.1, which is
+    // how a JVM binds loopback), and it then takes every connection to 127.0.0.1. Ephemeral selection
+    // in the IPv6 table sees neither, and NW's own bind lets both through. Prove both addresses free.
     // SO_REUSEADDR lets a port whose earlier connections sit in TIME_WAIT through, as a listener's own
-    // bind would; a live socket holding 0.0.0.0:port still refuses it (measured, macOS 26).
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_len = sizeof(addr);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)candidate);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        int error = errno;
+    // bind would; a live socket on the same address still refuses it (measured, macOS 26).
+    static const in_addr_t probed_addrs[] = { INADDR_ANY, INADDR_LOOPBACK };
+    for (size_t i = 0; i < sizeof(probed_addrs) / sizeof(probed_addrs[0]); i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd < 0) return -errno;
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_len = sizeof(addr);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((uint16_t)candidate);
+        addr.sin_addr.s_addr = htonl(probed_addrs[i]);
+        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            int error = errno;
+            close(fd);
+            return -error;
+        }
+        // Bound, never listened or connected: closing it leaves no TIME_WAIT, so the port is free at once.
         close(fd);
-        return -error;
     }
-    // Bound, never listened or connected: closing it leaves no TIME_WAIT, so the port is free at once.
-    close(fd);
     return candidate;
 }
 
