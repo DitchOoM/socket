@@ -224,8 +224,15 @@ jobs:
         # job, and a hung test consumes all of it — then the job is CANCELLED, which is not
         # `failure()`, so every upload is skipped and the hang leaves nothing to read (#417). That
         # is not hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
-        # artifacts at all. Measured 5.2-6.6 min across 10 recent green job-runs; 12 is ~2x that.
-        timeout-minutes: 12
+        # artifacts at all.
+        #
+        # This timeout is now the backstop. The script's own watchdog (WATCHDOG in
+        # scripts/android-emulator-tests.sh) declares a hang first, when an APK install has run for
+        # 2 min or the script has run for 10 min. It then captures the device, host and test engine,
+        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 14 leaves room for
+        # that plus the emulator boot before the script. Green runs of this step took 5.6-8.3 min
+        # (48 job-runs on AGP 9.5.1, all four API levels).
+        timeout-minutes: 14
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
