@@ -110,22 +110,27 @@ echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectiv
 #   * an APK install has run for INSTALL_STALL_S. A green install takes about 10 s here, dex2oat
 #     included. The engine gives `adb install` no deadline: AGP 9.5.1 writes the install timeout
 #     as `android-test.install-timeout-ms[<serial>]`, and the engine reads the key without the
-#     serial, so `android.experimental.testOptions.installApkTimeout` has no effect.
+#     serial, so `android.experimental.testOptions.installApkTimeout` has no effect. The ADB
+#     INSTALL GUARD below handles a stalled install first (record, kill, one pushed retry, at most
+#     ~3 min); this threshold is the backstop for when that did not end it.
 #   * the script has run for TEST_BUDGET_S. Green runs of this whole step take 5.6-8.3 min,
 #     emulator boot included.
 # Then the device, host and test engine are captured to $HANG_FILE, a ::error:: annotation says
 # what was hung, and Gradle is stopped. The script then shuts the emulator down as usual and fails.
-INSTALL_STALL_S="${ANDROID_INSTALL_STALL_S:-120}"
-TEST_BUDGET_S="${ANDROID_TEST_BUDGET_S:-600}"
+INSTALL_STALL_S="${ANDROID_INSTALL_STALL_S:-300}"
+TEST_BUDGET_S="${ANDROID_TEST_BUDGET_S:-660}"
 HANG_FILE="emulator-diagnostics/test-run-hang-api${API_LEVEL}.txt"
 GRADLE_OUT_FILE="emulator-diagnostics/gradle-connected-api${API_LEVEL}.txt"
 TEST_RUN_HUNG=0
 
-# "<seconds> <command line>" of each APK install adb is running, oldest first. `etime` rather than
-# `etimes` (Linux-only) so the script also runs against a local emulator on macOS.
+# "<seconds> <command line>" of each APK install adb is running, oldest first. Only processes that
+# ARE adb (or the adb install guard script, run by bash) count: a shell whose own command line
+# merely mentions `adb ... install` is not an install. `etime` rather than `etimes` (Linux-only)
+# so the script also runs against a local emulator on macOS.
 running_installs() {
   ps -eo etime=,args= | awk '
-    /[a]db .*( install | install-multiple | pm install )/ {
+    ($2 ~ /(^|\/)adb(\.real)?$/ || ($2 ~ /(^|\/)bash$/ && $3 ~ /(^|\/)adb$/)) &&
+    / install( |-multiple )/ {
       n = split($1, t, /[-:]/)
       secs = t[n] + 60 * t[n - 1]
       if (n >= 3) secs += 3600 * t[n - 2]
@@ -198,7 +203,7 @@ capture_hang() {
         pid=$(timeout 10 adb shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
         if [ -n "$pid" ]; then
           capture_section "kill -3 $pkg (pid $pid)" 10 adb shell \
-            "touch /data/anr/traces.txt && chmod 666 /data/anr/traces.txt; kill -3 $pid"
+            "rm -f /data/anr/traces.txt; touch /data/anr/traces.txt && chmod 666 /data/anr/traces.txt; kill -3 $pid"
           sleep 3
           capture_section "Java stacks of $pkg" 20 adb shell 'cat "$(ls -t /data/anr/* | head -1)"'
         fi
@@ -248,6 +253,34 @@ Full capture: ${HANG_FILE} (artifact android-test-reports-${API_LEVEL})")"
     sleep 5
   done
 }
+
+# ADB INSTALL GUARD: A STALLED TEST-APK INSTALL IS RECORDED, THEN RETRIED PUSHED
+# ------------------------------------------------------------------------------
+# The streamed `adb install` AGP's test engine runs has stalled on the API-24 emulator four times
+# since the AGP 9.5.1 bump (runs 42324622569, 42382561575, 42434499783, 42513600114), and the
+# engine cannot be given a deadline or install options (WATCHDOG above). So on CI the SDK's `adb`,
+# which is the binary the engine runs, is replaced by scripts/adb-install-guard.sh. It passes every
+# other command straight to the real adb. An install with no result after ADB_GUARD_STALL_S is
+# recorded to emulator-diagnostics/install-stall-<n>.txt, killed, and retried once with
+# `--no-streaming -r`. A recovered stall is reported as a ::warning:: below and its capture uploaded
+# even on a green run, so every occurrence adds evidence.
+#
+# Only on GitHub Actions: on a workstation this would rewrite the developer's own SDK.
+ADB_GUARD_STALL_S="${ANDROID_ADB_GUARD_STALL_S:-60}"
+ADB_GUARD_RETRY_S="${ANDROID_ADB_GUARD_RETRY_S:-120}"
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  SDK_ADB="${ANDROID_HOME:?ANDROID_HOME is not set}/platform-tools/adb"
+  if [ ! -e "$SDK_ADB.real" ]; then
+    mv "$SDK_ADB" "$SDK_ADB.real"
+  fi
+  sed -e "s#@REAL_ADB@#$SDK_ADB.real#" \
+    -e "s#@DIAG_DIR@#$PWD/emulator-diagnostics#" \
+    -e "s#@STALL_S@#$ADB_GUARD_STALL_S#" \
+    -e "s#@RETRY_S@#$ADB_GUARD_RETRY_S#" \
+    scripts/adb-install-guard.sh >"$SDK_ADB"
+  chmod +x "$SDK_ADB"
+  echo "adb install guard in place: $SDK_ADB -> $SDK_ADB.real (stall ${ADB_GUARD_STALL_S}s, retry ${ADB_GUARD_RETRY_S}s)"
+fi
 
 # There is no `adb reverse tcp:<quic port>` here: QUIC is UDP and adb reverse only handles TCP.
 # This lane runs on an EMULATOR, which is the one device kind with a built-in `10.0.2.2` alias for
@@ -349,6 +382,16 @@ ${RAN_NOTHING}")"
     ./gradlew :socket-quic-quiche:stopNetworkControlServer || true
   fi
 fi
+
+# Every install the guard recorded, recovered or not.
+for stall in emulator-diagnostics/install-stall-*.txt; do
+  [ -e "$stall" ] || continue
+  echo "::warning title=Test APK install stalled (API ${API_LEVEL})::$(gh_escape "$(grep -m1 '^apk: ' "$stall")
+$(grep -m1 '^wchar ' "$stall")
+$(grep -m1 '^=> the device received\|^all .* blocks match' "$stall")
+$(grep -m1 '^RESULT: ' "$stall")
+Capture: $stall (artifact install-stall-${API_LEVEL})")"
+done
 
 # Stop the streamer and let it flush before anything reads the file.
 kill "$LOGCAT_PID" 2>/dev/null || true

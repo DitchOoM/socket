@@ -262,11 +262,12 @@ jobs:
         #
         # This timeout is now the backstop. The script's own watchdog (WATCHDOG in
         # scripts/android-emulator-tests.sh) declares a hang first, when an APK install has run for
-        # 2 min or the script has run for 10 min. It then captures the device, host and test engine,
-        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 14 leaves room for
+        # 5 min or the script has run for 11 min. It then captures the device, host and test engine,
+        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 15 leaves room for
         # that plus the emulator boot before the script. Green runs of this step took 5.6-8.3 min
-        # (48 job-runs on AGP 9.5.1, all four API levels).
-        timeout-minutes: 14
+        # (48 job-runs on AGP 9.5.1, all four API levels); a stalled install that the adb install
+        # guard recovers adds about 2 min.
+        timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
@@ -303,54 +304,45 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # Mirror the audit step from build-apple.yaml + build-linux.yaml:
-      # count `harness OK` vs `harness SKIP` markers from
-      # QuicHarnessIntegrationTests' withHarness() across the
-      # connectedAndroidTest report XMLs. Surfaces a regression that
-      # silently breaks the Android QUIC client as a CI warning instead
-      # of letting it pass via the skip-on-failure catch.
+      # Did the emulator really exercise the docker quic-echo harness?
+      #
+      # This step used to copy the Linux/Apple audit and count the `harness OK` / `harness SKIP:`
+      # lines QuicHarnessIntegrationTests prints. That suite is in commonTest, which
+      # androidInstrumentedTest deliberately does not dependsOn, so it is never in the test APK and
+      # the step printed `QuicHarnessIntegrationTests on Android: OK=0, SKIP=0` on every run: a line
+      # that looks like a suite that ran nothing, from a step that validated nothing (and could not
+      # fail: it was continue-on-error). On this lane the harness is reached by the instrumented
+      # classes that resolve HarnessEndpoints.quicEcho; the script finds them in the source and reads
+      # their outcomes from the result XML, quoting each skip's reason from its per-test logcat.
+      # It FAILS when a harness class is missing from the results or none of its tests passed. When
+      # it fails, the upload below carries the XML and per-test logcat it read, plus the quic-echo
+      # container's own log and state.
       - name: Audit QUIC harness coverage on Android
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -I .github/scripts/audit-android-quic-harness.py \
+            --report-root socket-quic-quiche/build/outputs/androidTest-results \
+            --source-dir socket-quic-quiche/src/androidInstrumentedTest \
+            --api-level ${{ matrix.api-level }}
+
+      # The quic-echo side of a harness failure: whether the container was up, and what it logged
+      # (handshakes it saw, or nothing at all). Only the device side was recorded before, so "the
+      # emulator could not reach it" and "it was not running" looked the same.
+      - name: Capture quic-echo harness state on failure
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         run: |
-          REPORT_ROOT=socket-quic-quiche/build/outputs/androidTest-results
-          if [ ! -d "$REPORT_ROOT" ]; then
-            echo "no android instrumented-test results — audit skipped"
-            exit 0
-          fi
-          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          # Distinct skip reasons (dedup + count). Bound to [^<&] so the match
-          # stops at the next XML entity/tag in the androidTest result reports.
-          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
-            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
-          echo "QuicHarnessIntegrationTests on Android: OK=$OK, SKIP=$SKIP"
-          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+          mkdir -p emulator-diagnostics
           {
-            echo "## QUIC harness — Android (emulator)"
-            echo ""
-            echo "| OK | SKIP |"
-            echo "|---|---|"
-            echo "| $OK | $SKIP |"
-            if [ -n "$SKIP_REASONS" ]; then
-              echo ""
-              echo "<details><summary>Skip reasons (Android)</summary>"
-              echo ""
-              echo '```'
-              echo "$SKIP_REASONS"
-              echo '```'
-              echo "</details>"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
-            echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
-          elif [ "$OK" = "0" ]; then
-            # OK=0 AND SKIP=0 means the audit matched NOTHING — the suite never ran on the emulator
-            # (QuicHarnessIntegrationTests lives in commonTest, which connectedAndroidTest does not
-            # execute) or the marker text moved. Either way this step validated nothing, so it has to
-            # say so instead of printing "OK=0, SKIP=0" and passing like a clean result.
-            echo "::warning::No harness OK/SKIP markers on Android — QuicHarnessIntegrationTests never ran on the emulator, so this audit validated nothing"
-          fi
+            echo "--- docker compose ps ---"
+            (cd test-harness && docker compose ps -a) 2>&1 || true
+            echo "--- docker compose logs quic-echo (last 500 lines) ---"
+            (cd test-harness && docker compose logs --no-color --tail 500 quic-echo) 2>&1 || true
+            echo "--- host UDP sockets on 14433 ---"
+            ss -uanp 2>/dev/null | grep -E ':14433\b' || echo "(none)"
+          } > emulator-diagnostics/quic-echo-api${{ matrix.api-level }}.txt
 
       # The instrumented-test record itself. Without this a failure left ONLY the Gradle console
       # stack (run 31027926910): no per-test HTML/XML report, and no logcat — where the Android
@@ -376,6 +368,21 @@ jobs:
 
       # A shutdown wedge after green tests leaves the job green (it is a host-side fault, reported
       # as a ::warning::), so the failure upload above never carries its capture; this one does.
+      # A test-APK install that stalled and was recovered by the adb install guard
+      # (scripts/adb-install-guard.sh) leaves the job green, so the failure upload above never
+      # carries its capture; this one does, so every stall adds evidence.
+      - name: Upload stalled-install capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/install-stall-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-stall-${{ matrix.api-level }}
+          path: |
+            emulator-diagnostics/install-stall-*.txt
+            emulator-diagnostics/logcat-api*.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload emulator shutdown-wedge capture
         if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
         continue-on-error: true # an upload hiccup must not mask the capture's ::warning::

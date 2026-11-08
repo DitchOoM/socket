@@ -439,6 +439,11 @@ kotlin {
                     "NodeWriteBackpressureTests",
                     // Spins up a TCP server and a raw Node `net` peer.
                     "ReadEndsTruthfullyTests",
+                    // Spins up a TCP server and dials it from a stranger and a client.
+                    "AcceptLogTests",
+                    // These two bind TCP listeners / dial TCP; the range check beside them runs everywhere.
+                    "RefusedPortTests.noEphemeralListenerIsHandedTheRefusedPort",
+                    "RefusedPortTests.aConnectToTheRefusedPortFailsFast",
                 ).forEach { filter.excludeTestsMatching("com.ditchoom.socket.$it") }
             }
         }

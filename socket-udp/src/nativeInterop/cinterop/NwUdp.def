@@ -13,6 +13,7 @@ linkerOpts = -framework Network -framework Foundation
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <time.h>
 
 // Decompose an nw_error_t into K/N-safe scalars (see the base module's nw_helpers.h describe_nw_error).
 static void nw_udp_describe_error(nw_error_t _Nullable error,
@@ -65,6 +66,7 @@ void nw_udp_set_state_handler(nw_connection_t _Nonnull conn, nw_udp_state_handle
 {
     nw_connection_set_state_changed_handler(conn,
         ^(nw_connection_state_t state, nw_error_t _Nullable error) {
+            uint64_t nw_entry_ns = nw_udp_now_ns();
             int32_t domain = 0, code = 0; NSString *desc = nil;
             nw_udp_describe_error(error, &domain, &code, &desc);
             // Read at the state change itself: a `waiting` connection carries no error, and its path
@@ -79,8 +81,13 @@ void nw_udp_set_state_handler(nw_connection_t _Nonnull conn, nw_udp_state_handle
                     unsatisfied_reason = (int32_t)nw_path_get_unsatisfied_reason(path);
                 }
             }
-            handler((int32_t)state, domain, code, desc, path_status, unsatisfied_reason);
+            handler((int32_t)state, domain, code, desc, path_status, unsatisfied_reason, nw_entry_ns);
         });
+}
+
+uint64_t nw_udp_now_ns(void)
+{
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 }
 
 void nw_udp_start(nw_connection_t _Nonnull conn)
