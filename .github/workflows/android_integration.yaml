@@ -262,11 +262,12 @@ jobs:
         #
         # This timeout is now the backstop. The script's own watchdog (WATCHDOG in
         # scripts/android-emulator-tests.sh) declares a hang first, when an APK install has run for
-        # 2 min or the script has run for 10 min. It then captures the device, host and test engine,
-        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 14 leaves room for
+        # 5 min or the script has run for 11 min. It then captures the device, host and test engine,
+        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 15 leaves room for
         # that plus the emulator boot before the script. Green runs of this step took 5.6-8.3 min
-        # (48 job-runs on AGP 9.5.1, all four API levels).
-        timeout-minutes: 14
+        # (48 job-runs on AGP 9.5.1, all four API levels); a stalled install that the adb install
+        # guard recovers adds about 2 min.
+        timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
@@ -367,6 +368,21 @@ jobs:
 
       # A shutdown wedge after green tests leaves the job green (it is a host-side fault, reported
       # as a ::warning::), so the failure upload above never carries its capture; this one does.
+      # A test-APK install that stalled and was recovered by the adb install guard
+      # (scripts/adb-install-guard.sh) leaves the job green, so the failure upload above never
+      # carries its capture; this one does, so every stall adds evidence.
+      - name: Upload stalled-install capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/install-stall-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-stall-${{ matrix.api-level }}
+          path: |
+            emulator-diagnostics/install-stall-*.txt
+            emulator-diagnostics/logcat-api*.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload emulator shutdown-wedge capture
         if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
         continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
