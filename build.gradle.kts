@@ -437,6 +437,11 @@ kotlin {
                     // nonDrainingPeerIsReliable()=false, but exclude it for parity with the read suite).
                     "harness.WriteTimeoutContractTests",
                     "NodeWriteBackpressureTests",
+                    // Spins up a TCP server and dials it from a stranger and a client.
+                    "AcceptLogTests",
+                    // These two bind TCP listeners / dial TCP; the range check beside them runs everywhere.
+                    "RefusedPortTests.noEphemeralListenerIsHandedTheRefusedPort",
+                    "RefusedPortTests.aConnectToTheRefusedPortFailsFast",
                 ).forEach { filter.excludeTestsMatching("com.ditchoom.socket.$it") }
             }
         }
