@@ -92,7 +92,7 @@ runs:
     # Yarn for the Kotlin/JS + Wasm npm installs, from the runner image (or the npm registry), never
     # from GitHub releases. Exports KOTLIN_JS_YARN, which build.gradle.kts reads to turn the Kotlin
     # plugin's own yarn download off. That download took two merge runs down on 2026-11-08 when
-    # github.com answered it with 504 for at least 26 minutes. See the script's header.
+    # github.com answered it with 504 for over 90 minutes. See the script's header.
     - name: Provision yarn for Kotlin/JS (no GitHub download)
       shell: bash
       run: '"$GITHUB_WORKSPACE/.github/scripts/provision-kotlin-js-yarn.sh"'
