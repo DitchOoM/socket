@@ -412,8 +412,34 @@ int32_t nw_helper_listener_port(nw_listener_t _Nonnull listener)
     return (int32_t)nw_listener_get_port(listener);
 }
 
-int32_t nw_helper_ipv4_tcp_port_probe(int32_t port)
+int32_t nw_helper_listen_port_probe(int32_t port)
 {
+    int32_t candidate = port;
+    if (candidate == 0) {
+        // Draw from the IPv6 table, which a dual-stack listener lives in. The IPv4 allocator hands
+        // out ports in sequence and does not see IPv6-only holders (a `::1` connection, a V6ONLY
+        // socket), so a run of its draws can all collide with a busy stretch of the IPv6 table.
+        int fd6 = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+        if (fd6 < 0) return -errno;
+        int zero = 0;
+        setsockopt(fd6, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_len = sizeof(addr6);
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        socklen_t len6 = sizeof(addr6);
+        if (bind(fd6, (struct sockaddr *)&addr6, sizeof(addr6)) != 0
+            || getsockname(fd6, (struct sockaddr *)&addr6, &len6) != 0) {
+            int error = errno;
+            close(fd6);
+            return -error;
+        }
+        candidate = ntohs(addr6.sin6_port);
+        close(fd6);
+    }
+    // The dual-stack socket does not own the port's IPv4 half: an AF_INET socket on 0.0.0.0 can
+    // already hold it, and it would then take every connection to 127.0.0.1. Prove that half free.
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return -errno;
     // SO_REUSEADDR lets a port whose earlier connections sit in TIME_WAIT through, as a listener's own
@@ -424,22 +450,16 @@ int32_t nw_helper_ipv4_tcp_port_probe(int32_t port)
     memset(&addr, 0, sizeof(addr));
     addr.sin_len = sizeof(addr);
     addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
+    addr.sin_port = htons((uint16_t)candidate);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         int error = errno;
         close(fd);
         return -error;
     }
-    socklen_t len = sizeof(addr);
-    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
-        int error = errno;
-        close(fd);
-        return -error;
-    }
     // Bound, never listened or connected: closing it leaves no TIME_WAIT, so the port is free at once.
     close(fd);
-    return (int32_t)ntohs(addr.sin_port);
+    return candidate;
 }
 
 // Note: nw_listener_get_state() is not in the public C API.

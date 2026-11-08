@@ -3,7 +3,7 @@ package com.ditchoom.socket
 import com.ditchoom.socket.nwhelpers.SocketErrorTypePosix
 import com.ditchoom.socket.nwhelpers.nw_helper_cancel
 import com.ditchoom.socket.nwhelpers.nw_helper_create_listener
-import com.ditchoom.socket.nwhelpers.nw_helper_ipv4_tcp_port_probe
+import com.ditchoom.socket.nwhelpers.nw_helper_listen_port_probe
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_cancel
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_port
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_set_new_connection_handler
@@ -51,14 +51,19 @@ class NWServerWrapper(
         val ephemeral = port <= 0
         try {
             repeat(MAX_EPHEMERAL_LISTEN_ATTEMPTS) {
-                when (val start = listen(portOwnedForIpv4(if (ephemeral) 0 else port), backlog, channel)) {
+                val probed = nw_helper_listen_port_probe(if (ephemeral) 0 else port)
+                if (probed <= 0) {
+                    // The drawn port's IPv4 half is held: draw another. A named port is refused.
+                    if (!ephemeral || -probed != EADDRINUSE) throw portUnavailable(port, -probed)
+                    return@repeat
+                }
+                when (val start = listen(probed, backlog, channel)) {
                     is ListenStart.Ready -> {
                         this.listener = start.listener
                         return channel.receiveAsFlow()
                     }
-                    // The probe proved the port free for IPv4 only; its IPv6 half can still be held, or
-                    // be taken between the probe's close and the listen. Any port both families agree on
-                    // is right for an ephemeral request, so draw again; a port the caller named is refused.
+                    // The port can be taken between the probe's close and the listen. Any port both
+                    // families agree on is right for an ephemeral request, so draw again.
                     is ListenStart.Failed -> if (!ephemeral || !start.addressInUse) throw start.error
                 }
             }
@@ -69,8 +74,8 @@ class NWServerWrapper(
         }
     }
 
-    /**
-     * The port to listen on, taken from the **IPv4** table first.
+    /*
+     * Why the port is probed before NW listens on it.
      *
      * An NW listener is dual-stack `::`, and on Darwin that does not own the IPv4 half of its port: a
      * plain `AF_INET` socket already holding `0.0.0.0:P` lets the dual-stack listen on `P` succeed, and
@@ -80,18 +85,19 @@ class NWServerWrapper(
      * never hears of it — a TLS client waits for a ServerHello that never comes. (`:socket-udp` binds
      * the same way and for the same reason; see its `wildcardPortOwnedForIpv4`.)
      *
-     * So an `AF_INET` probe takes the port first, which by definition hands out a port free for IPv4,
-     * and closes it before the listener binds. A named port whose IPv4 half is held is refused here,
-     * rather than becoming a listener that is open and deaf over IPv4.
+     * So `nw_helper_listen_port_probe` draws an ephemeral port from the IPv6 table and then proves its
+     * IPv4 half free with a throwaway `AF_INET` bind, closing both before the listener binds. It does
+     * not draw from the IPv4 table: that allocator hands out ports in sequence and does not see
+     * IPv6-only holders (a `::1` connection, a V6ONLY socket), and under load eight draws in a row all
+     * collided with them. A named port whose IPv4 half is held is refused, rather than becoming a
+     * listener that is open and deaf over IPv4.
      */
-    private fun portOwnedForIpv4(requestedPort: Int): Int {
-        val probed = nw_helper_ipv4_tcp_port_probe(requestedPort)
-        if (probed > 0) return probed
-        val errno = -probed
-        throw SocketIOException(
-            "Cannot listen on port $requestedPort: its IPv4 half is unavailable (${strerror(errno)?.toKString() ?: "errno $errno"})",
-        )
-    }
+    private fun portUnavailable(
+        requestedPort: Int,
+        errno: Int,
+    ) = SocketIOException(
+        "Cannot listen on port $requestedPort: its IPv4 half is unavailable (${strerror(errno)?.toKString() ?: "errno $errno"})",
+    )
 
     /** How one listener start ended. A failed listener has already been cancelled. */
     private sealed interface ListenStart {
@@ -225,7 +231,7 @@ class NWServerWrapper(
     }
 
     private companion object {
-        /** Fresh IPv4-probed ports an ephemeral listen draws before giving up; a collision is rare. */
+        /** Ports an ephemeral listen draws before giving up; a collision is rare. */
         const val MAX_EPHEMERAL_LISTEN_ATTEMPTS = 8
     }
 }
