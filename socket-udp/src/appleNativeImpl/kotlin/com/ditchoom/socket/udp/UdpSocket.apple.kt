@@ -135,21 +135,28 @@ actual object UdpSocket {
     ): ConnectedDatagramChannel =
         // NWConnection assigns the local endpoint itself; localHost/localPort are advisory here (matching
         // the quiche NW client path, which does not bind a specific local address).
-        connectNw(remoteHost, remotePort, receiveBufferSize, bufferFactory, nw_udp_create(remoteHost, remotePort.toString()))
+        connectNw(remoteHost, remotePort, receiveBufferSize, bufferFactory) { nw_udp_create(remoteHost, remotePort.toString()) }
 
-    /** Await NW readiness on [created] and wrap it — every Apple connect, confined to an interface or not. */
+    /**
+     * Await NW readiness on the connection [create] makes and wrap it — every Apple connect, confined to
+     * an interface or not. [trace] records each step; a failed connect carries it as a suppressed
+     * [NwConnectTimeline].
+     */
     internal suspend fun connectNw(
         remoteHost: String,
         remotePort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-        created: platform.Network.nw_connection_t,
+        trace: NwConnectTrace = NwConnectTrace(),
+        create: () -> platform.Network.nw_connection_t,
     ): ConnectedDatagramChannel {
+        trace.mark("create begun")
         val conn =
-            created
+            create()
                 // NW would not create the connection at all: no error object exists yet, so the
                 // reason is the one thing this can be — the platform declined to make a socket.
                 ?: throw UdpConnectException(UdpConnectError.SocketUnavailable(ERRNO_NOT_SURFACED))
+        trace.mark("created")
         try {
             // Await NW readiness cancellably: a caller's withTimeout (e.g. the QUIC connect timeout) then
             // actually interrupts a stuck connect, and invokeOnCancellation cancels the NWConnection so a
@@ -157,12 +164,21 @@ actual object UdpSocket {
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
             suspendCancellableCoroutine<Unit> { continuation ->
                 val settle = NwConnectSettle(continuation)
-                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus, unsatisfiedReason ->
+                nw_udp_set_state_handler(conn) { state, errorDomain, errorCode, _, pathStatus, unsatisfiedReason, nwEntryNs ->
+                    trace.state(state, errorDomain, errorCode, pathStatus, unsatisfiedReason, nwEntryNs.toLong())
                     settle.on(nwConnectVerdict(state, errorDomain, errorCode, pathStatus, unsatisfiedReason))
                 }
                 nw_udp_start(conn)
-                continuation.invokeOnCancellation { nw_udp_cancel(conn) }
+                trace.mark("started")
+                continuation.invokeOnCancellation {
+                    trace.mark("cancelled by the caller")
+                    nw_udp_cancel(conn)
+                }
             }
+        } catch (e: UdpConnectException) {
+            nw_udp_cancel(conn)
+            e.addSuppressed(NwConnectTimeline(trace.render()))
+            throw e
         } catch (t: Throwable) {
             nw_udp_cancel(conn)
             throw t

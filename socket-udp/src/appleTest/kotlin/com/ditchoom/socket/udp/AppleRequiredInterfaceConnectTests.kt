@@ -14,10 +14,13 @@ import kotlinx.coroutines.withTimeout
 import platform.Network.nw_interface_type_cellular
 import platform.Network.nw_interface_type_wifi
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertIsNot
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * A connect confined to one kind of interface rides that interface, or fails at once and typed when
@@ -49,16 +52,48 @@ class AppleRequiredInterfaceConnectTests {
     @Test
     fun aConnectRequiringAnAbsentInterfaceFailsUnreachableWithoutWaitingForTheCallersTimeout() =
         runBlocking {
-            val outcome = runCatching { withTimeout(CALLERS_TIMEOUT) { connect(DOC_PEER, 9, NwRequiredInterface.Cellular) } }
+            // The connect's own timeline: if NW is slow to report again, this run says where the time went.
+            val trace = NwConnectTrace()
+            val started = TimeSource.Monotonic.markNow()
+            val outcome =
+                runCatching {
+                    withTimeout(CALLERS_TIMEOUT) {
+                        UdpSocket.connectRequiring(DOC_PEER, 9, 1500, factory, NwRequiredInterface.Cellular, trace)
+                    }
+                }
+            val took = started.elapsedNow()
             outcome.getOrNull()?.let {
                 it.close()
                 println("SKIPPED-VACUOUS: this host has a cellular interface, so a cellular requirement is satisfiable here")
                 return@runBlocking
             }
+            if (took > SLOW_REPORT) println("NW-SLOW-CONNECT: the connect took $took\n${trace.render()}")
             val failure = outcome.exceptionOrNull()
-            assertIsNot<TimeoutCancellationException>(failure, "the connect waited through NW's `waiting` until the caller's timeout")
-            val error = assertIs<UdpConnectException>(failure).error
-            assertIs<UdpConnectError.Unreachable>(error)
+            assertIsNot<TimeoutCancellationException>(
+                failure,
+                "the connect waited through NW's `waiting` until the caller's timeout\n${trace.render()}",
+            )
+            val error = assertIs<UdpConnectException>(failure, trace.render()).error
+            assertIs<UdpConnectError.Unreachable>(error, trace.render())
+        }
+
+    /** A failed connect carries its NW timeline, so the failure alone says which state NW reported and when. */
+    @Test
+    fun aFailedConnectCarriesItsNwTimeline() =
+        runBlocking {
+            val failure =
+                runCatching { withTimeout(CALLERS_TIMEOUT) { connect(DOC_PEER, 9, NwRequiredInterface.Cellular) } }
+                    .onSuccess {
+                        it.close()
+                        println("SKIPPED-VACUOUS: this host has a cellular interface, so a cellular requirement is satisfiable here")
+                        return@runBlocking
+                    }.exceptionOrNull()
+            val timeline = assertIs<UdpConnectException>(failure).suppressedExceptions.filterIsInstance<NwConnectTimeline>().single()
+            val text = assertNotNull(timeline.message)
+            assertContains(text, "create begun")
+            assertContains(text, "started")
+            assertContains(text, "state=waiting path=unsatisfied")
+            assertContains(text, "NW reported at +")
         }
 
     @Test
@@ -110,6 +145,9 @@ class AppleRequiredInterfaceConnectTests {
     private companion object {
         /** Long enough that only NW's own report, never the caller's timeout, ends a correct connect. */
         val CALLERS_TIMEOUT = 20.seconds
+
+        /** Far above the 1–5 ms NW takes locally and far below the 6.4–7.4 s two CI runs saw. */
+        val SLOW_REPORT = 1.seconds
 
         /** RFC 5737 TEST-NET-1: a connected UDP socket sends nothing, so it is never contacted. */
         const val DOC_PEER = "192.0.2.1"

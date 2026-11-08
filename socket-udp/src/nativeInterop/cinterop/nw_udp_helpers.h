@@ -45,13 +45,19 @@ nw_connection_t _Nullable nw_udp_create_requiring(
 // connection's current path at this change): 0=none/invalid,1=satisfied,2=unsatisfied,3=satisfiable.
 // unsatisfied_reason (nw_path_unsatisfied_reason_t, read only while path_status is unsatisfied, else 0):
 // 0=none given,1=cellular denied,2=Wi-Fi denied,3=local network denied,4=required VPN inactive.
+// nw_entry_ns: nw_udp_now_ns() taken as NW entered the C block, before anything else ran — so the
+// Kotlin side can tell how long NW took to report from how long the callback took to reach Kotlin.
 typedef void (^nw_udp_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
     NSString * _Nullable error_desc,
     int32_t path_status,
-    int32_t unsatisfied_reason);
+    int32_t unsatisfied_reason,
+    uint64_t nw_entry_ns);
+
+// A monotonic clock in nanoseconds (CLOCK_UPTIME_RAW), the one nw_entry_ns is read from.
+uint64_t nw_udp_now_ns(void);
 
 void nw_udp_set_state_handler(
     nw_connection_t _Nonnull conn,
