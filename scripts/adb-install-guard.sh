@@ -49,9 +49,77 @@ while [ "$i" -lt "${#args[@]}" ]; do
   esac
 done
 last="${args[${#args[@]} - 1]:-}"
+
+# THE ADB JOURNAL
+# ---------------
+# Every command, install or not, is recorded in $DIAG_DIR/adb-journal.txt: when it started, which
+# process ran it, its exit status, how long it took, and the head of its stderr when it failed.
+# AGP 9.5.1's test engine runs on the JUnit Platform, and when the engine fails before a device has
+# run anything, AGP throws the exception away: no listener logs it, the module's test-result.pb is
+# never written, and the log says only "Could not find test-result.pb for device" (run
+# 42650305746, :socket-http3 on API 24, 0.8 s after "Running tests on devices", with no install or
+# instrumentation reaching the device). Nearly everything the engine does before that point is an
+# adb command, and a failed one is the likeliest cause (DeviceApiLevelProvider throws when
+# `getprop ro.build.version.sdk` fails), so this record names it. android-emulator-tests.sh prints
+# the failed entries when a module ran no tests.
+#
+# adb is a child rather than exec'd, so its status can be recorded. Its stdin and stdout are the
+# caller's; its stderr is held until it exits (the engine reads stderr in full after the exit
+# anyway). SIGTERM, SIGINT and SIGHUP are passed on, so `Process.destroy()` still stops adb.
+# `destroyForcibly()` (SIGKILL) cannot be passed on; the engine's AdbController then joins its
+# reader threads for one second at most, so an adb left running cannot hang it.
+# Milliseconds since the epoch, without a fork where bash 5's EPOCHREALTIME exists.
+now_ms() {
+  local t="${EPOCHREALTIME:-}"
+  if [ -n "$t" ]; then
+    t="${t/[.,]/}"
+    echo $((10#$t / 1000))
+  else
+    echo $(($(date +%s) * 1000))
+  fi
+}
+
+journal() {
+  local ms
+  ms=$(now_ms)
+  printf '%s.%03d %s\n' "$(TZ=UTC date -r $((ms / 1000)) +%H:%M:%S 2>/dev/null || TZ=UTC date -d "@$((ms / 1000))" +%H:%M:%S)" \
+    $((ms % 1000)) "$*" >>"$DIAG_DIR/adb-journal.txt" 2>/dev/null || true
+}
+
+run_journaled() {
+  local caller errf start rc child ms
+  caller=$({ tr -d '\n' <"/proc/$PPID/comm"; } 2>/dev/null || echo '?')
+  if ! mkdir -p "$DIAG_DIR" 2>/dev/null || ! errf=$(mktemp 2>/dev/null); then
+    exec "$REAL_ADB" "$@"
+  fi
+  start=$(now_ms)
+  # `0<&0`: a background command's stdin is /dev/null unless it is redirected explicitly.
+  "$REAL_ADB" "$@" 0<&0 2>"$errf" &
+  child=$!
+  journal "start pid=$child caller=$caller($PPID) adb $*"
+  trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
+  while :; do
+    wait "$child"
+    rc=$?
+    kill -0 "$child" 2>/dev/null || break
+  done
+  trap - TERM INT HUP
+  cat "$errf" >&2
+  ms=$(($(now_ms) - start))
+  if [ "$rc" = "0" ]; then
+    journal "end   pid=$child rc=0 ${ms}ms"
+  else
+    journal "end   pid=$child rc=$rc ${ms}ms FAILED adb $* | stderr: $(head -c 400 "$errf" | tr '\n' ' ')"
+  fi
+  rm -f "$errf"
+  exit "$rc"
+}
+
 if [ "${args[$i]:-}" != "install" ] || [[ "$last" != *.apk ]]; then
-  exec "$REAL_ADB" "$@"
+  run_journaled "$@"
 fi
+mkdir -p "$DIAG_DIR" 2>/dev/null
+journal "start pid=$$ (install guard) adb $*"
 
 global=("${args[@]:0:$i}")
 install_opts=("${args[@]:$((i + 1))}")
@@ -87,6 +155,11 @@ run_bounded() {
 }
 
 finish() {
+  if [ "$1" = "0" ]; then
+    journal "end   pid=$$ (install guard) rc=0"
+  else
+    journal "end   pid=$$ (install guard) rc=$1 FAILED adb ${args[*]} | output: $(head -c 400 "$RUN_OUT" | tr '\n' ' ')"
+  fi
   cat "$RUN_OUT"
   rm -f "$RUN_OUT"
   exit "$1"
