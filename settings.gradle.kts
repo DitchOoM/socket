@@ -17,9 +17,18 @@ pluginManagement {
     // Pin the provision plugin version from a property so the same build drives a local -SNAPSHOT dev
     // publish + the published stable release. Default is the current stable (resolved from the Portal).
     val provisionVersion = providers.gradleProperty("boringsslPluginVersion").orNull ?: "0.0.6"
+    // The benchmark plugins' versions live in gradle.properties, not gradle/libs.versions.toml: that
+    // file is hashed into the konan, BoringSSL, quiche and cargo cache keys, so a benchmark-only bump
+    // there would rebuild every native cache on CI for nothing.
+    val kotlinxBenchmarkVersion = providers.gradleProperty("kotlinxBenchmarkVersion").get()
+    val androidxBenchmarkVersion = providers.gradleProperty("androidxBenchmarkVersion").get()
     resolutionStrategy {
         eachPlugin {
-            if (requested.id.id == "com.ditchoom.boringssl.provision") useVersion(provisionVersion)
+            when (requested.id.id) {
+                "com.ditchoom.boringssl.provision" -> useVersion(provisionVersion)
+                "org.jetbrains.kotlinx.benchmark" -> useVersion(kotlinxBenchmarkVersion)
+                "androidx.benchmark", "androidx.baselineprofile" -> useVersion(androidxBenchmarkVersion)
+            }
         }
     }
 }
@@ -37,6 +46,15 @@ include(":socket-udp")
 include(":socket-quic-trace-tools")
 // Hand-driven iOS handoff probe (not published, not in CI). See ios-probe/build.gradle.kts.
 include(":ios-probe")
+// Benchmarks: never published, never on a production or test classpath. Each module's build file says what it measures.
+include(":benchmark-jvm")
+project(":benchmark-jvm").projectDir = file("benchmarks/jvm")
+include(":benchmark-android")
+project(":benchmark-android").projectDir = file("benchmarks/android-micro")
+include(":benchmark-android-app")
+project(":benchmark-android-app").projectDir = file("benchmarks/android-app")
+include(":benchmark-baselineprofile")
+project(":benchmark-baselineprofile").projectDir = file("benchmarks/baselineprofile")
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"

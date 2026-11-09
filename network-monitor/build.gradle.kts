@@ -396,6 +396,12 @@ val syncRobolectricAndroidAll by tasks.registering(Sync::class) {
 
 android {
     compileSdk = 37
+    // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+    (this as com.android.build.api.dsl.LibraryExtension)
+        .sourceSets
+        .getByName("main")
+        .baselineProfiles
+        .srcDir("src/androidMain/baselineProfiles")
     (this as com.android.build.api.dsl.LibraryExtension)
         .sourceSets
         .getByName("main")

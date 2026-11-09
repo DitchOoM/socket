@@ -418,3 +418,89 @@ jobs:
           sleep 2
           pkill -SIGKILL -f crashpad_handler || true
           adb emu kill || true
+
+  # Jetpack Microbenchmarks (benchmarks/android-micro) in a release-like build: the test APK minified by
+  # R8 full mode, once with AGP's default rules, once with only the libraries' consumer rules (proving
+  # socket-quic-quiche's consumer-rules.pro keeps the by-name JNI binding working on its own), and once
+  # unminified for comparison. Every benchmark completes a QUIC round trip through quiche before it
+  # times anything, so an R8 build that broke JNI fails this job. The numbers are an emulator's:
+  # printed to the job summary as regression signals, never compared against a threshold.
+  android-benchmark:
+    name: "Android microbenchmarks (R8, emulator)"
+    runs-on: ubuntu-latest
+    needs: version
+    timeout-minutes: 40
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # libclang for boring-sys' bindgen (the Android quiche build); see the android-emulator job.
+      - name: Install libclang
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android benchmark lane: libclang for boring-sys bindgen"
+          packages: libclang-dev
+
+      - name: Install Rust + cargo-ndk
+        uses: dtolnay/rust-toolchain@stable
+      # All three ABIs: mergeJniLibFolders depends on every buildAndroidJni* task (see android-emulator).
+      - run: |
+          rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk
+
+      - name: Build Android QUIC native libs
+        run: ./gradlew :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
+
+      - name: Install + verify Android Emulator and system image
+        timeout-minutes: 6
+        run: bash scripts/android-sdk-emulator.sh install 34
+
+      # One emulator step, no snapshot: unlike android-emulator this job boots once.
+      - name: Run the benchmarks
+        timeout-minutes: 25
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          disk-size: 4096M
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify 34
+          # ONE line: the action runs each line of `script:` in its own shell (see android-emulator).
+          script: bash scripts/android-benchmark.sh 34
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-benchmark
+          path: |
+            bench-android/**
+            benchmarks/android-micro/build/outputs/**
+            benchmarks/android-micro/build/reports/androidTests/**
+          if-no-files-found: warn
+          retention-days: 14
