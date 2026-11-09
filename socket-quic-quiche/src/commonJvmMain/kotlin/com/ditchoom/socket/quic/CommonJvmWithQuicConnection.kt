@@ -12,7 +12,6 @@ import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -75,12 +74,12 @@ internal suspend fun buildJvmQuicConnection(
     // anything reads them, because applyQuicOptions below writes it into the quiche config and RFC
     // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
     // Before anything is opened: a connection whose timers cannot fire must be refused, not started.
-    tuning.driverContext.startDeadlineTimer()
+    tuning.driverContext.startTimers()
     val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
     val parentScope =
         CoroutineScope(
-            parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-client/$serverName@$endpoint"),
+            parentJob + applicationScopeDispatcher(tuning.driverContext) + CoroutineName("quic-client/$serverName@$endpoint"),
         )
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
     // acquired and hands over entirely once the connection owns its own release.

@@ -1,3 +1,5 @@
+@file:OptIn(com.ditchoom.socket.udp.InternalDatagramLoopApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -168,17 +170,26 @@ class RaceLoserFdLeakTest {
                 bufferFactory = BufferFactory.deterministic(),
                 connectPacing = ConnectPacing.Simultaneous,
             )
-        // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so none
-        // of it can be mistaken for a leak.
-        repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
+        // Every QUIC event loop is held for the measurement, so each has its thread and its selector
+        // (a few descriptors) open from before the baseline to after it: a connection placed on a loop
+        // that was idle would otherwise open them mid-measurement and read as a leak. They are bounded
+        // by the loop count, not by connections.
+        val loopHolds = quicLoopGroup.loops.map { it.hold() }
+        try {
+            // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so
+            // none of it can be mistaken for a leak.
+            repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
 
-        val before = openFileDescriptors()
-        val withoutTwoLiveCandidates =
-            (1..RACES).mapNotNull { n ->
-                race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
-            }
-        val after = openFileDescriptors()
-        return Measured(before, after, withoutTwoLiveCandidates)
+            val before = openFileDescriptors()
+            val withoutTwoLiveCandidates =
+                (1..RACES).mapNotNull { n ->
+                    race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
+                }
+            val after = openFileDescriptors()
+            return Measured(before, after, withoutTwoLiveCandidates)
+        } finally {
+            loopHolds.forEach { it.release() }
+        }
     }
 
     /**

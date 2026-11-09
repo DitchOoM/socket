@@ -10,7 +10,6 @@ import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 
@@ -70,7 +69,7 @@ class TypedMuxView<T>(
     ) : this(
         raw = raw,
         codec = codec,
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = CoroutineScope(SupervisorJob() + codecWriterDispatcher),
         outboundCapacity = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
         overflowPolicy = OverflowPolicy.Suspend,
         config = config,

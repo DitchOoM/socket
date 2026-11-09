@@ -129,6 +129,38 @@ val quicheJniOnlyJar =
         manifest { attributes("Multi-Release" to "false") }
     }
 
+// M connections to one in-process server, each on an application thread of its own: round trip, stream
+// per request and bulk at each M (QuicMultiConnectionLoad). JMH has no parameterized thread count, so this
+// is a plain program. -PloadArgs="<counts> <warm-up s> <measured s> [phases]", default "1,4,16,64 2 5".
+tasks.register<JavaExec>("multiConnectionLoad") {
+    description = "Aggregate QUIC throughput and per-connection latency at 1/4/16/64 connections."
+    group = "benchmark"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("com.ditchoom.socket.benchmark.QuicMultiConnectionLoadKt")
+    args(
+        providers
+            .gradleProperty("loadArgs")
+            .getOrElse("1,4,16,64 2 5")
+            .split(' ')
+            .filter { it.isNotBlank() },
+    )
+    jvmArgs(
+        "--enable-native-access=ALL-UNNAMED",
+        "--add-opens",
+        "java.base/java.nio=ALL-UNNAMED",
+        "-Dquiche.expectedJvmBackend=$expectedBackend",
+        "-Dbench.certDir=${certDir.asFile.absolutePath}",
+    )
+    if (!multiRelease) jvmArgs("-Djdk.util.jar.enableMultiRelease=false")
+    if (quicheBackend == "jni") {
+        dependsOn(quicheJniOnlyJar)
+        val replacement = quicheJniOnlyJar.flatMap { it.archiveFile }
+        classpath = files(replacement) + classpath.filter { !it.isQuicheJvmJar() }
+    }
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
+    outputs.upToDateWhen { false }
+}
+
 // The run tasks are JavaExec; JMH forks inherit the host VM's input arguments, so these reach every
 // measured fork.
 tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureEach {

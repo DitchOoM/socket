@@ -12,7 +12,6 @@ import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
@@ -40,9 +39,12 @@ internal suspend fun buildJvmQuicServer(
     api: QuicheApi = loadQuicheApi(),
 ): SharedQuicheServer {
     // Before anything is bound: a server whose timers cannot fire must be refused, not started.
-    tuning.driverContext.startDeadlineTimer()
+    tuning.driverContext.startTimers()
+    // The receive loop's place, decided before the socket opens so the per-address readers (when a
+    // wildcard is served one socket per address) wait in the same loop's selector.
+    val receivePlacement = placeDriver(tuning.driverContext, unplaced = serverReceiveDispatcher)
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-server"))
+    val parentScope = CoroutineScope(parentJob + applicationScopeDispatcher(tuning.driverContext) + CoroutineName("quic-server"))
     var bound = false
 
     // A shared port constrains the transport (RFC 9443 §3) — resolve that before configuring.
@@ -78,7 +80,7 @@ internal suspend fun buildJvmQuicServer(
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
         // A wildcard NIO socket cannot pin a reply's source, so it is served one socket per address.
-        val served = binding.openServerChannel(recvBufPool, SocketPerLocalAddress)
+        val served = binding.openServerChannel(recvBufPool, socketPerLocalAddress(receivePlacement.context))
         val channel = served.channel
         val localAddress = channel.localAddress
 
@@ -104,6 +106,7 @@ internal suspend fun buildJvmQuicServer(
                 tuning = tuning,
                 recvBufPool = recvBufPool,
                 alpnProtocols = quicOptions.alpnProtocols,
+                receivePlacement = receivePlacement,
             )
         bound = true
         return server
@@ -112,6 +115,7 @@ internal suspend fun buildJvmQuicServer(
         if (!bound) {
             api.configFree(config)
             parentScope.cancel()
+            receivePlacement.release()
         }
     }
 }

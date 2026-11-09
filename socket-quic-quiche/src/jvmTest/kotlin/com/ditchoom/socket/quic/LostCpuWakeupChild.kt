@@ -18,7 +18,8 @@ import kotlin.system.exitProcess
  * Its one argument names the context a parked "driver loop" is resumed through:
  * - `default`: plain `Dispatchers.Default`, the control. The reproducer must lose the wakeup here, or it
  *   reproduces nothing.
- * - `production`: [productionDriverContext], what every JVM/Android QUIC driver loop runs on.
+ * - `production`: where [placeDriver] puts a driver from [productionDriverContext]: an event loop of the
+ *   QUIC loop group, which is what every JVM/Android QUIC driver loop runs on.
  *
  * The steps, each waiting until the scheduler is quiet before the next:
  * 1. A blocking task parks a worker inside `Dispatchers.IO`.
@@ -51,7 +52,7 @@ object LostCpuWakeupChild {
         val target: CoroutineContext =
             when (args.single()) {
                 "default" -> Dispatchers.Default
-                "production" -> productionDriverContext
+                "production" -> placeDriver(productionDriverContext).context
                 else -> error("unknown mode ${args.single()}")
             }
         val wake = Channel<Unit>(Channel.UNLIMITED)

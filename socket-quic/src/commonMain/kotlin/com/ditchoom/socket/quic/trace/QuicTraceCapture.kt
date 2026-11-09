@@ -39,7 +39,9 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  *   fresh one per call for independent, replayable traces. The consumer owns the trace's IO (append
  *   to a file, ship over the network, buffer in memory) so capture stays platform-free; the qlog's IO
  *   is quiche's, which is why that half is a path. Each returned sink may be called from several
- *   coroutines concurrently — treat it like a log sink.
+ *   coroutines concurrently — treat it like a log sink. It is called on the transport's own threads
+ *   (on JVM/Android, the event loop the connection runs on, which serves other connections too), so it
+ *   must not block: buffer, or hand each line to a thread of your own, rather than write a file inline.
  * @property recordNetworkObservations record the connection's network observations (NET / NET_CAP) into
  *   the trace alongside its QUIC traffic. The monitor recorded is **the connection's own** — the one
  *   [com.ditchoom.socket.quic.QuicOptions.networkMonitor] resolves — so a captured trace, an automatic

@@ -615,7 +615,7 @@ class QuicheDriver(
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
         val settled =
-            withContext(driverContext) {
+            withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
                     state.first { it !is QuicConnectionState.Handshaking }
                 }
@@ -1287,6 +1287,17 @@ class QuicheDriver(
 
     private var driverScope: CoroutineScope? = null
 
+    /**
+     * Where this driver's coroutines run, decided once by [start] from [driverContext]: in production on
+     * JVM/Android, one event loop of the QUIC loop group, held until the driver's loop ends (see
+     * [placeDriver]). Elsewhere, [driverContext] as given.
+     */
+    @Volatile
+    private var placement: DriverPlacement? = null
+
+    /** The context every coroutine of this driver is launched in, and [awaitEstablished] arms its bound in. */
+    private val loopContext: CoroutineContext get() = placement?.context ?: driverContext
+
     // Native scratch for the uint64 seq-out of new_scid/probe/migrate. Allocated for every
     // connection — even non-migrating ones issue spare CIDs so a future peer migration works.
     private val seqScratch: PlatformBuffer = bufferFactory.allocate(8)
@@ -1759,21 +1770,28 @@ class QuicheDriver(
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
+        val placed = placeDriver(driverContext)
+        placement = placed
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
         capture.record { r ->
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/state")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/state")) {
                 state.collect { s ->
                     r.connectionState(s)
                     if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/path")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/path")) {
                 pathState.collect { r.pathState(it) }
             }
         }
-        driverJob = scope.launch(driverContext + CoroutineName(coroutineName)) { run() }
+        driverJob =
+            scope.launch(loopContext + CoroutineName(coroutineName)) { run() }.also { job ->
+                // On completion rather than in run()'s finally: a driver whose scope is cancelled before
+                // run() starts never enters it, and its hold must end all the same.
+                job.invokeOnCompletion { placed.release() }
+            }
 
         if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
@@ -1782,7 +1800,7 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(loopContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
     }
 
     /** What quiche is writing this connection's qlog into. Read and written on the driver loop only. */
@@ -3135,7 +3153,7 @@ class QuicheDriver(
         val scope = checkNotNull(driverScope) { "a send stalled before start()" }
         val key = entry.key
         val channel = entry.channel
-        return scope.launch(driverContext) {
+        return scope.launch(loopContext) {
             try {
                 channel.send(lent, len, target)
             } catch (ce: CancellationException) {
@@ -3325,7 +3343,7 @@ class QuicheDriver(
         // produced by then is treated exactly like a probe the peer has not answered by then.
         val budget = pathValidationBudget()
         val job =
-            scope.launch(driverContext) {
+            scope.launch(loopContext) {
                 val outcome =
                     try {
                         when (val opened = clock.withBound(budget) { factory.openPath(requestedHost, requestedPort) }) {
