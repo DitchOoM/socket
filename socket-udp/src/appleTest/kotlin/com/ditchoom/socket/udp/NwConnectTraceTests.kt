@@ -28,6 +28,22 @@ class NwConnectTraceTests {
     }
 
     @Test
+    fun theSummaryNamesTheFirstNwReportNotTheConnectsOwnSteps() {
+        var clock = 0L
+        val trace = NwConnectTrace(now = { clock })
+        trace.mark("create begun")
+        clock += 3_000_000
+        trace.mark("started")
+        assertContains(trace.firstReportSummary(), "NW never reported")
+        val nwEntry = clock + 1_000_000
+        clock += 1_500_000
+        trace.state(1, 0, 0, NW_PATH_UNSATISFIED, 0, nwEntry)
+        clock += 9_000_000_000
+        trace.state(5, 0, 0, NW_PATH_UNSATISFIED, 0, clock)
+        assertContains(trace.firstReportSummary(), "NW first reported at +4.000 ms, Kotlin saw it at +4.500 ms; load average ")
+    }
+
+    @Test
     fun eventsPastCapacityAreCountedNotKept() {
         val trace = NwConnectTrace(now = { 0L })
         repeat(NwConnectTrace.CAPACITY + 3) { trace.mark("step $it") }
