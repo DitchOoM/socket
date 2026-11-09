@@ -967,7 +967,9 @@ jobs:
           WD=$!
           # :lincheckTest is a SEPARATE task from :jvmTest — Lincheck fails open under another
           # JVM agent, so it runs on a clean JVM and jvmTest excludes it. `check` does not
-          # depend on it, so omitting it here means the model checks never run at all.
+          # depend on it, so omitting it here means the model checks never run at all. The same
+          # goes for :socket-quic-quiche:lincheckTest, which needs no quiche natives (it checks
+          # plain Kotlin state), so it runs here rather than in the quiche-jvm job.
           #
           # Every task here is project-qualified, so a module absent from this list has NO
           # test task run on this runner at all (the Apple lanes use unqualified task names and
@@ -982,7 +984,7 @@ jobs:
             :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:wasmJsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
             :network-monitor:netnsJvmProbeClasspath \
             :socket-quic:jvmTest :socket-quic:testDebugUnitTest :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest :socket-quic:linuxX64Test \
-            :socket-quic-quiche:jvmProcessResources \
+            :socket-quic-quiche:jvmProcessResources :socket-quic-quiche:lincheckTest \
             :socket-quic-default:jvmTest \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
             :socket-testkit:jvmTest :socket-testkit:testDebugUnitTest :socket-testkit:jsNodeTest :socket-testkit:wasmJsNodeTest :socket-testkit:linuxX64Test :socket-testkit:ktlintCheck \
