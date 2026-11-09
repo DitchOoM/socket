@@ -46,8 +46,10 @@ import kotlin.test.assertEquals
  * - `Dispatchers.Default` (the control) loses the wakeup. If it ever stops doing so, kotlinx.coroutines
  *   has fixed the race (or changed the scheduler enough that this reproducer no longer reaches it), and
  *   the choice of [productionDriverContext] can be revisited.
- * - [productionDriverContext] does not: its tasks are blocking tasks, which any unparked worker runs
- *   without a CPU permit.
+ * - A driver placed from [productionDriverContext] does not: it runs on an event loop of its own
+ *   ([quicLoopGroup]), a thread outside the scheduler, so no interleaving of the scheduler's workers can
+ *   strand it. (Before the loops, the driver ran on a `Dispatchers.IO` view, whose blocking tasks any
+ *   unparked worker runs without a CPU permit; that also passed this test.)
  */
 class LostCpuWakeupTests {
     @Test

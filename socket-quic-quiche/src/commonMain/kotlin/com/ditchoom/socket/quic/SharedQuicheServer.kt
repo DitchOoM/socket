@@ -37,6 +37,7 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.incrementAndFetch
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
@@ -111,6 +112,12 @@ internal class SharedQuicheServer(
     // [QuicServer.alpnProtocols] — quiche keeps the offer inside the opaque config, so the build
     // functions pass QuicOptions.alpnProtocols through rather than reading it back out.
     override val alpnProtocols: List<String> = emptyList(),
+    /**
+     * Where the receive loop, its packet reader and the Version Negotiation replies run: an event loop
+     * of their own in production on JVM/Android, [serverReceiveDispatcher] otherwise. Held until the
+     * server's scope ends. Never where handlers run: they are the application's code.
+     */
+    private val receivePlacement: DriverPlacement = placeDriver(tuning.driverContext, unplaced = serverReceiveDispatcher),
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 
@@ -122,8 +129,15 @@ internal class SharedQuicheServer(
 
     // Child scope of the per-call parent — cancelling it takes down every handler coroutine spawned
     // via connections() plus the receive loop.
-    private val serverJob = SupervisorJob(parentScope.coroutineContext[Job])
+    private val serverJob =
+        SupervisorJob(parentScope.coroutineContext[Job]).also { job ->
+            // Released once every child (the receive loop among them) has finished, not when close() starts.
+            job.invokeOnCompletion { receivePlacement.release() }
+        }
     private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
+
+    /** [receivePlacement]'s context: the receive loop's dispatcher and timers. */
+    private val receiveContext: CoroutineContext get() = receivePlacement.context
 
     /** Connection-lifecycle bookkeeping shared with the platform build functions (see [ServerConnectionRegistry]). */
     private val registry = ServerConnectionRegistry<ServerPathPair>(api, tuning.clock)
@@ -188,7 +202,7 @@ internal class SharedQuicheServer(
      */
     private val serverCapture: TraceCapture = tuning.captureFactory()
 
-    private val receiveJob = scope.launch(serverReceiveDispatcher + CoroutineName("quic-server/receive/$port")) { receiveLoop() }
+    private val receiveJob = scope.launch(receiveContext + CoroutineName("quic-server/receive/$port")) { receiveLoop() }
 
     override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
         // Bind handler lifetime to the caller's coroutine: cancelling the coroutine that called
@@ -273,6 +287,9 @@ internal class SharedQuicheServer(
         api.configFree(config)
         registry.closeChannels()
         serverJob.cancel()
+        // The server-level trace (accept-time arrivals, drops) reaches its sink off the loop: deliver it
+        // before close returns (bounded).
+        serverCapture.record { it.flush() }
         // Finally, cancel the per-call parent scope (the build function wires this). serverJob is a child
         // of it, so this is the strict superset.
         onClose?.invoke()
@@ -295,7 +312,7 @@ internal class SharedQuicheServer(
             // the reader, whose cancelled `send` cannot say whether the hand-off happened.
             val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS, onUndeliveredElement = ::freeUndeliveredDatagram)
             val reader =
-                launch(serverReceiveDispatcher + CoroutineName("quic-server/receive/$port/reader")) {
+                launch(receiveContext + CoroutineName("quic-server/receive/$port/reader")) {
                     try {
                         while (true) {
                             val r =
@@ -569,7 +586,7 @@ internal class SharedQuicheServer(
                     arrivedOn.orNull()?.let { DatagramSendOptions(fromLocal = it) } ?: DatagramSendOptions.Default
                 ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses -> DatagramSendOptions.Default
             }
-        scope.launch(serverReceiveDispatcher + CoroutineName("quic-server/version-negotiation/$port")) {
+        scope.launch(receiveContext + CoroutineName("quic-server/version-negotiation/$port")) {
             try {
                 val sent = sendOutcomeOf { channel.send(out, to = peer, options = options) }
                 // Freed only once the send has returned. A cancelled send is no proof the platform has
@@ -707,7 +724,8 @@ internal class SharedQuicheServer(
                 streamWritePolicy = streamWritePolicy,
                 streamOpenPolicy = streamOpenPolicy,
                 clock = tuning.clock,
-                driverContext = tuning.driverContext,
+                // Near the receive loop, which hands this connection every datagram it receives.
+                driverContext = placedNear(tuning.driverContext, receiveContext),
                 sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
                 capture = capture,

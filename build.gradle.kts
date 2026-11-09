@@ -775,6 +775,31 @@ afterEvaluate {
     }
 }
 
+// :socket-udp gets the same isolated task, for the event loop's lifecycle (LoopLifecycle): plain Kotlin
+// state, no sockets.
+project(":socket-udp") {
+    tasks.register<Test>("lincheckTest") {
+        description = "Model checks concurrent code with Lincheck (runs on a JVM with no other agents)"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm")
+    }
+    afterEvaluate {
+        dependencies.add("jvmTestImplementation", libs.lincheck)
+        val jvmTestTask = tasks.named<Test>("jvmTest").get()
+        tasks.named<Test>("lincheckTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = jvmTestTask.classpath
+            filter { includeTestsMatching("*Lincheck*") }
+        }
+        tasks.named<Test>("jvmTest") {
+            filter {
+                excludeTestsMatching("*Lincheck*")
+                isFailOnNoMatchingTests = false
+            }
+        }
+    }
+}
+
 // :socket-quic-quiche gets the same isolated task, configured from here rather than in its own build
 // script: socket-quic-quiche/build.gradle.kts is hashed into the quiche native cache keys
 // (quiche-*-v8, quiche-cargo-target-v3, quiche-apple-v3), so one test-dependency line there would make

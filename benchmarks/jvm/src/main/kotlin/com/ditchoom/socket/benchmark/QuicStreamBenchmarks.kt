@@ -201,3 +201,69 @@ internal suspend fun QuicByteStream.readToEnd(): Int {
         }
     }
 }
+
+/**
+ * The 64-byte long-lived round trip while ANOTHER stream on the same connection is served by a handler
+ * that blocks its thread for [BLOCKING_HANDLER_MILLIS] per request, driven back to back from a background
+ * thread. A handler runs on the application's dispatcher, never on the transport's event loop, so the
+ * blocked handler must not show up here: this should read like [QuicLongLivedStreamRoundTrip]. On the
+ * owned-loop spike, which ran handlers on the loop, it read 7.8 ms.
+ */
+@State(Scope.Benchmark)
+@BenchmarkMode(Mode.SampleTime)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
+open class QuicRoundTripBesideBlockingHandler {
+    private lateinit var loopback: QuicLoopback
+    private lateinit var stream: QuicByteStream
+    private lateinit var request: PlatformBuffer
+
+    @Volatile
+    private var running = true
+    private lateinit var blocker: Thread
+
+    @Setup(Level.Trial)
+    fun setUp() {
+        assertQuicheBackend()
+        loopback = QuicLoopback()
+        stream = runBlocking { loopback.client.openStream() }
+        request = loopback.client.bufferFactory.allocate(SIZE)
+        request.writeByte(ECHO_MARKER)
+        repeat(SIZE - 1) { request.writeByte('r'.code.toByte()) }
+        request.resetForRead()
+        val blockingStream = runBlocking { loopback.client.openStream() }
+        val blockingRequest = loopback.client.bufferFactory.allocate(SIZE)
+        blockingRequest.writeByte(BLOCKING_ECHO_MARKER)
+        repeat(SIZE - 1) { blockingRequest.writeByte('r'.code.toByte()) }
+        blockingRequest.resetForRead()
+        blocker =
+            kotlin.concurrent.thread(name = "blocking-neighbour", isDaemon = true) {
+                runBlocking {
+                    while (running) {
+                        blockingRequest.position(0)
+                        blockingStream.writeFully(blockingRequest, IO_TIMEOUT)
+                        blockingStream.readExactly(SIZE)
+                    }
+                }
+            }
+    }
+
+    @TearDown(Level.Trial)
+    fun tearDown() {
+        running = false
+        blocker.join(5_000)
+        request.freeIfNeeded()
+        loopback.close()
+    }
+
+    @Benchmark
+    fun roundTrip(): Int =
+        runBlocking {
+            request.position(0)
+            stream.writeFully(request, IO_TIMEOUT)
+            stream.readExactly(SIZE)
+        }
+
+    private companion object {
+        const val SIZE = 64
+    }
+}

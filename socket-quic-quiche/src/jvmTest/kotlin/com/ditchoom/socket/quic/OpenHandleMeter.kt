@@ -55,3 +55,19 @@ internal sealed interface OpenHandleMeter {
             }
     }
 }
+
+/**
+ * Runs [block] with every QUIC event loop held, so each loop's thread and selector (a few descriptors:
+ * kqueue or epoll plus its wakeup pipe) are open from before a descriptor baseline to after it. A
+ * connection placed on a loop that was idle would otherwise open them mid-measurement and read as a
+ * leak. Those descriptors are bounded by the loop count, not by connections.
+ */
+@OptIn(com.ditchoom.socket.udp.InternalDatagramLoopApi::class)
+internal inline fun <T> holdingEveryQuicLoop(block: () -> T): T {
+    val holds = quicLoopGroup.loops.map { it.hold() }
+    try {
+        return block()
+    } finally {
+        holds.forEach { it.release() }
+    }
+}

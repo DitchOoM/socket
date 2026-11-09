@@ -22,7 +22,6 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
@@ -137,7 +136,7 @@ class CodecConnection<T>(
     ) : this(
         stream = stream,
         codec = codec,
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = CoroutineScope(SupervisorJob() + codecWriterDispatcher),
         outboundCapacity = DEFAULT_OUTBOUND_CAPACITY,
         overflowPolicy = OverflowPolicy.Suspend,
         config = config,

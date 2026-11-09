@@ -168,17 +168,20 @@ class RaceLoserFdLeakTest {
                 bufferFactory = BufferFactory.deterministic(),
                 connectPacing = ConnectPacing.Simultaneous,
             )
-        // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so none
-        // of it can be mistaken for a leak.
-        repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
+        // Every loop's selector is open across the baseline: see [holdingEveryQuicLoop].
+        return holdingEveryQuicLoop {
+            // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so
+            // none of it can be mistaken for a leak.
+            repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
 
-        val before = openFileDescriptors()
-        val withoutTwoLiveCandidates =
-            (1..RACES).mapNotNull { n ->
-                race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
-            }
-        val after = openFileDescriptors()
-        return Measured(before, after, withoutTwoLiveCandidates)
+            val before = openFileDescriptors()
+            val withoutTwoLiveCandidates =
+                (1..RACES).mapNotNull { n ->
+                    race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
+                }
+            val after = openFileDescriptors()
+            Measured(before, after, withoutTwoLiveCandidates)
+        }
     }
 
     /**

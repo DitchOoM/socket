@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
@@ -615,7 +616,7 @@ class QuicheDriver(
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
         val settled =
-            withContext(driverContext) {
+            withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
                     state.first { it !is QuicConnectionState.Handshaking }
                 }
@@ -1287,6 +1288,28 @@ class QuicheDriver(
 
     private var driverScope: CoroutineScope? = null
 
+    /**
+     * Where this driver's coroutines run, decided once by [start] from [driverContext]: in production on
+     * JVM/Android, one event loop of the QUIC loop group, held until the driver's loop ends (see
+     * [placeDriver]). Elsewhere, [driverContext] as given.
+     */
+    @Volatile
+    private var placement: DriverPlacement? = null
+
+    /**
+     * A client's view of the peer's certificate chain (leaf first), copied out of quiche as the driver
+     * tears down, so it outlives `conn`. A server may close the moment its handshake completes; the client
+     * then still has to check the certificate it was shown (`serverCertificateHashes`, the chain
+     * verifiers) and report that verdict, typed, not a closed command channel or "no certificate". Empty
+     * for a server, before teardown, and for a connection that never received a certificate. Written once
+     * on the loop in [cleanup], before any read is refused; read from any thread.
+     */
+    @Volatile
+    private var retainedPeerCertificates: List<PlatformBuffer> = emptyList()
+
+    /** The context every coroutine of this driver is launched in, and [awaitEstablished] arms its bound in. */
+    private val loopContext: CoroutineContext get() = placement?.context ?: driverContext
+
     // Native scratch for the uint64 seq-out of new_scid/probe/migrate. Allocated for every
     // connection — even non-migrating ones issue spare CIDs so a future peer migration works.
     private val seqScratch: PlatformBuffer = bufferFactory.allocate(8)
@@ -1759,21 +1782,28 @@ class QuicheDriver(
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
+        val placed = placeDriver(driverContext)
+        placement = placed
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
         capture.record { r ->
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/state")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/state")) {
                 state.collect { s ->
                     r.connectionState(s)
                     if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/path")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/path")) {
                 pathState.collect { r.pathState(it) }
             }
         }
-        driverJob = scope.launch(driverContext + CoroutineName(coroutineName)) { run() }
+        driverJob =
+            scope.launch(loopContext + CoroutineName(coroutineName)) { run() }.also { job ->
+                // On completion rather than in run()'s finally: a driver whose scope is cancelled before
+                // run() starts never enters it, and its hold must end all the same.
+                job.invokeOnCompletion { placed.release() }
+            }
 
         if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
@@ -1782,7 +1812,7 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(loopContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
     }
 
     /** What quiche is writing this connection's qlog into. Read and written on the driver loop only. */
@@ -2100,6 +2130,9 @@ class QuicheDriver(
                     entry.readerJob?.join()
                 }
                 cleanup()
+                // The trace reaches the application's sink off this loop; let what this connection
+                // recorded arrive before its end is reported (bounded, and a suspension, not a block).
+                capture.record { it.flush() }
             }
         }
     }
@@ -3135,7 +3168,7 @@ class QuicheDriver(
         val scope = checkNotNull(driverScope) { "a send stalled before start()" }
         val key = entry.key
         val channel = entry.channel
-        return scope.launch(driverContext) {
+        return scope.launch(loopContext) {
             try {
                 channel.send(lent, len, target)
             } catch (ce: CancellationException) {
@@ -3325,7 +3358,7 @@ class QuicheDriver(
         // produced by then is treated exactly like a probe the peer has not answered by then.
         val budget = pathValidationBudget()
         val job =
-            scope.launch(driverContext) {
+            scope.launch(loopContext) {
                 val outcome =
                     try {
                         when (val opened = clock.withBound(budget) { factory.openPath(requestedHost, requestedPort) }) {
@@ -3861,6 +3894,8 @@ class QuicheDriver(
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         latchIdentity()
+        // Before anything fails a PeerCert read and before conn is freed: see [retainedPeerCertificates].
+        retainedPeerCertificates = retainPeerCertificates()
         measureDrainingPeriod()
         wireIdScratch.freeNativeMemory()
         commands.close()
@@ -3979,6 +4014,8 @@ class QuicheDriver(
             is QuicheCmd.DgramSend -> cmd.result.complete(-1)
             // Connection gone before the cert could be read — report "no certificate" (0); the verifier
             // turns that into a handshake failure, which is the right outcome for a torn-down connection.
+            // Connection gone: "nothing read here"; readPeerCertDerThroughDriver then answers from the chain
+            // retained at teardown, without touching the borrowed memory this command carries.
             is QuicheCmd.PeerCert -> cmd.result.complete(0)
             // Connection gone — no quiche handles to read; an all-null snapshot is the typed "no stats".
             is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
@@ -4216,7 +4253,75 @@ class QuicheDriver(
         driverJob?.join()
     }
 
+    /** Copies the peer's chain out of quiche (loop only, `conn` still alive). Bounded; empty on any failure. */
+    private fun retainPeerCertificates(): List<PlatformBuffer> {
+        if (role != QuicRole.Client) return emptyList()
+        val chain = ArrayList<PlatformBuffer>()
+        try {
+            for (index in 0 until MAX_RETAINED_PEER_CERTS) {
+                var capacity = RETAINED_PEER_CERT_INITIAL_CAPACITY
+                var copied: PlatformBuffer? = null
+                while (copied == null) {
+                    val scratch = bufferFactory.allocate(capacity)
+                    try {
+                        val len = api.connPeerCertChainAt(conn, index, scratch.nativeMemoryAccess!!.nativeAddress.toLong(), capacity)
+                        when {
+                            len <= 0 -> return chain
+                            len > capacity && len <= MAX_RETAINED_PEER_CERT_SIZE && capacity < len -> capacity = len
+                            len > capacity -> return chain
+                            else -> {
+                                scratch.position(0)
+                                scratch.setLimit(len)
+                                copied =
+                                    BufferFactory.managed().allocate(len).also {
+                                        it.write(scratch)
+                                        it.resetForRead()
+                                    }
+                            }
+                        }
+                    } finally {
+                        scratch.freeNativeMemory()
+                    }
+                }
+                chain += copied
+            }
+        } catch (_: Throwable) {
+            // A backend without the chain export: the leaf alone, then, or nothing.
+        }
+        return chain
+    }
+
+    /**
+     * Answers a peer-certificate read from [retainedPeerCertificates], once the connection is gone, with
+     * quiche's snprintf-style result: the DER length, copied into [der] at 0 only when it fits within
+     * [capacity]; 0 past the end of the chain or when nothing was retained.
+     */
+    internal fun copyRetainedPeerCert(
+        position: PeerCertPosition,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int {
+        val index =
+            when (position) {
+                PeerCertPosition.Leaf -> 0
+                is PeerCertPosition.InChain -> position.index
+            }
+        val retained = retainedPeerCertificates.getOrNull(index) ?: return 0
+        val view = retained.slice()
+        val len = view.remaining()
+        if (len <= capacity) {
+            der.position(0)
+            der.write(view)
+            der.position(0)
+        }
+        return len
+    }
+
     companion object {
+        private const val MAX_RETAINED_PEER_CERTS = 16
+        private const val RETAINED_PEER_CERT_INITIAL_CAPACITY = 4096
+        private const val MAX_RETAINED_PEER_CERT_SIZE = 64 * 1024
+
         const val MAX_DATAGRAM_SIZE = 1350
 
         /**

@@ -282,7 +282,14 @@ class ErrorHandlingTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.serveEach { client ->
-                        receivedData = client.readString(deadline = 1.seconds)
+                        // Not a timing test: a deadline a loaded runner can miss made this flaky (it timed out
+                        // once locally under load, and the handler's failure was swallowed by serveEach).
+                        receivedData =
+                            try {
+                                client.readString(deadline = 10.seconds)
+                            } catch (e: Exception) {
+                                "server read failed: $e"
+                            }
                         dataReceived.unlock()
                     }
                 }

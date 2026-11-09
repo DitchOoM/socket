@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.quic.trace.OffLoopTraceSink
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -23,7 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
     quicOptions.trace?.let {
         val connection = it.captureFor()
-        TraceCapture.On(QuicTraceRecorder(connection.sink), connection.qlog, connection.trafficSecrets)
+        // The sink is application code: it is called off the transport's threads, never on a loop.
+        val sink = OffLoopTraceSink(connection.sink)
+        TraceCapture.On(QuicTraceRecorder(sink), connection.qlog, connection.trafficSecrets)
     } ?: TraceCapture.Off
 
 /**

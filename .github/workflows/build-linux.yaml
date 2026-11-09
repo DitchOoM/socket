@@ -969,7 +969,8 @@ jobs:
           # JVM agent, so it runs on a clean JVM and jvmTest excludes it. `check` does not
           # depend on it, so omitting it here means the model checks never run at all. The same
           # goes for :socket-quic-quiche:lincheckTest, which needs no quiche natives (it checks
-          # plain Kotlin state), so it runs here rather than in the quiche-jvm job.
+          # plain Kotlin state), so it runs here rather than in the quiche-jvm job, and for
+          # :socket-udp:lincheckTest (the event loop's lifecycle).
           # :socket-testsuite:mainThreadSafetyTest is separate for the same reason: it runs under the
           # BlockHound agent (one fresh JVM per test class), and `check` does not depend on it either.
           #
@@ -994,7 +995,7 @@ jobs:
             :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \
             :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
             :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
-            :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
+            :socket-udp:jvmTest :socket-udp:lincheckTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
             -PquicEchoAllArches=true \
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
