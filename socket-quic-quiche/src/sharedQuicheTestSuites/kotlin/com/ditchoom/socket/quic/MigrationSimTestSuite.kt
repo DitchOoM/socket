@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -136,6 +137,43 @@ abstract class MigrationSimTestSuite {
                         heard,
                         "the client's last write was queued right before its close and never reached the server: " +
                             "the close ran before anything flushed it, traffic ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
+
+    /**
+     * A read of the connection's state queued right behind a write sees the write sent.
+     *
+     * The driver loop runs several queued data-path commands before one flush. A command that reports
+     * on the connection must not be one of them: run behind an unflushed write, a stats read counts the
+     * write as unsent, and a stall snapshot run behind a received datagram saw quiche call a stream
+     * readable before its reader had been woken — a stall that does not exist (`DriverStallSnapshotTests`
+     * on the Linux runners). A reporting command runs on a settled turn, as it did when the loop flushed
+     * after every command. Here the write and the read are queued before the loop runs, every run.
+     */
+    @Test
+    fun aStatsReadQueuedRightBehindAWriteSeesItSent() =
+        runTest {
+            val test = this
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 813_002L) {
+                    val stream = client.openStream()
+                    stream.writeText("first")
+                    val accepted = server.acceptStream()
+                    assertIs<ReadResult.Data>(withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }).buffer.freeIfNeeded()
+                    // Quiet: every ACK either side owes has gone out, so nothing but the write below is sent.
+                    delay(1.seconds)
+                    val before = assertNotNull(clientDriver.stats().connStats, "an established connection has stats").sentBytes
+
+                    test.launch { stream.writeText(LAST_WORDS) }
+                    val after = test.async { clientDriver.stats() }
+
+                    val sent = assertNotNull(after.await().connStats, "an established connection has stats").sentBytes
+                    assertTrue(
+                        sent >= before + LAST_WORDS.length,
+                        "the stats read queued behind a write must see that write sent: $before bytes sent before " +
+                            "the write, $sent after it",
                     )
                 }
             }

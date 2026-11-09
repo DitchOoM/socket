@@ -2055,7 +2055,7 @@ class QuicheDriver(
                 when {
                     cmd != null -> {
                         dispatch(cmd)
-                        if (!dispatchQueued()) break
+                        if (!dispatchQueued(cmd)) break
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired: the deadline it belongs to decides what happens, and nothing else.
@@ -2172,11 +2172,16 @@ class QuicheDriver(
     }
 
     /**
-     * Run the commands already queued behind the one just dispatched, up to [MAX_COMMANDS_PER_TURN], so
-     * one [afterCommand] serves several: a run of writes, opens and reads, and up to
-     * [RECEIVES_PER_FLUSH] received datagrams, then one flush sends what they call for (a window update
-     * rides with the data, a stream's writes leave together). Flushing after each command made a burst
-     * of N datagrams cost N flushes, each walking every stream and path.
+     * Run the commands already queued behind [first], up to [MAX_COMMANDS_PER_TURN] in all, so one
+     * [afterCommand] serves several: a run of writes, opens and reads, and up to [RECEIVES_PER_FLUSH]
+     * received datagrams, then one flush sends what they call for (a window update rides with the data, a
+     * stream's writes leave together). Flushing after each command made a burst of N datagrams cost N
+     * flushes, each walking every stream and path.
+     *
+     * Only the data path shares a flush ([sharesAFlush]). Every other command — a close, a reset, a
+     * migration, a stats or state read — runs on a settled turn, with an [afterCommand] before it and
+     * after it, exactly as when the loop flushed after every command: it sees what the commands before
+     * it sent and signalled, and the commands after it see what it did.
      *
      * Received datagrams are the one thing it does not batch freely, because a flush is also where
      * quiche writes its ACK. RFC 9000 §13.2.2: "A receiver SHOULD send an ACK frame after receiving at
@@ -2190,28 +2195,49 @@ class QuicheDriver(
      * gave up most of the bulk-throughput gain (loopback, median of three: 62 against 155 MiB/s on FFM,
      * 84 against 128 on JNI), so two it is: the RFC's own number.
      *
-     * A [QuicheCmd.Close] is never run behind unflushed commands either. quiche sends nothing but
-     * CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close and
-     * not yet flushed would be discarded without ever being sent: the application's write returned and
-     * its bytes are gone. Flushing first sends them, as flushing after every command always did
-     * (`aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent`).
+     * Two ways a shared flush went wrong before that rule, both caught by tests. quiche sends nothing
+     * but CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close
+     * and not yet flushed was discarded without ever being sent
+     * (`aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent`). And a state read run behind a received
+     * datagram saw quiche report a stream readable before [discoverNewStreams] had woken its reader, a
+     * stall that does not exist (`DriverStallSnapshotTests`).
      *
      * Bounded so a peer that keeps the queue full cannot starve timers and flushes: after the cap the
      * loop flushes and re-arms its wake as usual, and the rest wait one turn. Returns false when the loop
      * was cancelled; the command in hand is failed, as the loop does for the one it receives.
      */
-    private suspend fun dispatchQueued(): Boolean {
+    private suspend fun dispatchQueued(first: QuicheCmd): Boolean {
+        var previous = first
         repeat(MAX_COMMANDS_PER_TURN - 1) {
             val next = commands.tryReceive().getOrNull() ?: return true
             if (!currentCoroutineContext().isActive) {
                 failCommand(next)
                 return false
             }
-            if (receivedSinceFlush >= RECEIVES_PER_FLUSH || next is QuicheCmd.Close) afterCommand()
+            if (!previous.sharesAFlush() || !next.sharesAFlush() || receivedSinceFlush >= RECEIVES_PER_FLUSH) {
+                afterCommand()
+            }
             dispatch(next)
+            previous = next
         }
         return true
     }
+
+    /**
+     * Whether this command may run beside others before one flush ([dispatchQueued]): the data path —
+     * datagrams in, stream and datagram reads and writes, stream opens — and nothing that ends, resets,
+     * moves or reports on the connection. Exhaustive, so a new command has to choose.
+     */
+    private fun QuicheCmd.sharesAFlush(): Boolean =
+        when (this) {
+            is QuicheCmd.RecvPacket, is QuicheCmd.OpenStream, is QuicheCmd.StreamRecv, is QuicheCmd.StreamSend,
+            is QuicheCmd.DgramRecv, is QuicheCmd.DgramSend,
+            -> true
+            is QuicheCmd.AbandonOpen, is QuicheCmd.StreamShutdown, is QuicheCmd.PeerCert, is QuicheCmd.Stats,
+            is QuicheCmd.PeerTransportParamsRead, is QuicheCmd.SourceIdsRead, is InspectConnection<*>,
+            is QuicheCmd.Close, is QuicheCmd.Migrate, is PathOpened, is PathSendSettled,
+            -> false
+        }
 
     /**
      * Datagrams handed to quiche since the last [afterCommand] flushed: what [dispatchQueued] counts
