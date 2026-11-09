@@ -182,7 +182,14 @@ class DriverFlightRecorderTests {
 
                             readerContext.hold()
                             reply.complete(Unit)
-                            val lost = awaitRecording(driver) { id in it.signalledReadersNotResumed }
+                            // Both, not the signal alone: the loop records StreamSignalled in the middle of
+                            // its turn, so the first recording naming the reader can still read MidTurn (CI
+                            // run 42621844610 caught it 62 us after the signal). The reader is held, so it
+                            // stays signalled-not-resumed; a loop that never goes idle times this out.
+                            val lost =
+                                awaitRecording(driver) {
+                                    id in it.signalledReadersNotResumed && it.verdict is LoopVerdict.IdleNothingQueued
+                                }
                             assertEquals(listOf(id), lost.signalledReadersNotResumed, lost.render(12))
                             assertIs<LoopVerdict.IdleNothingQueued>(lost.verdict, "the loop did its part: ${lost.render(12)}")
                             println(lost.render(tail = 12))
