@@ -2025,6 +2025,7 @@ class QuicheDriver(
                 when {
                     cmd != null -> {
                         dispatch(cmd)
+                        if (!dispatchQueued()) break
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired: the deadline it belongs to decides what happens, and nothing else.
@@ -2135,6 +2136,29 @@ class QuicheDriver(
                 }
             if (!queuedOnly) return
         }
+    }
+
+    /**
+     * Run the commands already queued behind the one just dispatched, up to [MAX_COMMANDS_PER_TURN], so
+     * one [afterCommand] serves them all: quiche takes every datagram that arrived, then one flush sends
+     * what they call for (ACKs coalesce, a window update rides with the data). That is how quiche is
+     * meant to be driven: receive until the socket is empty, then send. Flushing after each command made
+     * a burst of N datagrams cost N flushes, each walking every stream and path.
+     *
+     * Bounded so a peer that keeps the queue full cannot starve timers and flushes: after the cap the
+     * loop flushes and re-arms its wake as usual, and the rest wait one turn. Returns false when the loop
+     * was cancelled; the command in hand is failed, as the loop does for the one it receives.
+     */
+    private suspend fun dispatchQueued(): Boolean {
+        repeat(MAX_COMMANDS_PER_TURN - 1) {
+            val next = commands.tryReceive().getOrNull() ?: return true
+            if (!currentCoroutineContext().isActive) {
+                failCommand(next)
+                return false
+            }
+            dispatch(next)
+        }
+        return true
     }
 
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
@@ -4182,6 +4206,12 @@ class QuicheDriver(
          * traffic against a segment of an hour.
          */
         internal const val QLOG_CHECK_WAKES = 64
+
+        /**
+         * The most commands one loop turn runs before it flushes: see [dispatchQueued]. 64 datagrams is
+         * ~86 KB at [MAX_DATAGRAM_SIZE].
+         */
+        internal const val MAX_COMMANDS_PER_TURN = 64
 
         /**
          * What every driver-backed connection declares to its callers. All three bindings —
