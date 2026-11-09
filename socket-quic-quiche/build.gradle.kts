@@ -5679,15 +5679,11 @@ kotlin {
         }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
-            dependencies {
-                // SHA-256 for W3C serverCertificateHashes leaf-cert pinning (sha256Into actual). Pure-JCA
-                // on JVM/Android — no native lib. Scoped to JVM/Android ONLY (not commonMain): on Linux,
-                // buffer-crypto would link a SECOND static BoringSSL alongside quiche's → duplicate
-                // SHA256_* symbols → SIGSEGV. Linux uses the already-linked BoringSSL via cinterop instead
-                // (see Sha256.linux.kt). Even with no call, a commonMain dep would pull buffer-crypto's
-                // libcrypto.a onto the Linux link line, so the scoping is load-bearing, not cosmetic.
-                implementation(libs.buffer.crypto)
-            }
+            // No buffer-crypto here, ever: the SHA-256 behind W3C serverCertificateHashes (sha256Into actual)
+            // is JCA MessageDigest directly. buffer-crypto-android declares minSdk 28, above this module's 24,
+            // so depending on it failed manifest merging for every app with minSdk 24-27. It must also never
+            // reach the Linux link: it bundles a SECOND static BoringSSL alongside quiche's → duplicate
+            // SHA256_* symbols → SIGSEGV (Linux uses the already-linked BoringSSL; see Sha256.linux.kt).
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
