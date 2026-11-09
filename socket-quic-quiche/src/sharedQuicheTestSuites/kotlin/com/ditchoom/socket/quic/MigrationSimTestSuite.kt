@@ -3623,6 +3623,39 @@ abstract class MigrationSimTestSuite {
                         }
 
                         assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the path dies")
+                        // The premise: the count decides, not the ceiling. Both are timed from the first
+                        // unanswered send, the count's fourth expiry lands (2^4 - 1) PTOs after it, and
+                        // SILENT_PATH_PATIENCE ends the wait at 4s whatever the count. So the count only
+                        // decides on a path whose PTO is under 4s / 15 = 267ms, which on this 120ms round
+                        // trip means an RTT variance that has decayed from RFC 9002 §5.3's first-sample
+                        // `rtt / 2` (60ms) to under ~30ms: a quarter off per sample, so four samples.
+                        //
+                        // How many samples the handshake and one echo leave is not this test's to fix. It
+                        // is the peers' ACK cadence: quiche samples once per ACK that newly acknowledges
+                        // its largest packet, and a driver that reads every queued datagram before it
+                        // sends acknowledges a burst with one ACK where flushing per datagram sent one
+                        // each (RFC 9000 §13.2.2 allows either). With batched receives this point is
+                        // reached with two samples, PTO 325ms, and the ceiling fired at three expiries,
+                        // which is the ceiling working as designed, not the count regressing. So echo
+                        // until the path is estimated well enough for the count to be the thing measured,
+                        // and say so if it never is.
+                        val atWarm =
+                            run {
+                                var reading = clientPathTimers().single { it.active }
+                                var echoes = 0
+                                while (reading.pto * COUNT_DECIDES_WITHIN_PTOS >= SILENT_PATH_PATIENCE && echoes < WARM_UP_ECHOES) {
+                                    assertEquals("warm$echoes", echo("warm$echoes"), "the path must stay healthy while it warms up")
+                                    echoes++
+                                    reading = clientPathTimers().single { it.active }
+                                }
+                                reading
+                            }
+                        assertTrue(
+                            atWarm.pto * COUNT_DECIDES_WITHIN_PTOS < SILENT_PATH_PATIENCE,
+                            "the scenario no longer reproduces its condition: after $WARM_UP_ECHOES echoes the " +
+                                "path is still estimated at $atWarm, so its fourth expiry would land after " +
+                                "the $SILENT_PATH_PATIENCE ceiling and the ceiling, not the count, would decide",
+                        )
                         awaitSpareDcids()
                         assertEquals(0, client.attempts.size, "nothing may migrate before the path dies")
 
@@ -4902,8 +4935,27 @@ abstract class MigrationSimTestSuite {
 
         const val DETERMINISM_SEED = 671_101L
 
-        /** Measured: the seeds whose reply loses its FIN when quiche is built without the FIN patch. */
-        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(30L, 71L, 107L, 124L)
+        /**
+         * Measured: the seeds among 0..1999 whose reply arrives whole and loses its FIN when quiche is built
+         * without `patchQuicheFinIsSentUntilAcknowledged`, every run; with the patch each ends with the FIN.
+         *
+         * A seed fixes the sim's loss draws, not which datagrams they land on: the pipe draws once per
+         * datagram in the order they are offered, so the set belongs to the driver's send cadence and is
+         * re-measured when that changes. Reading every queued datagram before one flush acknowledges a
+         * burst with one ACK instead of one per datagram, which moved every later draw: of the previous
+         * set (30, 71, 107, 124) none still lost its FIN unpatched, and 71 now meets a 43s run of lost
+         * ACKs that outlasts the handler's own 30s write bound, so it never reaches its FIN at all.
+         */
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(406L, 518L, 1313L)
+
+        /**
+         * PTOs from the first unanswered send to the [SILENT_PATH_EXPIRY_THRESHOLD]-th expiry: `2^4 - 1`, each
+         * expiry doubling the one before (RFC 9002 §6.2.1).
+         */
+        val COUNT_DECIDES_WITHIN_PTOS = (1 shl SILENT_PATH_EXPIRY_THRESHOLD.toInt()) - 1
+
+        /** Echoes a healthy path gets to converge its RTT estimate before a scenario that needs it gives up. */
+        const val WARM_UP_ECHOES = 8
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000

@@ -2055,6 +2055,7 @@ class QuicheDriver(
                 when {
                     cmd != null -> {
                         dispatch(cmd)
+                        if (!dispatchQueued()) break
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired: the deadline it belongs to decides what happens, and nothing else.
@@ -2168,6 +2169,39 @@ class QuicheDriver(
                 }
             if (!queuedOnly) return
         }
+    }
+
+    /**
+     * Run the commands already queued behind the one just dispatched, up to [MAX_COMMANDS_PER_TURN], so
+     * one [afterCommand] serves them all: quiche takes every datagram that arrived, then one flush sends
+     * what they call for (ACKs coalesce, a window update rides with the data). That is how quiche is
+     * meant to be driven: receive until the socket is empty, then send. Flushing after each command made
+     * a burst of N datagrams cost N flushes, each walking every stream and path.
+     *
+     * The burst is acknowledged once, too: quiche writes an ACK in the flush after any ack-eliciting
+     * packet, so N datagrams read together draw one ACK where flushing per datagram drew N. RFC 9000
+     * §13.2.2 allows it ("A receiver MAY process multiple available packets before determining whether
+     * to send an ACK frame in response"), and it is what makes bulk receive cheap. The cost is redundancy
+     * under loss: when that one ACK is lost, nothing else from the burst carries the acknowledgement,
+     * and the sender waits for its PTO. The sim measures it: a 34 KB reply over an 800 ms, 30 %-loss path
+     * misses the handler's 30 s write bound or the 120 s close linger in 6 % of seeds against 0.5 % when
+     * every datagram was flushed alone. The sim delivers a whole burst at one instant, so it reads all of
+     * it together; on a real link only the datagrams already queued when the loop wakes are.
+     *
+     * Bounded so a peer that keeps the queue full cannot starve timers and flushes: after the cap the
+     * loop flushes and re-arms its wake as usual, and the rest wait one turn. Returns false when the loop
+     * was cancelled; the command in hand is failed, as the loop does for the one it receives.
+     */
+    private suspend fun dispatchQueued(): Boolean {
+        repeat(MAX_COMMANDS_PER_TURN - 1) {
+            val next = commands.tryReceive().getOrNull() ?: return true
+            if (!currentCoroutineContext().isActive) {
+                failCommand(next)
+                return false
+            }
+            dispatch(next)
+        }
+        return true
     }
 
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
@@ -4331,6 +4365,12 @@ class QuicheDriver(
          * traffic against a segment of an hour.
          */
         internal const val QLOG_CHECK_WAKES = 64
+
+        /**
+         * The most commands one loop turn runs before it flushes: see [dispatchQueued]. 64 datagrams is
+         * ~86 KB at [MAX_DATAGRAM_SIZE].
+         */
+        internal const val MAX_COMMANDS_PER_TURN = 64
 
         /**
          * What every driver-backed connection declares to its callers. All three bindings —
