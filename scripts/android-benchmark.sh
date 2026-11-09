@@ -28,9 +28,18 @@ run() { # <label> <gradle property args...>
   local label="$1"
   shift
   rm -rf "$RESULTS"
-  ./gradlew :benchmark-android:connectedReleaseAndroidTest \
+  adb logcat -c || true
+  if ! ./gradlew :benchmark-android:connectedReleaseAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.suppressErrors=EMULATOR \
-    -PlinuxTargets=false --no-configuration-cache "$@"
+    -PlinuxTargets=false --no-configuration-cache "$@"; then
+    # Failure-only capture: AGP's report says only "Process crashed", and its own logcat file is not
+    # kept. The crash buffer and the app's log say what crashed and where.
+    adb logcat -d -b crash > "$OUT/logcat-crash-$label.txt" 2>&1 || true
+    adb logcat -d -b main,system > "$OUT/logcat-$label.txt" 2>&1 || true
+    echo "::error::$label: the benchmark run failed; logcat is in the android-benchmark artifact (bench-android/logcat-*$label.txt)"
+    grep -E "FATAL|AndroidRuntime|Abort message|signal [0-9]+ \\(SIG" "$OUT/logcat-crash-$label.txt" "$OUT/logcat-$label.txt" | head -40 || true
+    exit 1
+  fi
   local json
   json="$(find "$RESULTS" -name '*benchmarkData.json' | head -1)"
   if [ -z "$json" ]; then

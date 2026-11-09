@@ -406,8 +406,7 @@ class DatagramEventLoop internal constructor(
         } catch (failure: Throwable) {
             // A dispatched coroutine handles its own failures; this is a bare task that threw. Report it
             // and keep the loop alive: every other connection on it depends on the next turn.
-            val current = Thread.currentThread()
-            current.uncaughtExceptionHandler?.uncaughtException(current, failure)
+            reportLoopFailure("a task failed", failure)
         }
     }
 
@@ -452,8 +451,7 @@ class DatagramEventLoop internal constructor(
             // Only the selector itself can get here (tasks and timers are caught one by one). Report it,
             // wake every waiter so each re-registers on the thread that replaces this one, and start
             // that thread if anything still needs the loop.
-            val current = Thread.currentThread()
-            current.uncaughtExceptionHandler?.uncaughtException(current, failure)
+            reportLoopFailure("the selector failed; a new thread takes over", failure)
             for (interest in interests.values.toList()) waiters -= interest.resumeAll()
             interests.clear()
             val stranded = lifecycle.startFailed()
@@ -463,6 +461,19 @@ class DatagramEventLoop internal constructor(
         } finally {
             runCatching { sel.close() }
         }
+    }
+
+    /**
+     * Reports a failure the loop survived. Not through the thread's uncaught-exception handler: on Android
+     * the default one kills the process, and a loop that outlives a failed task must not take the app down
+     * with it. Printed to `System.err` (logcat on Android), with the loop's name and the full stack.
+     */
+    private fun reportLoopFailure(
+        what: String,
+        failure: Throwable,
+    ) {
+        System.err.println("DatagramEventLoop $name: $what (the loop keeps running)")
+        failure.printStackTrace()
     }
 
     override fun toString(): String = name
