@@ -82,11 +82,17 @@ static const int32_t SocketErrorTypeTls   = 3;
 // State handler callback.
 // Connection state (nw_connection_state_t): 0=invalid, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
 // error_domain: 0=none, 1=posix, 2=dns, 3=tls
+// nw_entry_ns: nw_helper_now_ns() read as NW entered the C block, before anything else ran, so a
+// diagnostic can tell how long NW took to report a state from how long the report took to reach Kotlin.
 typedef void (^nw_helper_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
-    NSString * _Nullable error_desc);
+    NSString * _Nullable error_desc,
+    uint64_t nw_entry_ns);
+
+// A monotonic clock in nanoseconds (CLOCK_UPTIME_RAW), the one nw_entry_ns is read from.
+uint64_t nw_helper_now_ns(void);
 
 void nw_helper_set_state_handler(
     nw_connection_t _Nonnull conn,
@@ -146,7 +152,8 @@ typedef void (^nw_helper_listener_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
-    NSString * _Nullable error_desc);
+    NSString * _Nullable error_desc,
+    uint64_t nw_entry_ns);
 
 nw_listener_t _Nullable nw_helper_create_listener(int32_t port, int32_t backlog);
 
