@@ -56,10 +56,10 @@ import kotlin.time.TimeSource
  *
  * It defaults to [NetworkMonitor.open], the platform's best reactive monitor, which is built on an IO
  * dispatcher so collecting [receive] never blocks the collector's thread. A factory you pass runs on the
- * collector's thread, so it should not block. The factory is invoked once per [receive] collection, and the produced monitor is owned by this
- * connection: it is [closed][NetworkMonitor.close] when that collection terminates. No monitor
- * socket is opened until [receive] is collected. Pass `{ NetworkMonitor.AlwaysAvailable }` to
- * opt out of monitoring. A monitor that cannot identify links reports a constant `Unidentified` and
+ * collector's thread, so it should not block. The factory is invoked once per [receive] collection, and
+ * the produced monitor is owned by this connection: it is [closed][NetworkMonitor.close] when that
+ * collection terminates. No monitor socket is opened until [receive] is collected. Pass
+ * `{ NetworkMonitor.AlwaysAvailable }` to opt out of monitoring. A monitor that cannot identify links reports a constant `Unidentified` and
  * never emits a path change, so the path-change behaviors are inert until a real reactive producer is
  * present (Apple/Android/browser-JS), keeping default behavior identical to a plain backoff.
  *

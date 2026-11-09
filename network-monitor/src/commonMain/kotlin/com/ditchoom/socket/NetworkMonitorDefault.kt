@@ -18,7 +18,8 @@ import kotlinx.coroutines.withContext
  *
  * Safe to call from any thread, including the Android main thread or a desktop UI thread: starting a
  * monitor can open a routing socket and load a native library, and that work runs on an IO dispatcher,
- * never on the caller's thread.
+ * never on the caller's thread. A monitor that finishes starting just as the caller is cancelled is
+ * closed, not leaked.
  *
  * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished. To share one
  * monitor across the process instead of owning one, use [shared].
@@ -29,7 +30,10 @@ import kotlinx.coroutines.withContext
  * carries its own netlink and `NWPathMonitor` cinterops; `:socket` re-exports all of it via
  * `api(project(":network-monitor"))`.
  */
-suspend fun NetworkMonitor.Companion.open(): NetworkMonitor = withContext(blockingWork) { platformNetworkMonitor() }
+suspend fun NetworkMonitor.Companion.open(): NetworkMonitor =
+    buildOffTheCallersThread(onAbandoned = {
+        it.close()
+    }) { platformNetworkMonitor() }
 
 /**
  * The process's shared monitor: the [NetworkMonitor.installProcessDefault] override if one was installed,

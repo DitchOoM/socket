@@ -6,7 +6,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import kotlinx.coroutines.withContext
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -78,14 +77,15 @@ sealed interface PeerCertificateSupport {
          *
          * Safe to call from any thread, including the Android main thread or a desktop UI thread: key
          * generation reads the OS entropy source, and that work runs on an IO dispatcher, never on the
-         * caller's thread.
+         * caller's thread. A certificate that finishes just as the caller is cancelled is closed (its key
+         * wiped), not leaked.
          */
         suspend fun mint(
             validity: PeerCertificateValidity = PeerCertificateValidity.Maximum,
             notBefore: Instant = Clock.System.now() - PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE,
         ): PeerCertificate {
             val start = Instant.fromEpochSeconds(notBefore.epochSeconds)
-            return withContext(blockingWork) { generatePeerCertificate(backend, validity, start) }
+            return buildOffTheCallersThread(onAbandoned = { it.close() }) { generatePeerCertificate(backend, validity, start) }
         }
 
         /**
