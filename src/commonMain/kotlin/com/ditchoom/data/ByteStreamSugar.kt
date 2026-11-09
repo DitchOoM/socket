@@ -69,13 +69,22 @@ suspend fun ByteSource.readInto(
 }
 
 /**
- * Emits chunks until clean EOF or reset (both terminate the flow quietly). A connection that ends
- * without either fails the flow with the transport's typed close (on QUIC, a `QuicCloseException`).
+ * Emits chunks until clean EOF or reset (both terminate the flow quietly), or until this side closes
+ * the source: a close between reads or during one ends the flow quietly too. A connection that ends
+ * any other way fails the flow with the transport's typed close (on QUIC, a `QuicCloseException`).
  */
 fun ByteSource.readFlow(deadline: Duration = readPolicy.toDeadline()): Flow<ReadBuffer> =
     flow {
         while (isOpen) {
-            when (val result = read(deadline)) {
+            val result =
+                try {
+                    read(deadline)
+                } catch (e: SocketClosedException.General) {
+                    // A read cut short by this side's close: the collector's owner closed it.
+                    if (!isOpen) return@flow
+                    throw e
+                }
+            when (result) {
                 is ReadResult.Data -> emit(result.buffer)
                 ReadResult.End -> return@flow
                 ReadResult.Reset -> return@flow

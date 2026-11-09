@@ -24,6 +24,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -106,6 +108,14 @@ abstract class AsyncBaseClientSocket(
                     // abandon only the wait. The next read() re-awaits this same background read.
                     throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
+                    // close() cancels the background read's scope; the waiter itself was not cancelled.
+                    // Passing that CancellationException on would end the caller's coroutine silently,
+                    // as if *it* had been cancelled — report this side's close instead. The buffer stays
+                    // with the cancelled read, which the channel's close ends.
+                    if (inFlight.deferred.isCancelled && currentCoroutineContext().isActive) {
+                        inFlightRead = null
+                        throw SocketClosedException.General("Socket closed during read", e)
+                    }
                     // The waiter was cancelled from outside; the background read still owns the buffer,
                     // so leave it orphaned for the next read() and let the cancellation propagate.
                     throw e
@@ -132,7 +142,15 @@ abstract class AsyncBaseClientSocket(
      * timeout (RFC §3.2).
      */
     private fun startOrphanedRead(): InFlightRead {
-        val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
+        // A close() landing between readRaw's isOpen check and here makes getOption throw a bare
+        // ClosedChannelException; mapped like every other platform IOException, it is this side's
+        // close (SocketClosedException.General), not a raw java.nio exception the caller cannot type.
+        val receiveBuffer =
+            try {
+                socket.getOption(StandardSocketOptions.SO_RCVBUF)
+            } catch (e: IOException) {
+                throw wrapJvmException(e)
+            }
         val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBuffer))
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         val deferred =

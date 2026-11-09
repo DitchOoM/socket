@@ -205,8 +205,18 @@ open class NodeSocket(
         return BytesWritten(bytesToWrite)
     }
 
+    /**
+     * Ends the incoming stream with [cause], which a read throws once the buffered data is drained:
+     * [SocketClosedException.EndOfStream] for the peer's graceful close, the mapped Node error for a
+     * reset or failure. The first cause wins, so the reason the connection ended is never overwritten
+     * by the teardown that follows it.
+     */
+    internal fun endIncoming(cause: SocketException) {
+        incomingMessageChannel.close(cause)
+    }
+
     fun cleanSocket(socket: Socket) {
-        incomingMessageChannel.close()
+        endIncoming(SocketClosedException.General("Socket closed during read"))
         socket.removeAllListeners()
         socket.end {}
         socket.destroy()
@@ -270,12 +280,15 @@ class NodeClientSocket(
             buffer.resetForRead()
             incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
         }
-        netSocket.on("error") { _ ->
+        netSocket.on("error") { e ->
             hadTransmissionError = true
+            endIncoming(wrapNodeError(e, hostname))
             cleanSocket(netSocket)
         }
         netSocket.on("close") { transmissionError ->
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
+            // An error, if there was one, already ended the stream; otherwise the peer closed gracefully.
+            endIncoming(SocketClosedException.EndOfStream())
             cleanSocket(netSocket)
         }
     }

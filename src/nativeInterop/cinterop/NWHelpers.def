@@ -302,7 +302,9 @@ void nw_helper_tcp_receive(
           bool is_complete, nw_error_t _Nullable error) {
             int32_t error_domain = 0, error_code = 0;
             NSString *error_desc = nil;
-            // Check for POSIX ENODATA (96) — peer closed connection
+            // POSIX ENODATA (96) is end-of-stream: measured on macOS 26, NW reports it on the receives
+            // after the one that carried the peer's FIN. After a RST it reports ECONNRESET (54) and then
+            // ENOTCONN (57), and a local cancel ECANCELED (89), so ENODATA is never an error in disguise.
             if (error != NULL) {
                 int code = nw_error_get_error_code(error);
                 nw_error_domain_t domain = nw_error_get_error_domain(error);

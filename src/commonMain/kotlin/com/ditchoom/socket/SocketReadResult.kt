@@ -16,8 +16,13 @@ import com.ditchoom.buffer.freeIfNeeded
  * ```
  *
  * - a non-empty buffer  → [ReadResult.Data]
- * - an empty buffer / clean EOF / [SocketClosedException] → [ReadResult.End]
+ * - an empty buffer / [SocketClosedException.EndOfStream] (the peer's graceful close) → [ReadResult.End]
  * - [SocketClosedException.ConnectionReset] → [ReadResult.Reset]
+ * - any other [SocketClosedException] is thrown as it is.
+ *
+ * [ReadResult.End] promises the peer closed gracefully. A read cut short by this side's own close
+ * ([SocketClosedException.General]), a broken pipe, or a transport's typed close are not that, and
+ * reporting them as `End` let a caller take a failed connection for a finished exchange.
  */
 internal suspend inline fun translateRead(read: () -> ReadBuffer): ReadResult =
     try {
@@ -30,6 +35,6 @@ internal suspend inline fun translateRead(read: () -> ReadBuffer): ReadResult =
         }
     } catch (_: SocketClosedException.ConnectionReset) {
         ReadResult.Reset
-    } catch (_: SocketClosedException) {
+    } catch (_: SocketClosedException.EndOfStream) {
         ReadResult.End
     }

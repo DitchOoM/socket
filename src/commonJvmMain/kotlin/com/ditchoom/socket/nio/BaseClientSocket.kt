@@ -24,6 +24,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -86,7 +88,7 @@ abstract class BaseClientSocket(
         // The blocking channel can't honor a deadline in-line without being torn down, so route it
         // through the orphaned-read single-flight (RFC §3.2) — enforced *and* non-destructive.
         if (blocking) return blockingReadRaw(deadline)
-        val buffer = readBufferSource.acquire(effectiveReadBufferSize(socket.socket().receiveBufferSize))
+        val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBufferSize()))
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()
@@ -97,6 +99,19 @@ abstract class BaseClientSocket(
             throw e
         }
     }
+
+    /**
+     * SO_RCVBUF, for sizing a read's buffer. A close() landing between readRaw's isOpen check and here
+     * makes the query throw "Socket is closed"; mapped like every other platform IOException, that is
+     * this side's close ([SocketClosedException.General]), not a raw java.net exception the caller
+     * cannot type.
+     */
+    private fun receiveBufferSize(): Int =
+        try {
+            socket.socket().receiveBufferSize
+        } catch (e: IOException) {
+            throw wrapJvmException(e)
+        }
 
     /**
      * The blocking-path read (RFC §3.2 orphaned-read single-flight). Enforces [deadline] by racing
@@ -129,6 +144,14 @@ abstract class BaseClientSocket(
                     // abandon only the wait. The next read() re-awaits this same background read.
                     throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
+                    // close() cancels the background read's scope; the waiter itself was not cancelled.
+                    // Passing that CancellationException on would end the caller's coroutine silently,
+                    // as if *it* had been cancelled — report this side's close instead. The buffer stays
+                    // with the cancelled read, which the channel's close ends.
+                    if (inFlight.deferred.isCancelled && currentCoroutineContext().isActive) {
+                        inFlightBlockingRead = null
+                        throw SocketClosedException.General("Socket closed during read", e)
+                    }
                     // The waiter was cancelled from outside; the background read still owns the buffer,
                     // so leave it orphaned for the next read() and let the cancellation propagate.
                     throw e
@@ -154,7 +177,7 @@ abstract class BaseClientSocket(
      * the read must genuinely block so it survives a caller timeout (RFC §3.2).
      */
     private fun startBlockingRead(): InFlightBlockingRead {
-        val buffer = readBufferSource.acquire(effectiveReadBufferSize(socket.socket().receiveBufferSize))
+        val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBufferSize()))
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         val deferred =
             blockingReadScope.async {
