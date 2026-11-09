@@ -160,15 +160,7 @@ class LostCpuWakeupTests {
         /** @return whether the stopped thread may run on. */
         private fun onBreakpoint(event: BreakpointEvent): Boolean {
             val thread = event.thread()
-            val frame =
-                try {
-                    thread.frame(0)
-                } catch (_: com.sun.jdi.IncompatibleThreadStateException) {
-                    // Seen once on JDK 17 (CI): the event's thread reported as not suspended when its
-                    // frames were read. It cannot be inspected, so it is not the worker to hold; let it run,
-                    // and the choreography waits for the next breakpoint (or reports BROKEN if none comes).
-                    return true
-                }
+            val frame = thread.frame(0)
             if (frame.location().method().name() == "mark") {
                 when ((frame.argumentValues.single() as StringReference).value()) {
                     "arm" -> armed = true
