@@ -10,7 +10,8 @@ import com.ditchoom.buffer.WriteBuffer
  *
  * The digest behind the W3C `serverCertificateHashes` leaf-certificate pin ([matchLeafHash]). Each backend
  * binds its own native implementation:
- *  - JVM/Android ([commonJvmMain]) → `com.ditchoom.buffer.crypto.sha256` (JCA `MessageDigest`).
+ *  - JVM/Android ([commonJvmMain]) → JCA `MessageDigest` directly. Not buffer-crypto: its Android artifact
+ *    declares minSdk 28, above this module's 24, which broke manifest merging for apps on minSdk 24–27.
  *  - Linux ([linuxMain]) → the BoringSSL `SHA256` **already linked** into this binary (quiche's libcrypto,
  *    via the `BoringSslX509` cinterop). Linux deliberately does **not** use buffer-crypto here: buffer-crypto
  *    statically bundles its *own* BoringSSL, and two BoringSSL copies in one Kotlin/Native binary collide

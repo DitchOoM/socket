@@ -240,6 +240,97 @@ jobs:
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
 
+  # Android minSdk floor: a minimal Android APP with minSdk 24 (.ci/android-minsdk-consumer) that
+  # depends on every module an Android user consumes, assembled against the same merged maven-local
+  # the smoke above uses. The manifest merger only compares a dependency's minSdk against an
+  # APPLICATION's, so no library build can see a transitive dependency that raises the floor: that is
+  # how :socket-quic-quiche shipped with minSdk 24 while depending on buffer-crypto (minSdk 28), and
+  # every app below 28 that added QUIC failed to build. Assemble only, no emulator, GitHub-hosted.
+  android-minsdk-consumer:
+    name: "Android minSdk 24 consumer (assemble)"
+    needs: [version, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download merged maven-local
+        id: maven-local-download
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: maven-local-merged
+          path: /tmp/maven-local-merged
+      # See .github/scripts/artifact-download-retry.sh: the action does not retry an edge 403.
+      - name: Retry the maven-local download
+        if: steps.maven-local-download.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            maven-local-merged /tmp/maven-local-merged
+      # Same race-proof version derivation as consumer-smoke: the version actually built.
+      - name: Resolve built version
+        run: |
+          version=$(ls /tmp/maven-local-merged/com/ditchoom/socket/ 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          if [ -z "$version" ]; then
+            echo "::error::No socket version in the merged maven-local — validate didn't produce artifacts."
+            exit 1
+          fi
+          echo "RESOLVED_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Assembling the minSdk 24 consumer against version: ${version}"
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      # Licenses deferred and accepted with retry, for the reason build-linux.yaml's
+      # "Setup Android SDK" step documents (a truncated emulator-package download fails the action).
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+      - name: Accept Android SDK licenses (retry transient package prep)
+        run: |
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            if printf 'y\n%.0s' $(seq 1 50) | sdkmanager --licenses; then
+              exit 0
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              backoff=$((i * 15))
+              echo "::warning::'sdkmanager --licenses' failed (attempt $i/$attempts); retrying in ${backoff}s"
+              sleep "$backoff"
+            fi
+          done
+          echo "::error::Android SDK license acceptance failed after $attempts attempts"
+          exit 1
+      # cache-disabled for the same reason as consumer-smoke: the warm tree comes from one place.
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-disabled: true
+      - name: Restore Gradle build outputs (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+      # The repo's wrapper with -p: the standalone build gets the same Gradle the library build uses,
+      # and its AGP version comes from gradle/libs.versions.toml (see its settings.gradle.kts).
+      - name: Assemble the minSdk 24 consumer app
+        run: |
+          ./gradlew -p .ci/android-minsdk-consumer assembleDebug \
+            -PsocketVersion="${RESOLVED_VERSION}" \
+            -PmavenRepoPath=/tmp/maven-local-merged \
+            --no-daemon
+
   # Apple Kotlin/Native LINK gate — the strong Gap-A catcher. Links (does not run; iOS needs no
   # simulator) the consumer test binaries against the published klib. ld64 fails hard on an undefined
   # quiche_* symbol, so an undistributed/unembedded libquiche.a surfaces as the link error it is.
