@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -27,7 +28,9 @@ import kotlin.time.Duration.Companion.seconds
  * **Skip-on-unreachable, never flaky-fail** — same contract as [Http3PublicEndpointInteropTests] and
  * [QuicPublicEndpointInteropTests]. UDP/443 egress isn't guaranteed in CI, public WebTransport servers
  * come and go, and JS has no QUIC — so any *establishment* failure (no egress, server down, peer
- * doesn't advertise WebTransport, draft-version mismatch on the CONNECT) is caught and logged as a SKIP.
+ * doesn't advertise WebTransport, draft-version mismatch on the CONNECT) is caught and logged as a SKIP,
+ * naming the phase it stopped in (see [PublicEndpointAttempt]). An attempt still running
+ * [PublicEndpointAttempt.CANCEL_GRACE] after its budget cancelled it is this library's defect, and fails.
  * The echo-equality assertion runs **outside** the skip-catch: a session that establishes and a stream
  * that round-trips but returns the WRONG bytes is a real regression and fails the test. If every
  * endpoint skips, a single loud line flags that no real WebTransport interop was validated.
@@ -51,15 +54,24 @@ class WebTransportPublicEndpointInteropTests {
         )
     private val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
+    private companion object {
+        /** The whole exchange, resolution to close. Its steps had no bound of their own past the echo. */
+        val ENDPOINT_BUDGET = 30.seconds
+    }
+
     @Test
     fun echoesOverPublicWebTransport_orSkips() =
-        runTest(timeout = 60.seconds) {
+        // Longer than every endpoint's budget plus its cancellation grace, so this test's own verdict
+        // (which phase stalled, and whether it ignored cancellation) always lands before runTest's.
+        runTest(timeout = (ENDPOINT_BUDGET + PublicEndpointAttempt.CANCEL_GRACE) * endpoints.size + 10.seconds) {
             withContext(Dispatchers.Default) {
                 val payload = "ditchoom-webtransport-interop"
                 var validated = 0
                 for ((host, port, path) in endpoints) {
-                    val echoed: String? =
-                        try {
+                    val outcome =
+                        PublicEndpointAttempt.run("$host:$port$path", ENDPOINT_BUDGET) {
+                            resolve(host)
+                            enter("handshake")
                             withHttp3Connection(
                                 host,
                                 port,
@@ -68,35 +80,43 @@ class WebTransportPublicEndpointInteropTests {
                                 timeout = 8.seconds,
                                 webTransport = WebTransportOptions(maxSessions = 1),
                             ) {
+                                enter("settings")
                                 withTimeout(5.seconds) { peerSettings() }
+                                enter("session CONNECT")
                                 val session = connectWebTransport(authority = host, path = path)
                                 try {
+                                    enter("open stream")
                                     val stream = session.openBidiStream()
                                     val out = textBuffer(payload)
                                     try {
+                                        enter("write")
                                         stream.write(out)
                                     } finally {
                                         out.freeIfNeeded() // write is zero-copy; it does not take ownership
                                     }
                                     stream.shutdownSend()
+                                    enter("echo")
                                     withTimeout(8.seconds) { stream.drainUtf8() }
                                 } finally {
+                                    enter("session close")
                                     session.close(code = 0, reason = "interop done")
+                                    enter("close")
                                 }
                             }
-                        } catch (t: Throwable) {
-                            println(
-                                "[WebTransportPublicEndpointInteropTests] public WT SKIP $host:$port$path — " +
-                                    "${t::class.simpleName}: ${t.message}",
-                            )
-                            null
                         }
-
-                    if (echoed != null) {
-                        // A real, foreign WebTransport echo completed — the bytes MUST match exactly.
-                        assertEquals(payload, echoed, "$host: WebTransport bidi echo must round-trip unchanged")
-                        validated++
-                        println("[WebTransportPublicEndpointInteropTests] public WT OK $host:$port$path echo=\"$echoed\"")
+                    when (outcome) {
+                        is PublicEndpointAttempt.Outcome.Done -> {
+                            // A real, foreign WebTransport echo completed — the bytes MUST match exactly.
+                            assertEquals(payload, outcome.value, "$host: WebTransport bidi echo must round-trip unchanged")
+                            validated++
+                            println(
+                                "[WebTransportPublicEndpointInteropTests] public WT OK $host:$port$path " +
+                                    "echo=\"${outcome.value}\" (${outcome.report})",
+                            )
+                        }
+                        is PublicEndpointAttempt.Outcome.Unreachable ->
+                            println("[WebTransportPublicEndpointInteropTests] public WT SKIP ${outcome.report}")
+                        is PublicEndpointAttempt.Outcome.IgnoredCancellation -> fail(outcome.report)
                     }
                 }
                 if (validated == 0) {
