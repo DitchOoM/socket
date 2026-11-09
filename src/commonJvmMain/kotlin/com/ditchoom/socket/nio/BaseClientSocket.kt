@@ -24,6 +24,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -129,6 +131,14 @@ abstract class BaseClientSocket(
                     // abandon only the wait. The next read() re-awaits this same background read.
                     throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
+                    // close() cancels the background read's scope; the waiter itself was not cancelled.
+                    // Passing that CancellationException on would end the caller's coroutine silently,
+                    // as if *it* had been cancelled — report this side's close instead. The buffer stays
+                    // with the cancelled read, which the channel's close ends.
+                    if (inFlight.deferred.isCancelled && currentCoroutineContext().isActive) {
+                        inFlightBlockingRead = null
+                        throw SocketClosedException.General("Socket closed during read", e)
+                    }
                     // The waiter was cancelled from outside; the background read still owns the buffer,
                     // so leave it orphaned for the next read() and let the cancellation propagate.
                     throw e
