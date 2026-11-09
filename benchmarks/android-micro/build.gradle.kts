@@ -33,6 +33,40 @@ val minify = providers.gradleProperty("benchMinify").map(String::toBooleanStrict
 val defaultProguardFile = providers.gradleProperty("benchDefaultProguardFile").map(String::toBooleanStrict).getOrElse(true)
 val androidxBenchmarkVersion = providers.gradleProperty("androidxBenchmarkVersion").get()
 
+// Copies the committed test certificate pair (socket-quic-quiche/testcerts, valid to 2047) into a
+// generated resource dir as certs/cert.crt and certs/cert.key, which the code reads as Java resources.
+// Not :socket-quic-quiche's androidInstrumentedTest resources: that dir also receives certs its own
+// tasks generate, which this module must neither depend on nor race.
+abstract class CopyBenchmarkCerts : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val certs: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        val dir = outputDir.get().asFile.resolve("certs")
+        dir.deleteRecursively()
+        dir.mkdirs()
+        certs.forEach { it.copyTo(dir.resolve(it.name)) }
+    }
+}
+
+val testCerts = rootProject.files("socket-quic-quiche/testcerts/cert.crt", "socket-quic-quiche/testcerts/cert.key")
+
+// Out of the repo-wide `connectedAndroidTest` / `connectedCheck`: android_integration.yaml's emulator
+// lane runs those aggregates across every project, and benchmarks are not instrumented tests. They run
+// only when asked for by name (the android-benchmark job, baseline-profile.yaml). AGP attaches each
+// variant's connected task to the aggregates while it creates variants, after this script runs, so
+// the detach waits for every project to finish evaluating.
+gradle.projectsEvaluated {
+    tasks
+        .matching { it.name in setOf("connectedAndroidTest", "connectedCheck", "deviceAndroidTest", "deviceCheck") }
+        .configureEach { setDependsOn(emptyList<Any>()) }
+}
+
 android {
     namespace = "com.ditchoom.socket.benchmark.android"
     compileSdk = 37
@@ -61,13 +95,23 @@ android {
         }
     }
 
-    // The loopback server needs a certificate it can read from disk; :socket-quic-quiche's instrumented
-    // tests bundle one as a Java resource, and the benchmark reuses it rather than keeping a copy.
-    sourceSets.getByName("androidTest").resources.srcDir("../../socket-quic-quiche/src/androidInstrumentedTest/resources")
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.deviceTests.values.forEach { test ->
+            val copy =
+                tasks.register<CopyBenchmarkCerts>(
+                    "copyBenchmarkCerts${variant.name.replaceFirstChar { it.uppercase() }}${test.name.replaceFirstChar { it.uppercase() }}",
+                ) {
+                    certs.from(testCerts)
+                }
+            test.sources.resources?.addGeneratedSourceDirectory(copy, CopyBenchmarkCerts::outputDir)
+        }
     }
 }
 

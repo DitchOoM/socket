@@ -25,6 +25,17 @@ repositories {
     mavenCentral()
 }
 
+// Out of the repo-wide `connectedAndroidTest` / `connectedCheck`: android_integration.yaml's emulator
+// lane runs those aggregates across every project, and benchmarks are not instrumented tests. They run
+// only when asked for by name (the android-benchmark job, baseline-profile.yaml). AGP attaches each
+// variant's connected task to the aggregates while it creates variants, after this script runs, so
+// the detach waits for every project to finish evaluating.
+gradle.projectsEvaluated {
+    tasks
+        .matching { it.name in setOf("connectedAndroidTest", "connectedCheck", "deviceAndroidTest", "deviceCheck") }
+        .configureEach { setDependsOn(emptyList<Any>()) }
+}
+
 android {
     namespace = "com.ditchoom.socket.benchmark.baselineprofile"
     compileSdk = 37
