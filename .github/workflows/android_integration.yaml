@@ -504,3 +504,13 @@ jobs:
             benchmarks/android-micro/build/reports/androidTests/**
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Upload emulator shutdown-wedge capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-shutdown-wedge-benchmark-34
+          path: emulator-diagnostics/emulator-shutdown-wedge-*.txt
+          if-no-files-found: error
+          retention-days: 7
