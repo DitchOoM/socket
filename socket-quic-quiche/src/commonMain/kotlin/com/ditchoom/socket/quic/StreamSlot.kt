@@ -3,8 +3,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.channels.Channel
-import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicReference
 
 /**
@@ -41,9 +41,23 @@ class StreamSlot(
      * [StreamEnd.Fin] means the next `read()` returns [com.ditchoom.buffer.flow.ReadResult.End].
      * [StreamEnd.Reset] carries the peer's RESET_STREAM application error code to that same next
      * `read()`.
+     *
+     * Latched only through [latchFin] / [latchReset]: the driver loop and the reading coroutine both
+     * latch it, from different threads, and the first verdict wins.
      */
-    @Volatile
-    var end: StreamEnd = StreamEnd.Open
+    val end: StreamEnd get() = latchedEnd.load()
+
+    private val latchedEnd = AtomicReference<StreamEnd>(StreamEnd.Open)
+
+    /**
+     * Latch [StreamEnd.Fin], unless a verdict is already latched. A compare-and-set, not a
+     * check-then-write: two threads latch this, and a read-then-write lets the second writer overwrite
+     * the first verdict (a Reset replaced by a Fin) after both saw [StreamEnd.Open].
+     */
+    internal fun latchFin(): Boolean = latchedEnd.compareAndSet(StreamEnd.Open, StreamEnd.Fin)
+
+    /** Latch the peer's RESET_STREAM with its [code], unless a verdict is already latched. See [latchFin]. */
+    internal fun latchReset(code: QuicAppErrorCode): Boolean = latchedEnd.compareAndSet(StreamEnd.Open, StreamEnd.Reset(code))
 
     /**
      * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
@@ -69,6 +83,63 @@ class StreamSlot(
 
     /** Where the application's reads of this stream stand. See [StreamReadState]; advanced by CAS only. */
     val readState = AtomicReference<StreamReadState>(StreamReadState.Idle)
+
+    /**
+     * The driver hands over [chunk] (bytes quiche already accepted, or null for none) and then, when
+     * [fin] is set, latches [StreamEnd.Fin]. In that order: a reader that sees the FIN must also see
+     * the chunk it follows — see [queuedOrLatchedVerdict] for the reader's half of the ordering.
+     *
+     * @return false when the queue is closed and [chunk] was not taken; the caller still owns it, and
+     *   no FIN is latched.
+     */
+    internal fun deliverDrained(
+        chunk: ReadBuffer?,
+        fin: Boolean,
+    ): Boolean {
+        if (chunk != null && pendingData.trySend(chunk).isFailure) return false
+        if (fin) latchFin()
+        return true
+    }
+
+    /**
+     * A read takes the oldest chunk in [pendingData], or null when there is none. The stream is marked
+     * [StreamReadState.HandedOff] *before* the take, so a chunk is never out of the queue while the
+     * stream claims nothing — [holdsUnread] would read false over bytes a read is holding. When the
+     * queue was empty, [handBack] gives back the hand-off this call made itself (and only that one).
+     */
+    internal inline fun takeQueued(handBack: () -> Unit): ReadBuffer? {
+        val marked = readState.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+        val chunk = pendingData.tryReceive().getOrNull()
+        if (chunk == null && marked) handBack()
+        return chunk
+    }
+
+    /**
+     * What a read returns when quiche has nothing more for it right now: the next queued chunk
+     * (through [take]), else the latched verdict, else null — the read waits for more.
+     *
+     * [end] is read BEFORE the queue. [deliverDrained] queues before it latches, so a FIN seen here
+     * means every chunk it follows is already visible to [take]. The other order has a window: the
+     * queue looks empty, the driver's teardown drain queues the stream's last chunk and latches its
+     * FIN, and the read reports End over bytes the stream is still holding — the #318 data loss, by a
+     * race instead of a missing drain.
+     */
+    internal inline fun queuedOrLatchedVerdict(take: () -> ReadResult.Data?): ReadResult? =
+        when (end) {
+            StreamEnd.Open -> take()
+            StreamEnd.Fin -> take() ?: ReadResult.End
+            is StreamEnd.Reset -> take() ?: ReadResult.Reset
+        }
+
+    /** A read returned bytes to its caller: [StreamReadState.HandedOff] back to [StreamReadState.Idle], never over [StreamReadState.Finished]. */
+    internal fun returnHandOff() {
+        readState.compareAndSet(StreamReadState.HandedOff, StreamReadState.Idle)
+    }
+
+    /** The application is done reading this stream for good. */
+    internal fun finishReads() {
+        readState.store(StreamReadState.Finished)
+    }
 
     /**
      * Whether this stream still holds something for the application: bytes handed to a read that has not

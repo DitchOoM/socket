@@ -142,7 +142,15 @@ abstract class AsyncBaseClientSocket(
      * timeout (RFC §3.2).
      */
     private fun startOrphanedRead(): InFlightRead {
-        val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
+        // A close() landing between readRaw's isOpen check and here makes getOption throw a bare
+        // ClosedChannelException; mapped like every other platform IOException, it is this side's
+        // close (SocketClosedException.General), not a raw java.nio exception the caller cannot type.
+        val receiveBuffer =
+            try {
+                socket.getOption(StandardSocketOptions.SO_RCVBUF)
+            } catch (e: IOException) {
+                throw wrapJvmException(e)
+            }
         val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBuffer))
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         val deferred =
