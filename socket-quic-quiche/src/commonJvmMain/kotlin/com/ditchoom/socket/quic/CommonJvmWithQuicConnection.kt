@@ -78,9 +78,11 @@ internal suspend fun buildJvmQuicConnection(
     tuning.driverContext.startDeadlineTimer()
     val quicOptions = binding.transportOptionsFor(requestedOptions)
     val parentJob = SupervisorJob()
+    val spikeLoop = if (OwnedLoopSpike.enabled) OwnedLoopSpike.nextLoop() else null
     val parentScope =
         CoroutineScope(
-            parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-client/$serverName@$endpoint"),
+            parentJob + (spikeLoop ?: Dispatchers.IO.withTimerOf(tuning.driverContext)) +
+                CoroutineName("quic-client/$serverName@$endpoint"),
         )
     // What teardown still owes if this throws — see [ConnectProgress]. Advances as resources are
     // acquired and hands over entirely once the connection owns its own release.
@@ -239,7 +241,7 @@ internal suspend fun buildJvmQuicConnection(
                 streamWritePolicy = resolveStreamWritePolicy(quicOptions),
                 streamOpenPolicy = quicOptions.streamOpenPolicy,
                 clock = tuning.clock,
-                driverContext = tuning.driverContext,
+                driverContext = spikeLoop ?: tuning.driverContext,
                 sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
                 capture = tuning.captureFactory(),

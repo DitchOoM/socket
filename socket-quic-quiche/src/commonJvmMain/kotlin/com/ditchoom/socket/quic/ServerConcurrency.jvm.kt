@@ -51,7 +51,8 @@ internal actual class LiveDriverLedger actual constructor() {
     }
 }
 
-internal actual val serverReceiveDispatcher: CoroutineDispatcher = DeadlineTimer.Shared.over(Dispatchers.IO)
+internal actual val serverReceiveDispatcher: CoroutineDispatcher =
+    if (OwnedLoopSpike.enabled) OwnedLoopSpike.dispatcher else DeadlineTimer.Shared.over(Dispatchers.IO)
 
 internal actual fun writeNativeSizeT(
     buf: PlatformBuffer,

@@ -42,7 +42,7 @@ internal suspend fun buildJvmQuicServer(
     // Before anything is bound: a server whose timers cannot fire must be refused, not started.
     tuning.driverContext.startDeadlineTimer()
     val parentJob = SupervisorJob()
-    val parentScope = CoroutineScope(parentJob + Dispatchers.IO.withTimerOf(tuning.driverContext) + CoroutineName("quic-server"))
+    val parentScope = CoroutineScope(parentJob + (if (OwnedLoopSpike.enabled) OwnedLoopSpike.dispatcher else Dispatchers.IO.withTimerOf(tuning.driverContext)) + CoroutineName("quic-server"))
     var bound = false
 
     // A shared port constrains the transport (RFC 9443 §3) — resolve that before configuring.

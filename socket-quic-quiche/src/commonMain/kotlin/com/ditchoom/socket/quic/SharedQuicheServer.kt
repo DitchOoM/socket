@@ -198,7 +198,7 @@ internal class SharedQuicheServer(
             for (accepted in registry.acceptedDrivers) {
                 val driver = accepted.driver
                 val peer = accepted.remoteAddress
-                launch(serverReceiveDispatcher + CoroutineName("quic-server/handler/${peer.host}:${peer.port}")) {
+                launch(spikeHandlerContext(driver.loopContext, serverReceiveDispatcher) + CoroutineName("quic-server/handler/${peer.host}:${peer.port}")) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
                     val conn = DriverQuicConnection(driver, bufferFactory, accepted.remoteAddress, connScope)
@@ -707,7 +707,7 @@ internal class SharedQuicheServer(
                 streamWritePolicy = streamWritePolicy,
                 streamOpenPolicy = streamOpenPolicy,
                 clock = tuning.clock,
-                driverContext = tuning.driverContext,
+                driverContext = spikeAcceptedDriverContext(tuning.driverContext),
                 sendStallBound = tuning.sendStallBound,
                 random = tuning.random,
                 capture = capture,

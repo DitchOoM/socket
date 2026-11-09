@@ -29,6 +29,14 @@ class QuicBenchmarks {
 
     @Before
     fun setUp() {
+        // SPIKE (perf/owned-loop-spike): -e quicSpikeLoop shared|one|group|limited1, set before any QUIC
+        // class loads (OwnedLoopSpike reads it once).
+        val loop = androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("quicSpikeLoop") ?: "shared"
+        System.setProperty("quic.spike.loop", loop)
+        val setup = "# setup: loop=$loop cpus=${Runtime.getRuntime().availableProcessors()} " +
+            "pool.size=${System.getProperty("kotlinx.coroutines.scheduler.core.pool.size") ?: "default"}"
+        println(setup)
+        android.util.Log.i("QuicSpike", setup)
         assertJniBackend()
         loopback = AndroidQuicLoopback()
     }

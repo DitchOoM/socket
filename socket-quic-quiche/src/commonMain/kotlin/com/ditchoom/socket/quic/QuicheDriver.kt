@@ -1754,6 +1754,9 @@ class QuicheDriver(
         sampleActivePathLiveness()
     }
 
+    /** SPIKE (perf/owned-loop-spike): the context this driver's loop runs in. */
+    internal val loopContext: CoroutineContext get() = driverContext
+
     /** Every coroutine this driver launches is named after the connection it serves. */
     private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
 

@@ -152,7 +152,8 @@ internal fun CoroutineDispatcher.withTimerOf(driverContext: CoroutineContext): C
         else -> this
     }
 
-internal actual val productionDriverContext: CoroutineContext = DeadlineTimer.Shared.over(Dispatchers.Default)
+internal actual val productionDriverContext: CoroutineContext =
+    if (OwnedLoopSpike.enabled) OwnedLoopSpike.dispatcher else DeadlineTimer.Shared.over(Dispatchers.Default)
 
 /** What [DeadlineTimer.schedule] returns for a wait it does not schedule. */
 private object NothingScheduled : DisposableHandle {

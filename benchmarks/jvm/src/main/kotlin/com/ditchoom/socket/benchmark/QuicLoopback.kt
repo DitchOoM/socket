@@ -28,6 +28,11 @@ import kotlin.time.Duration.Companion.seconds
 /** A stream whose first byte is this is echoed; any other stream is drained and answered with FIN alone. */
 internal const val ECHO_MARKER: Byte = 'E'.code.toByte()
 
+/** SPIKE: a stream whose first byte is this is echoed after its handler BLOCKS its thread for [BLOCKING_HANDLER_MILLIS]. */
+internal const val BLOCKING_ECHO_MARKER: Byte = 'B'.code.toByte()
+
+internal const val BLOCKING_HANDLER_MILLIS = 5L
+
 internal val IO_TIMEOUT: Duration = 30.seconds
 
 /**
@@ -90,7 +95,7 @@ internal class QuicLoopback : AutoCloseable {
                     ),
             )
 
-        private fun tlsConfig(): QuicTlsConfig {
+        internal fun tlsConfig(): QuicTlsConfig {
             val dir =
                 System.getProperty("bench.certDir")
                     ?: error("bench.certDir is not set: run the benchmarks through Gradle (:benchmark-jvm:benchmark)")
@@ -112,6 +117,11 @@ internal fun assertQuicheBackend(): String {
             "The numbers would be reported under the wrong backend, so the run stops here."
     }
     println("# quiche backend: $actual (${loadQuicheApi()::class.java.name}) on JDK ${System.getProperty("java.version")}")
+    println(
+        "# setup: loop=${System.getProperty("quic.spike.loop") ?: "shared"} " +
+            "kotlinx.coroutines.scheduler.core.pool.size=${System.getProperty("kotlinx.coroutines.scheduler.core.pool.size") ?: "default"} " +
+            "cpus=${Runtime.getRuntime().availableProcessors()}",
+    )
     return actual
 }
 
@@ -129,6 +139,10 @@ internal fun loadedQuicheBackend(): String {
     return if (api === JniQuicheApi) "jni" else "ffm"
 }
 
+internal fun loopbackTls(): QuicTlsConfig = QuicLoopback.tlsConfig()
+
+internal suspend fun QuicScope.sinkOrEchoForLoad() = sinkOrEcho()
+
 private suspend fun QuicScope.sinkOrEcho() {
     coroutineScope {
         streams().collect { stream ->
@@ -140,11 +154,17 @@ private suspend fun QuicScope.sinkOrEcho() {
 private suspend fun serveStream(stream: QuicByteStream) {
     try {
         var echo: Boolean? = null
+        var blocking = false
         while (true) {
             when (val r = stream.read(10.minutes)) {
                 is ReadResult.Data ->
                     try {
-                        if (echo == null) echo = r.buffer.remaining() > 0 && r.buffer[r.buffer.position()] == ECHO_MARKER
+                        if (echo == null) {
+                            val first = if (r.buffer.remaining() > 0) r.buffer[r.buffer.position()] else 0
+                            echo = first == ECHO_MARKER || first == BLOCKING_ECHO_MARKER
+                            blocking = first == BLOCKING_ECHO_MARKER
+                        }
+                        if (blocking) Thread.sleep(BLOCKING_HANDLER_MILLIS)
                         if (echo == true) stream.writeFully(r.buffer, IO_TIMEOUT)
                     } finally {
                         r.buffer.freeIfNeeded()
