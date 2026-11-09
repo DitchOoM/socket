@@ -12,9 +12,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class QuicLocalServerTests {
@@ -345,7 +346,8 @@ class QuicLocalServerTests {
     fun replyLostInFlightIsRetransmittedBeforeTheServerCloses() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                val received = replyUnderDroppedDatagrams(QuicCloseLinger.Default, readBudget = 20.seconds)
+                val received =
+                    replyUnderDroppedDatagrams(QuicCloseLinger.Default, readBudget = 20.seconds, ReplyImpairment.DropFirstDatagrams)
                 assertEquals(
                     replyPayload.length,
                     received.length,
@@ -357,68 +359,115 @@ class QuicLocalServerTests {
 
     /**
      * Anti-vacuous guard for [replyLostInFlightIsRetransmittedBeforeTheServerCloses], and the
-     * pre-#321 behaviour written down: with [QuicCloseLinger.Immediate] the same scenario loses the
-     * reply outright, and the client's read reports the server's CONNECTION_CLOSE as the typed
-     * [QuicCloseException] — the stream's FIN never arrived, so it is not an end-of-stream. If the proxy
-     * ever stopped dropping the reply burst — the one way the positive test could pass without the fix
-     * doing anything — the client would read the whole reply and its FIN, and this would fail.
+     * pre-#321 behaviour written down: with [QuicCloseLinger.Immediate] the reply is lost outright, and
+     * the client's read reports the server's CONNECTION_CLOSE as the typed [QuicCloseException]. The
+     * stream's FIN never arrived, so it is not an end-of-stream. If the proxy ever stopped taking the
+     * reply away (the one way the positive test could pass without the fix doing anything), the client
+     * would read the whole reply and this would fail.
+     *
+     * The reply is taken away by [ReplyImpairment.BlackoutUntilServerQuiet], not by the positive test's
+     * count window. A count window decides nothing here: whether an immediate close truncates the reply
+     * depends on whether any reply datagram reaches the client before the server's close goes out. One
+     * that does gets ACKed, quiche marks everything before it lost, and the server retransmits the whole
+     * reply within a round trip, unless its close went out first. The old ten-datagram window ended
+     * exactly at the server's close on a macOS loopback, with nothing to spare; one datagram shorter, the
+     * client read the entire reply, which is what CI reported twice ("completed successfully with the
+     * result: <ABC…>"). The blackout holds every server datagram until the server has gone quiet after
+     * its handler returned, so how fast the server closes no longer matters.
      */
     @Test
     fun replyLostInFlightIsTruncatedByAnImmediateClose() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib(QuicLocalServerTests::class) {
-                assertFailsWith<QuicCloseException>(
-                    "closing immediately after the handler cannot deliver a dropped reply, and the client's " +
-                        "read must report that close rather than a clean end-of-stream",
-                ) {
-                    replyUnderDroppedDatagrams(QuicCloseLinger.Immediate, readBudget = 4.seconds)
+                var readEnded: ReadEnding? = null
+                val outcome =
+                    runCatching {
+                        replyUnderDroppedDatagrams(
+                            QuicCloseLinger.Immediate,
+                            readBudget = 4.seconds,
+                            ReplyImpairment.BlackoutUntilServerQuiet,
+                            onReadEnded = { readEnded = it },
+                        )
+                    }
+                val error = outcome.exceptionOrNull()
+                if (error != null && error !is QuicCloseException) throw error
+                // The client's read must not have ended on its own: a read that returned (End, Reset, a
+                // timeout, or the whole reply) means the close was not what it reported, even when the
+                // connection's block then ended with a QuicCloseException.
+                val ending = readEnded
+                if (error == null || ending != null) {
+                    fail(
+                        "closing immediately after the handler cannot deliver a reply the client never received, and the " +
+                            "client's read must report that close as a QuicCloseException. Instead the read ended with " +
+                            "$ending after ${outcome.getOrNull()?.length ?: "?"} of ${replyPayload.length} bytes " +
+                            "(block outcome: ${error ?: "returned normally"}): " +
+                            when (ending) {
+                                ReadEnding.AllArrived ->
+                                    "reply data reached the client although the proxy delivered only the server's last datagram"
+                                ReadEnding.End -> "a stream with no FIN read as the peer's clean end-of-stream"
+                                ReadEnding.Reset -> "a stream the peer never reset read as reset"
+                                ReadEnding.TimedOut, null -> "the close never reached the read"
+                            },
+                    )
                 }
             }
         }
 
+    /** How [replyUnderDroppedDatagrams] takes the reply away from the client. */
+    private enum class ReplyImpairment {
+        /**
+         * Drop the first [DROPPED_REPLY_DATAGRAMS] server→client datagrams after arming, then forward. A
+         * server that lingers recovers the reply by retransmitting it.
+         */
+        DropFirstDatagrams,
+
+        /**
+         * Hold every server→client datagram after arming. Once the server's handler has returned and the
+         * server has gone quiet, deliver only the last one, its CONNECTION_CLOSE. See [ReplyBlackoutProxy].
+         */
+        BlackoutUntilServerQuiet,
+    }
+
     /**
-     * Request/reply against a real quiche server whose first [DROPPED_REPLY_DATAGRAMS] reply datagrams
-     * are dropped by an in-process proxy, returning whatever the client managed to read within
-     * [readBudget]. The server closes the connection as soon as its handler returns; [closeLinger]
-     * decides whether that close waits for the peer.
+     * Request/reply against a real quiche server whose reply an in-process proxy takes away from the
+     * client as [impairment] says, returning whatever the client managed to read within [readBudget].
+     * [onReadEnded] hears how the reply's read ended, unless it threw.
+     * The server closes the connection as soon as its handler returns; [closeLinger] decides whether
+     * that close waits for the peer.
      */
     private suspend fun replyUnderDroppedDatagrams(
         closeLinger: QuicCloseLinger,
         readBudget: Duration,
+        impairment: ReplyImpairment,
+        onReadEnded: (ReadEnding) -> Unit = {},
     ): String {
         val options = testQuicOptions.copy(closeLinger = closeLinger)
         var received = ""
         withTimeout(60.seconds) {
             withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
+                val proxy: ImpairingProxy =
+                    when (impairment) {
+                        ReplyImpairment.DropFirstDatagrams ->
+                            DatagramChannelImpairingProxy(port) { direction, index ->
+                                if (direction == ImpairDirection.ServerToClient && index < DROPPED_REPLY_DATAGRAMS) {
+                                    ImpairAction.Drop
+                                } else {
+                                    ImpairAction.Forward
+                                }
+                            }
+                        ReplyImpairment.BlackoutUntilServerQuiet -> ReplyBlackoutProxy(port, quiet = SERVER_QUIET)
+                    }
                 val serverJob =
                     launch(Dispatchers.IO) {
                         connections {
-                            val stream = acceptStream()
-                            // Warm-up leg: echo the token back, so the client can prove the path is up
-                            // (and the handshake tail acked) before it arms the impairment.
-                            stream.read(10.seconds) { stream.write(it, 10.seconds) }
-                            // Request leg: drain to the peer's FIN.
-                            while (true) {
-                                if (stream.read(10.seconds) { it.remaining() } !is ScopedRead.Data) break
+                            try {
+                                replyHandler()
+                            } finally {
+                                (proxy as? ReplyBlackoutProxy)?.serverHandlerReturned()
                             }
-                            // The reply this test is about: written, FINed, and then the handler returns,
-                            // which closes the connection.
-                            val reply = BufferFactory.Default.allocate(replyPayload.length)
-                            reply.writeString(replyPayload, Charset.UTF8)
-                            reply.resetForRead()
-                            stream.write(reply, 10.seconds)
-                            stream.close()
                         }
                     }
 
-                val proxy =
-                    DatagramChannelImpairingProxy(port) { direction, index ->
-                        if (direction == ImpairDirection.ServerToClient && index < DROPPED_REPLY_DATAGRAMS) {
-                            ImpairAction.Drop
-                        } else {
-                            ImpairAction.Forward
-                        }
-                    }
                 val done = CompletableDeferred<String>()
                 val clientJob =
                     launch(Dispatchers.IO) {
@@ -430,7 +479,7 @@ class QuicLocalServerTests {
                                 proxy.arm() // from here, the server's next datagrams are the ones dropped
                                 writeAscii(stream, "request")
                                 stream.shutdownSend()
-                                done.complete(readUpTo(stream, replyPayload.length, readBudget))
+                                done.complete(readUpTo(stream, replyPayload.length, readBudget, onReadEnded))
                                 stream.close()
                             }
                         } catch (t: Throwable) {
@@ -453,6 +502,25 @@ class QuicLocalServerTests {
         return received
     }
 
+    /**
+     * The server side of [replyUnderDroppedDatagrams]. Warm-up leg: echo the token back, so the client
+     * can prove the path is up (and the handshake tail acked) before it arms the impairment. Request
+     * leg: drain to the peer's FIN. Then the reply this test is about: written, FINed, and the handler
+     * returns, which closes the connection.
+     */
+    private suspend fun QuicScope.replyHandler() {
+        val stream = acceptStream()
+        stream.read(10.seconds) { stream.write(it, 10.seconds) }
+        while (true) {
+            if (stream.read(10.seconds) { it.remaining() } !is ScopedRead.Data) break
+        }
+        val reply = BufferFactory.Default.allocate(replyPayload.length)
+        reply.writeString(replyPayload, Charset.UTF8)
+        reply.resetForRead()
+        stream.write(reply, 10.seconds)
+        stream.close()
+    }
+
     private suspend fun writeAscii(
         stream: QuicByteStream,
         text: String,
@@ -463,16 +531,20 @@ class QuicLocalServerTests {
         stream.write(buf, 10.seconds)
     }
 
+    /** How [readUpTo] stopped, when it stopped without throwing. */
+    private enum class ReadEnding { AllArrived, End, Reset, TimedOut }
+
     /**
      * Accumulate stream reads until [total] characters have arrived, the stream ends, or a read runs
-     * out of time — returning what did arrive. A read timeout is a *result* here, not a failure: the
-     * unfixed server simply never sends the rest, and the assertion should be about the missing bytes
-     * rather than about a stack trace.
+     * out of time — returning what did arrive, and telling [onEnded] which of those it was. A read
+     * timeout is a *result* here, not a failure: the unfixed server simply never sends the rest, and
+     * the assertion should be about the missing bytes rather than about a stack trace.
      */
     private suspend fun readUpTo(
         stream: QuicByteStream,
         total: Int,
         timeout: Duration,
+        onEnded: (ReadEnding) -> Unit = {},
     ): String {
         val sb = StringBuilder(total)
         while (sb.length < total) {
@@ -480,11 +552,22 @@ class QuicLocalServerTests {
                 try {
                     stream.read(timeout) { it.readString(it.remaining(), Charset.UTF8) }
                 } catch (_: TimeoutCancellationException) {
-                    break
+                    onEnded(ReadEnding.TimedOut)
+                    return sb.toString()
                 }
-            if (r !is ScopedRead.Data) break
-            sb.append(r.value)
+            when (r) {
+                is ScopedRead.Data -> sb.append(r.value)
+                ScopedRead.End -> {
+                    onEnded(ReadEnding.End)
+                    return sb.toString()
+                }
+                ScopedRead.Reset -> {
+                    onEnded(ReadEnding.Reset)
+                    return sb.toString()
+                }
+            }
         }
+        onEnded(ReadEnding.AllArrived)
         return sb.toString()
     }
 
@@ -498,6 +581,13 @@ class QuicLocalServerTests {
          * retransmission that happens *after* the handler returned.
          */
         const val DROPPED_REPLY_DATAGRAMS = 10
+
+        /**
+         * How long the server must have sent nothing, after its handler returned, before
+         * [ReplyBlackoutProxy] delivers its last datagram. The server closes within milliseconds of the
+         * handler returning; this only has to outlast that, well inside the guard's 4 s read budget.
+         */
+        val SERVER_QUIET = 250.milliseconds
 
         /** ~8 KB ⇒ several datagrams, so a dropped prefix leaves a hole nothing else can fill. */
         const val REPLY_SIZE = 8 * 1024
