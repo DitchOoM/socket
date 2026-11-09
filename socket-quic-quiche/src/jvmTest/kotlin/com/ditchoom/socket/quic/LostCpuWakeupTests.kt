@@ -11,6 +11,7 @@ import com.sun.jdi.event.BreakpointEvent
 import com.sun.jdi.event.ClassPrepareEvent
 import com.sun.jdi.event.VMDeathEvent
 import com.sun.jdi.event.VMDisconnectEvent
+import com.sun.jdi.event.VMStartEvent
 import com.sun.jdi.request.EventRequest
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
@@ -93,8 +94,20 @@ class LostCpuWakeupTests {
         val vm = connector.launch(arguments)
         val output = StringBuffer()
         val drains = listOf(vm.process().inputStream, vm.process().errorStream).map { drain(it, output) }
-        Debugger(vm).run()
-        check(vm.process().waitFor(60, TimeUnit.SECONDS)) { "the child never exited:\n$output" }
+        val debugger = Debugger(vm)
+        try {
+            debugger.run()
+            check(vm.process().waitFor(60, TimeUnit.SECONDS)) { "the child never exited" }
+        } catch (t: Throwable) {
+            // Failure-only: what the child printed, and every stop the debugger saw, in order.
+            vm.process().destroyForcibly()
+            drains.forEach { it.join(5_000) }
+            throw AssertionError(
+                "the $mode run's debugger failed: $t\n" +
+                    "debugger stops:\n${debugger.history.joinToString("\n")}\nchild output:\n$output",
+                t,
+            )
+        }
         drains.forEach { it.join(5_000) }
         println("[lost-cpu-wakeup] $mode:\n$output")
         return ChildRun(vm.process().exitValue(), output.toString())
@@ -111,12 +124,23 @@ class LostCpuWakeupTests {
     /**
      * Holds the first worker that reaches `tryReleaseCpu` from `tryPark` with the CPU permit once the child
      * marks "arm", and lets it go when the child marks "release". Every other stop resumes at once.
+     *
+     * It reads a stopped thread's frames only while the child cannot be exiting: a worker between "arm" and
+     * the hold (the child's main thread is then waiting for the hold), and the child's main thread at a mark
+     * (it is the thread that would exit). Once a worker is held, the `tryReleaseCpu` breakpoint is deleted, so
+     * no worker stops again. While it stayed, a worker that parked after the child's last step stopped there while
+     * the child was exiting, and JDWP had already dropped the thread's suspension, so reading its frame threw
+     * `IncompatibleThreadStateException` (the JDK 17 / JNI lane, PR #815's run 42633926330, attempt 1).
      */
     private class Debugger(
         private val vm: VirtualMachine,
     ) {
         private var armed = false
         private var held: ThreadReference? = null
+        private var workerBreakpoint: EventRequest? = null
+
+        /** Every stop, for the failure message. */
+        val history = mutableListOf<String>()
 
         fun run() {
             // One request per class: filters on a single request must all match.
@@ -127,13 +151,16 @@ class LostCpuWakeupTests {
                     enable()
                 }
             }
-            vm.resume()
+            // The launched VM waits, suspended, for its VMStartEvent to be resumed; that resume is the only
+            // one. (An extra vm.resume() here would be a second, stale resume: it would release whatever
+            // thread the first class-prepare stop had suspended.)
             try {
                 while (true) {
                     val events = vm.eventQueue().remove(TimeUnit.SECONDS.toMillis(60)) ?: error("the child went silent")
                     var resume = true
                     for (event in events) {
                         when (event) {
+                            is VMStartEvent -> history += "vm start"
                             is ClassPrepareEvent -> breakOn(event.referenceType() as ClassType)
                             is BreakpointEvent -> resume = onBreakpoint(event) && resume
                             is VMDeathEvent, is VMDisconnectEvent -> return
@@ -147,39 +174,46 @@ class LostCpuWakeupTests {
         }
 
         private fun breakOn(type: ClassType) {
+            history += "prepared ${type.name()}"
             val name = if (type.name() == WORKER) "tryReleaseCpu" else "mark"
             val method = type.methodsByName(name).single()
-            vm.eventRequestManager().createBreakpointRequest(method.location()).apply {
-                setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
-                enable()
-            }
+            val request =
+                vm.eventRequestManager().createBreakpointRequest(method.location()).apply {
+                    setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
+                    enable()
+                }
+            if (type.name() == WORKER) workerBreakpoint = request
         }
 
         /** @return whether the stopped thread may run on. */
         private fun onBreakpoint(event: BreakpointEvent): Boolean {
             val thread = event.thread()
-            val frame = thread.frame(0)
-            if (frame.location().method().name() == "mark") {
-                when ((frame.argumentValues.single() as StringReference).value()) {
+            // The event's own location: reading it needs nothing from the thread.
+            if (event.location().method().name() == "mark") {
+                val step = (thread.frame(0).argumentValues.single() as StringReference).value()
+                history += "mark $step on ${thread.name()}"
+                when (step) {
                     "arm" -> armed = true
                     "release" -> held?.resume()
                 }
                 return true
             }
             if (!armed || held != null) return true
-            if (thread
+            val caller =
+                thread
                     .frame(1)
                     .location()
                     .method()
-                    .name() != "tryPark"
-            ) {
-                return true
-            }
-            val worker = frame.thisObject()
+                    .name()
+            val worker = thread.frame(0).thisObject()
             val state = worker.getValue(worker.referenceType().fieldByName("state")) as ObjectReference
             val stateName = (state.getValue(state.referenceType().fieldByName("name")) as StringReference).value()
-            if (stateName != "CPU_ACQUIRED") return true
+            history += "tryReleaseCpu on ${thread.name()} from $caller in $stateName"
+            if (caller != "tryPark" || stateName != "CPU_ACQUIRED") return true
             held = thread
+            // Nothing after the hold needs a worker stop; a later one could land while the child exits.
+            workerBreakpoint?.let { vm.eventRequestManager().deleteEventRequest(it) }
+            history += "holding ${thread.name()}"
             val child = vm.classesByName(CHILD).single() as ClassType
             child.setValue(child.fieldByName("heldWorker"), vm.mirrorOf(thread.name()))
             return false
