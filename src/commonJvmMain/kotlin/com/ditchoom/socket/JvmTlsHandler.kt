@@ -44,6 +44,22 @@ internal class JvmTlsHandler(
     val closeTimeout = 1.seconds
 
     suspend fun handshake(timeout: Duration) {
+        // On Dispatchers.IO, never the caller's thread (which may be a UI thread): the first
+        // SSLContext.init in a process seeds its SecureRandom from the OS entropy device and, with the
+        // default trust managers, reads the platform trust store from disk.
+        engine = withContext(Dispatchers.IO) { newClientEngine() }
+        engine.beginHandshake()
+        try {
+            doHandshake(timeout)
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
+        }
+    }
+
+    /** A client-mode [SSLEngine] for [hostname], with SNI and hostname verification set from [config]. */
+    private fun newClientEngine(): SSLEngine {
         val context =
             try {
                 SSLContext.getInstance("TLSv1.3")
@@ -59,7 +75,7 @@ internal class JvmTlsHandler(
             }
 
         context.init(null, trustManagers, null)
-        engine = context.createSSLEngine(hostname, port)
+        val engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
 
         // SNI + hostname verification must be configured through a single
@@ -79,15 +95,7 @@ internal class JvmTlsHandler(
             }
             engine.sslParameters = sslParams
         }
-
-        engine.beginHandshake()
-        try {
-            doHandshake(timeout)
-        } catch (e: javax.net.ssl.SSLHandshakeException) {
-            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
-        } catch (e: javax.net.ssl.SSLException) {
-            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
-        }
+        return engine
     }
 
     /**

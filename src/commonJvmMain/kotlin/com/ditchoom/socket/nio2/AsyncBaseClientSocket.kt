@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.data.freeIfData
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
@@ -14,6 +15,7 @@ import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
+import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellationException
@@ -67,7 +69,8 @@ abstract class AsyncBaseClientSocket(
 
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
-    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+    override suspend fun read(deadline: Duration): ReadResult =
+        offTheAndroidMainThread(onAbandoned = { it.freeIfData() }) { translateRead { readRaw(deadline) } }
 
     private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (!isOpen) throw SocketClosedException.General("Socket is closed.")
@@ -171,7 +174,7 @@ abstract class AsyncBaseClientSocket(
         val bytesRead =
             try {
                 readMutex.withLock {
-                    socket.aRead(buffer.byteBuffer, timeout)
+                    offTheAndroidMainThread { socket.aRead(buffer.byteBuffer, timeout) }
                 }
             } catch (e: IOException) {
                 // Route every platform IOException through the single mapper. The async
@@ -188,11 +191,12 @@ abstract class AsyncBaseClientSocket(
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten {
-        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline) }
-        return BytesWritten(rawSocketWrite(buffer, deadline))
-    }
+    ): BytesWritten =
+        offTheAndroidMainThread {
+            if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+            tlsHandler?.let { return@offTheAndroidMainThread it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline) }
+            BytesWritten(rawSocketWrite(buffer, deadline))
+        }
 
     internal override suspend fun rawSocketWrite(
         buffer: ReadBuffer,
@@ -231,6 +235,6 @@ abstract class AsyncBaseClientSocket(
         // Tear down the waiter for any orphaned read; closing the channel (in super.close) is what
         // actually completes the outstanding JDK read, so no read leaks past close.
         orphanedReadScope.cancel()
-        super.close()
+        offTheAndroidMainThread { super.close() }
     }
 }
