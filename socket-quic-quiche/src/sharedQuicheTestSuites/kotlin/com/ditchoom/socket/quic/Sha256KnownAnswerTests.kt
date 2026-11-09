@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,28 +13,29 @@ import kotlin.test.assertEquals
  * A wrong digest here is silent in production: a pin that never matches looks exactly like a server whose
  * certificate changed.
  *
- * Inputs use [BufferFactory.Default], the only kind the native actuals accept (they read through a raw
- * address). [JvmSha256HeapBufferTests] repeats the vectors with heap buffers on the JVM, where the actual
- * reads the backing array instead.
+ * Inputs use [BufferFactory.network], as production does (the verifier's DER buffer is native so quiche
+ * gets an address): the native actuals read through a raw address and reject anything else.
+ * [BufferFactory.Default] is NOT native on Linux. [JvmSha256HeapBufferTests] repeats the vectors with heap
+ * buffers on the JVM, where the actual reads the backing array instead.
  */
 class Sha256KnownAnswerTests {
     @Test
-    fun emptyInput() = Sha256Vectors.empty(BufferFactory.Default)
+    fun emptyInput() = Sha256Vectors.empty(BufferFactory.network())
 
     @Test
-    fun abc() = Sha256Vectors.abc(BufferFactory.Default)
+    fun abc() = Sha256Vectors.abc(BufferFactory.network())
 
     @Test
-    fun twoBlockInput() = Sha256Vectors.twoBlock(BufferFactory.Default)
+    fun twoBlockInput() = Sha256Vectors.twoBlock(BufferFactory.network())
 
     @Test
-    fun oneHundredTwelveByteInput() = Sha256Vectors.oneHundredTwelve(BufferFactory.Default)
+    fun oneHundredTwelveByteInput() = Sha256Vectors.oneHundredTwelve(BufferFactory.network())
 
     @Test
-    fun oneMillionBytes() = Sha256Vectors.oneMillion(BufferFactory.Default)
+    fun oneMillionBytes() = Sha256Vectors.oneMillion(BufferFactory.network())
 
     @Test
-    fun sliceWithNonZeroPositionIsHashedAndNotConsumed() = Sha256Vectors.positionedSlice(BufferFactory.Default)
+    fun sliceWithNonZeroPositionIsHashedAndNotConsumed() = Sha256Vectors.positionedSlice(BufferFactory.network())
 }
 
 /** The vectors, shared with the JVM heap-buffer variant. Expected values are FIPS 180-4 / NIST examples. */
