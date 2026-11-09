@@ -2173,20 +2173,22 @@ class QuicheDriver(
 
     /**
      * Run the commands already queued behind the one just dispatched, up to [MAX_COMMANDS_PER_TURN], so
-     * one [afterCommand] serves them all: quiche takes every datagram that arrived, then one flush sends
-     * what they call for (ACKs coalesce, a window update rides with the data). That is how quiche is
-     * meant to be driven: receive until the socket is empty, then send. Flushing after each command made
-     * a burst of N datagrams cost N flushes, each walking every stream and path.
+     * one [afterCommand] serves several: a run of writes, opens and reads, and up to
+     * [RECEIVES_PER_FLUSH] received datagrams, then one flush sends what they call for (a window update
+     * rides with the data, a stream's writes leave together). Flushing after each command made a burst
+     * of N datagrams cost N flushes, each walking every stream and path.
      *
-     * The burst is acknowledged once, too: quiche writes an ACK in the flush after any ack-eliciting
-     * packet, so N datagrams read together draw one ACK where flushing per datagram drew N. RFC 9000
-     * §13.2.2 allows it ("A receiver MAY process multiple available packets before determining whether
-     * to send an ACK frame in response"), and it is what makes bulk receive cheap. The cost is redundancy
-     * under loss: when that one ACK is lost, nothing else from the burst carries the acknowledgement,
-     * and the sender waits for its PTO. The sim measures it: a 34 KB reply over an 800 ms, 30 %-loss path
-     * misses the handler's 30 s write bound or the 120 s close linger in 6 % of seeds against 0.5 % when
-     * every datagram was flushed alone. The sim delivers a whole burst at one instant, so it reads all of
-     * it together; on a real link only the datagrams already queued when the loop wakes are.
+     * Received datagrams are the one thing it does not batch freely, because a flush is also where
+     * quiche writes its ACK. RFC 9000 §13.2.2: "A receiver SHOULD send an ACK frame after receiving at
+     * least two ack-eliciting packets." So the loop flushes once it has read [RECEIVES_PER_FLUSH]
+     * datagrams, before running anything else. Reading the whole queue first would ACK a burst once
+     * (the same section's MAY), and that one ACK is then the burst's only acknowledgement: lose it and
+     * the sender waits out a PTO. The deterministic sim measured what that costs: a 34 KB reply over an
+     * 800 ms, 30 %-loss path missed the handler's 30 s write bound or the 120 s close linger in 121 of
+     * 2000 seeds with the whole queue read before one flush, 39 with a flush every two datagrams, 11 with
+     * a flush every datagram, and 10 on the loop that flushed after every command. One flush per datagram
+     * gave up most of the bulk-throughput gain (loopback, median of three: 62 against 155 MiB/s on FFM,
+     * 84 against 128 on JNI), so two it is: the RFC's own number.
      *
      * Bounded so a peer that keeps the queue full cannot starve timers and flushes: after the cap the
      * loop flushes and re-arms its wake as usual, and the rest wait one turn. Returns false when the loop
@@ -2199,10 +2201,17 @@ class QuicheDriver(
                 failCommand(next)
                 return false
             }
+            if (receivedSinceFlush >= RECEIVES_PER_FLUSH) afterCommand()
             dispatch(next)
         }
         return true
     }
+
+    /**
+     * Datagrams handed to quiche since the last [afterCommand] flushed: what [dispatchQueued] counts
+     * toward [RECEIVES_PER_FLUSH]. Loop-confined, like everything the loop's commands touch.
+     */
+    private var receivedSinceFlush = 0
 
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
     private fun dispatch(cmd: QuicheCmd) {
@@ -2252,6 +2261,7 @@ class QuicheDriver(
                 // No QuicheMemory here, deliberately: this command already carries the buffer itself,
                 // so the owner needs no re-pairing — only the fence, which costs nothing per datagram
                 // where an extra object on the receive hot path would not.
+                receivedSinceFlush++
                 try {
                     api.connRecv(conn, addr, cmd.len, info)
                 } finally {
@@ -2446,6 +2456,7 @@ class QuicheDriver(
     }
 
     private suspend fun afterCommand() {
+        receivedSinceFlush = 0
         flushOutgoing()
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
@@ -4371,6 +4382,12 @@ class QuicheDriver(
          * ~86 KB at [MAX_DATAGRAM_SIZE].
          */
         internal const val MAX_COMMANDS_PER_TURN = 64
+
+        /**
+         * Received datagrams one loop turn reads before it flushes, so that quiche ACKs at least every
+         * second ack-eliciting packet (RFC 9000 §13.2.2). See [dispatchQueued].
+         */
+        internal const val RECEIVES_PER_FLUSH = 2
 
         /**
          * What every driver-backed connection declares to its callers. All three bindings —

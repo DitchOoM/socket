@@ -242,14 +242,19 @@ internal val SILENT_PATH_MINIMUM_SILENCE: Duration = 2.seconds
  * clock whose tick length is set by the thing being measured.
  *
  * ## Why four seconds
- * The ceiling binds where the count is slowest, and the arithmetic says exactly where that is: a run's
- * elapsed time at its *k*-th expiry is `(2^k − 2)·PTO`, so the third expiry lands at `6·PTO` and this
- * ceiling first bites at `PTO > 667ms`. That is above every PTO of a working path — real round trips
- * sit well under 200ms, and the sim's slowest arm is a 240ms round trip at `PTO ≈ 465ms` — and 1.5×
- * below the 1024ms of an un-sampled one. So it changes nothing on a path the count already handles
- * and rescues the one it cannot: detection in the two-migration scenario is the same at every
- * ceiling from 2.5s to 6s, and 15.36s without one. The value is not tuning a boundary; it is picking
- * which side of a 1.5× gap to sit on.
+ * The ceiling binds where the count is slowest, and the arithmetic says exactly where that is. It is
+ * timed from the first ack-eliciting send the path did not answer ([SilenceThreshold.isMetByUnansweredSends]),
+ * and the *k*-th expiry lands `(2^k − 1)·PTO` after that send, so the fourth lands at `15·PTO` and this
+ * ceiling decides instead of the count once `PTO > 267ms`. (Judged only at an expiry, from the run's
+ * first expiry, [SilenceThreshold.isMetBy]'s own ceiling clause sees `(2^k − 2)·PTO` and would first
+ * bite at the third expiry, `PTO > 667ms`; the unanswered-send timer always gets there sooner.) So the
+ * count decides on a sampled path with a settled variance — the sim's 120ms round trip at `PTO ≈ 246ms`,
+ * detection at 3.695s — and the ceiling decides on everything slower: a 120ms path with only two RTT
+ * samples (`PTO ≈ 325ms`), the sim's 240ms arm at `PTO ≈ 465ms`, and the 1024ms of an un-sampled path.
+ * On a path the count would have handled within the 4s the ceiling only declares sooner, never on less
+ * evidence: ack-eliciting data unanswered for four seconds, where a working path answers within one
+ * PTO. Detection in the two-migration scenario is the same at every ceiling from 2.5s to 6s, and 15.36s
+ * without one.
  *
  * ⚠️ It is never armed as a timer off a run: a run that has stopped growing must never be declared on
  * elapsed time alone. It is armed off an answer the path owes for ack-eliciting data handed to quiche

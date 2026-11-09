@@ -3632,13 +3632,14 @@ abstract class MigrationSimTestSuite {
                         //
                         // How many samples the handshake and one echo leave is not this test's to fix. It
                         // is the peers' ACK cadence: quiche samples once per ACK that newly acknowledges
-                        // its largest packet, and a driver that reads every queued datagram before it
-                        // sends acknowledges a burst with one ACK where flushing per datagram sent one
-                        // each (RFC 9000 §13.2.2 allows either). With batched receives this point is
-                        // reached with two samples, PTO 325ms, and the ceiling fired at three expiries,
-                        // which is the ceiling working as designed, not the count regressing. So echo
-                        // until the path is estimated well enough for the count to be the thing measured,
-                        // and say so if it never is.
+                        // its largest packet, and a driver that flushes after every second received
+                        // datagram (QuicheDriver.RECEIVES_PER_FLUSH) sends fewer ACKs than one that
+                        // flushed after each. With that cadence this point is reached with three samples
+                        // (rttvar 33.75ms, PTO 280ms), and with the whole queue read before one flush it
+                        // was two (PTO 325ms); either way the ceiling fired at three expiries, which is
+                        // the ceiling working as designed, not the count regressing. So echo until the
+                        // path is estimated well enough for the count to be the thing measured, and say
+                        // so if it never is.
                         val atWarm =
                             run {
                                 var reading = clientPathTimers().single { it.active }
@@ -4941,12 +4942,13 @@ abstract class MigrationSimTestSuite {
          *
          * A seed fixes the sim's loss draws, not which datagrams they land on: the pipe draws once per
          * datagram in the order they are offered, so the set belongs to the driver's send cadence and is
-         * re-measured when that changes. Reading every queued datagram before one flush acknowledges a
-         * burst with one ACK instead of one per datagram, which moved every later draw: of the previous
-         * set (30, 71, 107, 124) none still lost its FIN unpatched, and 71 now meets a 43s run of lost
-         * ACKs that outlasts the handler's own 30s write bound, so it never reaches its FIN at all.
+         * re-measured when that changes. Flushing after every second received datagram instead of every
+         * one ([QuicheDriver.RECEIVES_PER_FLUSH]) sends fewer ACKs and moved every later draw: of the
+         * previous set (30, 71, 107, 124) none loses its FIN unpatched any more (on the per-command loop it
+         * had already drifted to 12 and 17, so the test had stopped proving the patch). Seven seeds qualify
+         * now; these are the first four.
          */
-        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(406L, 518L, 1313L)
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(173L, 271L, 1009L, 1028L)
 
         /**
          * PTOs from the first unanswered send to the [SILENT_PATH_EXPIRY_THRESHOLD]-th expiry: `2^4 - 1`, each
