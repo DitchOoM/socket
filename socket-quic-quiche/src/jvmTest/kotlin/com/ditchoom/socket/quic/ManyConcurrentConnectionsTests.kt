@@ -17,16 +17,28 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * **More QUIC connections than `Dispatchers.IO` has threads, open at once in one process, all work.**
  *
- * Before the event loops, every connection's UDP socket waited for its next datagram in a `select()` of
- * its own, parked on a `Dispatchers.IO` thread. `Dispatchers.IO` has 64 threads. With 64 client
- * connections and the server's receive loop open in one process, every one of them was taken by a parked
- * select, and nothing else that needed IO (the connections' own reads, the server's handlers) could run:
- * every round trip timed out. Measured on the owned-loop spike: 60 connections worked, 64 stalled, and 64
- * worked with `-Dkotlinx.coroutines.io.parallelism=256`.
+ * ## The mechanism before the event loops, from thread dumps of this test on `main`
+ *
+ * Every connection's UDP socket is a `:socket-udp` `NioDatagramChannel`, and its receive waited for the
+ * next datagram in `runInterruptible(Dispatchers.IO) { selector.select() }`: one `Dispatchers.IO`
+ * thread parked in `KQueue.poll` (epoll on Linux) per waiting socket. `Dispatchers.IO` allows 64 at
+ * once. Dumps taken 25 s into a stalled run (macOS, 80 connections):
+ *
+ * - **JDK 17:** 64 IO threads, every one a client connection's reader in `select()`. The server's
+ *   receive-loop reader, which runs on `Dispatchers.IO` too, never got a thread: its task sat in the
+ *   queue, so the server read nothing, and every handshake past the first 63 or so timed out (30 s).
+ * - **JDK 21:** the same, with 63 client readers plus one IO thread held by the network monitor's
+ *   blocking routing-socket `recv` (`FfmRoutingSocketNetworkMonitor`, FFM, JDK 21+ only).
+ *
+ * The drivers were not the bottleneck: they ran on an elastic `Dispatchers.IO` view (#805) whose
+ * threads sat idle. Virtual threads played no part on either JDK. `quicBlockingDispatcher` (virtual
+ * threads on JDK 21+) backs only the legacy quiche `NioUdpChannel`, which no production path opens.
+ * There were no carrier threads in either dump.
  *
  * Now the sockets wait in the selectors of the QUIC event loops, a handful of threads for any number of
- * sockets. This opens [CONNECTIONS] connections, holds them all open, and only then has each do a round
- * trip, so every socket is waiting at the same time.
+ * sockets. This opens [CONNECTIONS] connections and holds them all open. Only then does each do a round
+ * trip, so every socket is waiting at the same time. It fails on `main` on JDK 17 and on JDK 21, and
+ * passes with the loops on both.
  */
 class ManyConcurrentConnectionsTests {
     private val options =
