@@ -152,7 +152,31 @@ internal fun CoroutineDispatcher.withTimerOf(driverContext: CoroutineContext): C
         else -> this
     }
 
-internal actual val productionDriverContext: CoroutineContext = DeadlineTimer.Shared.over(Dispatchers.Default)
+/**
+ * What every JVM/Android driver loop (and its per-path UDP reader loops) runs on: a view of
+ * `Dispatchers.IO` as wide as `Dispatchers.Default`, **not** `Dispatchers.Default` itself.
+ *
+ * kotlinx.coroutines 1.11.0's scheduler can lose the wakeup for a `Dispatchers.Default` task that a
+ * thread other than a CPU-permit-holding worker puts in its global CPU queue (kotlinx.coroutines issue
+ * #4491; the fix, PR #4528, is unreleased). The worker it unparks cannot take the task without a CPU
+ * permit; the worker holding the permit has already made its last scan, gives the permit back and
+ * parks. The task then waits, with every worker parked, until some unrelated dispatch wakes one. A
+ * driver loop is woken almost only from such threads: the [DeadlineTimer] thread, the NIO receive
+ * loops and server handlers on `Dispatchers.IO`, and an application's own threads. On Android, whose
+ * core pool is two, a QUIC stream stalled that way for 16 s (#799's flight recorder: `global CPU queue
+ * size = 1`, `CPUs acquired = 0`, 18 workers parked).
+ *
+ * A task dispatched here is a blocking task in the same scheduler, and any worker it unparks runs it
+ * whether or not it holds a CPU permit, so no interleaving strands it ([LostCpuWakeupTests] forces the
+ * one that strands a `Dispatchers.Default` task). An `IO` view is elastic: it does not share
+ * `Dispatchers.IO`'s 64-thread limit, so the selector loops parked in `Dispatchers.IO` cannot starve a
+ * driver. Its width is `Dispatchers.Default`'s, so drivers still run no more of quiche's CPU work at
+ * once than before.
+ */
+internal val driverLoopDispatcher: CoroutineDispatcher =
+    Dispatchers.IO.limitedParallelism(maxOf(2, Runtime.getRuntime().availableProcessors()), "quic-driver")
+
+internal actual val productionDriverContext: CoroutineContext = DeadlineTimer.Shared.over(driverLoopDispatcher)
 
 /** What [DeadlineTimer.schedule] returns for a wait it does not schedule. */
 private object NothingScheduled : DisposableHandle {
