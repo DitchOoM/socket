@@ -254,13 +254,57 @@ Full capture: ${HANG_FILE} (artifact android-test-reports-${API_LEVEL})")"
   done
 }
 
+# A MODULE THAT RAN NO TESTS: WHAT THE ENGINE, THE DEVICE AND THE RUNNER LOOKED LIKE
+# -----------------------------------------------------------------------------------
+# Run 42650305746 (API 24): :socket-http3 printed "Running tests on devices", then 0.8 s later
+# "Could not find test-result.pb", and nothing else. The emulator was alive (it answered the
+# shutdown below), no install or instrumentation reached it, and the log had no "AndroidTestRunner
+# failed": the engine failed before the device ran anything, and AGP 9.5.1 discards that
+# exception (neither of its JUnit Platform listeners logs a failed engine). The job's later
+# "error: no emulator detected" came from the cleanup step, after this script had shut it down.
+# So this capture records what can still be seen: every adb command the engine ran and how each
+# ended (ADB JOURNAL, scripts/adb-install-guard.sh), whether the device still answers, and the
+# runner's memory and kernel log (an OOM kill would show there).
+NO_TESTS_FILE="emulator-diagnostics/no-tests-ran-api${API_LEVEL}.txt"
+ADB_JOURNAL="emulator-diagnostics/adb-journal.txt"
+
+failed_adb_commands() {
+  grep -F ' FAILED ' "$ADB_JOURNAL" 2>/dev/null || echo "(none recorded in $ADB_JOURNAL)"
+}
+
+capture_no_tests_ran() {
+  {
+    echo "Modules with instrumented tests that ran none (API ${API_LEVEL}), captured $(date -u +%FT%TZ):"
+    echo "$1"
+    echo "--- Gradle lines about test results ---"
+    grep -nE 'Running tests on devices|test-result.pb|AndroidTestRunner|connectedDebugAndroidTest|Failed to|FAILED' \
+      "$GRADLE_OUT_FILE" 2>/dev/null | tail -60 || true
+    echo
+    echo "--- adb commands that failed ---"
+    failed_adb_commands
+    echo
+    echo "--- adb journal, last 150 entries ---"
+    tail -150 "$ADB_JOURNAL" 2>/dev/null || echo "(no journal at $ADB_JOURNAL)"
+    capture_section "adb devices" 10 adb devices -l
+    capture_section "device answers adb shell" 15 adb shell 'echo alive; getprop sys.boot_completed; getprop ro.build.version.sdk'
+    capture_section "device storage" 15 adb shell df
+    capture_section "device memory" 15 adb shell cat /proc/meminfo
+    capture_section "device packages (test packages)" 15 adb shell pm list packages com.ditchoom
+    capture_section "runner memory" 5 free -m
+    capture_section "runner load" 5 cat /proc/loadavg
+    capture_section "runner kernel log: OOM kills and segfaults" 10 \
+      bash -c "sudo -n dmesg -T 2>&1 | grep -iE 'oom|killed process|out of memory|segfault|qemu' | tail -40"
+    capture_section "runner processes by memory" 5 bash -c "ps -eo pid,rss,etime,args --sort=-rss | head -15 | cut -c1-300"
+  } >"$NO_TESTS_FILE" 2>&1
+}
+
 # ADB INSTALL GUARD: A STALLED TEST-APK INSTALL IS RECORDED, THEN RETRIED PUSHED
 # ------------------------------------------------------------------------------
 # The streamed `adb install` AGP's test engine runs has stalled on the API-24 emulator four times
 # since the AGP 9.5.1 bump (runs 42324622569, 42382561575, 42434499783, 42513600114), and the
 # engine cannot be given a deadline or install options (WATCHDOG above). So on CI the SDK's `adb`,
 # which is the binary the engine runs, is replaced by scripts/adb-install-guard.sh. It passes every
-# other command straight to the real adb. An install with no result after ADB_GUARD_STALL_S is
+# other command to the real adb, recording each in $ADB_JOURNAL. An install with no result after ADB_GUARD_STALL_S is
 # recorded to emulator-diagnostics/install-stall-<n>.txt, killed, and retried once with
 # `--no-streaming -r`. A recovered stall is reported as a ::warning:: below and its capture uploaded
 # even on a green run, so every occurrence adds evidence.
@@ -364,8 +408,15 @@ if [ "$NETWORK_READY" = "1" ]; then
       sed -E 's#src/androidInstrumentedTest/.*##; s#/$##; s#^$#.#' | sort -u)
     if [ -n "$RAN_NOTHING" ]; then
       TEST_EXIT=1
-      echo "::error title=Instrumented tests did not run (API ${API_LEVEL})::$(gh_escape "These modules have instrumented tests but ran none. Look for 'AndroidTestRunner failed' in the run-tests log (an install that failed, for example):
-${RAN_NOTHING}")"
+      capture_no_tests_ran "$RAN_NOTHING"
+      echo "::group::Capture: modules that ran no tests (API ${API_LEVEL}) -> ${NO_TESTS_FILE}"
+      cat "$NO_TESTS_FILE"
+      echo "::endgroup::"
+      echo "::error title=Instrumented tests did not run (API ${API_LEVEL})::$(gh_escape "These modules have instrumented tests but ran none:
+${RAN_NOTHING}
+If the log has 'AndroidTestRunner failed', the run on the device failed (an install, for example). If not, the test engine failed before the device ran anything and AGP discarded the exception. Failed adb commands (newest last):
+$(failed_adb_commands | tail -20)
+Full capture: ${NO_TESTS_FILE} (artifact android-test-reports-${API_LEVEL})")"
     fi
   fi
 
