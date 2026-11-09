@@ -9,6 +9,7 @@ import com.ditchoom.socket.connectRace
 import com.ditchoom.socket.nio.util.aConfigureBlocking
 import com.ditchoom.socket.nio.util.connect
 import com.ditchoom.socket.nio.util.openSocketChannel
+import com.ditchoom.socket.offTheAndroidMainThread
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
@@ -17,7 +18,13 @@ class NioClientSocket(
     config: TransportConfig = TransportConfig(),
 ) : BaseClientSocket(blocking, config),
     ClientToServerSocket {
+    /** Connects (and, with TLS, handshakes) off the Android main thread: see [offTheAndroidMainThread]. */
     override suspend fun open(
+        port: Int,
+        hostname: String?,
+    ) = offTheAndroidMainThread { connect(port, hostname) }
+
+    private suspend fun connect(
         port: Int,
         hostname: String?,
     ) {

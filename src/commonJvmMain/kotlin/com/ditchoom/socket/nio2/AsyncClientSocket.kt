@@ -7,6 +7,7 @@ import com.ditchoom.socket.candidatesFor
 import com.ditchoom.socket.connectRace
 import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
+import com.ditchoom.socket.offTheAndroidMainThread
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
@@ -14,7 +15,13 @@ class AsyncClientSocket(
     config: TransportConfig = TransportConfig(),
 ) : AsyncBaseClientSocket(config),
     ClientToServerSocket {
+    /** Connects (and, with TLS, handshakes) off the Android main thread: see [offTheAndroidMainThread]. */
     override suspend fun open(
+        port: Int,
+        hostname: String?,
+    ) = offTheAndroidMainThread { connect(port, hostname) }
+
+    private suspend fun connect(
         port: Int,
         hostname: String?,
     ) {

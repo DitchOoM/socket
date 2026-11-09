@@ -1,6 +1,10 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -25,7 +29,24 @@ object QuicheEngine : QuicEngine {
 
     override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(JcaPeerCertificateBackend)
 
+    /**
+     * Establishment runs on [Dispatchers.IO], never on the caller's thread, which may be a UI thread:
+     * the first connection in a process extracts and loads the native library, and every connection
+     * may start the platform network monitor, read the platform trust store and write a CA bundle file.
+     */
     override suspend fun connect(
+        binding: QuicClientBinding,
+        endpoint: QuicEndpoint,
+        serverName: String,
+        quicOptions: QuicOptions,
+        transport: TransportConfig,
+        timeout: Duration,
+    ): QuicConnection =
+        offTheCallersThread(release = { it.close() }) {
+            establish(binding, endpoint, serverName, quicOptions, transport, timeout)
+        }
+
+    private suspend fun establish(
         binding: QuicClientBinding,
         endpoint: QuicEndpoint,
         serverName: String,
@@ -69,18 +90,48 @@ object QuicheEngine : QuicEngine {
         return connection
     }
 
+    /** On [Dispatchers.IO] for the reasons [connect] is, plus the certificate and key file reads. */
     override suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
     ): QuicServer =
-        buildJvmQuicServer(
-            binding,
-            tlsConfig,
-            quicOptions,
-            QuicheDriverTuning(captureFactory = {
-                traceRecorderFor(quicOptions)
-            }),
-        )
+        offTheCallersThread(release = { it.close() }) {
+            buildJvmQuicServer(
+                binding,
+                tlsConfig,
+                quicOptions,
+                QuicheDriverTuning(captureFactory = {
+                    traceRecorderFor(quicOptions)
+                }),
+            )
+        }
+
+    /** On [Dispatchers.IO]: the certificate is written to PEM files for the bind to read. */
+    override suspend fun bind(
+        binding: QuicPortBinding,
+        certificate: PeerCertificate,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = offTheCallersThread(release = { it.close() }) { super.bind(binding, certificate, quicOptions, timeout) }
+}
+
+/**
+ * Runs [block] on [Dispatchers.IO] and returns what it built. A caller cancelled just as [block]
+ * finishes never receives the result — `withContext` discards it — and that is the ordinary way a
+ * losing candidate of a connect race ends, so the discarded connection or server is [release]d here
+ * rather than leaked.
+ */
+private suspend inline fun <T> offTheCallersThread(
+    crossinline release: suspend (T) -> Unit,
+    crossinline block: suspend () -> T,
+): T {
+    var built: T? = null
+    try {
+        return withContext(Dispatchers.IO) { block().also { built = it } }
+    } catch (e: CancellationException) {
+        built?.let { withContext(NonCancellable) { release(it) } }
+        throw e
+    }
 }
