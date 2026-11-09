@@ -334,7 +334,7 @@ jobs:
   # → UnsupportedQuicEngine, so their QUIC suites skip cleanly.
   # NOT continue-on-error: a real Apple test failure must stay red.
   kn-tests:
-    name: "K/N ${{ matrix.shard.name }}"
+    name: "K/N ${{ matrix.shard.name }} #${{ matrix.rep }}"
     needs: natives
     runs-on: macos-26
     timeout-minutes: 45
@@ -344,72 +344,12 @@ jobs:
       # triaging a multi-target Kotlin/Native break.
       fail-fast: false
       matrix:
+        # TEMPORARY (measurement): the iOS simulator shard only, replicated.
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         shard:
-          # ⚠️ The macOS x64 suite is split with `-x`, NOT with a hand-kept list of qualified
-          # `:module:macosX64Test` task paths, and that choice is load-bearing. An explicit list is
-          # exactly the false-green this file already warns about above: add a module (or an Apple
-          # target to an existing one) and its tests silently stop running, with everything green.
-          # `-x` inverts the failure mode — the unqualified task still means "every subproject that
-          # has one", so a new module automatically lands in the `rest` shard. The only thing the
-          # split can get wrong is running something twice, which is loud and cheap.
-          #
-          # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
-          # dominates the lane; the two together were 827s of a 864s job before this split.
-          #
-          # `requireAllTests` turns a skipped test into a hard failure on the lanes whose first
-          # inventory came back empty (see the skip-inventory step). It is deliberately absent from
-          # the three simulator shards, which still legitimately skip.
-          #
-          # ⚠️ The reason is NOT the one this comment used to give, and the difference decides when
-          # the flag can be set. Re-measured from the markers in run 31890681923, the 115 skips split
-          # into TWO causes, not one:
-          #
-          #   simulator-lacks-fixtures        93  AppleHttp3LoopbackTest (31 x 3 lanes)
-          #   simulator-lacks-network-services 22  AppleWebTransportTest (5 x 3) + QuicHarnessIntegrationTests (7, iOS)
-          #
-          # #359 fixed the first 93 by exporting each module's testcerts/ into the sandbox by
-          # absolute path (see the root build.gradle.kts). It cannot fix the other 22: those suites
-          # skip because `simctl spawn --standalone` runs outside launchd_sim, so the network daemons
-          # a connection needs are unreachable wherever the certs are. That is #81, and it needs a
-          # booted-mode lane (`standalone = false`), not a fixture.
-          #
-          # So setting requireAllTests: "1" here today would convert 22 correct, documented skips into
-          # a permanently red lane — the SkipGate docs' exact "a gate that cannot be satisfied is not
-          # a gate". It goes on when #81 lands and the inventory reads zero, and not before.
-          - name: "macOS x64 (quiche)"
-            tasks: ":socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
-          - name: "macOS x64 (all other modules)"
-            tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
-          # Booted, not standalone: the shard boots an iPhone simulator and the tests spawn into it,
-          # so the network daemons the WebTransport and QUIC-harness suites need are reachable.
-          # requireAllTests stays off until this shard's skip inventory reads zero.
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
             bootSimulator: "1"
-          # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
-          # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
-          # cleanly and what remains is mostly compile time, which parallelises well.
-          - name: "tvOS simulator"
-            tasks: "tvosSimulatorArm64Test"
-          - name: "watchOS simulator"
-            tasks: "watchosSimulatorArm64Test"
-          # ktlint gets its OWN lane. It rode the macOS x64 lane, then moved to the compile lane
-          # when that was split — and took the bottleneck with it both times, because it is ~400s
-          # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
-          # landed on it). It depends on no native artifact and no test, so it parallelises freely.
-          - name: "ktlint"
-            tasks: "ktlintCheck"
-          # Compile (can't run — no device) the test sources for the Apple *device* targets that
-          # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
-          # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every
-          # other Apple target maps it to Long. A width-dependent comparison therefore compiles
-          # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
-          # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
-          # everywhere (#280). Cheap: compile only, no link, no run.
-          - name: "device-target compile (ILP32 guard)"
-            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
@@ -436,10 +376,29 @@ jobs:
       - name: Run ${{ matrix.shard.name }}
         env:
           SOCKET_REQUIRE_ALL_TESTS: ${{ matrix.shard.requireAllTests }}
-        run: >-
-          .github/scripts/gradle-retry.sh
-          ${{ matrix.shard.tasks }}
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          set +e
+          .github/scripts/measure-lane.sh sample "$RUNNER_TEMP/sampler.log" &
+          sampler=$!
+          start=$(date +%s)
+          .github/scripts/gradle-retry.sh ${{ matrix.shard.tasks }} --no-configuration-cache ${{ inputs.gradle-args }}
+          rc=$?
+          echo "MEASURE gradle-step-seconds=$(( $(date +%s) - start ))"
+          kill "$sampler" || true
+          exit $rc
+
+      - name: Extract measurements (TEMPORARY)
+        if: ${{ !cancelled() }}
+        run: |
+          .github/scripts/measure-lane.sh extract measure-out
+          cp "$RUNNER_TEMP/sampler.log" measure-out/ || true
+      - name: Upload measurements (TEMPORARY)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: measure-${{ github.run_attempt }}-${{ matrix.rep }}
+          path: measure-out/
+          retention-days: 7
 
       # The simulator shards are the reason this exists: `wrapTestBody` early-returns there, and on
       # Kotlin/Native an early return is reported as a PASS, so the iOS/tvOS/watchOS lanes were
@@ -482,6 +441,7 @@ jobs:
   jvm-tests:
     name: "JVM quiche (${{ matrix.backend.name }})"
     needs: natives
+    if: false # TEMPORARY (measurement)
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -585,6 +545,7 @@ jobs:
   link:
     name: "Link macosArm64 test binaries"
     needs: natives
+    if: false # TEMPORARY (measurement)
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -683,6 +644,7 @@ jobs:
   publish:
     name: "Publish Apple targets to Maven Local"
     needs: natives
+    if: false # TEMPORARY (measurement)
     runs-on: macos-26
     timeout-minutes: 40
     steps:
