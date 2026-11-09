@@ -100,13 +100,18 @@ class StreamSlot(
      * after it.
      */
     internal suspend fun awaitData(size: Int) {
-        waitingRead.store(size)
+        advertiseWaitingRead(size)
         try {
             dataSignal.receive()
         } finally {
-            waitingRead.store(0)
+            withdrawWaitingRead()
         }
     }
+
+    /** [awaitData]'s advert, apart from its wait: the hand-off model checks these two around the driver. */
+    internal fun advertiseWaitingRead(size: Int) = waitingRead.store(size)
+
+    internal fun withdrawWaitingRead() = waitingRead.store(0)
 
     /**
      * Driver loop only: the size of the read parked on [dataSignal], claiming it so at most one chunk is
