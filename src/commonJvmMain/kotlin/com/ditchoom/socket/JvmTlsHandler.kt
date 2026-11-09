@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.security.NoSuchAlgorithmException
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
@@ -44,6 +45,25 @@ internal class JvmTlsHandler(
     val closeTimeout = 1.seconds
 
     suspend fun handshake(timeout: Duration) {
+        // On Dispatchers.IO, never the caller's thread (which may be a UI thread): the first
+        // SSLContext.init in a process reads the platform trust store from disk (default trust
+        // managers), the entropy source is read to seed the engine's SecureRandom, and beginHandshake
+        // builds the ClientHello (random, session id, key share).
+        engine =
+            withContext(Dispatchers.IO) {
+                newClientEngine().also { it.beginHandshake() }
+            }
+        try {
+            doHandshake(timeout)
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
+        }
+    }
+
+    /** A client-mode [SSLEngine] for [hostname], with SNI and hostname verification set from [config]. */
+    private fun newClientEngine(): SSLEngine {
         val context =
             try {
                 SSLContext.getInstance("TLSv1.3")
@@ -58,8 +78,8 @@ internal class JvmTlsHandler(
                 null
             }
 
-        context.init(null, trustManagers, null)
-        engine = context.createSSLEngine(hostname, port)
+        context.init(null, trustManagers, seededRandom())
+        val engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
 
         // SNI + hostname verification must be configured through a single
@@ -79,15 +99,30 @@ internal class JvmTlsHandler(
             }
             engine.sslParameters = sslParams
         }
+        return engine
+    }
 
-        engine.beginHandshake()
-        try {
-            doHandshake(timeout)
-        } catch (e: javax.net.ssl.SSLHandshakeException) {
-            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
-        } catch (e: javax.net.ssl.SSLException) {
-            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
-        }
+    /**
+     * The engine's randomness, seeded here (on Dispatchers.IO) and never reading the entropy source
+     * again. The engine draws from it on the caller's thread too: a TLS 1.3 NewSessionTicket the
+     * server sends after the handshake is consumed in [unwrap] and draws a session id, and a TLS 1.2
+     * CBC record sealed in [wrap] draws its IV. With `context.init(…, null)` the engine would use the
+     * platform default, which on Linux and macOS is NativePRNG: it re-reads /dev/urandom whenever its
+     * small buffer is spent or more than 100 ms old, so those draws were file reads on the caller's
+     * thread. The JDK's DRBG (NIST SP 800-90A Hash_DRBG) reads its seed once, when it is first used,
+     * and is then pure computation. Android has no "DRBG"; its default (Conscrypt, BoringSSL's
+     * RAND_bytes) does no file I/O, so it is used there as is.
+     */
+    private fun seededRandom(): SecureRandom {
+        val random =
+            try {
+                SecureRandom.getInstance("DRBG")
+            } catch (e: NoSuchAlgorithmException) {
+                SecureRandom()
+            }
+        // The first draw instantiates (seeds) a DRBG; make it here, on Dispatchers.IO.
+        random.nextLong()
+        return random
     }
 
     /**

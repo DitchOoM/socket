@@ -38,6 +38,16 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
+    ): AddressedDatagramChannel =
+        offTheAndroidMainThread(onAbandoned = {
+            it.close()
+        }) { bindInPlace(localHost, localPort, receiveBufferSize, bufferFactory) }
+
+    private fun bindInPlace(
+        localHost: String?,
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): AddressedDatagramChannel {
         if (localHost != null) return boundTo(localHost, localPort, receiveBufferSize, bufferFactory)
         // Wildcard: take the port from the IPv4 table first — see [wildcardPortOwnedForIpv4]. Only the
@@ -130,7 +140,20 @@ actual object UdpSocket {
         // A refusal anywhere on the way — open, bind, connect — reports typed: the JDK's own
         // BindException / NoRouteToHostException / SocketException phrase is classified onto
         // UdpConnectError and kept as the cause, so a caller can branch on the reason on every backend.
-        return try {
+        return offTheAndroidMainThread(onAbandoned = {
+            it.close()
+        }) { openConnected(peer, localHost, localPort, receiveBufferSize, bufferFactory, beforeBind) }
+    }
+
+    private fun openConnected(
+        peer: SocketAddress,
+        localHost: String?,
+        localPort: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+        beforeBind: NioChannel.() -> Unit,
+    ): ConnectedDatagramChannel =
+        try {
             NioChannel.open().closedIfSetupFails {
                 configureBlocking(false)
                 beforeBind()
@@ -145,7 +168,6 @@ actual object UdpSocket {
         } catch (e: IOException) {
             throw UdpConnectException(jvmConnectErrorOf(e), e)
         }
-    }
 
     actual suspend fun bindMulticast(
         port: Int,
@@ -157,7 +179,17 @@ actual object UdpSocket {
         // opened with the no-arg open(). SO_REUSEADDR before bind lets multiple listeners share the port.
         val v6 = family == AddressFamily.IPv6
         val host = if (v6) WILDCARD_V6 else WILDCARD
-        return typedBindFailure(host, port) {
+        return offTheAndroidMainThread(onAbandoned = { it.close() }) { openMulticast(v6, host, port, receiveBufferSize, bufferFactory) }
+    }
+
+    private fun openMulticast(
+        v6: Boolean,
+        host: String,
+        port: Int,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): MulticastDatagramChannel =
+        typedBindFailure(host, port) {
             NioChannel.open(if (v6) StandardProtocolFamily.INET6 else StandardProtocolFamily.INET).closedIfSetupFails {
                 setOption(StandardSocketOptions.SO_REUSEADDR, true)
                 configureBlocking(false)
@@ -167,7 +199,6 @@ actual object UdpSocket {
                 MulticastNioDatagramChannel(this, base)
             }
         }
-    }
 
     actual suspend fun resolve(
         host: String,

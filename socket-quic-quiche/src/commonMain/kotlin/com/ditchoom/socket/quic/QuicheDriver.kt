@@ -2216,11 +2216,19 @@ class QuicheDriver(
             }
 
             is QuicheCmd.StreamRecv -> {
+                val slot = streams[cmd.streamId]
                 // endBorrow AFTER the call, always: quiche writes into this memory, and on a managed
                 // runtime nothing else is keeping it mapped by the time the driver loop gets here.
                 val result =
                     try {
-                        api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
+                        // Bytes this loop already handed the stream (to a read parked in awaitData that has
+                        // since moved on) come before anything quiche still holds: answer Done so the read
+                        // takes them from the queue, rather than reading past them out of order.
+                        if (slot != null && !slot.pendingData.isEmpty) {
+                            StreamRecvResult.Done
+                        } else {
+                            api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
+                        }
                     } finally {
                         cmd.buf.endBorrow()
                     }
@@ -2229,7 +2237,7 @@ class QuicheDriver(
                 // cannot count them as read. Marked before the hand-off, on the loop that decides it.
                 when (result) {
                     is StreamRecvResult.Data, is StreamRecvResult.Reset ->
-                        streams[cmd.streamId]?.readState?.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+                        slot?.readState?.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
                     StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> Unit
                 }
                 cmd.result.complete(result)
@@ -2535,6 +2543,7 @@ class QuicheDriver(
                 }
                 val existing = streams[streamId.id]
                 if (existing != null) {
+                    handToWaitingRead(existing)
                     existing.dataSignal.trySend(Unit)
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
                 } else {
@@ -2556,6 +2565,41 @@ class QuicheDriver(
             }
         } finally {
             api.streamIterFree(iter)
+        }
+    }
+
+    /**
+     * When a read is parked on [slot]'s data signal, read what quiche has for it now and queue it on the
+     * slot, so the signal that follows wakes the read with its bytes already in hand. Without this the
+     * woken read had to send a `StreamRecv` back through this loop and wait for the answer: two more
+     * thread hand-offs on the critical path of every read that waited for the network.
+     *
+     * One chunk per park, of the size the read asked for ([StreamSlot.takeWaitingRead]): exactly what the
+     * read's own `StreamRecv` would have taken, so flow control credits the peer no sooner than before.
+     * The queue keeps order with the read's later `StreamRecv`s (see [StreamSlot.awaitData]), and the
+     * chunk is handed over and its FIN latched the way the teardown drain does ([StreamSlot.deliverDrained]).
+     */
+    private fun handToWaitingRead(slot: StreamSlot) {
+        val size = slot.takeWaitingRead()
+        if (size <= 0) return
+        val buffer = streamReadPool.allocate(size)
+        when (val result = api.connStreamRecv(conn, slot.id, addr(buffer), size)) {
+            is StreamRecvResult.Data -> {
+                if (result.bytesRead > 0) {
+                    buffer.position(result.bytesRead)
+                    buffer.resetForRead()
+                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                } else {
+                    buffer.freeNativeMemory()
+                    if (result.fin) slot.latchFin()
+                }
+            }
+            is StreamRecvResult.Reset -> {
+                buffer.freeNativeMemory()
+                slot.latchReset(result.applicationErrorCode)
+            }
+            // Nothing to hand over after all, or a failure the read's own StreamRecv will meet and report.
+            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> buffer.freeNativeMemory()
         }
     }
 
@@ -4540,9 +4584,9 @@ class DriverStreamAdapter(
     }
 
     /** Park on the stream's data wake, recording the park and its return for [QuicheDriver.flight]. */
-    private suspend fun awaitDataSignal() {
+    private suspend fun awaitDataSignal(size: Int) {
         driver.flight.record(FlightEvent.ReaderParked, slot.id.id)
-        slot.dataSignal.receive()
+        slot.awaitData(size)
         driver.flight.record(FlightEvent.ReaderResumed, slot.id.id)
     }
 
@@ -4598,6 +4642,14 @@ class DriverStreamAdapter(
         // pendingData(), but remembering what it took. Every destructive take inside withTimeout goes
         // through this; the one before the try is outside the deadline and does not need it.
         fun takePending(): ReadResult.Data? = pendingData()?.also { pendingTaken = it }
+
+        // Park until the driver signals, then take what it handed over while we waited (the chunk, or a
+        // verdict it latched), in the same queue-then-verdict order as the Done answer. Null: nothing was
+        // handed over, so ask quiche again.
+        suspend fun awaitDataThenQueued(): ReadResult? {
+            awaitDataSignal(bufferSize)
+            return slot.queuedOrLatchedVerdict { takePending() }
+        }
         try {
             val result =
                 withTimeout(timeout) {
@@ -4651,7 +4703,7 @@ class DriverStreamAdapter(
                                 // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
                                 // unenforced assumption): wait for the data signal like a Done and retry.
                                 takePending()?.let { return@withTimeout it }
-                                awaitDataSignal()
+                                awaitDataThenQueued()?.let { return@withTimeout it }
                                 continue
                             }
                             is StreamRecvResult.Done -> {
@@ -4662,7 +4714,7 @@ class DriverStreamAdapter(
                                 // the stream's last chunk). If the FIN (or Reset) was consumed earlier
                                 // (coalesced with data), no signal is coming — end now rather than park.
                                 slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
-                                awaitDataSignal()
+                                awaitDataThenQueued()?.let { return@withTimeout it }
                                 continue
                             }
                             is StreamRecvResult.Error -> {

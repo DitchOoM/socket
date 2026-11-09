@@ -970,6 +970,8 @@ jobs:
           # depend on it, so omitting it here means the model checks never run at all. The same
           # goes for :socket-quic-quiche:lincheckTest, which needs no quiche natives (it checks
           # plain Kotlin state), so it runs here rather than in the quiche-jvm job.
+          # :socket-testsuite:mainThreadSafetyTest is separate for the same reason: it runs under the
+          # BlockHound agent (one fresh JVM per test class), and `check` does not depend on it either.
           #
           # Every task here is project-qualified, so a module absent from this list has NO
           # test task run on this runner at all (the Apple lanes use unqualified task names and
@@ -988,7 +990,7 @@ jobs:
             :socket-quic-default:jvmTest \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
             :socket-testkit:jvmTest :socket-testkit:testDebugUnitTest :socket-testkit:jsNodeTest :socket-testkit:wasmJsNodeTest :socket-testkit:linuxX64Test :socket-testkit:ktlintCheck \
-            :socket-testsuite:jvmTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
+            :socket-testsuite:jvmTest :socket-testsuite:mainThreadSafetyTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
             :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \
             :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
             :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \

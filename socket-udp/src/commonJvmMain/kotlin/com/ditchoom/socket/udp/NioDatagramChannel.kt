@@ -18,6 +18,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
@@ -221,7 +222,13 @@ internal abstract class NioDatagramChannelCore(
         }
     }
 
-    override suspend fun receive(): DatagramReadResult {
+    /** Off the Android main thread, where even a non-blocking `recvfrom` is a violation: see [offTheAndroidMainThread]. */
+    override suspend fun receive(): DatagramReadResult =
+        offTheAndroidMainThread(onAbandoned = { (it as? DatagramReadResult.Received)?.datagram?.payload?.freeIfNeeded() }) {
+            receiveInPlace()
+        }
+
+    private suspend fun receiveInPlace(): DatagramReadResult {
         while (true) {
             if (closed) return DatagramReadResult.Closed()
             var payload: PlatformBuffer? = null
@@ -332,7 +339,9 @@ internal abstract class NioDatagramChannelCore(
         if (length > maxWritableSize) {
             throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         }
-        writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize)
+        // Off the Android main thread, where even a non-blocking `sendto` is a violation; anywhere else
+        // (the QUIC datapath included) this sends in place.
+        offTheAndroidMainThread { writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize) }
     }
 
     /**
