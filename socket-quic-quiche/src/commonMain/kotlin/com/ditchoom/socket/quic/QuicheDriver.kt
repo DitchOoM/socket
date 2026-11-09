@@ -259,6 +259,30 @@ class QuicheDriver(
      */
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED, onUndeliveredElement = ::failCommand)
 
+    /**
+     * The loop's and the readers' last steps, readable without the loop: see [DriverFlight]. Built only
+     * when trace capture is on, the existing opt-in for diagnosing a connection.
+     */
+    internal val flight: DriverFlight =
+        when (capture) {
+            TraceCapture.Off -> DriverFlight.Off
+            is TraceCapture.On -> DriverFlight.Ring()
+        }
+
+    /**
+     * What [flight] holds now, with the loop's verdict, read on the calling thread. A stalled test asks
+     * this first, because a loop that stopped taking commands cannot answer [stallSnapshot].
+     */
+    internal fun flightRecording(): FlightRecording =
+        when (val ring = flight) {
+            DriverFlight.Off -> FlightRecording.Off
+            is DriverFlight.Ring -> {
+                val queued = !commands.isEmpty
+                val entries = ring.entries()
+                FlightRecording.Recorded(role, loopVerdictOf(entries, queued), unresumedSignalledReaders(entries), entries)
+            }
+        }
+
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
 
@@ -1395,6 +1419,14 @@ class QuicheDriver(
         }
     }
 
+    private fun Wake.kind(): WakeKind =
+        when (this) {
+            is Wake.ProbeAbandon -> WakeKind.ProbeAbandon
+            is Wake.KeepAlive -> WakeKind.KeepAlive
+            is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
+            is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
+        }
+
     /** Whether any deadline is pending at all — never a duration standing in for "none". */
     private sealed interface NextWake {
         data object NoTimer : NextWake
@@ -1954,6 +1986,7 @@ class QuicheDriver(
                         NextWake.NoTimer -> null
                         is NextWake.Armed -> armed.wake.remaining
                     }
+                flight.record(FlightEvent.LoopParked, wait?.inWholeMilliseconds ?: -1L)
                 val cmd =
                     if (wait == null) {
                         // No timer pending — block until next command (or channel close)
@@ -1972,6 +2005,22 @@ class QuicheDriver(
                 if (!currentCoroutineContext().isActive) {
                     cmd?.let(::failCommand)
                     break
+                }
+                when (cmd) {
+                    null ->
+                        when (armed) {
+                            NextWake.NoTimer -> Unit
+                            is NextWake.Armed ->
+                                flight.record(
+                                    FlightEvent.WokeByTimer,
+                                    armed.wake
+                                        .kind()
+                                        .ordinal
+                                        .toLong(),
+                                )
+                        }
+                    // Behind the branch: the class reference is not built when the recorder is off.
+                    else -> (flight as? DriverFlight.Ring)?.record(FlightEvent.WokeByCommand, 0L, cmd::class)
                 }
                 when {
                     cmd != null -> {
@@ -2487,6 +2536,7 @@ class QuicheDriver(
                 val existing = streams[streamId.id]
                 if (existing != null) {
                     existing.dataSignal.trySend(Unit)
+                    flight.record(FlightEvent.StreamSignalled, streamId.id)
                 } else {
                     val slot = StreamSlot(streamId)
                     streams[streamId.id] = slot
@@ -2501,6 +2551,7 @@ class QuicheDriver(
                         )
                     incomingStreams.trySend(QuicByteStream(streamId, byteStream, originOfPeerStream()))
                     slot.dataSignal.trySend(Unit)
+                    flight.record(FlightEvent.StreamSignalled, streamId.id)
                 }
             }
         } finally {
@@ -2969,6 +3020,7 @@ class QuicheDriver(
                     // every queued stream command. The connection then cannot die, so nothing
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
+                    flight.record(FlightEvent.SendBegin, written.toLong())
                     clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
@@ -2976,6 +3028,14 @@ class QuicheDriver(
                 } catch (untyped: Exception) {
                     SendOutcome.Failed(DatagramSendError.Transport(untyped))
                 }
+            flight.record(
+                FlightEvent.SendEnd,
+                when (outcome) {
+                    is SendOutcome.Sent -> 0L
+                    is SendOutcome.Failed -> 1L
+                    is SendOutcome.Stalled -> 2L
+                },
+            )
             when (outcome) {
                 is SendOutcome.Sent -> Unit // keep draining quiche's send queue
                 is SendOutcome.Failed -> {
@@ -3990,13 +4050,7 @@ class QuicheDriver(
                     NextWake.NoTimer -> LoopWake.Untimed
                     is NextWake.Armed ->
                         LoopWake.Timed(
-                            kind =
-                                when (wait.wake) {
-                                    is Wake.ProbeAbandon -> WakeKind.ProbeAbandon
-                                    is Wake.KeepAlive -> WakeKind.KeepAlive
-                                    is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
-                                    is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
-                                },
+                            kind = wait.wake.kind(),
                             wait = wait.wake.remaining,
                             armedAgo = loopWaitArmedAt.elapsedNow(),
                         )
@@ -4481,10 +4535,20 @@ class DriverStreamAdapter(
                 throw e
             }
         when (result) {
-            is ReadResult.Data -> driver.readReturned(slot)
+            is ReadResult.Data -> {
+                driver.flight.record(FlightEvent.ReadReturned, slot.id.id)
+                driver.readReturned(slot)
+            }
             ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
         }
         return result
+    }
+
+    /** Park on the stream's data wake, recording the park and its return for [QuicheDriver.flight]. */
+    private suspend fun awaitDataSignal() {
+        driver.flight.record(FlightEvent.ReaderParked, slot.id.id)
+        slot.dataSignal.receive()
+        driver.flight.record(FlightEvent.ReaderResumed, slot.id.id)
     }
 
     private suspend fun readNext(
@@ -4593,7 +4657,7 @@ class DriverStreamAdapter(
                                 // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
                                 // unenforced assumption): wait for the data signal like a Done and retry.
                                 takePending()?.let { return@withTimeout it }
-                                slot.dataSignal.receive()
+                                awaitDataSignal()
                                 continue
                             }
                             is StreamRecvResult.Done -> {
@@ -4607,7 +4671,7 @@ class DriverStreamAdapter(
                                     StreamEnd.Fin -> return@withTimeout ReadResult.End
                                     is StreamEnd.Reset -> return@withTimeout ReadResult.Reset
                                 }
-                                slot.dataSignal.receive()
+                                awaitDataSignal()
                                 continue
                             }
                             is StreamRecvResult.Error -> {
