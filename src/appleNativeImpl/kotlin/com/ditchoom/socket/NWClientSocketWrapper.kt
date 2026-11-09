@@ -65,6 +65,8 @@ class NWClientSocketWrapper(
         val tlsConfig = config.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
+        val trace = NwStateTrace("NW TCP connect to $endpoint:$port (tls=$useTls)")
+        trace.mark("create begun")
         val conn =
             nw_helper_create_tcp_connection(
                 host = endpoint,
@@ -76,6 +78,7 @@ class NWClientSocketWrapper(
                 // null (unset) keeps the platform default (Nagle on).
                 no_delay = NSNumber(bool = config.io.tcpNoDelay == true),
             ) ?: throw SocketIOException("Failed to create NW connection")
+        trace.mark("created")
 
         try {
             // Network.framework's own connection timeout (set in create_tcp_parameters) covers the TCP
@@ -83,10 +86,15 @@ class NWClientSocketWrapper(
             // nothing holds the connection in `preparing` for as long as the peer stays silent. So the
             // whole establishment, TCP and TLS together, is bounded here — the same bound the JVM and
             // Linux connects put on their TLS handshake.
-            withTimeoutOrNull(config.connectTimeout) { awaitReady(conn, hostname) }
-                ?: throw SocketTimeoutException(TimeoutContext.Connect(config.connectTimeout, hostname, port), hostname, port)
+            withTimeoutOrNull(config.connectTimeout) { awaitReady(conn, hostname, trace) }
+                ?: run {
+                    trace.mark("connect timeout (${config.connectTimeout}) elapsed")
+                    throw SocketTimeoutException(TimeoutContext.Connect(config.connectTimeout, hostname, port), hostname, port)
+                }
         } catch (e: Throwable) {
             nw_helper_force_cancel(conn)
+            // A failed connect carries its NW timeline; a cancellation is the caller's, not ours to annotate.
+            if (e !is kotlinx.coroutines.CancellationException) e.addSuppressed(NwStateTimeline(trace.render()))
             throw e
         }
         return conn
@@ -96,12 +104,14 @@ class NWClientSocketWrapper(
     private suspend fun awaitReady(
         conn: nw_connection_t,
         hostname: String,
+        trace: NwStateTrace,
     ) = suspendCancellableCoroutine<Unit> { continuation ->
         // NW calls the handler on a concurrent queue, so two state changes (a TLS `waiting`, then the
         // `cancelled` our own cleanup causes) can run at once: claim the single resume atomically.
         val resumed = AtomicInt(0)
 
-        nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
+        nw_helper_set_state_handler(conn) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+            trace.connectionState("client", state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
             val outcome: Result<Unit>? =
                 when (state) {
                     3 -> Result.success(Unit) // ready
@@ -113,5 +123,6 @@ class NWClientSocketWrapper(
         }
 
         nw_helper_start(conn)
+        trace.mark("started")
     }
 }

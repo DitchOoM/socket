@@ -9,6 +9,7 @@ import com.ditchoom.socket.nwhelpers.nw_helper_listener_port
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_set_new_connection_handler
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_set_state_handler
 import com.ditchoom.socket.nwhelpers.nw_helper_listener_start
+import com.ditchoom.socket.nwhelpers.nw_helper_remote_port
 import com.ditchoom.socket.nwhelpers.nw_helper_set_state_handler
 import com.ditchoom.socket.nwhelpers.nw_helper_start
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -33,8 +34,15 @@ import kotlin.coroutines.suspendCoroutine
 @OptIn(ExperimentalForeignApi::class)
 class NWServerWrapper(
     private val config: TransportConfig = TransportConfig(),
-) : ServerSocket {
+) : ServerSocket,
+    ServerSocketDiagnostics {
     private var listener: nw_listener_t = null
+
+    /** Port probes, listen attempts, listener states and each arriving connection's states; see [NwStateTrace]. */
+    private val trace = NwStateTrace("NW listener")
+
+    override fun diagnostics(): String = trace.render()
+
     private var acceptChannel: Channel<ClientSocket>? = null
     private val closeHandlers = mutableListOf<() -> Unit>()
 
@@ -52,6 +60,7 @@ class NWServerWrapper(
         try {
             repeat(MAX_EPHEMERAL_LISTEN_ATTEMPTS) {
                 val probed = nw_helper_listen_port_probe(if (ephemeral) 0 else port)
+                trace.mark(if (probed > 0) "port probe: $probed free in both families" else "port probe: errno ${-probed}")
                 if (probed <= 0) {
                     // The drawn port's IPv4 half is held: draw another. A named port is refused.
                     if (!ephemeral || -probed != EADDRINUSE) throw portUnavailable(port, -probed)
@@ -125,12 +134,16 @@ class NWServerWrapper(
         // Set new connection handler — each accepted connection gets a state handler
         // to wait until it's ready before sending to the channel.
         // Connection state: 0=invalid, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
+        trace.mark("listen on $port")
         nw_helper_listener_set_new_connection_handler(nwListener) { conn ->
+            val arrival = "connection from remote port ${nw_helper_remote_port(conn)}"
+            trace.mark("$arrival arrived")
             // NW calls this on a concurrent queue. Once the connection is handed out, the socket owns
             // it: cancelling it here when the peer resets made the socket's pending read report
             // ECANCELED, as if this side had closed, instead of the peer's ECONNRESET.
             val handedOut = AtomicInt(0)
-            nw_helper_set_state_handler(conn) { state, _, _, _ ->
+            nw_helper_set_state_handler(conn) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+                trace.connectionState(arrival, state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
                 when (state) {
                     3 -> { // ready
                         if (handedOut.compareAndSet(0, 1)) {
@@ -154,7 +167,8 @@ class NWServerWrapper(
         val start: ListenStart =
             try {
                 suspendCancellableCoroutine<ListenStart> { continuation ->
-                    nw_helper_listener_set_state_handler(nwListener) { state, errorDomain, errorCode, errorDesc ->
+                    nw_helper_listener_set_state_handler(nwListener) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+                        trace.listenerState(state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
                         when (state) {
                             2 -> { // ready
                                 listenerReady = true
@@ -216,7 +230,8 @@ class NWServerWrapper(
 
             closeHandlers.add { complete() }
 
-            nw_helper_listener_set_state_handler(nwListener) { state, _, _, _ ->
+            nw_helper_listener_set_state_handler(nwListener) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+                trace.listenerState(state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
                 if (state == 4) { // cancelled
                     listenerReady = false
                     for (handler in closeHandlers) {
