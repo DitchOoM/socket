@@ -25,7 +25,7 @@ internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
     quicOptions.trace?.let {
         val connection = it.captureFor()
         // The sink is application code: it is called off the transport's threads, never on a loop.
-        val sink = OffLoopTraceSink(connection.sink, serverReceiveDispatcher)
+        val sink = OffLoopTraceSink(connection.sink)
         TraceCapture.On(QuicTraceRecorder(sink), connection.qlog, connection.trafficSecrets)
     } ?: TraceCapture.Off
 

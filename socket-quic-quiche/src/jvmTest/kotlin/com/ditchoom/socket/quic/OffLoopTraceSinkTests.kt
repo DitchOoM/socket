@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.trace.OffLoopTraceSink
+import com.ditchoom.socket.quic.trace.TraceDeliveryQueue
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Dispatchers
@@ -34,7 +35,7 @@ class OffLoopTraceSinkTests {
                         threads.add(Thread.currentThread())
                         seen.add((e as TraceEvent.Error).message)
                     },
-                    Dispatchers.IO,
+                    TraceDeliveryQueue(Dispatchers.IO),
                 )
             repeat(5_000) { sink.emit(event(it)) }
             assertTrue(sink.flush(10.seconds), "flush must see every queued event delivered")
@@ -56,8 +57,7 @@ class OffLoopTraceSinkTests {
                         release.await()
                         seen.add(e)
                     },
-                    Dispatchers.IO,
-                    capacity = CAPACITY,
+                    TraceDeliveryQueue(Dispatchers.IO, capacity = CAPACITY),
                 )
             sink.emit(event(0))
             assertTrue(entered.await(5, TimeUnit.SECONDS), "the first event never reached the sink")
@@ -81,6 +81,20 @@ class OffLoopTraceSinkTests {
         }
 
     @Test
+    fun twoCapturesSharingOneSinkInterleaveInTheOrderTheyRecorded() =
+        runBlocking {
+            val seen = Collections.synchronizedList(mutableListOf<String>())
+            val shared = TraceSink { e -> seen.add((e as TraceEvent.Error).message) }
+            val queue = TraceDeliveryQueue(Dispatchers.IO)
+            // A server's own capture and one of its connections' captures, both onto the same sink.
+            val serverLevel = OffLoopTraceSink(shared, queue)
+            val connection = OffLoopTraceSink(shared, queue)
+            repeat(1_000) { n -> (if (n % 2 == 0) serverLevel else connection).emit(event(n)) }
+            assertTrue(serverLevel.flush(10.seconds))
+            assertEquals(List(1_000) { "event-$it" }, seen)
+        }
+
+    @Test
     fun aSinkThatThrowsLosesOnlyThatEvent() =
         runBlocking {
             val seen = Collections.synchronizedList(mutableListOf<String>())
@@ -91,7 +105,7 @@ class OffLoopTraceSinkTests {
                         if (m == "event-1") error("a broken sink")
                         seen.add(m)
                     },
-                    Dispatchers.IO,
+                    TraceDeliveryQueue(Dispatchers.IO),
                 )
             repeat(3) { sink.emit(event(it)) }
             assertTrue(sink.flush(5.seconds))
@@ -102,7 +116,7 @@ class OffLoopTraceSinkTests {
     fun flushGivesUpOnAStuckSinkWithinItsBound() =
         runBlocking {
             val release = CountDownLatch(1)
-            val sink = OffLoopTraceSink(TraceSink { release.await() }, Dispatchers.IO)
+            val sink = OffLoopTraceSink(TraceSink { release.await() }, TraceDeliveryQueue(Dispatchers.IO))
             sink.emit(event(0))
             sink.emit(event(1))
             val started = System.nanoTime()
