@@ -614,6 +614,12 @@ kotlin {
 
 android {
     compileSdk = 37
+    // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+    (this as com.android.build.api.dsl.LibraryExtension)
+        .sourceSets
+        .getByName("main")
+        .baselineProfiles
+        .srcDir("src/androidMain/baselineProfiles")
     // AGP 9 + legacy-DSL opt-out: the `sourceSets[...]` Kotlin accessor casts to the
     // removed old API. Reach the source set via the new DSL interface instead.
     (this as com.android.build.api.dsl.LibraryExtension)
@@ -627,6 +633,9 @@ android {
         // monitor cannot usefully support API 21/22: RFC_NETWORK_REACHABILITY §8.1.
         minSdk = 23
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Shipped in the AAR as proguard.txt. Every module of this library depends on :socket, so this
+        // is where a rule for the shared com.ditchoom:buffer dependency lives; see the file.
+        consumerProguardFiles("consumer-rules.pro")
     }
     namespace = "$group.${rootProject.name}"
 

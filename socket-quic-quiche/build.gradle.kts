@@ -5849,10 +5849,17 @@ android {
     (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {
         manifest.srcFile("src/androidMain/AndroidManifest.xml")
         jniLibs.srcDirs("src/androidMain/jniLibs")
+        // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+        baselineProfiles.srcDir("src/androidMain/baselineProfiles")
     }
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
+        // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's
+        // default file) R8 renames the class and every QUIC call fails with UnsatisfiedLinkError —
+        // measured by :benchmark-android with -PbenchDefaultProguardFile=false.
+        consumerProguardFiles("consumer-rules.pro")
     }
     namespace = "com.ditchoom.socket.quic.quiche"
 
