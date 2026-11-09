@@ -16,6 +16,20 @@ case "$1" in
       sleep 2
     done >> "$2"
     ;;
+  probe)
+    # Spawns the socket-udp test binary into the booted simulator every ~2 s, once it exists, and
+    # records NW's first report for a cellular-required connect from a fresh process each time.
+    out="$2"
+    kexe=socket-udp/build/bin/iosSimulatorArm64/debugTest/test.kexe
+    until [ -f "$kexe" ] && [ $(( $(date +%s) - $(stat -f %m "$kexe") )) -gt 10 ]; do sleep 2; done
+    echo "$(date +%H:%M:%S) PROBE-START" >> "$out"
+    while true; do
+      line=$(xcrun simctl spawn "$IOS_SIMULATOR_BOOTED_UDID" "$PWD/$kexe" \
+        --ktest_filter='*AppleRequiredInterfaceConnectTests.aConnectRequiringAnAbsent*' 2>&1 | grep NW-FIRST-REPORT)
+      echo "$(date +%H:%M:%S) $(cat "$RUNNER_TEMP/phase" 2>/dev/null) ${line:-NO-REPORT}" >> "$out"
+      sleep 2
+    done
+    ;;
   extract)
     out="$2"; mkdir -p "$out"
     python3 - "$out" <<'PY'

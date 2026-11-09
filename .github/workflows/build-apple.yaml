@@ -349,7 +349,6 @@ jobs:
         shard:
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
-            linkFirst: "linkDebugTestIosSimulatorArm64"
             bootSimulator: "1"
     steps:
       - uses: actions/checkout@v7
@@ -374,6 +373,12 @@ jobs:
           echo "booted $(xcrun simctl list devices | grep "$UDID")"
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
 
+      - name: Start the NW probe (TEMPORARY)
+        run: |
+          echo "gradle" > "$RUNNER_TEMP/phase"
+          nohup .github/scripts/measure-lane.sh probe "$RUNNER_TEMP/probe.log" > /dev/null 2>&1 &
+          nohup .github/scripts/measure-lane.sh sample "$RUNNER_TEMP/sampler.log" > /dev/null 2>&1 &
+
       # Build every test binary BEFORE any test runs, as its own Gradle invocation. In one invocation
       # Gradle starts a module's simulator tests as soon as that module is linked, so on this 3-core
       # runner the tests shared the machine with the compiles and links of every other module. NW's
@@ -383,30 +388,23 @@ jobs:
       # UNQUALIFIED, like the test task: a new module's binary is linked here without a list to keep.
       - name: Compile and link the ${{ matrix.shard.name }} test binaries
         if: ${{ matrix.shard.linkFirst != '' }}
-        run: >-
-          .github/scripts/gradle-retry.sh
-          ${{ matrix.shard.linkFirst }}
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          echo "link" > "$RUNNER_TEMP/phase"
+          .github/scripts/gradle-retry.sh ${{ matrix.shard.linkFirst }} --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run ${{ matrix.shard.name }}
         env:
           SOCKET_REQUIRE_ALL_TESTS: ${{ matrix.shard.requireAllTests }}
         run: |
-          set +e
-          .github/scripts/measure-lane.sh sample "$RUNNER_TEMP/sampler.log" &
-          sampler=$!
-          start=$(date +%s)
+          echo "${{ matrix.shard.linkFirst != '' && 'test' || 'gradle' }}" > "$RUNNER_TEMP/phase"
           .github/scripts/gradle-retry.sh ${{ matrix.shard.tasks }} --no-configuration-cache ${{ inputs.gradle-args }}
-          rc=$?
-          echo "MEASURE gradle-step-seconds=$(( $(date +%s) - start ))"
-          kill "$sampler" || true
-          exit $rc
 
       - name: Extract measurements (TEMPORARY)
         if: ${{ !cancelled() }}
         run: |
           .github/scripts/measure-lane.sh extract measure-out
-          cp "$RUNNER_TEMP/sampler.log" measure-out/ || true
+          pkill -f measure-lane.sh || true
+          cp "$RUNNER_TEMP/sampler.log" "$RUNNER_TEMP/probe.log" measure-out/ || true
       - name: Upload measurements (TEMPORARY)
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
