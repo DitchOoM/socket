@@ -20,6 +20,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.HostResolver
 import com.ditchoom.socket.NetworkMonitor
@@ -179,6 +180,10 @@ class AndroidMainThreadSafetyTests {
             NetworkMonitor.open().close()
             NetworkMonitor.shared()
             listNetworkInterfaces()
+            // Not suspend, and needs no replacement: processDefault() only reads a lazily built holder
+            // (a MutableStateFlow), and a hold's register and release are ConnectivityManager binder
+            // calls, no disk or network I/O. Checked here so that stays true.
+            CellularStandby.processDefault().hold().close()
         }
 
     @Test
