@@ -38,6 +38,9 @@ object MainThreadSafety {
         // runs. That is the test's own blocking, not the library's, so it happens here, before any
         // scenario, rather than on the main-like thread in the middle of one.
         kotlin.test.asserter
+        // Every SecureRandom draw becomes a device read, so a draw on the main-like thread fails on every
+        // machine rather than only when NativePRNG's 100 ms buffer happens to be stale (see the class).
+        UnbufferedDeviceRandom.installFirst()
         // install() also loads every BlockHoundIntegration on the classpath through ServiceLoader, which
         // is how kotlinx-coroutines-debug's CoroutinesBlockHoundIntegration gets applied: it marks the
         // Dispatchers.Default workers non-blocking too, and allows the scheduler's own parking.

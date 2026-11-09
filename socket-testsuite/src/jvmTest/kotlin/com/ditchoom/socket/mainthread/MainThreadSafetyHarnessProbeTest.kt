@@ -39,9 +39,19 @@ class MainThreadSafetyHarnessProbeTest {
         }
 
     @Test
+    fun aSecureRandomDrawOnTheMainLikeThreadFails() =
+        // A draw that NativePRNG would usually serve from its buffer: the harness makes every draw a
+        // device read, so this fails however recently something else drew.
+        assertCaught("java.io.FileInputStream") {
+            java.security.SecureRandom().nextBytes(ByteArray(32))
+            java.security.SecureRandom().nextBytes(ByteArray(32))
+        }
+
+    @Test
     fun theSameCallsOffTheMainLikeThreadPass() =
         runOnMainLike {
             withContext(Dispatchers.IO) {
+                java.security.SecureRandom().nextBytes(ByteArray(32))
                 // Not a DNS lookup: the JDK caches the answer, which would leave the DNS probe above
                 // nothing to catch if this ran first.
                 Thread.sleep(1)
