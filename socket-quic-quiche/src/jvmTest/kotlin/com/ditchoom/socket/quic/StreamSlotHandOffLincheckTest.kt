@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class) // Channel.isEmpty, as production reads it
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -109,5 +111,14 @@ private fun handOffOptions(): ModelCheckingOptions =
                 thread { actor(HandOffModel::parkThenRead) }
             }
         }.threads(2)
-        .actorsPerThread(3)
+        .actorsPerThread(2)
         .actorsBefore(0)
+        // An explicit budget. The defaults (100 scenarios x 10 000 invocations) explored this model, whose
+        // slot is a kotlinx Channel and whose loop is a monitor, for 9 minutes on a laptop and past the
+        // 15-minute hang watchdog on a 4-core CI runner. The race it exists for is two actors deep (the
+        // custom scenario), and the control arm convicts the unguarded model inside this same budget.
+        .iterations(HAND_OFF_SCENARIOS)
+        .invocationsPerIteration(HAND_OFF_INVOCATIONS)
+
+private const val HAND_OFF_SCENARIOS = 10
+private const val HAND_OFF_INVOCATIONS = 1_000
