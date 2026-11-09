@@ -68,6 +68,11 @@ object MainThreadSafety {
                 // DNS: every InetAddress lookup ends in one of these natives.
                 .markAsBlocking("java.net.Inet6AddressImpl", "lookupAllHostAddr", "(Ljava/lang/String;I)[Ljava/net/InetAddress;")
                 .markAsBlocking("java.net.Inet4AddressImpl", "lookupAllHostAddr", "(Ljava/lang/String;)[Ljava/net/InetAddress;")
+                // The interface table: listing interfaces and reading their flags are ioctl/netlink round
+                // trips into the kernel, behind natives BlockHound does not know about.
+                .markAsBlocking("java.net.NetworkInterface", "getAll", "()[Ljava/net/NetworkInterface;")
+                .markAsBlocking("java.net.NetworkInterface", "isUp0", "(Ljava/lang/String;I)Z")
+                .markAsBlocking("java.net.NetworkInterface", "isLoopback0", "(Ljava/lang/String;I)Z")
                 // Native library loading: dlopen of a multi-megabyte library (JNI and FFM respectively).
                 .markAsBlocking(
                     "jdk.internal.loader.NativeLibraries",
@@ -134,4 +139,22 @@ fun runOnMainLike(
 /** Fails unless [block] runs on the main-like thread — a guard that a scenario did not hop off it. */
 fun assertOnMainLike(what: String) {
     if (Thread.currentThread() !is MainLikeThread) fail("$what resumed on ${Thread.currentThread().name}, not the main-like thread")
+}
+
+/**
+ * Fails unless [blocking], run on the main-like thread, is caught blocking it. The control for a suspend
+ * replacement: it shows the deprecated blocking function the replacement stands in for registers here,
+ * so the replacement's pass means something.
+ */
+fun assertBlocksTheMainLikeThread(blocking: () -> Unit) {
+    val failure =
+        try {
+            runOnMainLike { blocking() }
+            null
+        } catch (e: AssertionError) {
+            e
+        }
+    if (failure == null || !failure.message.orEmpty().contains("blocking call(s) on the main-like thread")) {
+        fail("expected a blocking call on the main-like thread, got ${failure ?: "none"}")
+    }
 }

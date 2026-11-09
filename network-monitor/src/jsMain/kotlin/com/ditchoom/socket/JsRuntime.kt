@@ -4,7 +4,7 @@ package com.ditchoom.socket
  * Node-vs-browser detection for this module: the browser has `window`, Node does not.
  *
  * Shared by [JsNetworkMonitor] (which polls `os.networkInterfaces()` under Node and listens for
- * `online`/`offline` in a browser) and [enumerateNetworkInterfaces] (which returns an empty list off
+ * `online`/`offline` in a browser) and [listNetworkInterfaces] (which returns an empty list off
  * Node) so the two can never disagree about which runtime this is.
  *
  * **Name it distinctly, and never `isNodeJs`.** `:socket` declares a public top-level

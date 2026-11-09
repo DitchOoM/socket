@@ -9,9 +9,9 @@ import com.ditchoom.socket.ParsedAddress
 import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.ownerOf
-import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
+import com.ditchoom.socket.shared
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -57,9 +57,9 @@ import kotlin.time.Duration.Companion.seconds
  * Neither case is owned here. [NetworkMonitorSource.Supplied] is the caller's, and the process default
  * belongs to whoever installed it — nothing in this module closes either.
  */
-internal fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor =
+internal suspend fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor =
     when (source) {
-        NetworkMonitorSource.ProcessDefault -> NetworkMonitor.processDefault()
+        NetworkMonitorSource.ProcessDefault -> NetworkMonitor.shared()
         is NetworkMonitorSource.Supplied -> source.monitor
     }
 

@@ -586,4 +586,4 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port)
 
 // The NWPathMonitor bridge and the getifaddrs interface scan that used to live here moved to
 // :network-monitor's own NetworkHelpers.def, with AppleNetworkMonitor and
-// enumerateNetworkInterfaces() (issue #269) — see the note in nw_helpers.h.
+// listNetworkInterfaces() (issue #269) — see the note in nw_helpers.h.

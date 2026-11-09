@@ -3,6 +3,7 @@
 package com.ditchoom.socket
 
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.runBlocking
 import platform.posix.getenv
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,7 +37,7 @@ class NetnsWifiClassifyTest {
         assertEquals("Wifi", kind::class.simpleName, "classifyLinkKind('$iface') must be Wifi (has /sys phy80211)")
 
         // The same classification must flow through the enumerate path (ICE/WebRTC host candidates).
-        val nif = enumerateNetworkInterfaces().firstOrNull { it.name == iface }
+        val nif = runBlocking { listNetworkInterfaces() }.firstOrNull { it.name == iface }
         assertTrue(nif != null, "enumerate must include the wireless interface '$iface'")
         assertEquals("Wifi", nif!!.kind::class.simpleName, "enumerate: classified kind for '$iface'")
     }

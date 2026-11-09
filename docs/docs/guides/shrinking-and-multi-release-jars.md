@@ -61,12 +61,12 @@ shrinking, so it cannot itself be stripped, and it prints to `stderr`:
 ```
 ===== com.ditchoom:network-monitor — REACTIVE TIER MISSING =====
 This JDK is 21 or newer, but META-INF/versions/21 is not in the artifact, so
-NetworkMonitor.default() has fallen back to a polling monitor instead of the
+NetworkMonitor.open() has fallen back to a polling monitor instead of the
 event-driven routing-socket one (rtnetlink on Linux, PF_ROUTE on macOS).
 ...
 ```
 
-You can also inspect it programmatically at any time — `NetworkMonitor.default().capability.mechanism`
+You can also inspect it programmatically at any time — `NetworkMonitor.open().capability.mechanism`
 is `MonitorMechanism.Polled` when the reactive tier is missing.
 
 ## Fix: flatten before the shrinker runs

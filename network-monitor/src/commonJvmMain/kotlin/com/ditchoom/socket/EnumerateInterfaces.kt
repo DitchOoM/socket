@@ -4,10 +4,10 @@ import com.ditchoom.socket.transport.NetworkKind
 import java.net.NetworkInterface
 
 /**
- * JVM/Android actual for [enumerateNetworkInterfaces], from [NetworkInterface.getNetworkInterfaces].
+ * JVM/Android actual for [platformNetworkInterfaces], from [NetworkInterface.getNetworkInterfaces].
  * Kind is [NetworkKind.Other] — a raw JDK interface scan cannot classify link type (see [JvmNetworkId]).
  */
-actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> =
+internal actual fun platformNetworkInterfaces(): List<NetworkInterfaceInfo> =
     try {
         NetworkInterface
             .getNetworkInterfaces()
@@ -32,3 +32,10 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> =
     } catch (_: Exception) {
         emptyList()
     }
+
+@Deprecated(
+    "Blocks the calling thread while it reads the interface table. Call the suspend " +
+        "listNetworkInterfaces(), which does the read on an IO dispatcher.",
+    ReplaceWith("listNetworkInterfaces()", "com.ditchoom.socket.listNetworkInterfaces"),
+)
+actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> = platformNetworkInterfaces()

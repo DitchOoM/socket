@@ -10,7 +10,7 @@ import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.canRouteOffLink
-import com.ditchoom.socket.default
+import com.ditchoom.socket.open
 import com.ditchoom.socket.pathChanges
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -54,8 +54,9 @@ import kotlin.time.TimeSource
  *    Keyed on **identity**, so a reachability transition on the same network is not mistaken for a
  *    migration.
  *
- * It defaults to [NetworkMonitor.default], the platform's best reactive monitor. The factory
- * is invoked once per [receive] collection, and the produced monitor is owned by this
+ * It defaults to [NetworkMonitor.open], the platform's best reactive monitor, which is built on an IO
+ * dispatcher so collecting [receive] never blocks the collector's thread. A factory you pass runs on the
+ * collector's thread, so it should not block. The factory is invoked once per [receive] collection, and the produced monitor is owned by this
  * connection: it is [closed][NetworkMonitor.close] when that collection terminates. No monitor
  * socket is opened until [receive] is collected. Pass `{ NetworkMonitor.AlwaysAvailable }` to
  * opt out of monitoring. A monitor that cannot identify links reports a constant `Unidentified` and
@@ -79,7 +80,7 @@ import kotlin.time.TimeSource
  *         codec
  *     },
  *     classifier = DefaultReconnectionClassifier(),
- *     // monitorFactory defaults to { NetworkMonitor.default() }
+ *     // monitorFactory defaults to the platform monitor (NetworkMonitor.open())
  * )
  *
  * conn.receive().collect { message -> handle(message) }
@@ -88,7 +89,7 @@ import kotlin.time.TimeSource
 class ReconnectingConnection<T>(
     private val connect: suspend () -> Connection<T>,
     private val classifier: ReconnectionClassifier = DefaultReconnectionClassifier(),
-    private val monitorFactory: () -> NetworkMonitor = { NetworkMonitor.default() },
+    private val monitorFactory: () -> NetworkMonitor = PlatformMonitor,
     private val liveness: Liveness? = null,
 ) : Connection<T> {
     override val id: Long = 0L
@@ -177,7 +178,7 @@ class ReconnectingConnection<T>(
 
                 // Auto-reset backoff when network becomes available. The monitor is created
                 // per-collection and owned here — closed in the finally below.
-                val monitor = monitorFactory()
+                val monitor = if (monitorFactory === PlatformMonitor) NetworkMonitor.open() else monitorFactory()
                 val monitorJob = launchNetworkMonitorJob(monitor)
 
                 try {
@@ -370,4 +371,14 @@ class ReconnectingConnection<T>(
             }
         }
     }
+}
+
+/**
+ * The default [ReconnectingConnection] monitor factory: a marker, compared by identity, that
+ * [ReconnectingConnection.receive] replaces with the suspend [NetworkMonitor.open], so the platform monitor
+ * is built off the collector's thread. The parameter keeps its non-suspend type for binary compatibility;
+ * this is never invoked.
+ */
+private val PlatformMonitor: () -> NetworkMonitor = {
+    error("PlatformMonitor is a marker; ReconnectingConnection opens the monitor itself")
 }

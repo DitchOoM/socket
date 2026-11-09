@@ -4,6 +4,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.runBlocking
 import platform.posix.getenv
 import platform.posix.if_nametoindex
 import kotlin.test.Test
@@ -57,14 +58,14 @@ class NetnsRouteResolutionTest {
     }
 
     @Test
-    fun enumerateNetworkInterfacesReportsTheControlledNamespaceInterfaces() {
+    fun listNetworkInterfacesReportsTheControlledNamespaceInterfaces() {
         val iface = env("NETMON_EXPECT_IFACE") ?: return // not under the netns harness — skip
         val expectIdx = if_nametoindex(iface).toLong()
 
-        // enumerateNetworkInterfaces() (the ICE/WebRTC host-candidate source) reads getifaddrs + the
+        // listNetworkInterfaces() (the ICE/WebRTC host-candidate source) reads getifaddrs + the
         // same /sys classification — a real integration path its host-live test can only shape-check.
         // Here the namespace has a KNOWN interface set, so assert the exact fields.
-        val interfaces = enumerateNetworkInterfaces()
+        val interfaces = runBlocking { listNetworkInterfaces() }
         val names = interfaces.map { it.name }
 
         val loopback = interfaces.firstOrNull { it.isLoopback }

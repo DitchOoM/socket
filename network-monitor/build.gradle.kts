@@ -27,16 +27,16 @@ repositories {
 
 // com.ditchoom:network-monitor — the whole of network awareness, standalone: the NetworkMonitor /
 // NetworkState / NetworkId contract, EVERY implementation of it (JVM FFM routing socket, Android
-// ConnectivityManager, JS, Linux netlink, Apple NWPathMonitor), `NetworkMonitor.default()` /
-// `.processDefault()`, and the point-in-time `enumerateNetworkInterfaces()` scan that ICE host-candidate
+// ConnectivityManager, JS, Linux netlink, Apple NWPathMonitor), `NetworkMonitor.open()` /
+// `.shared()`, and the point-in-time `listNetworkInterfaces()` scan that ICE host-candidate
 // gathering reads. Extracted from root :socket so consumers (../webrtc ICE/WebRTC, QUIC auto-migration)
 // can depend on network-awareness without TCP + TLS. :socket re-exports all of it through
 // `api(project(":network-monitor"))`, so nothing downstream moved packages.
 //
 // WHY ONE MODULE AND NOT TWO (issue #269 proposed a third, native-only module): `expect`/`actual`
-// cannot span a module boundary. Leaving the native monitors anywhere else leaves `default()` split
+// cannot span a module boundary. Leaving the native monitors anywhere else leaves `open()` split
 // from half its actuals and forces the monitors to be duplicated. Since the native monitors have to be
-// wherever `default()` is, and `default()` has to be wherever the contract is, there is exactly one
+// wherever `open()` is, and `open()` has to be wherever the contract is, there is exactly one
 // module.
 //
 // THE CINTEROP CONSTRAINT (this comment used to assert the wrong rule; the measurement below is what
@@ -73,7 +73,7 @@ repositories {
 // NWHelpers.def — and re-run those probes rather than citing this comment.
 
 // Apple C bridge: the NWPathMonitor behind AppleNetworkMonitor and the getifaddrs scan behind
-// enumerateNetworkInterfaces(). Header-only + framework linkage — no archive to build, so unlike
+// listNetworkInterfaces(). Header-only + framework linkage — no archive to build, so unlike
 // :socket's Apple cinterop there is nothing to sequence against.
 fun KotlinNativeTarget.configureNetworkHelpersCinterop() {
     compilations["main"].cinterops {
@@ -198,7 +198,7 @@ kotlin {
         androidMain.dependencies {
             // App Startup: NetworkMonitorInitializer (contributed to androidx.startup's
             // InitializationProvider by src/androidMain/AndroidManifest.xml) captures the application
-            // Context at process start, so NetworkMonitor.default() is reactive on Android without the
+            // Context at process start, so NetworkMonitor.open() is reactive on Android without the
             // app remembering installAndroidContext(). `implementation`, not `api`: consumers never
             // compile against androidx.startup, they only need it on the runtime classpath, and its own
             // consumer proguard.txt keeps `* extends Initializer` so R8 cannot strip ours.
@@ -298,7 +298,7 @@ kotlin {
 // NetlinkNetworkMonitorTest can reference NetlinkNetworkMonitor at both compile and runtime.
 // compileDependencyFiles lets the test resolve the class; the afterEvaluate below appends it to the
 // actual jvmTest runtime classpath (appended — the base polling selector still wins for
-// NetworkMonitor.default() in a normal run; the FFM classes are exercised via direct instantiation).
+// NetworkMonitor.open() in a normal run; the FFM classes are exercised via direct instantiation).
 kotlin.jvm().compilations.getByName("test") {
     compileDependencyFiles +=
         kotlin

@@ -152,7 +152,7 @@ abstract class QuicCertificateHashPinningTestSuite {
         runQuicTest {
             wrapTestBody {
                 requireEnforced("generated peer certificate")
-                generatedPeerCertificates().generate().use { cert ->
+                generatedPeerCertificates().mint().use { cert ->
                     val opts = options()
                     withQuicServer(port = 0, certificate = cert, quicOptions = opts) {
                         val handlerRan = CompletableDeferred<Unit>()
@@ -180,7 +180,7 @@ abstract class QuicCertificateHashPinningTestSuite {
             wrapTestBody {
                 requireEnforced("expired generated peer certificate")
                 val expiredStart = Clock.System.now() - PeerCertificateValidity.Maximum.duration - 1.days
-                generatedPeerCertificates().generate(notBefore = expiredStart).use { cert ->
+                generatedPeerCertificates().mint(notBefore = expiredStart).use { cert ->
                     val opts = options()
                     withQuicServer(port = 0, certificate = cert, quicOptions = opts) {
                         val serverJob = launch { runCatching { connections {} } }

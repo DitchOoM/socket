@@ -13,7 +13,7 @@ package com.ditchoom.socket
  *   wired yet (a `NotifyAddrChange` seam can replace it later).
  *
  * Public because the owning platform module (`com.ditchoom:socket`) delegates its
- * `NetworkMonitor.default()` JVM actual here across the module boundary.
+ * JVM platform-monitor actual (behind `NetworkMonitor.open()`) here across the module boundary.
  */
 fun defaultJvmNetworkMonitor(): NetworkMonitor {
     val os = System.getProperty("os.name").orEmpty().lowercase()

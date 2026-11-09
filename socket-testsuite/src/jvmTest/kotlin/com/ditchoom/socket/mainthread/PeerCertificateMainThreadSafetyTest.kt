@@ -17,16 +17,16 @@ import kotlin.time.Duration.Companion.seconds
  * The WebTransport peer role from the main-like thread: bind a QUIC server that presents a generated
  * certificate, which writes it to PEM files for the TLS stack to read.
  *
- * The certificate is minted off the main-like thread: [PeerCertificateSupport.Available.generate] is
- * not a suspend function, so it cannot move its key generation (which reads the OS entropy device)
- * anywhere else, and a caller on a UI thread has to.
+ * The certificate is minted on the main-like thread too: [PeerCertificateSupport.Available.mint] moves
+ * its key generation (which reads the OS entropy device) to an IO dispatcher itself.
  */
 class PeerCertificateMainThreadSafetyTest {
     @Test
-    fun generateAndBindWithACertificate() =
+    fun mintAndBindWithACertificate() =
         runOnMainLike {
             val support = assertIs<PeerCertificateSupport.Available>(peerCertificates)
-            withContext(Dispatchers.IO) { support.generate() }.use { certificate ->
+            support.mint().use { certificate ->
+                assertOnMainLike("PeerCertificateSupport.Available.mint")
                 withQuicServer(port = 0, certificate = certificate, quicOptions = QuicFixtures.options) {
                     assertOnMainLike("withQuicServer(certificate)")
                     val echo = launch { serveEcho() }
@@ -42,4 +42,21 @@ class PeerCertificateMainThreadSafetyTest {
                 }
             }
         }
+}
+
+/**
+ * The control for [PeerCertificateMainThreadSafetyTest]: the deprecated, non-suspend
+ * [PeerCertificateSupport.Available.generate] does block the main-like thread. Without this, a `mint`
+ * that passed only because nothing in key generation registers as blocking would prove nothing. Its own
+ * class, so its JVM is fresh.
+ */
+class DeprecatedPeerCertificateGenerateMainThreadSafetyControlTest {
+    @Test
+    fun generateOnTheMainLikeThreadIsCaught() {
+        val support = assertIs<PeerCertificateSupport.Available>(peerCertificates)
+        assertBlocksTheMainLikeThread {
+            @Suppress("DEPRECATION")
+            support.generate().close()
+        }
+    }
 }

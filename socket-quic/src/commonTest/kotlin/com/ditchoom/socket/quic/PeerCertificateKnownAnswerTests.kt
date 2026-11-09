@@ -24,18 +24,19 @@ class PeerCertificateKnownAnswerTests {
     private val notBefore = Instant.parse("2026-09-21T00:00:00Z")
 
     @Test
-    fun certificateDer() {
-        val certificate = PeerCertificateSupport.Available(FixedBackend()).generate(PeerCertificateValidity.Maximum, notBefore)
-        assertEquals(CERTIFICATE_DER, certificate.der().toHexString())
-        assertEquals(notBefore + 14.days, certificate.notAfter)
-        assertEquals(FIXED_DIGEST_HEX, certificate.hash.value.toHexString())
-    }
+    fun certificateDer() =
+        runTest {
+            val certificate = PeerCertificateSupport.Available(FixedBackend()).mint(PeerCertificateValidity.Maximum, notBefore)
+            assertEquals(CERTIFICATE_DER, certificate.der().toHexString())
+            assertEquals(notBefore + 14.days, certificate.notAfter)
+            assertEquals(FIXED_DIGEST_HEX, certificate.hash.value.toHexString())
+        }
 
     @Test
     fun pemFilesCarryTheCertificateAndPkcs8Key() =
         runTest {
             val backend = FixedBackend()
-            val certificate = PeerCertificateSupport.Available(backend).generate(PeerCertificateValidity.Maximum, notBefore)
+            val certificate = PeerCertificateSupport.Available(backend).mint(PeerCertificateValidity.Maximum, notBefore)
             val paths = certificate.withPemFiles { it }
             assertEquals(QuicTlsConfig(certChainPath = "cert.pem", privKeyPath = "key.pem"), paths)
             assertEquals(CERTIFICATE_PEM, backend.presentedCertificatePem)
@@ -45,7 +46,7 @@ class PeerCertificateKnownAnswerTests {
     @Test
     fun closedCertificateRefusesToPresentItsKey() =
         runTest {
-            val certificate = PeerCertificateSupport.Available(FixedBackend()).generate(PeerCertificateValidity.Maximum, notBefore)
+            val certificate = PeerCertificateSupport.Available(FixedBackend()).mint(PeerCertificateValidity.Maximum, notBefore)
             certificate.close()
             certificate.close()
             val failure = assertFailsWith<PeerCertificateException> { certificate.withPemFiles { it } }.failure
@@ -59,7 +60,7 @@ class PeerCertificateKnownAnswerTests {
     fun closeDuringABindWipesOnlyAfterTheBindReturns() =
         runTest {
             val backend = FixedBackend()
-            val certificate = PeerCertificateSupport.Available(backend).generate(PeerCertificateValidity.Maximum, notBefore)
+            val certificate = PeerCertificateSupport.Available(backend).mint(PeerCertificateValidity.Maximum, notBefore)
             certificate.withPemFiles { certificate.close() }
             // The backend read the key after close() was called inside its bind: still intact.
             assertEquals(PRIVATE_KEY_PEM, backend.presentedPrivateKeyPem)
@@ -67,15 +68,16 @@ class PeerCertificateKnownAnswerTests {
         }
 
     @Test
-    fun malformedBackendKeyMaterialIsTyped() {
-        val failure =
-            assertFailsWith<PeerCertificateException> {
-                PeerCertificateSupport.Available(FixedBackend(publicKeyBytes = 64)).generate(PeerCertificateValidity.Maximum, notBefore)
-            }.failure
-        val malformed = assertIs<PeerCertificateFailure.MalformedKeyMaterial>(failure)
-        assertEquals(KeyMaterialPart.PublicKey, malformed.part)
-        assertEquals(64, malformed.actualBytes)
-    }
+    fun malformedBackendKeyMaterialIsTyped() =
+        runTest {
+            val failure =
+                assertFailsWith<PeerCertificateException> {
+                    PeerCertificateSupport.Available(FixedBackend(publicKeyBytes = 64)).mint(PeerCertificateValidity.Maximum, notBefore)
+                }.failure
+            val malformed = assertIs<PeerCertificateFailure.MalformedKeyMaterial>(failure)
+            assertEquals(KeyMaterialPart.PublicKey, malformed.part)
+            assertEquals(64, malformed.actualBytes)
+        }
 
     /** Deterministic stand-in for platform crypto: a fixed real P-256 key pair, a fixed DER "signature", a fixed "digest". */
     private class FixedBackend(
