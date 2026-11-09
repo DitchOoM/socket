@@ -35,10 +35,16 @@ import kotlin.time.Duration.Companion.seconds
  * matrix green and meaningless, and the one the UDP suite avoids by asserting a specific datagram.
  *
  * ⚠️ **`dropEvery(n)` defaults to `offset = 0`, so the first datagram of each impaired leg is dropped —
- * which is the client's first Initial.** The costs are therefore handshake recovery, not steady-state
- * loss: measured 1.1s for the uplink case (one Initial PTO at quiche's 333ms initial RTT) and 18.2s for
- * both legs (PTO exponential backoff, 1+2+4+8…). That distribution is discrete in powers of two, so
- * "margin" is not continuous here — one more unlucky alignment is +16s.
+ * which is the client's first Initial.** The handshake therefore recovers through one Initial PTO at
+ * quiche's 333ms initial RTT (~1s uplink-only, ~2s both legs), and its RTT sample includes that wait.
+ *
+ * ⚠️ **Which later datagram a count-based schedule hits depends on how many datagrams each side sends,
+ * so it moves whenever batching or coalescing changes.** On roughly one run in five, the both-legs
+ * schedule drops the client's first stream packet. Its retransmission then waits out a PTO inflated by
+ * that handshake sample (srtt ~1s, rttvar ~0.5s) and reaches the server ~4.5s after the handshake. The
+ * echo server used to accept streams for 3s only, so it never echoed and the client idled out at 30s
+ * (run 129233965669; 4 runs in 60 in-process). [echoConnection] now accepts for the life of the
+ * connection, and `EchoConnectionLateStreamTests` pins the late arrival without loss.
  *
  * ## Why JVM-only
  * Same reasoning as `UdpHarnessTests`: the sidecars are reachable from `jvmTest` under the `harnessUp`
