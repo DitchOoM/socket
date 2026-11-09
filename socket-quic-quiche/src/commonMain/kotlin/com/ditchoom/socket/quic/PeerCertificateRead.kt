@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.PlatformBuffer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.withContext
 
 /**
@@ -32,11 +33,21 @@ internal suspend fun readPeerCertDerThroughDriver(
     val deferred = CompletableDeferred<Int>()
     // The buffer travels with its address: quiche writes the DER into it on the driver loop, so what
     // keeps that memory mapped has to reach the driver too. See [QuicheMemory].
-    driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred, position))
-    // Past the send, so the driver is borrowing: from here every exit waits for it to say it is done.
     try {
-        return deferred.await()
-    } finally {
-        withContext(NonCancellable) { deferred.join() }
+        driver.commands.send(QuicheCmd.PeerCert(der.driverOwnedMemory(), capacity, deferred, position))
+    } catch (_: ClosedSendChannelException) {
+        // The connection is gone (a peer may close the instant its handshake completes): answer from the
+        // chain the driver copied out as it tore down, so the certificate is still checked, not refused.
+        return driver.copyRetainedPeerCert(position, der, capacity)
     }
+    // Past the send, so the driver is borrowing: from here every exit waits for it to say it is done.
+    val read =
+        try {
+            deferred.await()
+        } finally {
+            withContext(NonCancellable) { deferred.join() }
+        }
+    // A read the teardown drain answered "nothing here" for: the retained chain, as above. A live
+    // connection's 0 (no certificate) stands.
+    return if (read == 0 && driver.commands.isClosedForSend) driver.copyRetainedPeerCert(position, der, capacity) else read
 }
