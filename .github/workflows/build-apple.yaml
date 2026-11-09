@@ -388,6 +388,7 @@ jobs:
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
             linkFirst: "linkDebugTestIosSimulatorArm64"
+            testArgs: "--max-workers=1 --continue"
             bootSimulator: "1"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
           # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
@@ -443,8 +444,8 @@ jobs:
       # connect timeout) hit 7 runs before and 1 after, and NW's first report never passed 18 ms
       # after, against 4.3-11.7 s on 3 runs before. Wall-clock did not change: the work only moved.
       #
-      # It narrows the window, it does not close it: tests of different modules still run side by
-      # side in the one simulator, and the simulator still stalls now and then with nothing building.
+      # It narrowed the window, it did not close it: tests of different modules still ran side by
+      # side in the one simulator. The test step below closes that half (`testArgs`).
       # UNQUALIFIED, like the test task, so a new module's binary is linked here without a list.
       # tvOS/watchOS have not shown these stalls and were not measured, so they keep one invocation.
       - name: Compile and link the ${{ matrix.shard.name }} test binaries
@@ -454,12 +455,22 @@ jobs:
           ${{ matrix.shard.linkFirst }}
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # `testArgs` is the iOS shard's `--max-workers=1 --continue`: one module's simulator tests at a
+      # time. With the default workers, Gradle runs several modules' test binaries in the one booted
+      # simulator at once. Measured on 35 runs of each arm, interleaved in the same two workflow runs
+      # (PR #815): a test-visible stall of 2 s or more (the TLS-to-plain-server handshake failure,
+      # NW's first report for a connect) hit 4 runs with the default and 0 with one worker, and the
+      # test step took 6.1 -> 8.3 min (p50; whole job 21.8 -> 24.5 min). Free memory and swap on the
+      # runner did not change, so this removes the overlap, not the memory pressure.
+      # `--continue` because with one worker a failing module would otherwise stop every module
+      # queued behind it, and the shard would report less than it does today.
       - name: Run ${{ matrix.shard.name }}
         env:
           SOCKET_REQUIRE_ALL_TESTS: ${{ matrix.shard.requireAllTests }}
         run: >-
           .github/scripts/gradle-retry.sh
           ${{ matrix.shard.tasks }}
+          ${{ matrix.shard.testArgs }}
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # The simulator shards are the reason this exists: `wrapTestBody` early-returns there, and on
