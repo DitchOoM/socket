@@ -387,6 +387,7 @@ jobs:
           # requireAllTests stays off until this shard's skip inventory reads zero.
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
+            linkFirst: "linkDebugTestIosSimulatorArm64"
             bootSimulator: "1"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
           # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
@@ -432,6 +433,26 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           echo "booted $(xcrun simctl list devices | grep "$UDID")"
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # Every test binary is linked BEFORE any simulator test starts, in its own Gradle invocation.
+      # In one invocation Gradle starts a module's tests as soon as that module links, so the tests
+      # shared this 3-core runner with the compiles and links of every other module, and the booted
+      # simulator stops answering for seconds at a time while those run. Measured over 29 runs of the
+      # old lane against 40 of this one (PR #803): a test-visible stall of 2 s or more (NW's first
+      # report for a connect, normally 1-20 ms; the TLS-to-plain-server handshake failure; a TLS
+      # connect timeout) hit 7 runs before and 1 after, and NW's first report never passed 18 ms
+      # after, against 4.3-11.7 s on 3 runs before. Wall-clock did not change: the work only moved.
+      #
+      # It narrows the window, it does not close it: tests of different modules still run side by
+      # side in the one simulator, and the simulator still stalls now and then with nothing building.
+      # UNQUALIFIED, like the test task, so a new module's binary is linked here without a list.
+      # tvOS/watchOS have not shown these stalls and were not measured, so they keep one invocation.
+      - name: Compile and link the ${{ matrix.shard.name }} test binaries
+        if: ${{ matrix.shard.linkFirst != '' }}
+        run: >-
+          .github/scripts/gradle-retry.sh
+          ${{ matrix.shard.linkFirst }}
+          --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run ${{ matrix.shard.name }}
         env:

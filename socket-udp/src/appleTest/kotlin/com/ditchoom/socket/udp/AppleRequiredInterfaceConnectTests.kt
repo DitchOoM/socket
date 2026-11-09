@@ -73,6 +73,7 @@ class AppleRequiredInterfaceConnectTests {
                 println("SKIPPED-VACUOUS: this host has a cellular interface, so a cellular requirement is satisfiable here")
                 return@runBlocking
             }
+            println("NW-FIRST-REPORT: cellular-required connect took $took; ${trace.firstReportSummary()}")
             if (took > SLOW_REPORT) println("NW-SLOW-CONNECT: the connect took $took\n${trace.render()}")
             val failure = outcome.exceptionOrNull()
             assertIsNot<TimeoutCancellationException>(
@@ -180,11 +181,21 @@ class AppleRequiredInterfaceConnectTests {
         }
 
     /** A ready Wi-Fi-confined connection to TEST-NET-1, or `null` (said out loud) when this host has no Wi-Fi route. */
-    private suspend fun wifiConnectionOrNull(): ConnectedDatagramChannel? =
-        runCatching { withTimeout(10.seconds) { connect(DOC_PEER, 9, NwRequiredInterface.Wifi) } }.getOrElse {
+    private suspend fun wifiConnectionOrNull(): ConnectedDatagramChannel? {
+        val trace = NwConnectTrace()
+        val started = TimeSource.Monotonic.markNow()
+        val outcome =
+            runCatching {
+                withTimeout(10.seconds) {
+                    UdpSocket.connectRequiring(DOC_PEER, 9, 1500, factory, NwRequiredInterface.Wifi, trace)
+                }
+            }
+        println("NW-FIRST-REPORT: Wi-Fi-required connect took ${started.elapsedNow()}; ${trace.firstReportSummary()}")
+        return outcome.getOrElse {
             println("SKIPPED-VACUOUS: this host has no Wi-Fi interface with a route ($it)")
             null
         }
+    }
 
     private fun SocketAddress.isLoopback(): Boolean = host == "::1" || host.startsWith("127.")
 

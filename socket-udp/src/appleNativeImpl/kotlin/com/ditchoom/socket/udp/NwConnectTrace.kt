@@ -92,6 +92,22 @@ internal class NwConnectTrace(
             if (count > CAPACITY) append("\n  … ").append(count - CAPACITY).append(" later events not kept")
         }
 
+    /**
+     * One line saying how long NW took to deliver its first state report, from the start of this trace,
+     * and when Kotlin saw it. Printed by tests on every run, fast or slow, so a CI log yields the
+     * latency distribution rather than only its outliers.
+     */
+    fun firstReportSummary(): String {
+        val first =
+            (0 until minOf(recorded.value, CAPACITY))
+                .firstNotNullOfOrNull { i -> events[i]?.takeIf { it.nwEntryNs != NOT_FROM_NW } }
+        val head = "connect #$ordinal"
+        val tail = "load average ${loadAverage()}"
+        if (first == null) return "$head: NW never reported; $tail"
+        return "$head: NW first reported at +${ms(first.nwEntryNs - origin)} ms, " +
+            "Kotlin saw it at +${ms(first.kotlinNs - origin)} ms; $tail"
+    }
+
     private fun loadAverage(): String =
         memScoped {
             val loads = allocArray<DoubleVar>(3)
