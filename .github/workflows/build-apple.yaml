@@ -345,10 +345,11 @@ jobs:
       fail-fast: false
       matrix:
         # TEMPORARY (measurement): the iOS simulator shard only, replicated.
-        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
         shard:
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
+            linkFirst: "linkDebugTestIosSimulatorArm64"
             bootSimulator: "1"
     steps:
       - uses: actions/checkout@v7
@@ -372,6 +373,20 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           echo "booted $(xcrun simctl list devices | grep "$UDID")"
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # Build every test binary BEFORE any test runs, as its own Gradle invocation. In one invocation
+      # Gradle starts a module's simulator tests as soon as that module is linked, so on this 3-core
+      # runner the tests shared the machine with the compiles and links of every other module. NW's
+      # first report for an unsatisfiable connect, normally 1-5 ms, took 6.4-7.4 s on two runs like
+      # that, and the TLS-to-plain-server test lost ~7 s on a third. The test step below then has
+      # nothing left to build, so nothing but tests competes for the runner while they run.
+      # UNQUALIFIED, like the test task: a new module's binary is linked here without a list to keep.
+      - name: Compile and link the ${{ matrix.shard.name }} test binaries
+        if: ${{ matrix.shard.linkFirst != '' }}
+        run: >-
+          .github/scripts/gradle-retry.sh
+          ${{ matrix.shard.linkFirst }}
+          --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run ${{ matrix.shard.name }}
         env:
