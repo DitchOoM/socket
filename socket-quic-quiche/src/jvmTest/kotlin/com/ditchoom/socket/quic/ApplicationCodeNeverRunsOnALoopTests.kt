@@ -4,6 +4,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.udp.InternalDatagramLoopApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,9 @@ import kotlin.time.Duration.Companion.seconds
  * scope, and every continuation after a read, write, open or accept must resume on the application's
  * dispatcher, never on a `quic-loop-*` thread.
  *
+ * A trace sink ([QuicTraceCapture]) is application code too: the events a connection records on its
+ * loop are handed to the sink off the loop ([com.ditchoom.socket.quic.trace.OffLoopTraceSink]).
+ *
  * Every point where application code runs records its thread; any that is a loop thread fails the test.
  * The control proves the probe can see a loop thread at all: a coroutine that opts into
  * `Dispatchers.Unconfined` resumes on whatever thread completes its wait, which for a stream read is the
@@ -35,6 +40,22 @@ import kotlin.time.Duration.Companion.seconds
 class ApplicationCodeNeverRunsOnALoopTests {
     private val options =
         QuicOptions(alpnProtocols = listOf("app-code"), verifyPeer = false, idleTimeout = 1.minutes, migration = MigrationPolicy.Forbidden)
+
+    /** [options] with a trace capture whose sink (application code too) records where it runs. */
+    private fun tracedOptions(probe: Probe): QuicOptions =
+        QuicOptions(
+            alpnProtocols = listOf("app-code"),
+            verifyPeer = false,
+            idleTimeout = 1.minutes,
+            migration = MigrationPolicy.Forbidden,
+            trace =
+                QuicTraceCapture(
+                    TraceSink {
+                        probe.traced.incrementAndGet()
+                        probe.note("trace sink")
+                    },
+                ),
+        )
 
     private fun certPath(name: String): String {
         val url = this::class.java.classLoader.getResource("certs/$name") ?: error("Test cert not found: certs/$name")
@@ -47,6 +68,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
     private class Probe {
         val onLoop = ConcurrentLinkedQueue<String>()
         val checked = AtomicInteger()
+        val traced = AtomicInteger()
 
         fun note(where: String) {
             checked.incrementAndGet()
@@ -61,6 +83,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
             skipOnMissingNativeLib(ApplicationCodeNeverRunsOnALoopTests::class) {
                 val probe = Probe()
                 val loopsUsed = CompletableDeferred<Int>()
+                val options = tracedOptions(probe)
                 withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = tlsConfig, quicOptions = options) {
                     val serverJob =
                         launch {
@@ -112,6 +135,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
                 }
                 assertTrue(loopsUsed.await() > 0, "no QUIC loop thread was running, so nothing here was checked against one")
                 assertTrue(probe.checked.get() > ECHOES * 4, "the probe recorded only ${probe.checked.get()} points")
+                assertTrue(probe.traced.get() > 0, "no trace event reached a sink, so the sinks were not checked")
                 if (probe.onLoop.isNotEmpty()) {
                     fail(
                         "application code ran on a QUIC loop thread:\n" + probe.onLoop.distinct().joinToString("\n"),

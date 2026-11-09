@@ -287,6 +287,9 @@ internal class SharedQuicheServer(
         api.configFree(config)
         registry.closeChannels()
         serverJob.cancel()
+        // The server-level trace (accept-time arrivals, drops) reaches its sink off the loop: deliver it
+        // before close returns (bounded).
+        serverCapture.record { it.flush() }
         // Finally, cancel the per-call parent scope (the build function wires this). serverJob is a child
         // of it, so this is the strict superset.
         onClose?.invoke()

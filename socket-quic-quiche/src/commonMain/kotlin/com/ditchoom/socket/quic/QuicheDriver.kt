@@ -2118,6 +2118,9 @@ class QuicheDriver(
                     entry.readerJob?.join()
                 }
                 cleanup()
+                // The trace reaches the application's sink off this loop; let what this connection
+                // recorded arrive before its end is reported (bounded, and a suspension, not a block).
+                capture.record { it.flush() }
             }
         }
     }
