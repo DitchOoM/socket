@@ -555,8 +555,11 @@ kotlin {
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
+        // Tests for the resolvers that block a thread (JVM, Linux, Apple), shared by those test source sets.
+        val blockingResolverTestDir = file("src/blockingResolverTest/kotlin")
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
+            kotlin.srcDir(blockingResolverTestDir)
         }
         jvmTest.get().dependsOn(commonJvmTest)
         jvmTest.dependencies {
@@ -592,6 +595,7 @@ kotlin {
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
                 findByName(sourceSetName)?.kotlin?.srcDir(posixNativeImplDir)
             }
+            findByName("appleTest")?.kotlin?.srcDir(blockingResolverTestDir)
         }
 
         // Linux implementation uses standard KMP hierarchy:
@@ -607,7 +611,10 @@ kotlin {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }
             }
-            named("linuxTest") { kotlin.srcDir(generateIoUringTest) }
+            named("linuxTest") {
+                kotlin.srcDir(generateIoUringTest)
+                kotlin.srcDir(blockingResolverTestDir)
+            }
         }
     }
 }
