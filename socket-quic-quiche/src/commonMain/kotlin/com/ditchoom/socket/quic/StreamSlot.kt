@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.channels.Channel
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 
 /**
@@ -60,11 +61,11 @@ class StreamSlot(
     internal fun latchReset(code: QuicAppErrorCode): Boolean = latchedEnd.compareAndSet(StreamEnd.Open, StreamEnd.Reset(code))
 
     /**
-     * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
-     * cases where quiche moved the receive offset but the `read()` that asked for the bytes is gone:
-     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown, and
+     * Stream bytes quiche had already delivered to us that no reader has taken yet. Three producers:
+     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown,
      * [DriverStreamAdapter.salvageCancelledRecv] when a read's timeout or cancellation unwound it before
-     * the driver answered its still-queued `StreamRecv`.
+     * the driver answered its still-queued `StreamRecv`, and the driver handing a read parked in
+     * [awaitData] the bytes it was waiting for (see [takeWaitingRead]).
      *
      * The connection dying does not un-receive them (RFC 9000 §10.2: a CONNECTION_CLOSE ends the
      * connection; the stream data the transport already accepted and acknowledged is still the
@@ -80,6 +81,43 @@ class StreamSlot(
      * is closed is released by [DriverStreamAdapter.releaseUndeliveredReads].
      */
     val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
+
+    /**
+     * The size of the read parked on [dataSignal], or 0 when no read is parked there. Set by the reader
+     * just before it parks ([awaitData]) and taken by the driver loop ([takeWaitingRead]) when quiche
+     * reports the stream readable, so the driver can hand the bytes over itself instead of only waking
+     * the reader to come and ask for them (one round trip through the loop fewer per read that waited).
+     */
+    private val waitingRead = AtomicInt(0)
+
+    /**
+     * Park the reader until the driver signals [dataSignal], advertising a read of [size] bytes for the
+     * driver to fill ([takeWaitingRead]) meanwhile. The advert is withdrawn BEFORE this returns, so the
+     * caller's next look at [pendingData] cannot be followed by a drain it did not see: once the advert
+     * is gone the driver only signals. A drain that took the advert first may still be landing as the
+     * reader looks; the driver answers that reader's next `StreamRecv` with `Done` while the queue holds
+     * anything (see `QuicheDriver.execute`), so the queued chunk is read before any byte quiche has
+     * after it.
+     */
+    internal suspend fun awaitData(size: Int) {
+        advertiseWaitingRead(size)
+        try {
+            dataSignal.receive()
+        } finally {
+            withdrawWaitingRead()
+        }
+    }
+
+    /** [awaitData]'s advert, apart from its wait: the hand-off model checks these two around the driver. */
+    internal fun advertiseWaitingRead(size: Int) = waitingRead.store(size)
+
+    internal fun withdrawWaitingRead() = waitingRead.store(0)
+
+    /**
+     * Driver loop only: the size of the read parked on [dataSignal], claiming it so at most one chunk is
+     * drained per park; 0 when no read is parked.
+     */
+    internal fun takeWaitingRead(): Int = waitingRead.exchange(0)
 
     /** Where the application's reads of this stream stand. See [StreamReadState]; advanced by CAS only. */
     val readState = AtomicReference<StreamReadState>(StreamReadState.Idle)
