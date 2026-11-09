@@ -621,22 +621,20 @@ class FfmQuicheApi private constructor(
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
-    ): StreamRecvResult =
-        Arena.ofConfined().use { arena ->
-            val finOut = arena.allocate(JAVA_BOOLEAN)
-            val errOut = arena.allocate(JAVA_LONG)
-            val raw = hStreamRecv.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), finOut, errOut) as Long
-            if (raw >= 0) {
-                val fin = finOut.get(JAVA_BOOLEAN, 0)
-                StreamRecvResult.Data(raw.toInt(), fin)
-            } else if (raw == QUICHE_ERR_DONE) {
-                StreamRecvResult.Done
-            } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                StreamRecvResult.Reset(QuicAppErrorCode(errOut.get(JAVA_LONG, 0)))
-            } else {
-                StreamRecvResult.Error(raw.toInt())
-            }
+    ): StreamRecvResult {
+        val out = outParams.get()
+        val raw = hStreamRecv.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), out.fin, out.errorCode) as Long
+        return if (raw >= 0) {
+            val fin = out.fin.get(JAVA_BOOLEAN, 0)
+            StreamRecvResult.Data(raw.toInt(), fin)
+        } else if (raw == QUICHE_ERR_DONE) {
+            StreamRecvResult.Done
+        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            StreamRecvResult.Reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
+        } else {
+            StreamRecvResult.Error(raw.toInt())
         }
+    }
 
     override fun connStreamSend(
         conn: QuicheConn,
@@ -644,19 +642,38 @@ class FfmQuicheApi private constructor(
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): StreamSendResult =
-        Arena.ofConfined().use { arena ->
-            val errOut = arena.allocate(JAVA_LONG)
-            val result = (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
-            // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
-            val errorCode =
-                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                    QuicAppErrorCode(errOut.get(JAVA_LONG, 0))
-                } else {
-                    null
-                }
-            StreamSendResult(result, errorCode)
-        }
+    ): StreamSendResult {
+        val errOut = outParams.get().errorCode
+        val result = (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
+        // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET, and it is read only then.
+        val errorCode =
+            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                QuicAppErrorCode(errOut.get(JAVA_LONG, 0))
+            } else {
+                null
+            }
+        return StreamSendResult(result, errorCode)
+    }
+
+    /**
+     * The out-parameters of the per-packet and per-stream calls ([connStreamRecv], [connStreamSend],
+     * [connPathStats]), one set per thread, allocated once: the same reasoning as [streamIdScratch]. A
+     * call writes them and reads them back on its own thread with nothing in between that can suspend,
+     * so no other call can overwrite them first. They were a confined arena per call, created and
+     * closed on every stream read, stream write and flush.
+     *
+     * Each value is read only where quiche has written it: `fin` on a successful read, `errorCode` on
+     * STREAM_RESET / STREAM_STOPPED, and the path-stats struct on success. Nothing relies on the zero
+     * fill a fresh arena gave.
+     */
+    private class OutParams {
+        private val arena = Arena.ofAuto()
+        val fin: MemorySegment = arena.allocate(JAVA_BOOLEAN)
+        val errorCode: MemorySegment = arena.allocate(JAVA_LONG)
+        val pathStats: MemorySegment = arena.allocate(PATH_STATS_SIZE, 8)
+    }
+
+    private val outParams: ThreadLocal<OutParams> = ThreadLocal.withInitial(::OutParams)
 
     override fun connStreamCapacity(
         conn: QuicheConn,
@@ -841,32 +858,31 @@ class FfmQuicheApi private constructor(
     override fun connPathStats(
         conn: QuicheConn,
         pathIdx: Long,
-    ): QuicPathStats? =
-        Arena.ofConfined().use { arena ->
-            val out = arena.allocate(PATH_STATS_SIZE, 8)
-            val rc = hConnPathStats.invokeExact(seg(conn.handle), pathIdx, out) as Int
-            if (rc < 0) return@use null
-            QuicPathStats(
-                validationState = out.get(JAVA_LONG, 272),
-                active = out.get(JAVA_BOOLEAN, 280),
-                recv = out.get(JAVA_LONG, 288),
-                sent = out.get(JAVA_LONG, 296),
-                lost = out.get(JAVA_LONG, 304),
-                retrans = out.get(JAVA_LONG, 312),
-                totalPtoCount = out.get(JAVA_LONG, 320),
-                rtt = out.get(JAVA_LONG, 344).nanoseconds,
-                minRtt = out.get(JAVA_LONG, 352).nanoseconds,
-                maxRtt = out.get(JAVA_LONG, 360).nanoseconds,
-                rttvar = out.get(JAVA_LONG, 368).nanoseconds,
-                cwnd = out.get(JAVA_LONG, 376),
-                sentBytes = out.get(JAVA_LONG, 384),
-                recvBytes = out.get(JAVA_LONG, 392),
-                lostBytes = out.get(JAVA_LONG, 400),
-                streamRetransBytes = out.get(JAVA_LONG, 408),
-                pmtu = out.get(JAVA_LONG, 416),
-                deliveryRate = out.get(JAVA_LONG, 424),
-            )
-        }
+    ): QuicPathStats? {
+        val out = outParams.get().pathStats
+        val rc = hConnPathStats.invokeExact(seg(conn.handle), pathIdx, out) as Int
+        if (rc < 0) return null
+        return QuicPathStats(
+            validationState = out.get(JAVA_LONG, 272),
+            active = out.get(JAVA_BOOLEAN, 280),
+            recv = out.get(JAVA_LONG, 288),
+            sent = out.get(JAVA_LONG, 296),
+            lost = out.get(JAVA_LONG, 304),
+            retrans = out.get(JAVA_LONG, 312),
+            totalPtoCount = out.get(JAVA_LONG, 320),
+            rtt = out.get(JAVA_LONG, 344).nanoseconds,
+            minRtt = out.get(JAVA_LONG, 352).nanoseconds,
+            maxRtt = out.get(JAVA_LONG, 360).nanoseconds,
+            rttvar = out.get(JAVA_LONG, 368).nanoseconds,
+            cwnd = out.get(JAVA_LONG, 376),
+            sentBytes = out.get(JAVA_LONG, 384),
+            recvBytes = out.get(JAVA_LONG, 392),
+            lostBytes = out.get(JAVA_LONG, 400),
+            streamRetransBytes = out.get(JAVA_LONG, 408),
+            pmtu = out.get(JAVA_LONG, 416),
+            deliveryRate = out.get(JAVA_LONG, 424),
+        )
+    }
 
     override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(hConnPeerError, conn)
 
