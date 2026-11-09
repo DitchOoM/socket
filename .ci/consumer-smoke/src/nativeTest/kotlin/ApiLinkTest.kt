@@ -39,7 +39,8 @@ class ApiLinkTest {
      * sandboxed environment that denies netlink is not this test's concern.
      */
     @Test
-    fun nativeNetworkMonitorLinks() {
-        runCatching { Smoke.networkAwareness() }
-    }
+    fun nativeNetworkMonitorLinks() =
+        runTest {
+            runCatching { Smoke.networkAwareness() }
+        }
 }

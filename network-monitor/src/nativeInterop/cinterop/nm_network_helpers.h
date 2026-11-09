@@ -2,7 +2,7 @@
 #define NM_NETWORK_HELPERS_H
 
 // Apple C bridge for :network-monitor — the NWPathMonitor backing AppleNetworkMonitor, and the
-// getifaddrs scan backing enumerateNetworkInterfaces(). Both moved out of :socket's nw_helpers.h with
+// getifaddrs scan backing listNetworkInterfaces(). Both moved out of :socket's nw_helpers.h with
 // the code that calls them (issue #269); :socket now has no caller for either.
 //
 // Both exist for the same reason: Kotlin/Native cannot express these APIs directly.

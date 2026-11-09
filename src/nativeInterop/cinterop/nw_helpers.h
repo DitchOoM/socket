@@ -217,7 +217,7 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 // The NWPathMonitor bridge (nw_helper_create_path_monitor + set_update_handler/start/cancel) and the
 // getifaddrs scan (nw_helper_enumerate_interfaces), with their block typedefs, now live in
 // network-monitor/src/nativeInterop/cinterop/nm_network_helpers.h alongside their only callers —
-// AppleNetworkMonitor and enumerateNetworkInterfaces(), which moved to :network-monitor together so
+// AppleNetworkMonitor and listNetworkInterfaces(), which moved to :network-monitor together so
 // they can share LinuxNetworkMonitor.classifyLinkKind without it becoming public API.
 //
 // Two cinterops on one classpath must not both declare the same helper, so they are declared THERE and

@@ -1,11 +1,12 @@
 package consumer.smoke
 
 import com.ditchoom.socket.NetworkMonitor
-import com.ditchoom.socket.default
-import com.ditchoom.socket.enumerateNetworkInterfaces
+import com.ditchoom.socket.listNetworkInterfaces
 import com.ditchoom.socket.networkId
+import com.ditchoom.socket.open
 import com.ditchoom.socket.permits
 import com.ditchoom.socket.transport.NetworkId
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -20,7 +21,7 @@ import kotlin.test.assertTrue
  *
  * Running it adds what neither resolution nor a link gate can see on the JVM: `network-monitor-jvm` is
  * a **multi-release JAR** whose reactive FFM routing-socket monitors sit under `META-INF/versions/21`
- * with a Java-8 polling base. Which one `default()` selects depends on the assembled jar being shaped
+ * with a Java-8 polling base. Which one `open()` selects depends on the assembled jar being shaped
  * correctly — the same packaging class of bug the loopback smoke catches for the quiche natives.
  *
  * Assertions are host-independent on purpose: a CI runner's interface set, rung and identity are
@@ -29,29 +30,30 @@ import kotlin.test.assertTrue
  */
 class NetworkAwarenessSmokeTest {
     @Test
-    fun publishedNetworkMonitorResolvesAndWorksThroughSocketsApiEdge() {
-        val interfaces = enumerateNetworkInterfaces()
-        assertTrue(
-            interfaces.any { it.isLoopback },
-            "every host has a loopback interface; enumerate returned ${interfaces.map { it.name }}",
-        )
+    fun publishedNetworkMonitorResolvesAndWorksThroughSocketsApiEdge() =
+        runTest {
+            val interfaces = listNetworkInterfaces()
+            assertTrue(
+                interfaces.any { it.isLoopback },
+                "every host has a loopback interface; enumerate returned ${interfaces.map { it.name }}",
+            )
 
-        val monitor = NetworkMonitor.default()
-        try {
-            val state = monitor.state.value
-            assertTrue(
-                monitor.capability.resolution.permits(state),
-                "${monitor::class.java.name} declares ${monitor.capability.resolution} but published $state",
-            )
-            // The sealed identity contract survives publication — never a bare string or null.
-            val id = state.networkId
-            assertTrue(
-                id is NetworkId.Link || id is NetworkId.KindOnly || id == NetworkId.Unidentified,
-                "networkId must be a sealed NetworkId, was $id",
-            )
-            println("consumer-smoke: network awareness OK — ${Smoke.networkAwareness()}")
-        } finally {
-            monitor.close()
+            val monitor = NetworkMonitor.open()
+            try {
+                val state = monitor.state.value
+                assertTrue(
+                    monitor.capability.resolution.permits(state),
+                    "${monitor::class.java.name} declares ${monitor.capability.resolution} but published $state",
+                )
+                // The sealed identity contract survives publication — never a bare string or null.
+                val id = state.networkId
+                assertTrue(
+                    id is NetworkId.Link || id is NetworkId.KindOnly || id == NetworkId.Unidentified,
+                    "networkId must be a sealed NetworkId, was $id",
+                )
+                println("consumer-smoke: network awareness OK — ${Smoke.networkAwareness()}")
+            } finally {
+                monitor.close()
+            }
         }
-    }
 }

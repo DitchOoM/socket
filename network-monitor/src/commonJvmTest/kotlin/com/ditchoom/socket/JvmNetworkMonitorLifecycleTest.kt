@@ -59,7 +59,7 @@ class JvmNetworkMonitorLifecycleTest {
     @Test
     fun defaultMonitorIsFunctionalAndCloses() =
         runBlocking(Dispatchers.IO) {
-            val monitor = NetworkMonitor.default()
+            val monitor = NetworkMonitor.open()
             try {
                 // Whatever the platform default is, it must expose the contract without throwing.
                 assertNetworkIdInvariant(monitor.state.value.networkId)

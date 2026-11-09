@@ -6,6 +6,7 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.test.runTest
 import platform.CoreFoundation.CFDataCreate
 import platform.CoreFoundation.CFDataRef
 import platform.CoreFoundation.CFRelease
@@ -27,46 +28,47 @@ import kotlin.test.fail
  */
 class ApplePeerCertificateSecurityFrameworkTest {
     @Test
-    fun securityFrameworkParsesAndVerifiesTheSelfSignature() {
-        val engine = peerCertificates as? PeerCertificateSupport.Available ?: fail("peerCertificates=$peerCertificates")
-        repeat(CERTIFICATES) { index ->
-            engine.generate().use { certificate ->
-                val der = certificate.der().let { buffer -> ByteArray(buffer.remaining()) { buffer[buffer.position() + it] } }
-                val context = "certificate $index: ${der.joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }}"
-                val (tbs, signature) = splitCertificate(der)
-                val derData = cfData(der)
-                val tbsData = cfData(tbs)
-                val signatureData = cfData(signature)
-                try {
-                    val secCertificate =
-                        assertNotNull(SecCertificateCreateWithData(null, derData), "SecCertificateCreateWithData refused $context")
+    fun securityFrameworkParsesAndVerifiesTheSelfSignature() =
+        runTest {
+            val engine = peerCertificates as? PeerCertificateSupport.Available ?: fail("peerCertificates=$peerCertificates")
+            repeat(CERTIFICATES) { index ->
+                engine.mint().use { certificate ->
+                    val der = certificate.der().let { buffer -> ByteArray(buffer.remaining()) { buffer[buffer.position() + it] } }
+                    val context = "certificate $index: ${der.joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }}"
+                    val (tbs, signature) = splitCertificate(der)
+                    val derData = cfData(der)
+                    val tbsData = cfData(tbs)
+                    val signatureData = cfData(signature)
                     try {
-                        val publicKey = assertNotNull(SecCertificateCopyKey(secCertificate), "SecCertificateCopyKey refused $context")
+                        val secCertificate =
+                            assertNotNull(SecCertificateCreateWithData(null, derData), "SecCertificateCreateWithData refused $context")
                         try {
-                            assertTrue(
-                                SecKeyVerifySignature(
-                                    publicKey,
-                                    kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
-                                    tbsData,
-                                    signatureData,
-                                    null,
-                                ),
-                                "self-signature does not verify: $context",
-                            )
+                            val publicKey = assertNotNull(SecCertificateCopyKey(secCertificate), "SecCertificateCopyKey refused $context")
+                            try {
+                                assertTrue(
+                                    SecKeyVerifySignature(
+                                        publicKey,
+                                        kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
+                                        tbsData,
+                                        signatureData,
+                                        null,
+                                    ),
+                                    "self-signature does not verify: $context",
+                                )
+                            } finally {
+                                CFRelease(publicKey)
+                            }
                         } finally {
-                            CFRelease(publicKey)
+                            CFRelease(secCertificate)
                         }
                     } finally {
-                        CFRelease(secCertificate)
+                        CFRelease(derData)
+                        CFRelease(tbsData)
+                        CFRelease(signatureData)
                     }
-                } finally {
-                    CFRelease(derData)
-                    CFRelease(tbsData)
-                    CFRelease(signatureData)
                 }
             }
         }
-    }
 
     /**
      * `Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue BIT STRING }` split

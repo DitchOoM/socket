@@ -1029,7 +1029,7 @@ jobs:
       # via NetnsJvmProbe. Rootless via `unshare -rnm`; :network-monitor:linuxX64Test above linked the
       # .kexe and :network-monitor:netnsJvmProbeClasspath dumped the JVM classpath + JDK21 launcher the
       # harness reads. The binary is :network-monitor's, not the root project's: issue #269 moved
-      # LinuxNetworkMonitor and enumerateNetworkInterfaces() there together.
+      # LinuxNetworkMonitor and listNetworkInterfaces() there together.
       # (Both netns steps therefore MUST stay in this job — they read a build output of the gradle
       # call above, and nothing uploads that .kexe.)
       - name: NetworkMonitor route resolution — netns integration (Linux)

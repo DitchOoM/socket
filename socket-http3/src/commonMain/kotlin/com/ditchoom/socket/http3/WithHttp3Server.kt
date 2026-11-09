@@ -91,7 +91,7 @@ suspend fun <R> withHttp3Server(
  *
  * ```kotlin
  * when (val certificates = peerCertificates) {
- *     is PeerCertificateSupport.Available -> certificates.generate().use { certificate ->
+ *     is PeerCertificateSupport.Available -> certificates.mint().use { certificate ->
  *         signalling.publish(certificate.hash)
  *         withHttp3Server(
  *             certificate = certificate,

@@ -20,8 +20,10 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.HostResolver
+import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.allocate
@@ -30,6 +32,9 @@ import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.http3.Http3Request
 import com.ditchoom.socket.http3.withHttp3Connection
 import com.ditchoom.socket.http3.withHttp3Server
+import com.ditchoom.socket.listNetworkInterfaces
+import com.ditchoom.socket.open
+import com.ditchoom.socket.shared
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.webtransport.Http3WebTransportConfig
 import com.ditchoom.socket.webtransport.webTransportSupport
@@ -163,6 +168,22 @@ class AndroidMainThreadSafetyTests {
         onMainThread {
             HostResolver.platform().resolve("localhost")
             UdpSocket.resolve("localhost", 9)
+        }
+
+    @Test
+    fun mintACertificateOpenAndShareAMonitorAndListInterfaces() =
+        onMainThread {
+            // Key generation reads the entropy source; the monitor registers a ConnectivityManager
+            // callback; the interface scan is a kernel round trip. Each suspend entry point moves its own
+            // work off the main thread.
+            assertIs<PeerCertificateSupport.Available>(peerCertificates).mint().close()
+            NetworkMonitor.open().close()
+            NetworkMonitor.shared()
+            listNetworkInterfaces()
+            // Not suspend, and needs no replacement: processDefault() only reads a lazily built holder
+            // (a MutableStateFlow), and a hold's register and release are ConnectivityManager binder
+            // calls, no disk or network I/O. Checked here so that stays true.
+            CellularStandby.processDefault().hold().close()
         }
 
     @Test
