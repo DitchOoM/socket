@@ -2190,6 +2190,12 @@ class QuicheDriver(
      * gave up most of the bulk-throughput gain (loopback, median of three: 62 against 155 MiB/s on FFM,
      * 84 against 128 on JNI), so two it is: the RFC's own number.
      *
+     * A [QuicheCmd.Close] is never run behind unflushed commands either. quiche sends nothing but
+     * CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close and
+     * not yet flushed would be discarded without ever being sent: the application's write returned and
+     * its bytes are gone. Flushing first sends them, as flushing after every command always did
+     * (`aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent`).
+     *
      * Bounded so a peer that keeps the queue full cannot starve timers and flushes: after the cap the
      * loop flushes and re-arms its wake as usual, and the rest wait one turn. Returns false when the loop
      * was cancelled; the command in hand is failed, as the loop does for the one it receives.
@@ -2201,7 +2207,7 @@ class QuicheDriver(
                 failCommand(next)
                 return false
             }
-            if (receivedSinceFlush >= RECEIVES_PER_FLUSH) afterCommand()
+            if (receivedSinceFlush >= RECEIVES_PER_FLUSH || next is QuicheCmd.Close) afterCommand()
             dispatch(next)
         }
         return true

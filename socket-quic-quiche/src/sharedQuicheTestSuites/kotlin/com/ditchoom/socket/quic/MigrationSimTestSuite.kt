@@ -90,6 +90,58 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A write handed to the driver just before the connection's close still leaves before the close.
+     *
+     * RFC 9000 §10.2 lets an endpoint that has sent CONNECTION_CLOSE send nothing else, and quiche stops
+     * sending stream data the moment it is asked to close. So a close that runs in the same loop turn as
+     * the write before it, with no flush between them, discards the write without it ever being sent:
+     * the application's write returned, its close returned, and the bytes are simply gone. The loop used
+     * to flush after every command, so this could not happen; once it ran every queued command before
+     * one flush it could, whenever the close was queued while the write was still being run, which is
+     * how a thread that writes and then closes behaves on Android and the JVM. The HTTP/3 suite's
+     * `webTransport_clientOpensUniStream_serverReceives` caught it on an API 35 emulator: the client
+     * opened a uni stream, wrote, closed the connection, and the server's session ended with no stream.
+     *
+     * Here the write and the close are queued from two coroutines before the driver loop runs, so they
+     * are in its queue together, every run.
+     */
+    @Test
+    fun aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent() =
+        runTest {
+            val test = this
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 813_001L) {
+                    val stream = client.openStream()
+                    stream.writeText("first")
+                    val accepted = server.acceptStream()
+                    val first = withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                    assertIs<ReadResult.Data>(first, "the stream must be open on both ends before the scenario starts")
+                        .buffer
+                        .freeIfNeeded()
+
+                    // Both coroutines run before the driver loop does, so the StreamSend and the Close are
+                    // queued back to back.
+                    test.launch { stream.writeText(LAST_WORDS) }
+                    test.launch { client.close() }
+
+                    var heard = ""
+                    while (true) {
+                        val r = runCatching { withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) } }.getOrNull()
+                        if (r !is ReadResult.Data) break
+                        heard += r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
+                        r.buffer.freeIfNeeded()
+                    }
+                    assertEquals(
+                        LAST_WORDS,
+                        heard,
+                        "the client's last write was queued right before its close and never reached the server: " +
+                            "the close ran before anything flushed it, traffic ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
+
+    /**
      * A client's handshake is confirmed when the server's HANDSHAKE_DONE arrives, one round trip after it
      * completes; a server's as it completes (RFC 9001 §4.1.2). The read the migration gate depends on.
      */
@@ -4958,6 +5010,9 @@ abstract class MigrationSimTestSuite {
 
         /** Echoes a healthy path gets to converge its RTT estimate before a scenario that needs it gives up. */
         const val WARM_UP_ECHOES = 8
+
+        /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
+        const val LAST_WORDS = "last words"
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
