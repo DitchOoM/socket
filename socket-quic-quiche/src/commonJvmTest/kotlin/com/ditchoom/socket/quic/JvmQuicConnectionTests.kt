@@ -11,7 +11,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
-import java.nio.channels.DatagramChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -97,9 +96,8 @@ class JvmQuicConnectionTests {
             Unit
         }
 
-    private fun createTestDriver(api: StubQuicheApi = StubQuicheApi()): QuicheDriver {
-        val channel = DatagramChannel.open().apply { configureBlocking(false) }
-        return QuicheDriver(
+    private fun createTestDriver(api: StubQuicheApi = StubQuicheApi()): QuicheDriver =
+        QuicheDriver(
             // Test double: never exercises a path move.
             migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
@@ -107,9 +105,21 @@ class JvmQuicConnectionTests {
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
-            udpChannel = NioUdpChannel(channel),
+            udpChannel = SilentUdpChannel,
             role = QuicRole.Client,
             ingress = DatagramIngress.ExternalPump,
         )
-    }
+}
+
+/** Ingress is pumped externally in these tests, so nothing is received; a send is accepted and dropped. */
+private object SilentUdpChannel : UdpChannel {
+    override suspend fun receive(buffer: com.ditchoom.buffer.PlatformBuffer): Int = kotlinx.coroutines.awaitCancellation()
+
+    override suspend fun send(
+        buffer: com.ditchoom.buffer.PlatformBuffer,
+        len: Int,
+        target: SendTarget,
+    ): SendOutcome = SendOutcome.Sent
+
+    override fun close() = Unit
 }

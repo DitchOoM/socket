@@ -67,6 +67,17 @@ class DatagramEventLoopGroup(
         throw failure ?: IllegalStateException("$namePrefix: no loop could be held")
     }
 
+    private val nextIndex =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    /**
+     * A loop for something that only ever waits on it briefly (a channel used off any loop), without a
+     * hold: round robin. A loop's thread keeps running while anything waits on it, and exits once
+     * nothing does.
+     */
+    fun next(): DatagramEventLoop = loops[Math.floorMod(nextIndex.getAndIncrement(), loops.size)]
+
     /** The threads running this group's loops now. For tests and diagnostics. */
     fun runningThreads(): List<Thread> = loops.mapNotNull { it.runningThread }
 
