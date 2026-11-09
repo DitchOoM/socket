@@ -24,6 +24,12 @@ OUT=bench-android
 RESULTS=benchmarks/android-micro/build/outputs/connected_android_test_additional_output
 mkdir -p "$OUT"
 
+# The emulator is shut down here, bounded, whatever the outcome (scripts/emulator-shutdown.sh). Left to
+# the action's own `adb emu kill`, a wedged emulator held this step until its timeout: run 42633798118
+# finished its benchmarks at 14:35:43, got "OK: killing emulator, bye bye", and timed out at 14:52:16.
+# shellcheck disable=SC2154 # status is assigned inside the trap
+trap 'status=$?; bash scripts/emulator-shutdown.sh "$API_LEVEL" "$status"; exit "$status"' EXIT
+
 run() { # <label> <gradle property args...>
   local label="$1"
   shift
