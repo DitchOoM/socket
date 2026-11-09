@@ -20,6 +20,8 @@ import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runInterruptible
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -234,21 +236,29 @@ internal abstract class NioDatagramChannelCore(
             // driver's retry rate.
             var handedOff = false
             try {
-                // select() is the only blocking call; runInterruptible makes a cancelled receive
-                // interrupt the select (which returns) without closing the underlying socket.
-                runInterruptible(Dispatchers.IO) { selector.select() }
-                selector.selectedKeys().clear()
-                if (closed) return DatagramReadResult.Closed()
-
+                // The fast path below may not suspend at all, so it would no longer be the cancellation
+                // point the select() always was: check here, as entering runInterruptible did.
+                currentCoroutineContext().ensureActive()
                 val buffer = bufferFactory.allocate(receiveBufferSize)
                 payload = buffer
                 val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
                 byteBuffer.clear()
                 // Both modes receive via channel.receive(): on a connected socket the reported sender IS
                 // the connected peer (value-equal via InternedJvmSocketAddress).
+                //
+                // The channel is non-blocking, so try it first: a datagram already queued (the common
+                // case under load, where they arrive faster than one receive takes) is read with one
+                // syscall and no thread hand-off. Only an empty socket parks in select(), which costs a
+                // hop to Dispatchers.IO and back plus the select itself, per datagram.
                 val sender =
-                    channel.receive(byteBuffer) as InetSocketAddress?
-                        ?: continue // spurious wakeup — `finally` frees the staging buffer
+                    channel.receive(byteBuffer) as InetSocketAddress? ?: run {
+                        // select() is the only blocking call; runInterruptible makes a cancelled receive
+                        // interrupt the select (which returns) without closing the underlying socket.
+                        runInterruptible(Dispatchers.IO) { selector.select() }
+                        selector.selectedKeys().clear()
+                        if (closed) return DatagramReadResult.Closed()
+                        channel.receive(byteBuffer) as InetSocketAddress?
+                    } ?: continue // spurious wakeup — `finally` frees the staging buffer
                 val length = byteBuffer.position()
                 // Expose exactly the received datagram as the readable window [0, length).
                 buffer.position(0)
