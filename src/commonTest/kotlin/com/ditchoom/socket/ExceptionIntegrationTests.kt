@@ -27,13 +27,28 @@ class ExceptionIntegrationTests {
     // DNS
     // ──────────────────────────────────────────────────────────────────
 
+    /**
+     * The OS resolver's own answer for a name that does not exist, through the platform connect path.
+     * (Our mapping of a resolver's "no address" answer is covered without the network by
+     * HostResolverTests.aResolverThatAnswersNoAddressIsAnUnknownHost.)
+     *
+     * The connect deadline is the resolver's whole budget here, since no address is ever reached. It
+     * was 5 s, no longer than one attempt of a stub resolver with the common 5 s per-attempt timeout, so
+     * a runner with a slow resolver timed out before the resolver answered: an iOS simulator lane once
+     * reported SocketTimeoutException "timed out after 5s" (PR #806). The
+     * deadline now covers [DNS_FAILURE_RESOLVER_BUDGET], several resolver attempts, and stays under JS
+     * mocha's 30 s test timeout. A timeout is still a failure, and its message records how long the
+     * resolver was given and how long it took, so a resolver that never answers is told apart from a
+     * mapping bug.
+     */
     @Test
     fun dnsFailure_producesSocketUnknownHostException() =
-        runTestNoTimeSkipping {
+        runTestNoTimeSkipping(timeout = DNS_FAILURE_RESOLVER_BUDGET + 5.seconds) {
             if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
+            val started = TimeSource.Monotonic.markNow()
             val ex =
                 try {
-                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = DNS_FAILURE_RESOLVER_BUDGET))
                     socket.open(
                         port = 80,
                         hostname = "this.host.does.not.exist.invalid",
@@ -43,7 +58,14 @@ class ExceptionIntegrationTests {
                 } catch (e: SocketException) {
                     e
                 }
-            assertIs<SocketUnknownHostException>(ex, "Expected SocketUnknownHostException but got ${ex::class.simpleName}: ${ex.message}")
+            val elapsed = started.elapsedNow()
+            val outcome =
+                when (ex) {
+                    is SocketTimeoutException ->
+                        "the resolver did not answer within the $DNS_FAILURE_RESOLVER_BUDGET budget (gave up after $elapsed)"
+                    else -> "a ${ex::class.simpleName} after $elapsed, which is a mapping bug"
+                }
+            assertIs<SocketUnknownHostException>(ex, "Expected SocketUnknownHostException; $outcome: ${ex.message}")
         }
 
     // ──────────────────────────────────────────────────────────────────
@@ -299,3 +321,9 @@ class ExceptionIntegrationTests {
         return "${bytes.size} bytes, first ${bytes.take(8).joinToString(" ") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }}"
     }
 }
+
+/**
+ * How long [ExceptionIntegrationTests.dnsFailure_producesSocketUnknownHostException] lets the OS resolver
+ * take to say a name does not exist: several 5 s resolver attempts, and under JS mocha's 30 s limit.
+ */
+private val DNS_FAILURE_RESOLVER_BUDGET = 20.seconds
