@@ -32,12 +32,14 @@ class ReadBufferPoolingTest {
         private val delegate: BufferFactory = BufferFactory.Default,
     ) : BufferFactory by delegate {
         val allocations = AtomicInteger(0)
+        val sizes = java.util.concurrent.ConcurrentLinkedQueue<Int>()
 
         override fun allocate(
             size: Int,
             byteOrder: ByteOrder,
         ): PlatformBuffer {
             allocations.incrementAndGet()
+            sizes.add(size)
             return delegate.allocate(size, byteOrder)
         }
     }
@@ -91,11 +93,13 @@ class ReadBufferPoolingTest {
         server.close()
 
         val allocations = counting.allocations.get()
+        val allocationSizes = counting.sizes.groupBy { it }.mapValues { it.value.size }
         assertTrue(totalReads >= 300, "sanity: expected many reads, got $totalReads")
         // Pooling ⇒ allocate() is called only on the handful of pool misses, NOT once per read.
         assertTrue(
             allocations < 20,
-            "receive buffers should be pooled/recycled: expected < 20 allocations, got $allocations over $totalReads reads",
+            "receive buffers should be pooled/recycled: expected < 20 allocations, got $allocations over $totalReads reads " +
+                "(allocation sizes: $allocationSizes)",
         )
     }
 
