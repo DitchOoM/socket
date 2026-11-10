@@ -42,6 +42,29 @@ transient+="|Could not (GET|HEAD) 'https://(repo\.maven\.apache\.org|repo1\.mave
 repo_hosts='(repo\.maven\.apache\.org|repo1\.maven\.org|plugins\.gradle\.org|plugins-artifacts\.gradle\.org|dl\.google\.com|maven\.google\.com)'
 transient+="|> ${repo_hosts}: (nodename nor servname provided, or not known|Temporary failure in name resolution|Name or service not known)"
 transient+="|UnknownHostException: ${repo_hosts}"
+# A plugin the settings/build script asks for that no plugin repository could serve. Gradle words it
+# on two lines and never says why ("Plugin [id: 'com.gradle.develocity', version: '4.3'] was not
+# found ..." then "- Plugin Repositories (could not resolve plugin artifact '<group>:<name>:<version>')"),
+# with no host or HTTP status unless run with --info. A job whose Gradle cache holds no plugin jars
+# fetches them from the portal on every run, so a portal timeout lands here (2026-11-10: three
+# Android jobs, 3m49s before giving up). Retried, and the portal is probed so the next occurrence
+# names its status.
+plugin_failure="Plugin Repositories \(could not resolve plugin artifact '"
+transient+="|${plugin_failure}"
+# Prints what the plugin portal answers for each plugin marker the failed build could not resolve:
+# status, remote address and timings, or curl's own error (timeout, DNS, TLS). Failure path only.
+# GRADLE_RETRY_PROBE swaps curl out for tests/gradle-retry.test.sh.
+probe_plugin_portal() {
+  local group name version url
+  sed -n "s/.*could not resolve plugin artifact '\([^']*\)'.*/\1/p" "$log" | sort -u |
+    while IFS=: read -r group name version; do
+      url="https://plugins.gradle.org/m2/${group//.//}/${name}/${version}/${name}-${version}.pom"
+      echo "::warning::plugin portal probe for ${group}:${name}:${version}: GET ${url}"
+      ${GRADLE_RETRY_PROBE:-curl} -sS -o /dev/null --max-time 20 \
+        -w 'status=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' "$url" 2>&1 ||
+        echo "::warning::plugin portal probe failed (exit $?)"
+    done
+}
 backoff_unit="${GRADLE_RETRY_BACKOFF_SECONDS:-30}"
 # Gradle words the server's answer either on the request's own line ("Could not HEAD '…'. Received
 # status code 403 …") or, for an artifact download, on the line beneath it ("> Received status code 403
@@ -61,6 +84,7 @@ for i in $(seq 1 "$attempts"); do
     echo "::error::gradle failed for a non-transient reason — not retrying. See the output above."
     exit 1
   fi
+  if fold_status_lines "$log" | grep -qE "$plugin_failure"; then probe_plugin_portal; fi
   if [ "$i" -lt "$attempts" ]; then
     backoff=$((i * backoff_unit))
     echo "::warning::gradle hit a transient repository failure (attempt $i/$attempts); retrying in ${backoff}s. See issue #427 for why this job talks to Maven Central at all."

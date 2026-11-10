@@ -160,6 +160,38 @@ check "a plugin-portal name-resolution failure (glibc) is retried" 0 2 "$RC" "$N
 run "$fixtures/test-dns-failure" 1
 check "a failing DNS test on its own host is not retried" 1 1 "$RC" "$N" "$OUT" "non-transient"
 
+# Verbatim from job 129567576890 (run 42736681620, 2026-11-10), timestamps stripped: the settings
+# plugin could not be fetched.
+cat >"$fixtures/plugin-unresolved" <<'EOF'
+FAILURE: Build failed with an exception.
+
+* Where:
+Settings file '/home/runner/work/socket/socket/settings.gradle.kts' line: 59
+
+* What went wrong:
+Plugin [id: 'com.gradle.develocity', version: '4.3'] was not found in any of the following sources:
+
+- Gradle Core Plugins (plugin is not in 'org.gradle' namespace)
+- Included Builds (No included builds contain this plugin)
+- Plugin Repositories (could not resolve plugin artifact 'com.gradle.develocity:com.gradle.develocity.gradle.plugin:4.3')
+  Searched in the following repositories:
+    MavenLocal(file:/home/runner/.m2/repository)
+    Google
+    Gradle Central Plugin Repository
+    MavenRepo
+EOF
+probe="$fixtures/probe"
+cat >"$probe" <<'EOF'
+#!/usr/bin/env bash
+echo "PROBED ${@: -1}"
+EOF
+chmod +x "$probe"
+export GRADLE_RETRY_PROBE="$probe"
+run "$fixtures/plugin-unresolved" 1
+check "an unresolved settings plugin is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
+check "an unresolved settings plugin probes its portal marker" 0 2 "$RC" "$N" "$OUT" "PROBED https://plugins.gradle.org/m2/com/gradle/develocity/com.gradle.develocity.gradle.plugin/4.3/com.gradle.develocity.gradle.plugin-4.3.pom"
+unset GRADLE_RETRY_PROBE
+
 echo "---"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
