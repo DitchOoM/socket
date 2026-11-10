@@ -23,9 +23,9 @@ name: Nightly deep checks
 
 on:
   schedule:
-    # 02:07 UTC: off the top of the hour, ahead of flake-sweep (06:41) and native-deps-freshness (09:17),
-    # which share the runner pool and the Linux native caches.
-    - cron: "7 2 * * *"
+    # 10:17 UTC: off the top of the hour, when GitHub delays scheduled runs, and after flake-sweep
+    # (06:41) and native-deps-freshness (09:17), which share the runner pool and the Linux native caches.
+    - cron: "17 10 * * *"
   workflow_dispatch:
     inputs:
       lincheck_scale:
