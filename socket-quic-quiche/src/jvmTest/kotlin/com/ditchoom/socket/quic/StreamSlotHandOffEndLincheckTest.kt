@@ -127,5 +127,5 @@ private fun handOffEndOptions(): ModelCheckingOptions =
         }.threads(2)
         .actorsPerThread(1)
         .actorsBefore(0)
-        .iterations(10)
-        .invocationsPerIteration(1_000)
+        .iterations(LincheckBudget.scaled(10))
+        .invocationsPerIteration(LincheckBudget.scaled(1_000))
