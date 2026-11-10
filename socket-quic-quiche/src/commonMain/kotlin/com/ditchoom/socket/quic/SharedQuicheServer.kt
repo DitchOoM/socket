@@ -25,8 +25,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -220,8 +218,7 @@ internal class SharedQuicheServer(
                         // The handler starts as soon as the client's 0-RTT is accepted, not at the end of the
                         // handshake: its early requests can then be answered in the server's first flight.
                         // What it reads early stays behind QuicStreamOrigin.Early's gate unless it opts in.
-                        val start =
-                            combine(driver.state, driver.earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
+                        val start = driver.awaitHandlerStart()
                         when (start) {
                             HandlerStart.Now -> conn.runUntilClosed(idleTimeout) { handler() }
                             HandlerStart.Never -> Unit

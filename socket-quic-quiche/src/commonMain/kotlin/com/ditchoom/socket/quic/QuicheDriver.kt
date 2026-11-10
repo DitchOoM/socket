@@ -32,6 +32,7 @@ import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -41,6 +42,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -379,6 +382,24 @@ class QuicheDriver(
             HandshakeSettled.Confirmed -> Unit
             HandshakeSettled.Failed -> throw connectionClosed()
         }
+    }
+
+    /**
+     * Whether a server's handler starts for this connection, decided: as soon as the client's 0-RTT is
+     * accepted or the handshake completes, never once the connection closed before either.
+     *
+     * [state] is a conflating StateFlow, so a collector that is dispatched late can see Handshaking
+     * jump to Closed when the peer completes the handshake and closes in the same breath — the shape of
+     * a client whose block returns immediately — with the Established in between never observed. Closed
+     * alone does not say whether the handshake finished first, so a close is checked against
+     * [handshakeSettled], which is completed Confirmed at the Established edge and never revoked: a
+     * Closed observed here happens-after that completion.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
+        val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
     }
 
     /**
