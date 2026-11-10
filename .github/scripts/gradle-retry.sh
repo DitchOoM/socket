@@ -46,9 +46,8 @@ transient+="|UnknownHostException: ${repo_hosts}"
 # on two lines and never says why ("Plugin [id: 'com.gradle.develocity', version: '4.3'] was not
 # found ..." then "- Plugin Repositories (could not resolve plugin artifact '<group>:<name>:<version>')"),
 # with no host or HTTP status unless run with --info. A job whose Gradle cache holds no plugin jars
-# fetches them from the portal on every run, so a portal timeout lands here (2026-11-10: three
-# Android jobs, 3m49s before giving up). Retried, and the portal is probed so the next occurrence
-# names its status.
+# fetches them from the portal on every run, so a portal timeout lands here. Retried, and the portal
+# is probed so the failure names its status.
 plugin_failure="Plugin Repositories \(could not resolve plugin artifact '"
 transient+="|${plugin_failure}"
 # Prints what the plugin portal answers for each plugin marker the failed build could not resolve:
