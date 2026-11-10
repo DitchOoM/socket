@@ -148,7 +148,16 @@ private suspend fun <C, T> staggered(
                     when (outcome) {
                         is Outcome.Connected ->
                             // Decided already, by another attempt or by a fatal failure: this one lost.
-                            if (!winner.complete(outcome.value)) withContext(NonCancellable) { runCatching { close(outcome.value) } }
+                            if (!winner.complete(outcome.value)) {
+                                withContext(NonCancellable) {
+                                    runCatching {
+                                        reportingStall(
+                                            "close of a losing connect attempt",
+                                            { "candidate=$candidate" },
+                                        ) { close(outcome.value) }
+                                    }
+                                }
+                            }
                         is Outcome.Failed ->
                             if (verdict(outcome.cause) is AttemptVerdict.Fatal) winner.completeExceptionally(outcome.cause)
                     }
