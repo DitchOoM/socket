@@ -2285,8 +2285,10 @@ class QuicheDriver(
                     try {
                         // Bytes this loop already handed the stream (to a read parked in awaitData that has
                         // since moved on) come before anything quiche still holds: answer Done so the read
-                        // takes them from the queue, rather than reading past them out of order.
-                        if (slot != null && !slot.pendingData.isEmpty) {
+                        // takes them from the queue, rather than reading past them out of order. The same
+                        // answer once the end is latched: every latch follows quiche reporting the stream's
+                        // end, so quiche holds nothing more and has collected the stream.
+                        if (slot != null && (!slot.pendingData.isEmpty || slot.end != StreamEnd.Open)) {
                             StreamRecvResult.Done
                         } else {
                             api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
