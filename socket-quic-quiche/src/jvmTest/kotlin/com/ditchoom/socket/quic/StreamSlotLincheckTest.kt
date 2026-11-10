@@ -199,5 +199,5 @@ private fun streamSlotOptions(): ModelCheckingOptions =
         .actorsPerThread(3)
         .actorsBefore(1)
         .actorsAfter(1)
-        .iterations(30)
-        .invocationsPerIteration(500)
+        .iterations(LincheckBudget.scaled(30))
+        .invocationsPerIteration(LincheckBudget.scaled(500))
