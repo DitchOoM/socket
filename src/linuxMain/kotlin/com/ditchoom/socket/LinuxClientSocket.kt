@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.BytesWritten
@@ -33,6 +34,9 @@ class LinuxClientSocket(
     /** The injected transport configuration, supplied at `allocate(config)` time. */
     private val config: TransportConfig = TransportConfig(),
 ) : ClientToServerSocket {
+    /** Bytes of a recv that completed for a reader cancelled before it resumed; the next read returns them. */
+    private val salvage = RecvSalvage()
+
     private val descriptor = SocketDescriptor(teardown = { freeTls() })
 
     /**
@@ -317,6 +321,7 @@ class LinuxClientSocket(
         fd: Int,
         deadline: Duration,
     ): ReadBuffer {
+        (salvage.take() as? Salvaged.Held)?.let { return it.buffer }
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
@@ -333,7 +338,7 @@ class LinuxClientSocket(
                         sslRead(fd, ptr, bufferSize, deadline)
                     } else {
                         // io_uring async read
-                        readWithIoUring(fd, ptr, bufferSize, deadline)
+                        readWithIoUring(fd, ptr, bufferSize, deadline, buffer)
                     }
 
                 return when {
@@ -366,7 +371,7 @@ class LinuxClientSocket(
                         if (ssl != null) {
                             sslRead(fd, ptr, bufferSize, deadline)
                         } else {
-                            readWithIoUring(fd, ptr, bufferSize, deadline)
+                            readWithIoUring(fd, ptr, bufferSize, deadline, buffer)
                         }
                     }
 
@@ -392,8 +397,9 @@ class LinuxClientSocket(
 
             throw SocketIOException("Buffer has no accessible memory for io_uring read")
         } catch (e: CancellationException) {
-            // Safe to free: submitAndWait ensures the kernel is done with the buffer
-            buffer.freeNativeMemory()
+            // Safe to free: submitAndWait ensures the kernel is done with the buffer. Unless the recv completed
+            // with bytes anyway: those are out of the socket, so the next read returns them.
+            if (!salvage.isHolding(buffer)) buffer.freeNativeMemory()
             throw e
         }
     }
@@ -441,8 +447,14 @@ class LinuxClientSocket(
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
+        buffer: PlatformBuffer,
     ): Int =
-        descriptor.submit(fd, SocketDescriptor.Lane.Read, timeout) { sqe, open ->
+        descriptor.submit(
+            fd,
+            SocketDescriptor.Lane.Read,
+            timeout,
+            abandoned = { received -> if (received > 0) salvage.hold(buffer, received) },
+        ) { sqe, open ->
             io_uring_prep_recv(sqe, open, ptr, size.convert(), 0)
         }
 
@@ -661,6 +673,7 @@ class LinuxClientSocket(
 
     /** Run by [descriptor] exactly once, while the descriptor is open and no read or write is using it. */
     private fun freeTls() {
+        salvage.discard()
         ssl?.let {
             SSL_shutdown(it)
             SSL_free(it)

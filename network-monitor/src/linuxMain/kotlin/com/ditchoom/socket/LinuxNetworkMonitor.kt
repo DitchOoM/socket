@@ -7,6 +7,7 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.cinterop.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
@@ -22,6 +23,7 @@ import platform.linux.freeifaddrs
 import platform.linux.getifaddrs
 import platform.linux.ifaddrs
 import platform.posix.*
+import kotlin.concurrent.AtomicInt
 
 /**
  * Linux [NetworkMonitor] using netlink sockets for event-driven network change detection.
@@ -74,53 +76,128 @@ class LinuxNetworkMonitor : NetworkMonitor {
         MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var netlinkFd: Int = -1
+    private val listening: Listening = openListening()
 
     /** The netlink reader; ends once it has left the netlink descriptor. Test seam for "close ends the reader". */
     internal var reader: Job = Job().also { it.complete() }
         private set
 
     init {
-        netlinkFd = createNetlinkSocket()
         // A synchronous seed, not the network talking: published without advancing the count.
         observationRelay.publish(resolveNetworkState())
 
-        if (netlinkFd >= 0) {
-            reader = scope.launch {
-                // Allocate a native scratch buffer once, reuse across netlink recvs. A raw malloc/free
-                // off nativeHeap, so it is released when the coroutine exits — no GC-managed ByteArray
-                // and no per-iteration pin/unpin. A plain allocArray rather than a PlatformBuffer keeps
-                // the com.ditchoom:buffer dependency out of this module's surface.
-                val scratch = nativeHeap.allocArray<ByteVar>(SCRATCH_BYTES)
-                try {
-                    while (isActive) {
-                        val n = recv(netlinkFd, scratch, SCRATCH_BYTES.convert(), 0)
-                        // ENOBUFS is not a dead socket: the kernel dropped notifications because the
-                        // socket's kernel receive queue (SO_RCVBUF — not this 4096-byte scratch buffer)
-                        // overflowed before we drained it (netlink(7) "reliable transmission") — likelier
-                        // now that the route groups multiply the event rate. Dropped *messages* cost nothing
-                        // here, because we never parse them: any wake-up triggers one full re-resolution,
-                        // which observes whatever end state the dropped burst left behind. So re-resolve
-                        // and keep listening; anything else (0 = closed, other errors) ends the loop.
-                        if (n == 0L || (n < 0L && errno != ENOBUFS)) break
-                        // One re-resolution, one publication: link, route and identity come from the same
-                        // pass, so a collector can never see a new link beside the old route. One call
-                        // publishes and counts, so the observation carries what this delivery resolved to
-                        // — including a re-resolution that changed nothing.
-                        observationRelay.record(resolveNetworkState())
+        if (listening is Listening.Open) {
+            val descriptors = listening.descriptors
+            // ATOMIC: the reader must start even if [close] cancels the scope first, because it is a party to the
+            // descriptors and the last party out closes them.
+            reader =
+                scope.launch(start = CoroutineStart.ATOMIC) {
+                    // Allocate a native scratch buffer once, reuse across netlink recvs. A raw malloc/free
+                    // off nativeHeap, so it is released when the coroutine exits — no GC-managed ByteArray
+                    // and no per-iteration pin/unpin. A plain allocArray rather than a PlatformBuffer keeps
+                    // the com.ditchoom:buffer dependency out of this module's surface.
+                    val scratch = nativeHeap.allocArray<ByteVar>(SCRATCH_BYTES)
+                    val waits = nativeHeap.allocArray<pollfd>(2)
+                    try {
+                        while (isActive) {
+                            // Closing a descriptor does not wake a thread blocked on it, and netlink refuses
+                            // shutdown(2) (ENOTSUP), so the wait is a poll on the netlink socket and on a pipe
+                            // [close] writes to.
+                            waits[0].fd = descriptors.netlink
+                            waits[0].events = POLLIN.toShort()
+                            waits[0].revents = 0
+                            waits[1].fd = descriptors.wakeRead
+                            waits[1].events = POLLIN.toShort()
+                            waits[1].revents = 0
+                            if (poll(waits, 2.convert(), -1) < 0) {
+                                if (errno == EINTR) continue
+                                break
+                            }
+                            if (waits[1].revents.toInt() != 0) break
+                            val n = recv(descriptors.netlink, scratch, SCRATCH_BYTES.convert(), MSG_DONTWAIT)
+                            if (n < 0L && (errno == EAGAIN || errno == EINTR)) continue
+                            // ENOBUFS is not a dead socket: the kernel dropped notifications because the
+                            // socket's kernel receive queue (SO_RCVBUF — not this 4096-byte scratch buffer)
+                            // overflowed before we drained it (netlink(7) "reliable transmission") — likelier
+                            // now that the route groups multiply the event rate. Dropped *messages* cost nothing
+                            // here, because we never parse them: any wake-up triggers one full re-resolution,
+                            // which observes whatever end state the dropped burst left behind. So re-resolve
+                            // and keep listening; anything else (0 = closed, other errors) ends the loop.
+                            if (n == 0L || (n < 0L && errno != ENOBUFS)) break
+                            // One re-resolution, one publication: link, route and identity come from the same
+                            // pass, so a collector can never see a new link beside the old route. One call
+                            // publishes and counts, so the observation carries what this delivery resolved to
+                            // — including a re-resolution that changed nothing.
+                            observationRelay.record(resolveNetworkState())
+                        }
+                    } finally {
+                        nativeHeap.free(waits)
+                        nativeHeap.free(scratch)
+                        descriptors.leave()
                     }
-                } finally {
-                    nativeHeap.free(scratch)
                 }
-            }
         }
     }
 
     override fun close() {
+        if (listening is Listening.Open) listening.descriptors.beginClose()
         scope.cancel()
-        if (netlinkFd >= 0) {
-            close(netlinkFd)
-            netlinkFd = -1
+    }
+
+    /** Whether there is a netlink socket to listen on. */
+    private sealed interface Listening {
+        data object None : Listening
+
+        class Open(
+            val descriptors: NetlinkDescriptors,
+        ) : Listening
+    }
+
+    /**
+     * The netlink socket and the pipe that wakes its reader, closed by whichever of the reader and [beginClose]
+     * leaves last. Closing the netlink descriptor under a reader blocked on it would not wake the reader, and its
+     * number could be reused by another thread's `socket()` before the reader looked again, so nothing closes
+     * a descriptor the reader may still name.
+     */
+    private class NetlinkDescriptors(
+        val netlink: Int,
+        val wakeRead: Int,
+        private val wakeWrite: Int,
+    ) {
+        /** The reader, and [beginClose]'s caller. */
+        private val parties = AtomicInt(2)
+        private val closeBegun = AtomicInt(0)
+
+        /** Wakes the reader to end, once however often it is called. */
+        fun beginClose() {
+            if (!closeBegun.compareAndSet(0, 1)) return
+            memScoped {
+                val wake = alloc<ByteVar>()
+                wake.value = 1
+                write(wakeWrite, wake.ptr, 1.convert())
+            }
+            leave()
+        }
+
+        fun leave() {
+            if (parties.decrementAndGet() != 0) return
+            close(netlink)
+            close(wakeRead)
+            close(wakeWrite)
+        }
+    }
+
+    private fun openListening(): Listening {
+        val netlink = createNetlinkSocket()
+        if (netlink < 0) return Listening.None
+        return memScoped {
+            val ends = allocArray<IntVar>(2)
+            if (pipe(ends) < 0) {
+                close(netlink)
+                Listening.None
+            } else {
+                Listening.Open(NetlinkDescriptors(netlink, ends[0], ends[1]))
+            }
         }
     }
 
