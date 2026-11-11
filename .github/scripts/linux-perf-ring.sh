@@ -84,13 +84,16 @@ do_start() { # <dir>
 filter_snapshot() {
   local f="$1" raw max
   raw=$(mktemp)
+  # NOT under sudo: perf refuses a file that is neither owned by the user running it nor by root, and
+  # collect hands the snapshots to the runner user first (the second hosted-runner probe: "not owned by
+  # current user or root"). Reading needs no privilege.
   # Per-type field lists: `trace` (the tracepoint's arguments: prev_comm/prev_state/next_comm, the
   # woken comm and pid) is only valid for tracepoints, and asking for it on the cpu-clock samples makes
   # perf refuse the whole command (seen on the first hosted-runner probe: "produced nothing"). The
   # plain list is the fallback, and perf's own complaint is kept in the log either way.
-  if ! $SUDO "$PERF" script -i "$f" -F trace:comm,tid,cpu,time,event,trace,ip,sym -F sw:comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err" || [ ! -s "$raw" ]; then
+  if ! "$PERF" script -i "$f" -F trace:comm,tid,cpu,time,event,trace,ip,sym -F sw:comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err" || [ ! -s "$raw" ]; then
     say "perf script with per-type fields failed ($(head -c 200 "$raw.err" | tr '\n' ' ')); retrying with plain fields"
-    $SUDO "$PERF" script -i "$f" -F comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err"
+    "$PERF" script -i "$f" -F comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err"
   fi
   [ -s "$raw" ] || say "perf script produced no output: $(head -c 300 "$raw.err" | tr '\n' ' ')"
   max=$(awk '/^[^ \t]/ && match($0, /[0-9]+\.[0-9]+:/) { t = substr($0, RSTART, RLENGTH - 1) + 0; if (t > m) m = t } END { printf "%.6f", m }' "$raw")
