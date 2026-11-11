@@ -120,7 +120,7 @@ abstract class QuicLargePayloadTestSuite {
     // ---- failure-only diagnostics ------------------------------------------------------------------
 
     /** Where a transfer is: each value is one of the places a stalled run can be parked. */
-    protected enum class TransferPhase { Binding, Connecting, Writing, AwaitingServerVerdict, Verified }
+    private enum class TransferPhase { Binding, Connecting, Writing, AwaitingServerVerdict, Verified }
 
     /**
      * What a transfer had done when it stopped. Immutable; replaced whole through [MutableStateFlow.update]
