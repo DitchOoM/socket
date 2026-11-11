@@ -7,7 +7,6 @@ import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.SymbolLookup
-import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BOOLEAN
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
@@ -34,7 +33,11 @@ class FfmQuicheApi private constructor(
         return linker.downcallHandle(symbol, desc)
     }
 
-    private fun seg(addr: Long): MemorySegment = MemorySegment.ofAddress(addr)
+    // Pointers cross the downcall boundary as plain `long`s: every [FunctionDescriptor] below declares an
+    // opaque `T *` as JAVA_LONG, which is the same register on every 64-bit ABI this tier runs on (SysV
+    // x86-64, AAPCS64 incl. Apple arm64, Windows x64; the tier already hard-codes 64-bit struct layouts
+    // and a 64-bit `size_t`). An ADDRESS parameter would need a MemorySegment per argument, i.e.
+    // `MemorySegment.ofAddress` (a NativeMemorySegmentImpl plus its session) on every quiche call.
 
     /**
      * NUL-terminated UTF-8 copy of [s], allocated in [arena] — a `const char *` for quiche.
@@ -67,179 +70,179 @@ class FfmQuicheApi private constructor(
     }
 
     // --- Lazily resolved downcall handles ---
-    private val hConfigNew by lazy { downcall("quiche_config_new", FunctionDescriptor.of(ADDRESS, JAVA_INT)) }
-    private val hConfigFree by lazy { downcall("quiche_config_free", FunctionDescriptor.ofVoid(ADDRESS)) }
+    private val hConfigNew by lazy { downcall("quiche_config_new", FunctionDescriptor.of(JAVA_LONG, JAVA_INT)) }
+    private val hConfigFree by lazy { downcall("quiche_config_free", FunctionDescriptor.ofVoid(JAVA_LONG)) }
     private val hConfigSetAppProtos by lazy {
-        downcall("quiche_config_set_application_protos", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_application_protos", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConfigSetMaxIdleTimeout by lazy {
-        downcall("quiche_config_set_max_idle_timeout", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_idle_timeout", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hConfigSetMaxRecvUdp by lazy {
-        downcall("quiche_config_set_max_recv_udp_payload_size", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_recv_udp_payload_size", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hConfigSetMaxSendUdp by lazy {
-        downcall("quiche_config_set_max_send_udp_payload_size", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_send_udp_payload_size", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetMaxData by lazy {
-        downcall("quiche_config_set_initial_max_data", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_data", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetActiveConnectionIdLimit by lazy {
-        downcall("quiche_config_set_active_connection_id_limit", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_active_connection_id_limit", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetBidiLocal by lazy {
-        downcall("quiche_config_set_initial_max_stream_data_bidi_local", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_stream_data_bidi_local", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetBidiRemote by lazy {
-        downcall("quiche_config_set_initial_max_stream_data_bidi_remote", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_stream_data_bidi_remote", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetUni by lazy {
-        downcall("quiche_config_set_initial_max_stream_data_uni", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_stream_data_uni", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetStreamsBidi by lazy {
-        downcall("quiche_config_set_initial_max_streams_bidi", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_streams_bidi", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetStreamsUni by lazy {
-        downcall("quiche_config_set_initial_max_streams_uni", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_max_streams_uni", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hDisableMigration by lazy {
-        downcall("quiche_config_set_disable_active_migration", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_set_disable_active_migration", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hVerifyPeer by lazy {
-        downcall("quiche_config_verify_peer", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_verify_peer", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hEnablePacing by lazy {
-        downcall("quiche_config_enable_pacing", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_enable_pacing", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hSetMaxPacingRate by lazy {
-        downcall("quiche_config_set_max_pacing_rate", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_pacing_rate", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetCcAlgorithm by lazy {
-        downcall("quiche_config_set_cc_algorithm", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
+        downcall("quiche_config_set_cc_algorithm", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_INT))
     }
     private val hEnableHystart by lazy {
-        downcall("quiche_config_enable_hystart", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_enable_hystart", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hSetInitialCwndPackets by lazy {
-        downcall("quiche_config_set_initial_congestion_window_packets", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_initial_congestion_window_packets", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetMaxConnWindow by lazy {
-        downcall("quiche_config_set_max_connection_window", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_connection_window", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hSetMaxStreamWindow by lazy {
-        downcall("quiche_config_set_max_stream_window", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_max_stream_window", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hDiscoverPmtu by lazy {
-        downcall("quiche_config_discover_pmtu", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_discover_pmtu", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hEnableEarlyData by lazy {
-        downcall("quiche_config_enable_early_data", FunctionDescriptor.ofVoid(ADDRESS))
+        downcall("quiche_config_enable_early_data", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
     private val hSetTicketKey by lazy {
         // int quiche_config_set_ticket_key(quiche_config *config, const uint8_t *key, size_t key_len)
-        downcall("quiche_config_set_ticket_key", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG))
+        downcall("quiche_config_set_ticket_key", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hGrease by lazy {
-        downcall("quiche_config_grease", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+        downcall("quiche_config_grease", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN))
     }
     private val hConfigEnableDgram by lazy {
-        downcall("quiche_config_enable_dgram", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
+        downcall("quiche_config_enable_dgram", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
     }
     private val hConnDgramSend by lazy {
-        downcall("quiche_conn_dgram_send", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG))
+        downcall("quiche_conn_dgram_send", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnDgramRecv by lazy {
-        downcall("quiche_conn_dgram_recv", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG))
+        downcall("quiche_conn_dgram_recv", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnDgramRecvFrontLen by lazy {
-        downcall("quiche_conn_dgram_recv_front_len", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_dgram_recv_front_len", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnDgramMaxWritableLen by lazy {
-        downcall("quiche_conn_dgram_max_writable_len", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_dgram_max_writable_len", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnect by lazy {
         downcall(
             "quiche_connect",
-            FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+            FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
-    private val hConnFree by lazy { downcall("quiche_conn_free", FunctionDescriptor.ofVoid(ADDRESS)) }
+    private val hConnFree by lazy { downcall("quiche_conn_free", FunctionDescriptor.ofVoid(JAVA_LONG)) }
     private val hConnRecv by lazy {
-        downcall("quiche_conn_recv", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_recv", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnSend by lazy {
-        downcall("quiche_conn_send", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_send", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hStreamRecv by lazy {
         downcall(
             "quiche_conn_stream_recv",
-            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS),
+            FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG),
         )
     }
     private val hStreamSend by lazy {
         downcall(
             "quiche_conn_stream_send",
-            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN, ADDRESS),
+            FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_BOOLEAN, JAVA_LONG),
         )
     }
     private val hStreamCapacity by lazy {
         // ssize_t quiche_conn_stream_capacity(conn, uint64 stream_id)
-        downcall("quiche_conn_stream_capacity", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG))
+        downcall("quiche_conn_stream_capacity", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPeerStreamsLeftBidi by lazy {
         // uint64_t quiche_conn_peer_streams_left_bidi(const quiche_conn *conn)
-        downcall("quiche_conn_peer_streams_left_bidi", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_peer_streams_left_bidi", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hPeerStreamsLeftUni by lazy {
         // uint64_t quiche_conn_peer_streams_left_uni(const quiche_conn *conn)
-        downcall("quiche_conn_peer_streams_left_uni", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_peer_streams_left_uni", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hStreamShutdown by lazy {
         // int quiche_conn_stream_shutdown(conn, uint64 stream_id, enum quiche_shutdown direction, uint64 err)
         downcall(
             "quiche_conn_stream_shutdown",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
     private val hIsEstablished by lazy {
-        downcall("quiche_conn_is_established", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_established", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hIsClosed by lazy {
-        downcall("quiche_conn_is_closed", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_closed", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hIsTimedOut by lazy {
-        downcall("quiche_conn_is_timed_out", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_timed_out", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hConnSetSession by lazy {
         // int quiche_conn_set_session(quiche_conn *conn, const uint8_t *buf, size_t buf_len)
-        downcall("quiche_conn_set_session", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG))
+        downcall("quiche_conn_set_session", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnSession by lazy {
         // void quiche_conn_session(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
-        downcall("quiche_conn_session", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_session", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hIsResumed by lazy {
-        downcall("quiche_conn_is_resumed", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_resumed", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hIsInEarlyData by lazy {
-        downcall("quiche_conn_is_in_early_data", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_in_early_data", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hEarlyDataReason by lazy {
         // uint32_t quiche_conn_early_data_reason(const quiche_conn *conn) — patched-in export
-        downcall("quiche_conn_early_data_reason", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+        downcall("quiche_conn_early_data_reason", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
     }
     private val hIsHandshakeConfirmed by lazy {
         // bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn) — patched-in export
-        downcall("quiche_conn_is_handshake_confirmed", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_is_handshake_confirmed", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hStreamDataUnacknowledged by lazy {
         // bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn) — patched-in export
-        downcall("quiche_conn_stream_data_unacknowledged", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
+        downcall("quiche_conn_stream_data_unacknowledged", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
     private val hTimeoutNanos by lazy {
-        downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
-    private val hOnTimeout by lazy { downcall("quiche_conn_on_timeout", FunctionDescriptor.ofVoid(ADDRESS)) }
+    private val hOnTimeout by lazy { downcall("quiche_conn_on_timeout", FunctionDescriptor.ofVoid(JAVA_LONG)) }
 
     // Caller-clock (RFC §6.1): thread-local virtual clock in the patched libquiche. Simulation-only.
     private val hSetVirtualTimeNanos by lazy {
@@ -253,323 +256,326 @@ class FfmQuicheApi private constructor(
     }
     private val hClearThreadRandomState by lazy { downcall("quiche_clear_thread_random_state", FunctionDescriptor.ofVoid()) }
     private val hSendAckEliciting by lazy {
-        downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnSetQlogPath by lazy {
         downcall(
             "quiche_conn_set_qlog_path",
-            FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+            FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG),
         )
     }
     private val hConfigLogKeys by lazy {
-        downcall("quiche_config_log_keys", FunctionDescriptor.ofVoid(ADDRESS))
+        downcall("quiche_config_log_keys", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
     private val hConnSetKeylogPath by lazy {
-        downcall("quiche_conn_set_keylog_path", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+        downcall("quiche_conn_set_keylog_path", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnClose by lazy {
         downcall(
             "quiche_conn_close",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_BOOLEAN, JAVA_LONG, ADDRESS, JAVA_LONG),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG, JAVA_LONG),
         )
     }
 
     private val hConnPeerCert by lazy {
         // void quiche_conn_peer_cert(conn, const uint8_t **out, size_t *out_len)
-        downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnPeerCertChainAt by lazy {
         // void quiche_conn_peer_cert_chain_at(conn, size_t index, const uint8_t **out, size_t *out_len) — patched-in export
-        downcall("quiche_conn_peer_cert_chain_at", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS, ADDRESS))
+        downcall("quiche_conn_peer_cert_chain_at", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnApplicationProto by lazy {
         // void quiche_conn_application_proto(conn, const uint8_t **out, size_t *out_len)
-        downcall("quiche_conn_application_proto", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_application_proto", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnTraceId by lazy {
         // void quiche_conn_trace_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
-        downcall("quiche_conn_trace_id", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_trace_id", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnSourceId by lazy {
         // void quiche_conn_source_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
-        downcall("quiche_conn_source_id", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_source_id", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     private val hConnStats by lazy {
         // void quiche_conn_stats(const quiche_conn *conn, quiche_stats *out)
-        downcall("quiche_conn_stats", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS))
+        downcall("quiche_conn_stats", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
     private val hConnPathStats by lazy {
         // int quiche_conn_path_stats(const quiche_conn *conn, size_t idx, quiche_path_stats *out)
-        downcall("quiche_conn_path_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_path_stats", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnPeerTransportParams by lazy {
         // bool quiche_conn_peer_transport_params(const quiche_conn *conn, quiche_transport_params *out)
-        downcall("quiche_conn_peer_transport_params", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+        downcall("quiche_conn_peer_transport_params", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
     }
     private val hConnPeerError by lazy {
         // bool quiche_conn_peer_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
-        downcall("quiche_conn_peer_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_peer_error", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnLocalError by lazy {
         // bool quiche_conn_local_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
-        downcall("quiche_conn_local_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_conn_local_error", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
 
     // --- Path migration handles ---
     private val hConnProbePath by lazy {
         downcall(
             "quiche_conn_probe_path",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
     private val hConnNewScid by lazy {
         downcall(
             "quiche_conn_new_scid",
             // conn, scid*, scid_len(size_t), reset_token*, retire_if_needed(bool), scid_seq*
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_BOOLEAN, ADDRESS),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_BOOLEAN, JAVA_LONG),
         )
     }
     private val hConnMigrate by lazy {
         downcall(
             "quiche_conn_migrate",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
     private val hConnMigrateSource by lazy {
         downcall(
             "quiche_conn_migrate_source",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS),
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
     private val hConnRetireDcid by lazy {
-        downcall("quiche_conn_retire_dcid", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG))
+        downcall("quiche_conn_retire_dcid", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG))
     }
     private val hConnAvailableDcids by lazy {
-        downcall("quiche_conn_available_dcids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_available_dcids", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnScidsLeft by lazy {
-        downcall("quiche_conn_scids_left", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_scids_left", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnPathEventNext by lazy {
-        downcall("quiche_conn_path_event_next", FunctionDescriptor.of(ADDRESS, ADDRESS))
+        downcall("quiche_conn_path_event_next", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnRetiredScids by lazy {
-        downcall("quiche_conn_retired_scids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_retired_scids", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnRetiredScidIter by lazy {
-        downcall("quiche_conn_retired_scid_iter", FunctionDescriptor.of(ADDRESS, ADDRESS))
+        downcall("quiche_conn_retired_scid_iter", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnActiveScids by lazy {
-        downcall("quiche_conn_active_scids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+        downcall("quiche_conn_active_scids", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnSourceIds by lazy {
-        downcall("quiche_conn_source_ids", FunctionDescriptor.of(ADDRESS, ADDRESS))
+        downcall("quiche_conn_source_ids", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnIdIterNext by lazy {
-        downcall("quiche_connection_id_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_connection_id_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hConnIdIterFree by lazy {
-        downcall("quiche_connection_id_iter_free", FunctionDescriptor.ofVoid(ADDRESS))
+        downcall("quiche_connection_id_iter_free", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
     private val hPathEventType by lazy {
-        downcall("quiche_path_event_type", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+        downcall("quiche_path_event_type", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
     }
     private val hPathEventNew by lazy {
-        downcall("quiche_path_event_new", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_path_event_new", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPathEventValidated by lazy {
-        downcall("quiche_path_event_validated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_path_event_validated", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPathEventFailedValidation by lazy {
-        downcall("quiche_path_event_failed_validation", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_path_event_failed_validation", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPathEventClosed by lazy {
-        downcall("quiche_path_event_closed", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_path_event_closed", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPathEventPeerMigrated by lazy {
-        downcall("quiche_path_event_peer_migrated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall("quiche_path_event_peer_migrated", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
     private val hPathEventPmtuUpdated by lazy {
-        downcall("quiche_path_event_pmtu_updated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+        downcall(
+            "quiche_path_event_pmtu_updated",
+            FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG),
+        )
     }
     private val hPathEventFree by lazy {
-        downcall("quiche_path_event_free", FunctionDescriptor.ofVoid(ADDRESS))
+        downcall("quiche_path_event_free", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
 
     // --- Config ---
-    override fun configNew(version: Int): QuicheConfig = QuicheConfig((hConfigNew.invokeExact(version) as MemorySegment).address())
+    override fun configNew(version: Int): QuicheConfig = QuicheConfig(hConfigNew.invokeExact(version) as Long)
 
     override fun configFree(config: QuicheConfig) {
-        hConfigFree.invokeExact(seg(config.handle))
+        hConfigFree.invokeExact(config.handle)
     }
 
     override fun configSetApplicationProtos(
         config: QuicheConfig,
         protosAddr: Long,
         protosLen: Int,
-    ): Int = hConfigSetAppProtos.invokeExact(seg(config.handle), seg(protosAddr), protosLen.toLong()) as Int
+    ): Int = hConfigSetAppProtos.invokeExact(config.handle, protosAddr, protosLen.toLong()) as Int
 
     override fun configSetMaxIdleTimeout(
         config: QuicheConfig,
         timeout: Long,
     ) {
-        hConfigSetMaxIdleTimeout.invokeExact(seg(config.handle), timeout)
+        hConfigSetMaxIdleTimeout.invokeExact(config.handle, timeout)
     }
 
     override fun configSetMaxRecvUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
     ) {
-        hConfigSetMaxRecvUdp.invokeExact(seg(config.handle), size)
+        hConfigSetMaxRecvUdp.invokeExact(config.handle, size)
     }
 
     override fun configSetMaxSendUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
     ) {
-        hConfigSetMaxSendUdp.invokeExact(seg(config.handle), size)
+        hConfigSetMaxSendUdp.invokeExact(config.handle, size)
     }
 
     override fun configSetInitialMaxData(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxData.invokeExact(seg(config.handle), v)
+        hSetMaxData.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialMaxStreamDataBidiLocal(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetBidiLocal.invokeExact(seg(config.handle), v)
+        hSetBidiLocal.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialMaxStreamDataBidiRemote(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetBidiRemote.invokeExact(seg(config.handle), v)
+        hSetBidiRemote.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialMaxStreamDataUni(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetUni.invokeExact(seg(config.handle), v)
+        hSetUni.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialMaxStreamsBidi(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetStreamsBidi.invokeExact(seg(config.handle), v)
+        hSetStreamsBidi.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialMaxStreamsUni(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetStreamsUni.invokeExact(seg(config.handle), v)
+        hSetStreamsUni.invokeExact(config.handle, v)
     }
 
     override fun configSetDisableActiveMigration(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hDisableMigration.invokeExact(seg(config.handle), v)
+        hDisableMigration.invokeExact(config.handle, v)
     }
 
     override fun configSetActiveConnectionIdLimit(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetActiveConnectionIdLimit.invokeExact(seg(config.handle), v)
+        hSetActiveConnectionIdLimit.invokeExact(config.handle, v)
     }
 
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hVerifyPeer.invokeExact(seg(config.handle), v)
+        hVerifyPeer.invokeExact(config.handle, v)
     }
 
     override fun configEnablePacing(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hEnablePacing.invokeExact(seg(config.handle), v)
+        hEnablePacing.invokeExact(config.handle, v)
     }
 
     override fun configSetMaxPacingRate(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxPacingRate.invokeExact(seg(config.handle), v)
+        hSetMaxPacingRate.invokeExact(config.handle, v)
     }
 
     override fun configSetCcAlgorithm(
         config: QuicheConfig,
         algo: Int,
     ) {
-        hSetCcAlgorithm.invokeExact(seg(config.handle), algo)
+        hSetCcAlgorithm.invokeExact(config.handle, algo)
     }
 
     override fun configEnableHystart(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hEnableHystart.invokeExact(seg(config.handle), v)
+        hEnableHystart.invokeExact(config.handle, v)
     }
 
     override fun configSetInitialCongestionWindowPackets(
         config: QuicheConfig,
         packets: Long,
     ) {
-        hSetInitialCwndPackets.invokeExact(seg(config.handle), packets)
+        hSetInitialCwndPackets.invokeExact(config.handle, packets)
     }
 
     override fun configSetMaxConnectionWindow(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxConnWindow.invokeExact(seg(config.handle), v)
+        hSetMaxConnWindow.invokeExact(config.handle, v)
     }
 
     override fun configSetMaxStreamWindow(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxStreamWindow.invokeExact(seg(config.handle), v)
+        hSetMaxStreamWindow.invokeExact(config.handle, v)
     }
 
     override fun configDiscoverPmtu(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hDiscoverPmtu.invokeExact(seg(config.handle), v)
+        hDiscoverPmtu.invokeExact(config.handle, v)
     }
 
     override fun configEnableEarlyData(config: QuicheConfig) {
-        hEnableEarlyData.invokeExact(seg(config.handle))
+        hEnableEarlyData.invokeExact(config.handle)
     }
 
     override fun configSetTicketKey(
         config: QuicheConfig,
         keyAddr: Long,
         keyLen: Int,
-    ): Int = hSetTicketKey.invokeExact(seg(config.handle), seg(keyAddr), keyLen.toLong()) as Int
+    ): Int = hSetTicketKey.invokeExact(config.handle, keyAddr, keyLen.toLong()) as Int
 
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hGrease.invokeExact(seg(config.handle), v)
+        hGrease.invokeExact(config.handle, v)
     }
 
     // --- Connection ---
@@ -586,20 +592,20 @@ class FfmQuicheApi private constructor(
     ): QuicheConn {
         val result =
             hConnect.invokeExact(
-                seg(serverNameAddr),
-                seg(scidAddr),
+                serverNameAddr,
+                scidAddr,
                 scidLen.toLong(),
-                seg(localAddr),
+                localAddr,
                 localAddrLen,
-                seg(peerAddr),
+                peerAddr,
                 peerAddrLen,
-                seg(config.handle),
-            ) as MemorySegment
-        return QuicheConn(result.address())
+                config.handle,
+            ) as Long
+        return QuicheConn(result)
     }
 
     override fun connFree(conn: QuicheConn) {
-        hConnFree.invokeExact(seg(conn.handle))
+        hConnFree.invokeExact(conn.handle)
     }
 
     override fun connRecv(
@@ -607,14 +613,14 @@ class FfmQuicheApi private constructor(
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ): Int = (hConnRecv.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong(), seg(recvInfo.handle)) as Long).toInt()
+    ): Int = (hConnRecv.invokeExact(conn.handle, buf, bufLen.toLong(), recvInfo.handle) as Long).toInt()
 
     override fun connSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         sendInfo: QuicheSendInfo,
-    ): Int = (hConnSend.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong(), seg(sendInfo.handle)) as Long).toInt()
+    ): Int = (hConnSend.invokeExact(conn.handle, buf, bufLen.toLong(), sendInfo.handle) as Long).toInt()
 
     override fun connStreamRecv(
         conn: QuicheConn,
@@ -623,7 +629,15 @@ class FfmQuicheApi private constructor(
         bufLen: Int,
     ): StreamRecvResult {
         val out = outParams.get()
-        val raw = hStreamRecv.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), out.fin, out.errorCode) as Long
+        val raw =
+            hStreamRecv.invokeExact(
+                conn.handle,
+                streamId.id,
+                buf,
+                bufLen.toLong(),
+                out.fin.address(),
+                out.errorCode.address(),
+            ) as Long
         return if (raw >= 0) {
             val fin = out.fin.get(JAVA_BOOLEAN, 0)
             StreamRecvResult.Data(raw.toInt(), fin)
@@ -644,7 +658,7 @@ class FfmQuicheApi private constructor(
         fin: Boolean,
     ): StreamSendResult {
         val errOut = outParams.get().errorCode
-        val result = (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
+        val result = (hStreamSend.invokeExact(conn.handle, streamId.id, buf, bufLen.toLong(), fin, errOut.address()) as Long).toInt()
         // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET, and it is read only then.
         val errorCode =
             if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
@@ -657,7 +671,7 @@ class FfmQuicheApi private constructor(
 
     /**
      * The out-parameters of the per-packet and per-stream calls ([connStreamRecv], [connStreamSend],
-     * [connPathStats]), one set per thread, allocated once: the same reasoning as [streamIdScratch]. A
+     * [connPathStats], [copyConnBytes] and the connection-id iterators), one set per thread, allocated once: the same reasoning as [streamIdScratch]. A
      * call writes them and reads them back on its own thread with nothing in between that can suspend,
      * so no other call can overwrite them first. They were a confined arena per call, created and
      * closed on every stream read, stream write and flush.
@@ -671,6 +685,10 @@ class FfmQuicheApi private constructor(
         val fin: MemorySegment = arena.allocate(JAVA_BOOLEAN)
         val errorCode: MemorySegment = arena.allocate(JAVA_LONG)
         val pathStats: MemorySegment = arena.allocate(PATH_STATS_SIZE, 8)
+
+        /** `const uint8_t **out` and `size_t *out_len` of quiche's byte-slice readers. */
+        val bytePtr: MemorySegment = arena.allocate(JAVA_LONG)
+        val byteLen: MemorySegment = arena.allocate(JAVA_LONG)
     }
 
     private val outParams: ThreadLocal<OutParams> = ThreadLocal.withInitial(::OutParams)
@@ -678,18 +696,18 @@ class FfmQuicheApi private constructor(
     override fun connStreamCapacity(
         conn: QuicheConn,
         streamId: QuicStreamId,
-    ): Long = hStreamCapacity.invokeExact(seg(conn.handle), streamId.id) as Long
+    ): Long = hStreamCapacity.invokeExact(conn.handle, streamId.id) as Long
 
-    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = hPeerStreamsLeftBidi.invokeExact(seg(conn.handle)) as Long
+    override fun connPeerStreamsLeftBidi(conn: QuicheConn): Long = hPeerStreamsLeftBidi.invokeExact(conn.handle) as Long
 
-    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = hPeerStreamsLeftUni.invokeExact(seg(conn.handle)) as Long
+    override fun connPeerStreamsLeftUni(conn: QuicheConn): Long = hPeerStreamsLeftUni.invokeExact(conn.handle) as Long
 
     override fun connStreamShutdown(
         conn: QuicheConn,
         streamId: QuicStreamId,
         direction: Int,
         err: Long,
-    ): Int = hStreamShutdown.invokeExact(seg(conn.handle), streamId.id, direction, err) as Int
+    ): Int = hStreamShutdown.invokeExact(conn.handle, streamId.id, direction, err) as Int
 
     override fun connPeerCert(
         conn: QuicheConn,
@@ -697,15 +715,14 @@ class FfmQuicheApi private constructor(
         bufLen: Int,
     ): Int =
         Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outPtr = arena.allocate(JAVA_LONG) // const uint8_t **out
             val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
-            hConnPeerCert.invokeExact(seg(conn.handle), outPtr, outLen)
+            hConnPeerCert.invokeExact(conn.handle, outPtr.address(), outLen.address())
             val len = outLen.get(JAVA_LONG, 0).toInt()
             if (len <= 0) return@use 0
             // Copy out only when it fits; otherwise report the needed length so the caller retries.
             if (len <= bufLen) {
-                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
-                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+                MemorySegment.copy(NATIVE, outPtr.get(JAVA_LONG, 0), NATIVE, buf, len.toLong())
             }
             len
         }
@@ -718,15 +735,14 @@ class FfmQuicheApi private constructor(
     ): Int {
         if (index < 0) return 0
         return Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outPtr = arena.allocate(JAVA_LONG) // const uint8_t **out
             val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
-            hConnPeerCertChainAt.invokeExact(seg(conn.handle), index.toLong(), outPtr, outLen)
+            hConnPeerCertChainAt.invokeExact(conn.handle, index.toLong(), outPtr.address(), outLen.address())
             val len = outLen.get(JAVA_LONG, 0).toInt()
             if (len <= 0) return@use 0
             // Same snprintf-style contract as connPeerCert: copy only when it fits.
             if (len <= bufLen) {
-                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
-                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+                MemorySegment.copy(NATIVE, outPtr.get(JAVA_LONG, 0), NATIVE, buf, len.toLong())
             }
             len
         }
@@ -738,15 +754,14 @@ class FfmQuicheApi private constructor(
         bufLen: Int,
     ): Int =
         Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outPtr = arena.allocate(JAVA_LONG) // const uint8_t **out
             val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
-            hConnApplicationProto.invokeExact(seg(conn.handle), outPtr, outLen)
+            hConnApplicationProto.invokeExact(conn.handle, outPtr.address(), outLen.address())
             val len = outLen.get(JAVA_LONG, 0).toInt()
             if (len <= 0) return@use 0
             // Same snprintf-style contract as connPeerCert: copy only when it fits.
             if (len <= bufLen) {
-                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
-                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+                MemorySegment.copy(NATIVE, outPtr.get(JAVA_LONG, 0), NATIVE, buf, len.toLong())
             }
             len
         }
@@ -773,19 +788,16 @@ class FfmQuicheApi private constructor(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int =
-        Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS)
-            val outLen = arena.allocate(JAVA_LONG)
-            handle.invokeExact(seg(conn.handle), outPtr, outLen)
-            val len = outLen.get(JAVA_LONG, 0).toInt()
-            if (len <= 0) return@use 0
-            if (len <= bufLen) {
-                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
-                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
-            }
-            len
+    ): Int {
+        val out = outParams.get()
+        handle.invokeExact(conn.handle, out.bytePtr.address(), out.byteLen.address())
+        val len = out.byteLen.get(JAVA_LONG, 0).toInt()
+        if (len <= 0) return 0
+        if (len <= bufLen) {
+            MemorySegment.copy(NATIVE, out.bytePtr.get(JAVA_LONG, 0), NATIVE, buf, len.toLong())
         }
+        return len
+    }
 
     // quiche_stats layout (64-bit; size_t == uint64_t == 8 bytes, so it is 25 consecutive 8-byte
     // fields then a trailing bool — same hand-offset discipline as the send_info constants below):
@@ -798,7 +810,7 @@ class FfmQuicheApi private constructor(
     override fun connStats(conn: QuicheConn): QuicConnStats? =
         Arena.ofConfined().use { arena ->
             val out = arena.allocate(CONN_STATS_SIZE, 8)
-            hConnStats.invokeExact(seg(conn.handle), out)
+            hConnStats.invokeExact(conn.handle, out.address())
             QuicConnStats(
                 recv = out.get(JAVA_LONG, 0),
                 sent = out.get(JAVA_LONG, 8),
@@ -825,7 +837,7 @@ class FfmQuicheApi private constructor(
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
         Arena.ofConfined().use { arena ->
             val out = arena.allocate(TRANSPORT_PARAMS_SIZE, 8)
-            val known = hConnPeerTransportParams.invokeExact(seg(conn.handle), out) as Boolean
+            val known = hConnPeerTransportParams.invokeExact(conn.handle, out.address()) as Boolean
             if (!known) return@use PeerTransportParams.NotYetNegotiated
             PeerTransportParams.Negotiated(
                 maxIdleTimeoutMillis = out.get(JAVA_LONG, 0),
@@ -860,7 +872,7 @@ class FfmQuicheApi private constructor(
         pathIdx: Long,
     ): QuicPathStats? {
         val out = outParams.get().pathStats
-        val rc = hConnPathStats.invokeExact(seg(conn.handle), pathIdx, out) as Int
+        val rc = hConnPathStats.invokeExact(conn.handle, pathIdx, out.address()) as Int
         if (rc < 0) return null
         return QuicPathStats(
             validationState = out.get(JAVA_LONG, 272),
@@ -901,9 +913,16 @@ class FfmQuicheApi private constructor(
         Arena.ofConfined().use { arena ->
             val isApp = arena.allocate(JAVA_BOOLEAN)
             val codeOut = arena.allocate(JAVA_LONG)
-            val reasonPtr = arena.allocate(ADDRESS)
+            val reasonPtr = arena.allocate(JAVA_LONG) // const uint8_t **reason
             val reasonLen = arena.allocate(JAVA_LONG)
-            val present = handle.invokeExact(seg(conn.handle), isApp, codeOut, reasonPtr, reasonLen) as Boolean
+            val present =
+                handle.invokeExact(
+                    conn.handle,
+                    isApp.address(),
+                    codeOut.address(),
+                    reasonPtr.address(),
+                    reasonLen.address(),
+                ) as Boolean
             if (!present) return@use null
             val code = codeOut.get(JAVA_LONG, 0)
             if (isApp.get(JAVA_BOOLEAN, 0)) QuicError.ApplicationError(code) else QuicError.fromTransportCode(code)
@@ -917,14 +936,14 @@ class FfmQuicheApi private constructor(
         recvQueueLen: Long,
         sendQueueLen: Long,
     ) {
-        hConfigEnableDgram.invokeExact(seg(config.handle), enabled, recvQueueLen, sendQueueLen)
+        hConfigEnableDgram.invokeExact(config.handle, enabled, recvQueueLen, sendQueueLen)
     }
 
     override fun connDgramSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = (hConnDgramSend.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Long).toInt()
+    ): Int = (hConnDgramSend.invokeExact(conn.handle, buf, bufLen.toLong()) as Long).toInt()
 
     override fun connDgramRecv(
         conn: QuicheConn,
@@ -932,7 +951,7 @@ class FfmQuicheApi private constructor(
         bufLen: Int,
     ): StreamRecvResult {
         // ssize_t: >= 0 length (datagrams have no FIN), QUICHE_ERR_DONE when none queued, else error.
-        val raw = hConnDgramRecv.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Long
+        val raw = hConnDgramRecv.invokeExact(conn.handle, buf, bufLen.toLong()) as Long
         return when {
             raw >= 0 -> StreamRecvResult.Data(raw.toInt(), false)
             raw == QUICHE_ERR_DONE -> StreamRecvResult.Done
@@ -940,26 +959,26 @@ class FfmQuicheApi private constructor(
         }
     }
 
-    override fun hasReadableDgram(conn: QuicheConn): Boolean = (hConnDgramRecvFrontLen.invokeExact(seg(conn.handle)) as Long) >= 0
+    override fun hasReadableDgram(conn: QuicheConn): Boolean = (hConnDgramRecvFrontLen.invokeExact(conn.handle) as Long) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
-        val raw = hConnDgramMaxWritableLen.invokeExact(seg(conn.handle)) as Long
+        val raw = hConnDgramMaxWritableLen.invokeExact(conn.handle) as Long
         return if (raw < 0) MaxDatagramSize.Unavailable else MaxDatagramSize.Bytes(raw.toInt())
     }
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(conn.handle) as Boolean
 
-    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = hIsHandshakeConfirmed.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = hIsHandshakeConfirmed.invokeExact(conn.handle) as Boolean
 
-    override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(conn.handle) as Boolean
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(conn.handle) as Boolean
 
     override fun connSetSession(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ): Int = hConnSetSession.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Int
+    ): Int = hConnSetSession.invokeExact(conn.handle, buf, bufLen.toLong()) as Int
 
     override fun connSession(
         conn: QuicheConn,
@@ -967,22 +986,21 @@ class FfmQuicheApi private constructor(
         bufLen: Int,
     ): Int = copyConnBytes(hConnSession, conn, buf, bufLen)
 
-    override fun connIsResumed(conn: QuicheConn): Boolean = hIsResumed.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsResumed(conn: QuicheConn): Boolean = hIsResumed.invokeExact(conn.handle) as Boolean
 
-    override fun connIsInEarlyData(conn: QuicheConn): Boolean = hIsInEarlyData.invokeExact(seg(conn.handle)) as Boolean
+    override fun connIsInEarlyData(conn: QuicheConn): Boolean = hIsInEarlyData.invokeExact(conn.handle) as Boolean
 
-    override fun connEarlyDataReason(conn: QuicheConn): Int = hEarlyDataReason.invokeExact(seg(conn.handle)) as Int
+    override fun connEarlyDataReason(conn: QuicheConn): Int = hEarlyDataReason.invokeExact(conn.handle) as Int
 
-    override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
-        hStreamDataUnacknowledged.invokeExact(seg(conn.handle)) as Boolean
+    override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean = hStreamDataUnacknowledged.invokeExact(conn.handle) as Boolean
 
     override fun connTimeout(conn: QuicheConn): Duration? {
-        val nanos = hTimeoutNanos.invokeExact(seg(conn.handle)) as Long
+        val nanos = hTimeoutNanos.invokeExact(conn.handle) as Long
         return if (nanos < 0) null else nanos.nanoseconds
     }
 
     override fun connOnTimeout(conn: QuicheConn) {
-        hOnTimeout.invokeExact(seg(conn.handle))
+        hOnTimeout.invokeExact(conn.handle)
     }
 
     override fun setThreadVirtualTimeNanos(nanos: Long) {
@@ -1005,17 +1023,17 @@ class FfmQuicheApi private constructor(
             }
         }
 
-    override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(seg(conn.handle)) as Long).toInt()
+    override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(conn.handle) as Long).toInt()
 
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
     ): Int =
         hConnClose.invokeExact(
-            seg(conn.handle),
+            conn.handle,
             error is QuicError.ApplicationError,
             error.code,
-            seg(0L),
+            0L,
             0L,
         ) as Int
 
@@ -1031,12 +1049,12 @@ class FfmQuicheApi private constructor(
             val seqOut = arena.allocate(JAVA_LONG)
             val rc =
                 hConnProbePath.invokeExact(
-                    seg(conn.handle),
-                    seg(localAddr),
+                    conn.handle,
+                    localAddr,
                     localLen,
-                    seg(peerAddr),
+                    peerAddr,
                     peerLen,
-                    seqOut,
+                    seqOut.address(),
                 ) as Int
             if (rc >= 0) ProbeOutcome.Probed(seqOut.get(JAVA_LONG, 0)) else ProbeOutcome.Rejected(rc)
         }
@@ -1050,12 +1068,12 @@ class FfmQuicheApi private constructor(
         seqOut: Long,
     ): Int =
         hConnNewScid.invokeExact(
-            seg(conn.handle),
-            seg(scidAddr),
+            conn.handle,
+            scidAddr,
             scidLen.toLong(),
-            seg(resetTokenAddr),
+            resetTokenAddr,
             retireIfNeeded,
-            seg(seqOut),
+            seqOut,
         ) as Int
 
     override fun connMigrate(
@@ -1069,12 +1087,12 @@ class FfmQuicheApi private constructor(
             val seqOut = arena.allocate(JAVA_LONG)
             val rc =
                 hConnMigrate.invokeExact(
-                    seg(conn.handle),
-                    seg(localAddr),
+                    conn.handle,
+                    localAddr,
                     localLen,
-                    seg(peerAddr),
+                    peerAddr,
                     peerLen,
-                    seqOut,
+                    seqOut.address(),
                 ) as Int
             if (rc >= 0) MigrateOutcome.Migrated(seqOut.get(JAVA_LONG, 0)) else MigrateOutcome.Rejected(rc)
         }
@@ -1082,34 +1100,34 @@ class FfmQuicheApi private constructor(
     override fun connRetireDcid(
         conn: QuicheConn,
         dcidSeq: Long,
-    ): Int = hConnRetireDcid.invokeExact(seg(conn.handle), dcidSeq) as Int
+    ): Int = hConnRetireDcid.invokeExact(conn.handle, dcidSeq) as Int
 
-    override fun connRetiredScids(conn: QuicheConn): Int = (hConnRetiredScids.invokeExact(seg(conn.handle)) as Long).toInt()
+    override fun connRetiredScids(conn: QuicheConn): Int = (hConnRetiredScids.invokeExact(conn.handle) as Long).toInt()
 
     override fun connDrainRetiredScids(
         conn: QuicheConn,
         out: Long,
         maxIds: Int,
     ): Int {
-        val iter = hConnRetiredScidIter.invokeExact(seg(conn.handle)) as MemorySegment
+        val iter = hConnRetiredScidIter.invokeExact(conn.handle) as Long
         // A null iterator is "nothing retired", not a failure — same shape as connPathEventNext's null.
-        if (iter.address() == 0L) return 0
-        return Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
-            val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
+        if (iter == 0L) return 0
+        val scratch = outParams.get()
+        val outPtr = scratch.bytePtr
+        val outLen = scratch.byteLen
+        return run {
             var yielded = 0
             try {
                 // Runs to completion even once the buffer is full: the iterator has already drained
                 // quiche's list, so stopping early would free ids nothing has recorded.
-                while (hConnIdIterNext.invokeExact(iter, outPtr, outLen) as Boolean) {
+                while (hConnIdIterNext.invokeExact(iter, outPtr.address(), outLen.address()) as Boolean) {
                     val len = outLen.get(JAVA_LONG, 0).toInt()
                     if (yielded < maxIds && len in 1..QUIC_MAX_CONN_ID_LEN) {
                         val slot = out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES
-                        val dst = seg(slot).reinterpret(RETIRED_SCID_SLOT_BYTES.toLong())
-                        dst.set(JAVA_BYTE, 0L, len.toByte())
-                        // Same `reinterpret` copy as connApplicationProto: quiche hands back a pointer
-                        // into memory the iterator owns, so it must be copied before the free below.
-                        MemorySegment.copy(outPtr.get(ADDRESS, 0).reinterpret(len.toLong()), 0L, dst, 1L, len.toLong())
+                        NATIVE.set(JAVA_BYTE, slot, len.toByte())
+                        // Same copy as connApplicationProto: quiche hands back a pointer into memory the
+                        // iterator owns, so it must be copied before the free below.
+                        MemorySegment.copy(NATIVE, outPtr.get(JAVA_LONG, 0), NATIVE, slot + 1L, len.toLong())
                     }
                     yielded++
                 }
@@ -1120,30 +1138,30 @@ class FfmQuicheApi private constructor(
         }
     }
 
-    override fun connActiveScids(conn: QuicheConn): Int = (hConnActiveScids.invokeExact(seg(conn.handle)) as Long).toInt()
+    override fun connActiveScids(conn: QuicheConn): Int = (hConnActiveScids.invokeExact(conn.handle) as Long).toInt()
 
     override fun connReadSourceIds(
         conn: QuicheConn,
         out: Long,
         maxIds: Int,
     ): Int {
-        val iter = hConnSourceIds.invokeExact(seg(conn.handle)) as MemorySegment
-        if (iter.address() == 0L) return 0
-        return Arena.ofConfined().use { arena ->
-            val outPtr = arena.allocate(ADDRESS)
-            val outLen = arena.allocate(JAVA_LONG)
+        val iter = hConnSourceIds.invokeExact(conn.handle) as Long
+        if (iter == 0L) return 0
+        val scratch = outParams.get()
+        val outPtr = scratch.bytePtr
+        val outLen = scratch.byteLen
+        return run {
             var yielded = 0
             try {
                 // Runs to completion even once the buffer is full — not because ids would be lost
                 // (quiche_conn_source_ids does not drain) but so the return value reports the true
                 // total, which is what makes an undersized buffer inspectable rather than silent.
-                while (hConnIdIterNext.invokeExact(iter, outPtr, outLen) as Boolean) {
+                while (hConnIdIterNext.invokeExact(iter, outPtr.address(), outLen.address()) as Boolean) {
                     val len = outLen.get(JAVA_LONG, 0).toInt()
                     if (yielded < maxIds && len in 1..QUIC_MAX_CONN_ID_LEN) {
                         val slot = out + yielded.toLong() * RETIRED_SCID_SLOT_BYTES
-                        val dst = seg(slot).reinterpret(RETIRED_SCID_SLOT_BYTES.toLong())
-                        dst.set(JAVA_BYTE, 0L, len.toByte())
-                        MemorySegment.copy(outPtr.get(ADDRESS, 0).reinterpret(len.toLong()), 0L, dst, 1L, len.toLong())
+                        NATIVE.set(JAVA_BYTE, slot, len.toByte())
+                        MemorySegment.copy(NATIVE, outPtr.get(JAVA_LONG, 0), NATIVE, slot + 1L, len.toLong())
                     }
                     yielded++
                 }
@@ -1161,15 +1179,15 @@ class FfmQuicheApi private constructor(
         seqOut: Long,
     ): Int =
         hConnMigrateSource.invokeExact(
-            seg(conn.handle),
-            seg(localAddr),
+            conn.handle,
+            localAddr,
             localLen,
-            seg(seqOut),
+            seqOut,
         ) as Int
 
-    override fun connAvailableDcids(conn: QuicheConn): Long = hConnAvailableDcids.invokeExact(seg(conn.handle)) as Long
+    override fun connAvailableDcids(conn: QuicheConn): Long = hConnAvailableDcids.invokeExact(conn.handle) as Long
 
-    override fun connScidsLeft(conn: QuicheConn): Long = hConnScidsLeft.invokeExact(seg(conn.handle)) as Long
+    override fun connScidsLeft(conn: QuicheConn): Long = hConnScidsLeft.invokeExact(conn.handle) as Long
 
     override fun connPathEventNext(
         conn: QuicheConn,
@@ -1178,26 +1196,26 @@ class FfmQuicheApi private constructor(
         peerOut: Long,
         peerLenOut: Long,
     ): QuichePathEventType? {
-        val ev = hConnPathEventNext.invokeExact(seg(conn.handle)) as MemorySegment
-        if (ev.address() == 0L) return null
+        val ev = hConnPathEventNext.invokeExact(conn.handle) as Long
+        if (ev == 0L) return null
         val type = hPathEventType.invokeExact(ev) as Int
         when (type) {
-            0 -> hPathEventNew.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
-            1 -> hPathEventValidated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
-            2 -> hPathEventFailedValidation.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
-            3 -> hPathEventClosed.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            0 -> hPathEventNew.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut)
+            1 -> hPathEventValidated.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut)
+            2 -> hPathEventFailedValidation.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut)
+            3 -> hPathEventClosed.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut)
             4 -> {
                 // ReusedSourceConnectionId: extra old/new-tuple + CID-seq fields out of scope; surface no addresses.
-                seg(localLenOut).reinterpret(JAVA_INT.byteSize()).set(JAVA_INT, 0, 0)
-                seg(peerLenOut).reinterpret(JAVA_INT.byteSize()).set(JAVA_INT, 0, 0)
+                NATIVE.set(JAVA_INT, localLenOut, 0)
+                NATIVE.set(JAVA_INT, peerLenOut, 0)
             }
-            5 -> hPathEventPeerMigrated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            5 -> hPathEventPeerMigrated.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut)
             6 ->
                 Arena.ofConfined().use { arena ->
                     // PmtuUpdated: the new PMTU is not surfaced; quiche already sizes its own sends by it.
                     val pmtuOut = arena.allocate(JAVA_LONG) // size_t *pmtu
                     // A statement, not the lambda's value: a void downcall must not be invoked as returning Object.
-                    hPathEventPmtuUpdated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut), pmtuOut)
+                    hPathEventPmtuUpdated.invokeExact(ev, localOut, localLenOut, peerOut, peerLenOut, pmtuOut.address())
                     Unit
                 }
         }
@@ -1207,56 +1225,67 @@ class FfmQuicheApi private constructor(
 
     // --- Server-side ---
     private val hLoadCert by lazy {
-        downcall("quiche_config_load_cert_chain_from_pem_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+        downcall("quiche_config_load_cert_chain_from_pem_file", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG))
     }
     private val hLoadKey by lazy {
-        downcall("quiche_config_load_priv_key_from_pem_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+        downcall("quiche_config_load_priv_key_from_pem_file", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG))
     }
     private val hLoadVerify by lazy {
-        downcall("quiche_config_load_verify_locations_from_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+        downcall("quiche_config_load_verify_locations_from_file", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG))
     }
     private val hHeaderInfo by lazy {
         downcall(
             "quiche_header_info",
             FunctionDescriptor.of(
                 JAVA_INT,
-                ADDRESS,
                 JAVA_LONG,
                 JAVA_LONG,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
-                ADDRESS,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
             ),
         )
     }
     private val hAccept by lazy {
         downcall(
             "quiche_accept",
-            FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+            FunctionDescriptor.of(
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_INT,
+                JAVA_LONG,
+            ),
         )
     }
     private val hNegotiateVersion by lazy {
         downcall(
             "quiche_negotiate_version",
-            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG),
+            FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG),
         )
     }
     private val hConnReadable by lazy {
-        downcall("quiche_conn_readable", FunctionDescriptor.of(ADDRESS, ADDRESS))
+        downcall("quiche_conn_readable", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hConnWritable by lazy {
-        downcall("quiche_conn_writable", FunctionDescriptor.of(ADDRESS, ADDRESS))
+        downcall("quiche_conn_writable", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
     private val hStreamIterNext by lazy {
-        downcall("quiche_stream_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+        downcall("quiche_stream_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
     }
     private val hStreamIterFree by lazy {
-        downcall("quiche_stream_iter_free", FunctionDescriptor.ofVoid(ADDRESS))
+        downcall("quiche_stream_iter_free", FunctionDescriptor.ofVoid(JAVA_LONG))
     }
 
     override fun connSetQlogPath(
@@ -1267,36 +1296,36 @@ class FfmQuicheApi private constructor(
     ): Boolean =
         Arena.ofConfined().use { arena ->
             hConnSetQlogPath.invokeExact(
-                seg(conn.handle),
-                cString(arena, path),
-                cString(arena, title),
-                cString(arena, desc),
+                conn.handle,
+                cString(arena, path).address(),
+                cString(arena, title).address(),
+                cString(arena, desc).address(),
             ) as Boolean
         }
 
     override fun configLogKeys(config: QuicheConfig) {
-        hConfigLogKeys.invokeExact(seg(config.handle))
+        hConfigLogKeys.invokeExact(config.handle)
     }
 
     override fun connSetKeylogPath(
         conn: QuicheConn,
         path: String,
-    ): Boolean = Arena.ofConfined().use { arena -> hConnSetKeylogPath.invokeExact(seg(conn.handle), cString(arena, path)) as Boolean }
+    ): Boolean = Arena.ofConfined().use { arena -> hConnSetKeylogPath.invokeExact(conn.handle, cString(arena, path).address()) as Boolean }
 
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = hLoadCert.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+    ): Int = hLoadCert.invokeExact(config.handle, pathAddr) as Int
 
     override fun configLoadPrivKeyFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = hLoadKey.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+    ): Int = hLoadKey.invokeExact(config.handle, pathAddr) as Int
 
     override fun configLoadVerifyLocationsFromFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = hLoadVerify.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+    ): Int = hLoadVerify.invokeExact(config.handle, pathAddr) as Int
 
     override fun headerInfo(
         buf: Long,
@@ -1312,17 +1341,17 @@ class FfmQuicheApi private constructor(
         tokenLenOut: Long,
     ): Int =
         hHeaderInfo.invokeExact(
-            seg(buf),
+            buf,
             bufLen.toLong(),
             dcil.toLong(),
-            seg(versionOut),
-            seg(typeOut),
-            seg(scidOut),
-            seg(scidLenOut),
-            seg(dcidOut),
-            seg(dcidLenOut),
-            seg(tokenOut),
-            seg(tokenLenOut),
+            versionOut,
+            typeOut,
+            scidOut,
+            scidLenOut,
+            dcidOut,
+            dcidLenOut,
+            tokenOut,
+            tokenLenOut,
         ) as Int
 
     override fun accept(
@@ -1338,17 +1367,17 @@ class FfmQuicheApi private constructor(
     ): QuicheConn {
         val result =
             hAccept.invokeExact(
-                seg(scidAddr),
+                scidAddr,
                 scidLen.toLong(),
-                seg(odcidAddr),
+                odcidAddr,
                 odcidLen.toLong(),
-                seg(localAddr),
+                localAddr,
                 localAddrLen,
-                seg(peerAddr),
+                peerAddr,
                 peerAddrLen,
-                seg(config.handle),
-            ) as MemorySegment
-        return QuicheConn(result.address())
+                config.handle,
+            ) as Long
+        return QuicheConn(result)
     }
 
     override fun negotiateVersion(
@@ -1361,25 +1390,23 @@ class FfmQuicheApi private constructor(
     ): Int =
         (
             hNegotiateVersion.invokeExact(
-                seg(scidAddr),
+                scidAddr,
                 scidLen.toLong(),
-                seg(dcidAddr),
+                dcidAddr,
                 dcidLen.toLong(),
-                seg(outAddr),
+                outAddr,
                 outLen.toLong(),
             ) as Long
         ).toInt()
 
-    override fun connReadable(conn: QuicheConn): QuicheStreamIter =
-        QuicheStreamIter((hConnReadable.invokeExact(seg(conn.handle)) as MemorySegment).address())
+    override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(hConnReadable.invokeExact(conn.handle) as Long)
 
-    override fun connWritable(conn: QuicheConn): QuicheStreamIter =
-        QuicheStreamIter((hConnWritable.invokeExact(seg(conn.handle)) as MemorySegment).address())
+    override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(hConnWritable.invokeExact(conn.handle) as Long)
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null
         val streamIdOut = streamIdScratch.get()
-        val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
+        val hasNext = hStreamIterNext.invokeExact(iter.handle, streamIdOut.address()) as Boolean
         return if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
     }
 
@@ -1387,7 +1414,7 @@ class FfmQuicheApi private constructor(
     private val streamIdScratch: ThreadLocal<MemorySegment> = ThreadLocal.withInitial { Arena.ofAuto().allocate(JAVA_LONG) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {
-        if (!iter.isExhausted) hStreamIterFree.invokeExact(seg(iter.handle))
+        if (!iter.isExhausted) hStreamIterFree.invokeExact(iter.handle)
     }
 
     // --- RecvInfo / SendInfo via FFM Arena-allocated structs ---
@@ -1429,8 +1456,8 @@ class FfmQuicheApi private constructor(
     // the server's per-source-address eviction path, where the insertion rate is set by remote
     // peers, so it would turn a source-address flood into a global-handshake amplifier. calloc also
     // keeps the zero-fill `Arena.allocate` guaranteed here, which sendInfoNew relies on.
-    private val hCalloc by lazy { libcDowncall("calloc", FunctionDescriptor.of(ADDRESS, JAVA_LONG, JAVA_LONG)) }
-    private val hFree by lazy { libcDowncall("free", FunctionDescriptor.ofVoid(ADDRESS)) }
+    private val hCalloc by lazy { libcDowncall("calloc", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG)) }
+    private val hFree by lazy { libcDowncall("free", FunctionDescriptor.ofVoid(JAVA_LONG)) }
 
     /**
      * Resolves a libc symbol, unlike [downcall] which resolves against libquiche. `calloc` / `free`
@@ -1454,18 +1481,15 @@ class FfmQuicheApi private constructor(
     }
 
     /**
-     * `calloc(1, size)` as a [size]-byte segment. Zero-filled, matching what `quiche_jni.c` gets from
-     * its own `calloc`.
-     *
-     * The segment is reinterpreted to global scope on purpose: its lifetime is this class's to
-     * manage through [hFree], and tying it to any arena would make that free a no-op.
+     * `calloc(1, size)` as the address of [size] zero-filled bytes, matching what `quiche_jni.c` gets
+     * from its own `calloc`. Its lifetime is this class's to manage through [hFree]; no arena owns it.
      */
-    private fun callocOrThrow(size: Long): MemorySegment {
-        val raw = hCalloc.invokeExact(1L, size) as MemorySegment
-        if (raw.address() == 0L) {
+    private fun callocOrThrow(size: Long): Long {
+        val raw = hCalloc.invokeExact(1L, size) as Long
+        if (raw == 0L) {
             throw OutOfMemoryError("calloc(1, $size) for a quiche info struct returned NULL")
         }
-        return raw.reinterpret(size)
+        return raw
     }
 
     override fun recvInfoNew(
@@ -1484,13 +1508,13 @@ class FfmQuicheApi private constructor(
         val info = callocOrThrow(RECV_INFO_SIZE.toLong() + fromAddrLen + toAddrLen)
         val fromOffset = RECV_INFO_SIZE.toLong() // 32, 8-aligned
         val toOffset = fromOffset + fromAddrLen // 4-aligned (fromAddrLen is 16 or 28)
-        MemorySegment.copy(seg(fromAddr).reinterpret(fromAddrLen.toLong()), 0L, info, fromOffset, fromAddrLen.toLong())
-        MemorySegment.copy(seg(toAddr).reinterpret(toAddrLen.toLong()), 0L, info, toOffset, toAddrLen.toLong())
-        info.set(ADDRESS, 0, info.asSlice(fromOffset)) // from -> inline copy
-        info.set(JAVA_INT, 8, fromAddrLen) // from_len
-        info.set(ADDRESS, 16, info.asSlice(toOffset)) // to -> inline copy
-        info.set(JAVA_INT, 24, toAddrLen) // to_len
-        return QuicheRecvInfo(info.address())
+        MemorySegment.copy(NATIVE, fromAddr, NATIVE, info + fromOffset, fromAddrLen.toLong())
+        MemorySegment.copy(NATIVE, toAddr, NATIVE, info + toOffset, toAddrLen.toLong())
+        NATIVE.set(JAVA_LONG, info, info + fromOffset) // from -> inline copy
+        NATIVE.set(JAVA_INT, info + 8, fromAddrLen) // from_len
+        NATIVE.set(JAVA_LONG, info + 16, info + toOffset) // to -> inline copy
+        NATIVE.set(JAVA_INT, info + 24, toAddrLen) // to_len
+        return QuicheRecvInfo(info)
     }
 
     /**
@@ -1503,14 +1527,14 @@ class FfmQuicheApi private constructor(
      * production hot path.
      */
     override fun recvInfoFree(info: QuicheRecvInfo) {
-        hFree.invokeExact(seg(info.handle))
+        hFree.invokeExact(info.handle)
     }
 
-    override fun sendInfoNew(): QuicheSendInfo = QuicheSendInfo(callocOrThrow(SEND_INFO_SIZE.toLong()).address())
+    override fun sendInfoNew(): QuicheSendInfo = QuicheSendInfo(callocOrThrow(SEND_INFO_SIZE.toLong()))
 
     /** Releases the struct [sendInfoNew] allocated. See [recvInfoFree] for the NULL / double-free contract. */
     override fun sendInfoFree(info: QuicheSendInfo) {
-        hFree.invokeExact(seg(info.handle))
+        hFree.invokeExact(info.handle)
     }
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
@@ -1524,20 +1548,14 @@ class FfmQuicheApi private constructor(
         return info.handle + SEND_INFO_TO_OFFSET
     }
 
-    override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {
-        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
-        return segment.get(JAVA_INT, SEND_INFO_TO_LEN_OFFSET.toLong())
-    }
+    override fun sendInfoToAddrLen(info: QuicheSendInfo): Int = NATIVE.get(JAVA_INT, info.handle + SEND_INFO_TO_LEN_OFFSET)
 
     override fun sendInfoFromAddr(info: QuicheSendInfo): Long {
         // from sockaddr_storage is the first field of quiche_send_info (offset 0).
         return info.handle
     }
 
-    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
-        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
-        return segment.get(JAVA_INT, SEND_INFO_FROM_LEN_OFFSET.toLong())
-    }
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = NATIVE.get(JAVA_INT, info.handle + SEND_INFO_FROM_LEN_OFFSET)
 
     // --- sockaddr decode (slice 3 migration) ---
     // FFM reads the struct directly. The JVM runs on Linux/macOS/Windows, so this
@@ -1546,25 +1564,16 @@ class FfmQuicheApi private constructor(
     // AF_INET = 2 everywhere; AF_INET6 = 10 (Linux) / 30 (BSD) / 23 (Windows).
     // sin_port is at offset 2, sin_addr at 4, sin6_addr at 8 in both layouts.
 
-    private fun ss(addr: Long): MemorySegment = MemorySegment.ofAddress(addr).reinterpret(SOCKADDR_STORAGE_SIZE)
+    private fun u8(addr: Long): Int = NATIVE.get(JAVA_BYTE, addr).toInt() and 0xFF
 
-    private fun u8(
-        seg: MemorySegment,
-        off: Int,
-    ): Int = seg.get(JAVA_BYTE, off.toLong()).toInt() and 0xFF
-
-    private fun beLong(
-        seg: MemorySegment,
-        off: Int,
-    ): Long {
+    private fun beLong(addr: Long): Long {
         var v = 0L
-        for (i in off until off + 8) v = (v shl 8) or u8(seg, i).toLong()
+        for (i in 0 until 8) v = (v shl 8) or u8(addr + i).toLong()
         return v
     }
 
     override fun sockAddrFamily(addr: Long): Int {
-        val seg = ss(addr)
-        val fam = if (IS_BSD) u8(seg, 1) else u8(seg, 0) or (u8(seg, 1) shl 8)
+        val fam = if (IS_BSD) u8(addr + 1) else u8(addr) or (u8(addr + 1) shl 8)
         return when (fam) {
             AF_INET -> 4
             AF_INET6 -> 6
@@ -1572,24 +1581,27 @@ class FfmQuicheApi private constructor(
         }
     }
 
-    override fun sockAddrPort(addr: Long): Int {
-        val seg = ss(addr)
-        return (u8(seg, 2) shl 8) or u8(seg, 3)
-    }
+    override fun sockAddrPort(addr: Long): Int = (u8(addr + 2) shl 8) or u8(addr + 3)
 
     override fun sockAddrV4(addr: Long): Long {
-        val seg = ss(addr)
         var v = 0L
-        for (i in 4 until 8) v = (v shl 8) or u8(seg, i).toLong()
+        for (i in 4 until 8) v = (v shl 8) or u8(addr + i).toLong()
         return v
     }
 
-    override fun sockAddrV6Hi(addr: Long): Long = beLong(ss(addr), 8)
+    override fun sockAddrV6Hi(addr: Long): Long = beLong(addr + 8)
 
-    override fun sockAddrV6Lo(addr: Long): Long = beLong(ss(addr), 16)
+    override fun sockAddrV6Lo(addr: Long): Long = beLong(addr + 16)
 
     companion object {
-        private const val SOCKADDR_STORAGE_SIZE = 128L
+        /**
+         * One immortal global-scope segment spanning the whole address space (`NULL.reinterpret(MAX)`), so
+         * a quiche pointer held as a `Long` is read or written as `NATIVE.get(layout, address)` with no
+         * `MemorySegment.ofAddress` per access. It carries no bounds safety of its own: every access is
+         * to an address and length that this class computed from quiche's own struct layouts.
+         */
+        private val NATIVE: MemorySegment = MemorySegment.NULL.reinterpret(Long.MAX_VALUE)
+
         private const val AF_INET = 2
         private val IS_BSD: Boolean =
             System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") || it.contains("bsd") }

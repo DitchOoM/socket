@@ -2,6 +2,12 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.HostResolver
 import com.ditchoom.socket.Resolution
+import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.ServerCertVerdict
+import com.ditchoom.socket.quic.ServerCertVerifier
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +54,64 @@ internal class PublicEndpointAttempt private constructor(
     var phase: String = "not started"
         private set
 
+    /**
+     * How far the connect got inside the one `handshake` phase, read from what the library already reports
+     * (its trace capture and the server-certificate verifier hook), never from the attempt's own guess.
+     * Replaced, never mutated. See [ConnectProgress].
+     */
+    @Volatile
+    private var progress: ConnectProgress = ConnectProgress.NotAtEngine
+
+    /**
+     * [base] with the library's own observation switched on: a trace capture whose events say when a candidate
+     * reached the engine, what datagrams crossed and when QUIC reported the connection established, and a
+     * verifier that is consulted only once the platform's trust check has passed. Together they split the
+     * `handshake` phase into the waits it is made of.
+     */
+    fun observing(base: QuicOptions): QuicOptions =
+        base.copy(
+            trace = QuicTraceCapture(TraceSink { event -> observe(event) }),
+            serverCertVerifiers =
+                base.serverCertVerifiers +
+                    ServerCertVerifier {
+                        advance(ConnectProgress.ChainAccepted)
+                        ServerCertVerdict.Trusted
+                    },
+        )
+
+    private fun observe(event: TraceEvent) {
+        val now = progress
+        when (event) {
+            is TraceEvent.DgramOut ->
+                when (now) {
+                    ConnectProgress.NotAtEngine -> advance(ConnectProgress.Handshaking(1, 0))
+                    is ConnectProgress.Handshaking -> advance(now.copy(out = now.out + 1))
+                    else -> Unit
+                }
+            is TraceEvent.DgramIn ->
+                when (now) {
+                    ConnectProgress.NotAtEngine -> advance(ConnectProgress.Handshaking(0, 1))
+                    is ConnectProgress.Handshaking -> advance(now.copy(inbound = now.inbound + 1))
+                    else -> Unit
+                }
+            is TraceEvent.State ->
+                if (event.name.endsWith("Established") && (now is ConnectProgress.Handshaking || now == ConnectProgress.NotAtEngine)) {
+                    advance(ConnectProgress.EstablishedAwaitingChain)
+                }
+            else -> Unit
+        }
+    }
+
+    private fun advance(next: ConnectProgress) {
+        if (progress != next) {
+            progress = next
+            if (next !is ConnectProgress.Handshaking) log = log + "${next.describe()}@${started.elapsedNow().inWholeMilliseconds}ms"
+        }
+    }
+
+    /** Where the attempt is, naming the wait inside `handshake` when that is the phase. */
+    internal fun whereItIs(): String = if (phase == "handshake") "'handshake' (${progress.describe()})" else "'$phase'"
+
     /** Mark that the attempt has reached [name]. */
     fun enter(name: String) {
         phase = name
@@ -64,6 +128,43 @@ internal class PublicEndpointAttempt private constructor(
             is Resolution.Resolved -> enter("dns answered ${answer.candidates.size} address(es)")
             is Resolution.NoAddress -> throw UnreachableEndpoint("$host has no address")
             is Resolution.Failed -> throw UnreachableEndpoint("$host did not resolve: ${answer.cause}")
+        }
+    }
+
+    /**
+     * The waits inside the `handshake` phase, in the order a connect passes through them. The first fact
+     * that proves one has been reached is the only evidence used: a trace sink that has been handed no
+     * datagram leaves [NotAtEngine], which says nothing was sent that the library recorded.
+     */
+    sealed interface ConnectProgress {
+        fun describe(): String
+
+        /** No datagram has been recorded: still resolving the name again, racing candidates, or opening the first socket. */
+        data object NotAtEngine : ConnectProgress {
+            override fun describe() = "no datagram recorded: candidate resolution, address race or socket open"
+        }
+
+        /** QUIC datagrams are crossing; [out] sent, [inbound] received, and QUIC has not reported the connection established. */
+        data class Handshaking(
+            val out: Int,
+            val inbound: Int,
+        ) : ConnectProgress {
+            override fun describe() =
+                if (inbound == 0) {
+                    "QUIC handshake, $out datagram(s) sent and none received: the server never answered"
+                } else {
+                    "QUIC handshake, $out datagram(s) sent and $inbound received: the server answered but the handshake did not finish"
+                }
+        }
+
+        /** QUIC reported Established; the platform trust check has not returned and no verifier has been consulted. */
+        data object EstablishedAwaitingChain : ConnectProgress {
+            override fun describe() = "QUIC established, waiting on the platform trust evaluation of the server chain"
+        }
+
+        /** The trust check passed and the verifier was consulted; what remains is the HTTP/3 or WebTransport bootstrap. */
+        data object ChainAccepted : ConnectProgress {
+            override fun describe() = "server chain accepted, in the HTTP/3 bootstrap (control streams, SETTINGS)"
         }
     }
 
@@ -116,21 +217,21 @@ internal class PublicEndpointAttempt private constructor(
                     Outcome.Done(work.await(), "$endpoint finished: $timeline")
                 } else {
                     Outcome.Unreachable(
-                        "$endpoint failed in phase '${attempt.phase}' after ${attempt.started.elapsedNow()}: " +
+                        "$endpoint failed in phase ${attempt.whereItIs()} after ${attempt.started.elapsedNow()}: " +
                             "${failure::class.simpleName}: ${failure.message}; phases: $timeline",
                     )
                 }
             }
-            val stalledIn = attempt.phase
+            val stalledIn = attempt.whereItIs()
             work.cancel()
             val unwound = withTimeoutOrNull(cancelGrace) { work.join() } != null
             val timeline = attempt.timeline()
             return if (unwound) {
-                Outcome.Unreachable("$endpoint stalled in phase '$stalledIn' past its $budget budget; phases: $timeline")
+                Outcome.Unreachable("$endpoint stalled in phase $stalledIn past its $budget budget; phases: $timeline")
             } else {
                 Outcome.IgnoredCancellation(
-                    "$endpoint stalled in phase '$stalledIn' past its $budget budget, and was still in phase " +
-                        "'${attempt.phase}' $cancelGrace after it was cancelled. A wait that ignores cancellation " +
+                    "$endpoint stalled in phase $stalledIn past its $budget budget, and was still in phase " +
+                        "${attempt.whereItIs()} $cancelGrace after it was cancelled. A wait that ignores cancellation " +
                         "is a defect in this library (or a blocking platform call it makes), not the endpoint's. " +
                         "Phases: $timeline",
                 )

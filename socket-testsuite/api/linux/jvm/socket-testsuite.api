@@ -275,6 +275,7 @@ public abstract class com/ditchoom/socket/quic/ServerCertVerifierTestSuite {
 	public fun <init> ()V
 	public final fun aChainThePlatformRefusesNeverReachesTheVerifier ()V
 	public final fun aRejectionFailsTheConnectBeforeTheBlockRuns ()V
+	public final fun aVerifierThatNeverAnswersEndsTheConnectAtTheHandshakeBudget ()V
 	public final fun theVerifierSeesTheWholeChainLeafFirst ()V
 	public abstract fun twoCertificateChainPem ()Ljava/lang/String;
 	public abstract fun twoCertificateChainTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;

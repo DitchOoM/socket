@@ -50,6 +50,7 @@ import platform.posix.mkstemp
 import platform.posix.sockaddr
 import platform.posix.unlink
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Build + establish a Linux quiche-backed [LinuxQuicConnection] over io_uring, returning it ready
@@ -74,6 +75,7 @@ internal suspend fun buildLinuxQuicConnection(
     // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): LinuxQuicConnection {
+    val handshakeStarted = TimeSource.Monotonic.markNow()
     // GREASE is forced off on a shared port before anything reads these — see
     // QuicClientBinding.transportOptionsFor.
     val quicOptions = binding.transportOptionsFor(requestedOptions)
@@ -291,6 +293,7 @@ internal suspend fun buildLinuxQuicConnection(
                 readChainDer = quicConn::readPeerCertChainDer,
                 closeConnection = { quicConn.close() },
                 now = tuning.wallClock(),
+                budget = HandshakeBudget(timeout, handshakeStarted),
             )
             quicConn
         }

@@ -75,7 +75,7 @@ class WebTransportPublicEndpointInteropTests {
                             withHttp3Connection(
                                 host,
                                 port,
-                                quicOptions,
+                                observing(quicOptions),
                                 connectionOptions,
                                 timeout = 8.seconds,
                                 webTransport = WebTransportOptions(maxSessions = 1),

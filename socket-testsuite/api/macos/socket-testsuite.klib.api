@@ -317,6 +317,7 @@ abstract class com.ditchoom.socket.quic/ServerCertVerifierTestSuite { // com.dit
     abstract fun twoCertificateChainTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.twoCertificateChainTlsConfig|twoCertificateChainTlsConfig(){}[0]
     final fun aChainThePlatformRefusesNeverReachesTheVerifier() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.aChainThePlatformRefusesNeverReachesTheVerifier|aChainThePlatformRefusesNeverReachesTheVerifier(){}[0]
     final fun aRejectionFailsTheConnectBeforeTheBlockRuns() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.aRejectionFailsTheConnectBeforeTheBlockRuns|aRejectionFailsTheConnectBeforeTheBlockRuns(){}[0]
+    final fun aVerifierThatNeverAnswersEndsTheConnectAtTheHandshakeBudget() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.aVerifierThatNeverAnswersEndsTheConnectAtTheHandshakeBudget|aVerifierThatNeverAnswersEndsTheConnectAtTheHandshakeBudget(){}[0]
     final fun theVerifierSeesTheWholeChainLeafFirst() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.theVerifierSeesTheWholeChainLeafFirst|theVerifierSeesTheWholeChainLeafFirst(){}[0]
     open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
 }

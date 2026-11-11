@@ -56,6 +56,7 @@ import platform.posix.unlink
 import kotlin.native.OsFamily
 import kotlin.native.Platform
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Build + establish an Apple quiche-backed [AppleQuicConnection] over a `:socket-udp` NWConnection-UDP
@@ -80,6 +81,7 @@ internal suspend fun buildAppleQuicConnection(
     // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): AppleQuicConnection {
+    val handshakeStarted = TimeSource.Monotonic.markNow()
     // GREASE is forced off on a shared port before anything reads these — see
     // QuicClientBinding.transportOptionsFor.
     val quicOptions = binding.transportOptionsFor(requestedOptions)
@@ -329,6 +331,7 @@ internal suspend fun buildAppleQuicConnection(
                 readChainDer = quicConn::readPeerCertChainDer,
                 closeConnection = { quicConn.close() },
                 now = tuning.wallClock(),
+                budget = HandshakeBudget(timeout, handshakeStarted),
             )
             quicConn
         }
