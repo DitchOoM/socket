@@ -227,8 +227,16 @@ class ReconnectingConnection<T>(
     @Volatile
     private var backoffReset = false
 
-    @Volatile
-    private var livenessLost = false
+    /**
+     * What a liveness probe's `Dead` verdict becomes: the held connection's move to [Slot.Down] with this
+     * cause. The verdict is therefore the identity-checked [release] of the connection it was measured on,
+     * not a flag the loop must remember to clear per connection: a probe that outlives its connection
+     * finds a different connection (or none) held, moves nothing, and so cannot condemn the next one.
+     */
+    private class LivenessLost : ConnectionState.Disconnected(SocketIOException("connection liveness lost after network change"))
+
+    /** True when the slot holds the outcome of a liveness probe that tore the held connection down. */
+    private fun condemnedByLiveness(): Boolean = (slot as? Slot.Down)?.state is LivenessLost
 
     /**
      * Teardown's once-only latch — see [TeardownOnce] for why a flag cannot do this job: with
@@ -312,7 +320,6 @@ class ReconnectingConnection<T>(
                                 conn.close()
                                 return@flow
                             }
-                            livenessLost = false
                             val livenessJob = launchLivenessJob(monitor, conn)
                             try {
                                 conn.receive().collect {
@@ -322,15 +329,11 @@ class ReconnectingConnection<T>(
                             } finally {
                                 livenessJob?.cancel()
                             }
-                            if (livenessLost) {
-                                // A liveness probe fired by a network-path change judged the connection
+                            if (condemnedByLiveness()) {
+                                // A liveness probe fired by a network-path change judged THIS connection
                                 // dead and tore it down. The path just changed, so reconnect now rather
                                 // than waiting out a backoff.
-                                release(
-                                    ConnectionState.Disconnected(
-                                        SocketIOException("connection liveness lost after network change"),
-                                    ),
-                                )
+                                release(LivenessLost())
                                 retryDelay = Duration.ZERO
                                 continue
                             }
@@ -347,8 +350,10 @@ class ReconnectingConnection<T>(
                                 // Disconnected(). Retrying here is how a closed connection reopens itself.
                                 return@flow
                             }
+                            // Read before release() overwrites the slot's outcome.
+                            val condemned = condemnedByLiveness()
                             release(ConnectionState.Disconnected(e))
-                            if (livenessLost) {
+                            if (condemned) {
                                 // Connection was torn down by a liveness probe after a network change;
                                 // its receive() surfaced the teardown as an error. Reconnect now.
                                 retryDelay = Duration.ZERO
@@ -458,8 +463,7 @@ class ReconnectingConnection<T>(
         return scope.launch {
             monitor.pathChanges().collect {
                 if (probe.probe() == Liveness.Result.Dead) {
-                    livenessLost = true
-                    release(conn, ConnectionState.Disconnected(SocketIOException("connection liveness lost after network change")))
+                    release(conn, LivenessLost())
                 }
             }
         }
