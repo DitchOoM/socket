@@ -3883,7 +3883,7 @@ class QuicheDriver(
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
             val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
             val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
-            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(random.nextInt(256).toByte()) }
+            repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
             token.resetForRead()
             val rc =
                 api.connNewScid(

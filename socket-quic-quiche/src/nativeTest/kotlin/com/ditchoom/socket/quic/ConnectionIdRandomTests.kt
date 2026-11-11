@@ -6,6 +6,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 
 /**
  * The source every connection id is drawn from is shared by the server's receive loop (the SCID of each
@@ -38,5 +40,22 @@ class ConnectionIdRandomTests {
             for (i in 0 until drawsPerWorker) if (!seen.add(worker[2 * i] to worker[2 * i + 1])) repeats++
         }
         assertEquals(0, repeats, "${workers * drawsPerWorker} connection ids drawn on $workers threads: $repeats repeated an earlier one")
+    }
+
+    @Test
+    fun theProductionDefaultIsTheOperatingSystemsRandomSource() {
+        // A regression to a generator that predicts its own next draw (Random.Default, a counter, a seed)
+        // is a different type.
+        assertIs<NativeEntropyRandom>(connectionIdRandom)
+        assertIs<NativeEntropyRandom>(QuicheDriverTuning().random)
+    }
+
+    @Test
+    fun twoInstancesDoNotShareTheirDraws() {
+        // State of ours, however seeded, would make two instances repeat each other.
+        val a = (0 until 4).map { connectionIdRandom.nextLong() }
+        val b = (0 until 4).map { connectionIdRandom.nextLong() }
+        assertNotEquals(a, b, "two runs of draws from the default source were identical")
+        assertEquals(8, (a + b).toSet().size, "a draw repeated an earlier one")
     }
 }
