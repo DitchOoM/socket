@@ -32,6 +32,7 @@ import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -41,6 +42,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -382,6 +385,24 @@ class QuicheDriver(
     }
 
     /**
+     * Whether a server's handler starts for this connection, decided: as soon as the client's 0-RTT is
+     * accepted or the handshake completes, never once the connection closed before either.
+     *
+     * [state] is a conflating StateFlow, so a collector that is dispatched late can see Handshaking
+     * jump to Closed when the peer completes the handshake and closes in the same breath — the shape of
+     * a client whose block returns immediately — with the Established in between never observed. Closed
+     * alone does not say whether the handshake finished first, so a close is checked against
+     * [handshakeSettled], which is completed Confirmed at the Established edge and never revoked: a
+     * Closed observed here happens-after that completion.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
+        val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
+    }
+
+    /**
      * A close reason this driver decided on itself and that quiche cannot carry back to it.
      *
      * [resolveCloseReason] reads the close reason back out of quiche (`peer_error` / `local_error` /
@@ -651,7 +672,10 @@ class QuicheDriver(
         try {
             val closed = CompletableDeferred<Unit>()
             commands.send(QuicheCmd.Close(reason, closed))
-            closed.await()
+            reportingStall(
+                "the driver to answer Close in $coroutineName",
+                { "closed.isCompleted=${closed.isCompleted} driver.isActive=${driverJob?.isActive}" },
+            ) { closed.await() }
         } catch (_: ClosedSendChannelException) {
             // Settled on its own in the same instant — its own reason stands.
         }
@@ -2128,7 +2152,12 @@ class QuicheDriver(
                     entry.readerJob?.cancel()
                 }
                 for (entry in paths.values.toList()) {
-                    entry.readerJob?.join()
+                    entry.readerJob?.let { reader ->
+                        reportingStall(
+                            "reader ${entry.key} to exit in $coroutineName",
+                            { "reader.isActive=${reader.isActive} reader.isCompleted=${reader.isCompleted}" },
+                        ) { reader.join() }
+                    }
                 }
                 cleanup()
                 // The trace reaches the application's sink off this loop; let what this connection
@@ -2332,8 +2361,10 @@ class QuicheDriver(
                     try {
                         // Bytes this loop already handed the stream (to a read parked in awaitData that has
                         // since moved on) come before anything quiche still holds: answer Done so the read
-                        // takes them from the queue, rather than reading past them out of order.
-                        if (slot != null && !slot.pendingData.isEmpty) {
+                        // takes them from the queue, rather than reading past them out of order. The same
+                        // answer once the end is latched: every latch follows quiche reporting the stream's
+                        // end, so quiche holds nothing more and has collected the stream.
+                        if (slot != null && slot.answersStreamRecvWithDone()) {
                             StreamRecvResult.Done
                         } else {
                             api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
@@ -4327,7 +4358,12 @@ class QuicheDriver(
 
     suspend fun destroy() {
         commands.close()
-        driverJob?.join()
+        driverJob?.let { driver ->
+            reportingStall(
+                "the driver loop to exit in $coroutineName",
+                { "driver.isActive=${driver.isActive} driver.isCompleted=${driver.isCompleted}" },
+            ) { driver.join() }
+        }
     }
 
     /** Copies the peer's chain out of quiche (loop only, `conn` still alive). Bounded; empty on any failure. */

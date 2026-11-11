@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
+import kotlinx.coroutines.channels.Channel
 import org.jetbrains.lincheck.LincheckAssertionError
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
@@ -19,7 +20,7 @@ import kotlin.test.assertFailsWith
  * tears down: chunks, then the stream's FIN ([StreamSlot.deliverDrained]), or the peer's RESET_STREAM
  * ([StreamSlot.latchReset]). The **reader** (another thread) asks the slot what to return when quiche
  * has nothing more for it — a `Done` answer, or the top of a read: the next queued chunk, else the
- * latched verdict, else wait ([StreamSlot.queuedOrLatchedVerdict] over [StreamSlot.takeQueued]), and
+ * latched verdict, else park ([StreamSlot.queuedOrLatchedVerdict] over [StreamSlot.takeQueued]), and
  * settles the stream's read state as the read returns.
  *
  * [StreamSlot.holdsUnread] is deliberately not an operation here. A read that finds the queue empty
@@ -30,7 +31,7 @@ import kotlin.test.assertFailsWith
  * ## The specification
  *
  * [StreamSlotSpec]: a queue and a latch. A read returns the oldest chunk while there is one, then the
- * verdict, and waits while the stream is open. The verdict latches once; the first latch wins. So a
+ * verdict, and parks while the stream is open. The verdict latches once; the first latch wins. So a
  * read never reports End or Reset while a chunk the driver delivered is still queued — that would be
  * #318, the bytes quiche accepted lost behind a clean-looking end.
  *
@@ -53,13 +54,13 @@ abstract class StreamSlotModel {
     private fun label(chunk: ReadBuffer): String = "chunk#${chunks.indexOfFirst { it === chunk }}"
 
     @Operation(nonParallelGroup = DRIVER)
-    fun drainChunk(): Boolean = slot.deliverDrained(nextChunk(), fin = false)
+    fun drainChunk(): Boolean = slot.deliverDrained(nextChunk(), fin = false).also { slot.dataSignal.trySend(Unit) }
 
     @Operation(nonParallelGroup = DRIVER)
-    fun drainLastChunkWithFin(): Boolean = slot.deliverDrained(nextChunk(), fin = true)
+    fun drainLastChunkWithFin(): Boolean = slot.deliverDrained(nextChunk(), fin = true).also { slot.dataSignal.trySend(Unit) }
 
     @Operation(nonParallelGroup = DRIVER)
-    fun drainReset(): Boolean = slot.latchReset(QuicAppErrorCode(RESET_CODE))
+    fun drainReset(): Boolean = slot.latchReset(QuicAppErrorCode(RESET_CODE)).also { slot.dataSignal.trySend(Unit) }
 
     /**
      * The reader's own `StreamRecv` came back with the FIN (coalesced with its data, or bare). Unit, as
@@ -71,24 +72,30 @@ abstract class StreamSlotModel {
         slot.latchFin()
     }
 
-    /** A read that quiche has nothing more for right now; settles the read state the way `streamRead` does. */
+    /**
+     * A read that quiche has nothing more for right now; settles the read state the way `streamRead` does.
+     * With nothing to report it parks on the slot's data signal and looks again when woken.
+     */
     @Operation(nonParallelGroup = READER)
-    fun read(): String =
-        when (val result = decide()) {
-            is ReadResult.Data -> {
-                slot.returnHandOff()
-                label(result.buffer)
+    suspend fun read(): String {
+        while (true) {
+            when (val result = decide()) {
+                is ReadResult.Data -> {
+                    slot.returnHandOff()
+                    return label(result.buffer)
+                }
+                ReadResult.End -> {
+                    slot.finishReads()
+                    return "End"
+                }
+                ReadResult.Reset -> {
+                    slot.finishReads()
+                    return "Reset"
+                }
+                null -> slot.dataSignal.receive()
             }
-            ReadResult.End -> {
-                slot.finishReads()
-                "End"
-            }
-            ReadResult.Reset -> {
-                slot.finishReads()
-                "Reset"
-            }
-            null -> "wait"
         }
+    }
 
     protected fun take(): ReadResult.Data? = slot.takeQueued(handBack = { slot.returnHandOff() })?.let { ReadResult.Data(it) }
 
@@ -104,36 +111,45 @@ abstract class StreamSlotModel {
     }
 }
 
-/** The sequential specification: a queue, a latch, and whether a read has returned the verdict. */
+/**
+ * The sequential specification: a queue, a latch, and a signal the driver sends after every delivery. A
+ * read returns the oldest chunk, else the verdict, else parks until the next signal and looks again; so
+ * a read that looks between a chunk's enqueue and its FIN's latch parks and is woken by the signal that
+ * follows the latch.
+ */
 class StreamSlotSpec {
     private val queue = ArrayDeque<Int>()
     private var delivered = 0
     private var end = "Open"
-    private var finished = false
+    private val signal = Channel<Unit>(Channel.CONFLATED)
 
     fun drainChunk(): Boolean {
         queue.addLast(delivered++)
+        signal.trySend(Unit)
         return true
     }
 
     fun drainLastChunkWithFin(): Boolean {
         queue.addLast(delivered++)
         latch("Fin")
+        signal.trySend(Unit)
         return true
     }
 
-    fun drainReset(): Boolean = latch("Reset")
+    fun drainReset(): Boolean = latch("Reset").also { signal.trySend(Unit) }
 
     fun readerSawFin() {
         latch("Fin")
     }
 
-    fun read(): String {
-        queue.removeFirstOrNull()?.let { return "chunk#$it" }
-        return when (end) {
-            "Open" -> "wait"
-            "Fin" -> "End".also { finished = true }
-            else -> "Reset".also { finished = true }
+    suspend fun read(): String {
+        while (true) {
+            queue.removeFirstOrNull()?.let { return "chunk#$it" }
+            when (end) {
+                "Open" -> signal.receive()
+                "Fin" -> return "End"
+                else -> return "Reset"
+            }
         }
     }
 
@@ -192,12 +208,14 @@ private fun streamSlotOptions(): ModelCheckingOptions =
         .addCustomScenario {
             parallel {
                 thread { actor(StreamSlotModel::drainLastChunkWithFin) }
-                thread { actor(StreamSlotModel::read) }
+                thread {
+                    actor(StreamSlotModel::read)
+                    actor(StreamSlotModel::read)
+                }
             }
-            post { actor(StreamSlotModel::read) }
         }.threads(2)
         .actorsPerThread(3)
         .actorsBefore(1)
-        .actorsAfter(1)
-        .iterations(30)
-        .invocationsPerIteration(500)
+        .actorsAfter(0)
+        .iterations(LincheckBudget.scaled(30))
+        .invocationsPerIteration(LincheckBudget.scaled(500))

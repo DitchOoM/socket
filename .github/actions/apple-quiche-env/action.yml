@@ -10,6 +10,17 @@ inputs:
     description: "Restore the ~/.konan cache. Only the Kotlin/Native jobs need it; the JVM-only jobs skip it (it is ~450MB)."
     required: false
     default: "true"
+  natives-run-id:
+    description: >-
+      Workflow run to pull the `quiche-apple-natives` artifact from. Empty (the default) means THIS
+      run. Set it only from a standalone workflow with no `natives` job of its own. Requires
+      `github-token`.
+    required: false
+    default: ""
+  github-token:
+    description: "Token for a cross-run artifact download. Only read when `natives-run-id` is set."
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -95,6 +106,9 @@ runs:
       with:
         name: quiche-apple-natives
         path: socket-quic-quiche/libs/quiche
+        # Both empty in the default same-run case, which is what the action does without them.
+        run-id: ${{ inputs.natives-run-id }}
+        github-token: ${{ inputs.github-token }}
 
     # ⚠️ Load-bearing, and the reason this whole fan-out works at all.
     #

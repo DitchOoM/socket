@@ -12,6 +12,10 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicIntArray
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -203,20 +207,33 @@ abstract class QuicConcurrencySoakTestSuite {
     fun manyConnectionsHighConcurrencyRoundTrip() =
         runQuicTest(timeout = 30.seconds) {
             wrapTestBody {
-                withDiffDebug("manyConnectionsHighConcurrency", { "scale=${testTimeScale()} connections=$HIGH_CONCURRENT_CONNECTIONS" }) {
+                val progress = ConnectionProgress(HIGH_CONCURRENT_CONNECTIONS)
+                withDiffDebug(
+                    "manyConnectionsHighConcurrency",
+                    { "scale=${testTimeScale()} connections=$HIGH_CONCURRENT_CONNECTIONS ${progress.describe()}" },
+                ) {
                     val serverLedger = EchoOwnershipLedger()
                     coroutineScope {
                         withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-                            val serverJob = launch { connections { echoEveryStream(serverLedger) } }
+                            val serverJob =
+                                launch {
+                                    connections {
+                                        progress.serverAccepted()
+                                        echoEveryStream(serverLedger, progress)
+                                    }
+                                }
                             try {
                                 val results =
                                     (0 until HIGH_CONCURRENT_CONNECTIONS)
                                         .map { i ->
                                             async {
+                                                progress.enter(i, ConnectionProgress.CONNECTING)
                                                 withQuicConnection("127.0.0.1", port, options, timeout = 25.seconds.scaled) {
+                                                    progress.enter(i, ConnectionProgress.OPENING_STREAM)
                                                     val stream = openStream()
-                                                    val echoed = stream.echoExact("hi-conn-$i")
+                                                    val echoed = stream.echoExact("hi-conn-$i") { progress.enter(i, it) }
                                                     stream.close()
+                                                    progress.enter(i, ConnectionProgress.DONE)
                                                     echoed
                                                 }
                                             }
@@ -301,16 +318,22 @@ abstract class QuicConcurrencySoakTestSuite {
      * fresh malloc. The ledger is what makes a dropped release *visible* rather than merely fatal three
      * suites later: delete the `finally` and every test here fails by name.
      */
-    private suspend fun QuicScope.echoEveryStream(ledger: EchoOwnershipLedger) {
+    private suspend fun QuicScope.echoEveryStream(
+        ledger: EchoOwnershipLedger,
+        progress: ConnectionProgress? = null,
+    ) {
         streams().collect { stream ->
+            progress?.serverStream()
             launch {
                 try {
                     while (true) {
                         val data = stream.read(15.seconds.scaled)
                         if (data is ReadResult.Data) {
+                            progress?.serverRead()
                             val receipt = ledger.took(data.buffer)
                             try {
                                 stream.writeFully(data.buffer, 10.seconds.scaled)
+                                progress?.serverEchoed()
                             } finally {
                                 ledger.release(receipt)
                             }
@@ -326,15 +349,20 @@ abstract class QuicConcurrencySoakTestSuite {
     }
 
     /** Write [payload], read exactly [payload].length bytes back, freeing every read buffer (ownership transfers to us). */
-    private suspend fun QuicByteStream.echoExact(payload: String): String {
+    private suspend fun QuicByteStream.echoExact(
+        payload: String,
+        phase: (Int) -> Unit = {},
+    ): String {
         val out = BufferFactory.deterministic().allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
+        phase(ConnectionProgress.WRITING)
         try {
             write(out, 10.seconds.scaled)
         } finally {
             out.freeNativeMemory()
         }
+        phase(ConnectionProgress.AWAITING_ECHO)
         return readExactly(payload.length, 10.seconds.scaled, payload)
     }
 
@@ -408,6 +436,54 @@ abstract class QuicConcurrencySoakTestSuite {
             sb.append(if (b >= 0x20 && b < 0x7F) b.toInt().toChar() else '.')
         }
         return sb.toString()
+    }
+
+    /**
+     * Where each client of the high-concurrency connection test is, and what the server has done, kept so a
+     * timeout names the stuck phase instead of only "Timed out waiting for 30000 ms" (a per-op 10 s budget
+     * at scale 3, not the test's own deadline). Read only when the test fails; written from any thread.
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    private class ConnectionProgress(
+        count: Int,
+    ) {
+        private val phases = AtomicIntArray(count)
+        private val accepted = AtomicInt(0)
+        private val streams = AtomicInt(0)
+        private val reads = AtomicInt(0)
+        private val echoes = AtomicInt(0)
+
+        fun enter(
+            connection: Int,
+            phase: Int,
+        ) = phases.storeAt(connection, phase)
+
+        fun serverAccepted() = accepted.incrementAndFetch()
+
+        fun serverStream() = streams.incrementAndFetch()
+
+        fun serverRead() = reads.incrementAndFetch()
+
+        fun serverEchoed() = echoes.incrementAndFetch()
+
+        fun describe(): String {
+            val byPhase = (0 until phases.size).groupBy { phases.loadAt(it) }
+            val clients =
+                byPhase.entries
+                    .sortedBy { it.key }
+                    .joinToString(" ") { (phase, who) -> "${NAMES[phase]}=${who.size}$who" }
+            return "clients[$clients] server[accepted=${accepted.load()} streams=${streams.load()} " +
+                "reads=${reads.load()} echoes=${echoes.load()}]"
+        }
+
+        companion object {
+            const val CONNECTING = 1
+            const val OPENING_STREAM = 2
+            const val WRITING = 3
+            const val AWAITING_ECHO = 4
+            const val DONE = 5
+            private val NAMES = listOf("not-started", "connecting", "opening-stream", "writing", "awaiting-echo", "done")
+        }
     }
 
     private companion object {
