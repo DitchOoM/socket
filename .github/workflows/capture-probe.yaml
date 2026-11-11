@@ -1,0 +1,72 @@
+name: capture-probe (DO NOT MERGE)
+on:
+  push:
+    branches: [ci/apple-failure-capture-probe]
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: start
+          hang-budget-minutes: "1"
+          kill-after-dump: "true"
+      - name: Deliberate crash, then deliberate hang (test.kexe and a GradleWorkerMain-named JVM)
+        run: |
+          set -uo pipefail
+          mkdir probe && cd probe
+          printf 'int main(void){volatile int *p = 0; *p = 1; return 0;}\n' > crash.c
+          cc -g -o crash crash.c && ./crash || echo "crash rc=$?"
+          printf 'class GradleWorkerMain { public static void main(String[] a) throws Exception { Thread.sleep(600000); } }\n' > GradleWorkerMain.java
+          (java GradleWorkerMain.java >/dev/null 2>&1 &)
+          printf '#include <unistd.h>\nvoid spin_here(void){sleep(600);}\nint main(void){spin_here();return 0;}\n' > hang.c
+          cc -g -o test.kexe hang.c
+          ./test.kexe
+          exit 1
+      - name: Capture system evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: collect
+          artifact-name: apple-capture-probe-macos
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Boot an iOS simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: start
+          hang-budget-minutes: "2"
+          kill-after-dump: "true"
+      - name: Deliberate crash and hang inside the booted simulator
+        run: |
+          set -uo pipefail
+          mkdir probe && cd probe
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          printf 'int main(void){volatile int *p = 0; *p = 1; return 0;}\n' > crash.c
+          printf '#include <unistd.h>\nvoid spin_here(void){sleep(600);}\nint main(void){spin_here();return 0;}\n' > hang.c
+          xcrun --sdk iphonesimulator cc -arch arm64 -isysroot "$SDK" -mios-simulator-version-min=16.0 -g -o crash crash.c
+          xcrun --sdk iphonesimulator cc -arch arm64 -isysroot "$SDK" -mios-simulator-version-min=16.0 -g -o test.kexe hang.c
+          xcrun simctl spawn "$IOS_SIMULATOR_BOOTED_UDID" ./crash || echo "crash rc=$?"
+          xcrun simctl spawn "$IOS_SIMULATOR_BOOTED_UDID" ./test.kexe
+          exit 1
+      - name: Capture system evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: collect
+          simulator-udid: ${{ env.IOS_SIMULATOR_BOOTED_UDID }}
+          artifact-name: apple-capture-probe-simulator
