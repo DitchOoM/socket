@@ -63,6 +63,10 @@ runs:
         "$gh_dir/scripts/jfr-ring.sh" start "$dir" "$(( ${{ inputs.hang-idle-minutes }} * 60 ))"
         echo "ORG_GRADLE_PROJECT_ciJfrRing=$dir" >> "$GITHUB_ENV"
         echo "ORG_GRADLE_PROJECT_ciJfrRingHome=$gh_dir" >> "$GITHUB_ENV"
+        # The init script runs the script with THIS bash: on a Windows runner a bare `bash` is the WSL stub.
+        bash_path="$(command -v bash)"
+        if command -v cygpath >/dev/null 2>&1; then bash_path="$(cygpath -m "$bash_path")"; fi
+        echo "ORG_GRADLE_PROJECT_ciJfrRingBash=$bash_path" >> "$GITHUB_ENV"
         echo "JFR_RING_DIR=$dir" >> "$GITHUB_ENV"
 
     # `|| true`: this step must never fail the job even if the script itself is broken.

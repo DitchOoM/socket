@@ -14,6 +14,7 @@
 //
 //   -PciJfrRing=<dir>        enable; dumps land in <dir>
 //   -PciJfrRingHome=<.github> where jfr/stall-ring.jfc and scripts/jfr-ring.sh live
+//   -PciJfrRingBash=<bash>    the bash that runs jfr-ring.sh (Git's, on Windows)
 //
 // The failure path: a worker JVM that survives a failed test keeps running, so the recording is
 // dumped from OUTSIDE by `jcmd JFR.dump` the moment Gradle reports the failure (dumponexit would
@@ -38,6 +39,9 @@ allprojects { proj ->
     if (home == null) return
     def settings = "${home}/jfr/stall-ring.jfc"
     def script = "${home}/scripts/jfr-ring.sh"
+    // A bare `bash` on a Windows runner is System32\bash.exe, the WSL launcher ("Windows Subsystem for
+    // Linux has no installed distributions", measured on windows-latest): the action passes Git's bash.
+    def bash = proj.findProperty('ciJfrRingBash')?.toString() ?: 'bash'
 
     def pending = "${ringDir}/pending"
     // A recording whose filename cannot be written does not warn: it ABORTS the JVM at startup
@@ -82,7 +86,7 @@ allprojects { proj ->
         t.afterTest { desc, result ->
             if (result.resultType == TestResult.ResultType.FAILURE && dumps.incrementAndGet() <= 3) {
                 try {
-                    def pb = new ProcessBuilder('bash', script, 'dump', ringDir.toString(),
+                    def pb = new ProcessBuilder(bash, script, 'dump', ringDir.toString(),
                         "failed: ${desc.className}.${desc.name}".toString()).redirectErrorStream(true)
                     // On Windows the runner is ours alone and `ps -o ppid` does not exist.
                     if (!System.getProperty('os.name').toLowerCase().contains('windows')) {
