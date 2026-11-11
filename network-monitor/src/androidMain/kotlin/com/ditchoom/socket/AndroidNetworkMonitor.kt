@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicBoolean
 import android.net.NetworkCapabilities as AndroidNetworkCapabilities
 
 /**
@@ -370,8 +371,14 @@ class AndroidNetworkMonitor(
         publishLinkQuality(caps)
     }
 
+    /** Flips once: the platform throws on a second `unregisterNetworkCallback`, so only the winner of this CAS unregisters. */
+    private val unregistered = AtomicBoolean(false)
+
+    /** Unregister the callback. Closing twice (or from two threads) unregisters once. */
     override fun close() {
-        connectivityManager.unregisterNetworkCallback(callback)
+        if (unregistered.compareAndSet(false, true)) {
+            connectivityManager.unregisterNetworkCallback(callback)
+        }
     }
 }
 
