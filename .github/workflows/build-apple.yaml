@@ -393,6 +393,7 @@ jobs:
           # requireAllTests stays off until this shard's skip inventory reads zero.
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
+            ring: "sample"
             linkFirst: "linkDebugTestIosSimulatorArm64"
             testArgs: "--max-workers=1 --continue"
             bootSimulator: "1"
@@ -435,6 +436,10 @@ jobs:
           mode: start
           hang-budget-minutes: "52"
           kill-after-dump: "true"
+          # Timeline ring of the test binary: `sample` snapshots on the iOS simulator shard only (its
+          # test.kexe runs as a host process), none on the macOS x64 / tvOS / watchOS / ktlint / ABI
+          # shards, which stay uninstrumented.
+          trace-ring: ${{ matrix.shard.ring }}
       - uses: ./.github/actions/apple-quiche-env
         id: quiche_env
 
@@ -852,6 +857,10 @@ jobs:
           mode: start
           hang-budget-minutes: "20"
           kill-after-dump: "true"
+          # Time Profiler recording of the K/N test binary (last ~60 s), uploaded only on failure.
+          # The only lane that records with xctrace: a sampling profiler perturbs timing, so the
+          # macOS x64 shards and the JVM lanes stay untraced.
+          trace-ring: xctrace
 
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
       # (the artifact preserved the repo-root-relative structure), so running from repo root
