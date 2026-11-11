@@ -23,7 +23,12 @@ data class AcceptCompletionHandler(
     override fun completed(
         result: AsynchronousSocketChannel,
         attachment: CancellableContinuation<AsynchronousSocketChannel>,
-    ) = continuation.resume(result)
+    ) {
+        // The JDK completes an accept on its own thread, possibly after the acceptor was cancelled.
+        // A resume into a cancelled continuation is dropped, and nothing else references the
+        // accepted channel, so a dropped resume must close it or the connection leaks.
+        continuation.resume(result) { _, accepted, _ -> accepted.blockingClose() }
+    }
 
     override fun failed(
         exc: Throwable,
