@@ -1,0 +1,7 @@
+11-11 04:17:32.521  2735  2750 I TestRunner: started: captureWifiAndAirplaneFlap(com.ditchoom.socket.AndroidNetworkMonitorTraceCapture)
+11-11 04:21:34.325  3757  3772 I TestRunner: started: theServersRoutingTableIsAProjectionOfQuichesSourceIds(com.ditchoom.socket.quic.AndroidSourceIdReadbackTests)
+11-11 04:21:34.453  3757  3936 F libc    : Fatal signal 6 (SIGABRT), code -6 in tid 3936 (quic-loop-0)
+11-11 04:21:34.507  4930  4930 F DEBUG   : pid: 3757, tid: 3936, name: quic-loop-0  >>> com.ditchoom.socket.quic.quiche.test <<<
+11-11 04:21:34.507  4930  4930 F DEBUG   : signal 6 (SIGABRT), code -6 (SI_TKILL), fault addr --------
+11-11 04:21:34.508  4930  4930 F DEBUG   : Abort message: 'art/runtime/gc/collector/mark_sweep.cc:413] Tried to mark 0xebadde09 not contained by any spaces'
+11-11 04:21:34.771  1607  2146 I ActivityManager: Process com.ditchoom.socket.quic.quiche.test (pid 3757) has died
