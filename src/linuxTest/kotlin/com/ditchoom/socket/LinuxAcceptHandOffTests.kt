@@ -162,7 +162,7 @@ class LinuxAcceptHandOffTests {
 }
 
 /** A dispatcher that runs nothing until the test takes each dispatched task, in order, and runs it itself. */
-private class SteppedDispatcher : CoroutineDispatcher() {
+internal class SteppedDispatcher : CoroutineDispatcher() {
     private val tasks = Channel<Runnable>(Channel.UNLIMITED)
 
     override fun dispatch(
