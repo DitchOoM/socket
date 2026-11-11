@@ -182,6 +182,11 @@ internal abstract class IoUringDatagramChannelCore(
      * nothing and pays an empty suspend call per receive.
      */
     private val beforeSubmit: suspend () -> Unit = {},
+    /**
+     * Test seam: runs in [sendDatagram] after the send's socket options are in force and before its `sendmsg`
+     * is handed to the poller, the window in which another sender's options could replace them.
+     */
+    private val beforeSendSubmit: suspend () -> Unit = {},
 ) : DatagramChannel {
     /**
      * Who releases the descriptor — the last party out — in one CAS; see [LastOutHandoff].
@@ -493,6 +498,7 @@ internal abstract class IoUringDatagramChannelCore(
         // is left in the state the caller asked for either way.
         val pin = sourcePinFor(options.fromLocal)
         applyControlPlane(options)
+        beforeSendSubmit()
         // Send the readable window [position, limit) straight from the buffer's native memory — no
         // copy, and reading position()/remaining() does not consume it (send-does-not-consume).
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
@@ -988,7 +994,8 @@ internal class AddressedIoUringDatagramChannel(
     receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     bufferFactory: BufferFactory = BufferFactory.deterministic(),
     beforeSubmit: suspend () -> Unit = {},
-) : IoUringDatagramChannelCore(fd, null, localAddress.port, ipv6, receiveBufferSize, bufferFactory, beforeSubmit),
+    beforeSendSubmit: suspend () -> Unit = {},
+) : IoUringDatagramChannelCore(fd, null, localAddress.port, ipv6, receiveBufferSize, bufferFactory, beforeSubmit, beforeSendSubmit),
     AddressedDatagramChannel {
     override suspend fun send(
         payload: ReadBuffer,
