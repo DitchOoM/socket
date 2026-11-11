@@ -1,5 +1,9 @@
 package com.ditchoom.socket.quic
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.SelectBuilder
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -52,11 +56,17 @@ interface DriverClock {
      * The default is production behaviour, so [RealDriverClock] needs no override, and a virtual-time
      * clock whose driver runs on the test scheduler (`driverContext = EmptyCoroutineContext`) gets
      * virtual behaviour for free — pinned by `theSendStallBoundIsDrivenByTheVirtualClock`.
+     *
+     * The bound is armed only once [block] suspends. A block that finishes without suspending cannot
+     * have stalled, and it is the common case by far: a datagram the NIO channel hands to the kernel at
+     * once. Arming a timeout for each of those cost a timer registration and cancellation per datagram,
+     * which woke the timer thread every time and capped loopback bulk throughput at about two thirds of
+     * what it is without (see [boundIfSuspended]).
      */
     suspend fun <T> withBound(
         wait: Duration,
         block: suspend () -> T,
-    ): T? = withTimeoutOrNull(wait) { block() }
+    ): T? = boundIfSuspended(wait, block)
 
     /**
      * The time to push into quiche's C library **immediately before** each connection operation, so
@@ -72,6 +82,31 @@ interface DriverClock {
      */
     fun quicheTime(): DriverTime = DriverTime.Real
 }
+
+/**
+ * [block], run at once in this coroutine's thread, and bounded by [wait] only if it suspends: then the
+ * rest of it is awaited under `withTimeoutOrNull(wait)`, cancelled when that expires, and the result is
+ * `null`, exactly as `withTimeoutOrNull(wait) { block() }` would give. The wait is counted from the first
+ * suspension rather than from the call; the work before it ran on this thread without waiting on anyone.
+ *
+ * A throw from [block] reaches the caller as it would from `withTimeoutOrNull`.
+ */
+@OptIn(ExperimentalCoroutinesApi::class) // Deferred.getCompleted, read only once isCompleted is true
+internal suspend fun <T> boundIfSuspended(
+    wait: Duration,
+    block: suspend () -> T,
+): T? =
+    coroutineScope {
+        val running = async(start = CoroutineStart.UNDISPATCHED) { block() }
+        if (running.isCompleted) {
+            running.getCompleted()
+        } else {
+            withTimeoutOrNull(wait) { running.await() } ?: run {
+                running.cancel()
+                null
+            }
+        }
+    }
 
 /**
  * Which source quiche's C library draws its randomness from for a connection — packet-number skips and

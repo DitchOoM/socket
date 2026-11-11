@@ -112,6 +112,19 @@ benchmark {
     }
 }
 
+// The JMH jar kotlinx-benchmark generates (build/benchmarks/main/jars/*-JMH.jar) bundles every dependency's
+// classes, META-INF/versions/21 (the FFM loader) included, but its manifest says nothing about multi-release.
+// A JVM then ignores the versioned classes and a run straight from that jar (`java -cp ... org.openjdk.jmh.Main`,
+// the way a profiler is attached) measures JNI whatever backend was meant. The Gradle benchmark tasks never
+// load this jar's copies (they run from the classpath, quiche's own multi-release jar first), so they were
+// unaffected; the jar is made right for everything else, and assertQuicheBackend fails a run whose backend is
+// not the one asked for (the default ask is ffm).
+afterEvaluate {
+    tasks.named<org.gradle.jvm.tasks.Jar>("mainBenchmarkJar") {
+        manifest { attributes("Multi-Release" to "true") }
+    }
+}
+
 val certDir = quicheProject.layout.projectDirectory.dir("testcerts")
 
 // The quiche jvm jar minus its META-INF/versions/** (the FFM loader and bindings): the JNI arm of the A/B.

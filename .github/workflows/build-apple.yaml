@@ -337,7 +337,13 @@ jobs:
     name: "K/N ${{ matrix.shard.name }}"
     needs: natives
     runs-on: macos-26
-    timeout-minutes: 45
+    # 60, not 45. The budget only exists to bound a hang; it must not sit inside the range a healthy
+    # run reaches on a slow runner. The iOS simulator shard normally finishes in 19-21 min, but on
+    # 2026-11-11 two consecutive runs landed on runners where every phase was 2-3x slower (cache
+    # extract 38s -> 68s, simulator boot 66s -> 189s, Gradle daemon start 32s -> 140s, compile+link
+    # 9m23s -> 26m52s): run 42980546933 took 43m06s, and run 42980590574 passed every step and was
+    # then cancelled at 45m05s — which skipped `publish` for a release whose tests were all green.
+    timeout-minutes: 60
     strategy:
       # One shard's failure must not cancel the others — with fail-fast the first red shard hides
       # whether the rest would have passed, which is the single most useful thing to know when
