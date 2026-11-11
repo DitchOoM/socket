@@ -122,7 +122,13 @@ private suspend fun judge(
         when (platformTrust) {
             PlatformChainTrust.InHandshake -> Unit
             is PlatformChainTrust.AfterHandshake ->
-                when (val verdict = platformTrust.evaluate(serverName, chain.map { it.slice() })) {
+                when (
+                    val verdict =
+                        reportingStall(
+                            "the platform trust store's verdict on the server chain",
+                            { "trust=platform store after the handshake, server=$serverName, chain=${chain.size} certificate(s)" },
+                        ) { platformTrust.evaluate(serverName, chain.map { it.slice() }) }
+                ) {
                     SystemTrustVerdict.Trusted -> Unit
                     is SystemTrustVerdict.Untrusted ->
                         throw ServerCertificateRejectedException(
