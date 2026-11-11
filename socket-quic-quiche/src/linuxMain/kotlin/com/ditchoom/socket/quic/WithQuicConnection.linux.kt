@@ -268,7 +268,8 @@ internal suspend fun buildLinuxQuicConnection(
             // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here
             // on owes the channel and the scope, and must not free them a second time.
             progress = ConnectProgress.DriverStarted(udpChannel)
-            runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
+            val resumption =
+                runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
                 quicConn.awaitEstablished(timeout)
             }
             // Connection owns teardown via onRelease now — hand ownership over before the pin check so
@@ -286,7 +287,7 @@ internal suspend fun buildLinuxQuicConnection(
             )
             verifyServerCertificateChain(
                 serverName,
-                quicConn.resumption,
+                resumption,
                 PlatformChainTrust.InHandshake,
                 quicOptions.serverCertVerifiers,
                 bufferFactory,

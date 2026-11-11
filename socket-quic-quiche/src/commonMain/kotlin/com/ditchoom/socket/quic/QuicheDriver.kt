@@ -379,7 +379,7 @@ class QuicheDriver(
      */
     internal suspend fun awaitHandshakeConfirmed() {
         when (handshakeSettled.await()) {
-            HandshakeSettled.Confirmed -> Unit
+            is HandshakeSettled.Confirmed -> Unit
             HandshakeSettled.Failed -> throw connectionClosed()
         }
     }
@@ -398,7 +398,7 @@ class QuicheDriver(
     @OptIn(ExperimentalCoroutinesApi::class)
     internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
         val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
-        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() is HandshakeSettled.Confirmed
         return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
     }
 
@@ -677,13 +677,19 @@ class QuicheDriver(
      * channel and the thrown channel agree. The bound is the caller's — it fires at exactly [timeout],
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
-    suspend fun awaitEstablished(timeout: Duration) {
+    suspend fun awaitEstablished(timeout: Duration): QuicResumptionOutcome {
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
+        //
+        // Waits on [handshakeSettled], not on [state]: [state] conflates, so a peer that completes the
+        // handshake and closes in the same breath can show a late collector Closed with the Established
+        // in between never observed, and a connection that did come up would read as a failed handshake.
+        // The value the wait returns is the outcome read at the Established edge: reading it from
+        // [state] afterwards is a read of a connection that may have closed since.
         val settled =
             withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
-                    state.first { it !is QuicConnectionState.Handshaking }
+                    handshakeSettled.await()
                 }
             }
         if (settled == null) {
@@ -697,8 +703,10 @@ class QuicheDriver(
                 attribution = closeAttribution(),
             )
         }
-        if (settled !is QuicConnectionState.Established) {
-            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
+        return when (settled) {
+            is HandshakeSettled.Confirmed -> settled.resumption
+            HandshakeSettled.Failed ->
+                throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
     }
 
@@ -2850,12 +2858,13 @@ class QuicheDriver(
         // was never usable: it goes from Handshaking straight to Closed below, and the caller learns the
         // close reason instead of a stream-limit refusal on its first openStream().
         if (_state.value is QuicConnectionState.Handshaking && api.connIsEstablished(conn) && !api.connIsClosed(conn)) {
-            _state.value =
+            val established =
                 QuicConnectionState.Established(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeSettled.complete(HandshakeSettled.Confirmed)
+            _state.value = established
+            handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
