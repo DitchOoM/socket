@@ -354,6 +354,7 @@ public final class com/ditchoom/socket/ConnectionState$Initialized : com/ditchoo
 
 public final class com/ditchoom/socket/DefaultReconnectionClassifier : com/ditchoom/socket/ReconnectionClassifier {
 	public static final field Companion Lcom/ditchoom/socket/DefaultReconnectionClassifier$Companion;
+	public fun <init> ()V
 	public synthetic fun <init> (JJDILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JJDLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun classify (Ljava/lang/Throwable;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -379,6 +380,7 @@ public final class com/ditchoom/socket/HostResolverKt {
 }
 
 public final class com/ditchoom/socket/IoTuning {
+	public fun <init> ()V
 	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Integer;IIJIIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/Boolean;
@@ -964,6 +966,7 @@ public final class com/ditchoom/socket/TlsConfig$Companion {
 
 public final class com/ditchoom/socket/TransportConfig {
 	public static final field Companion Lcom/ditchoom/socket/TransportConfig$Companion;
+	public fun <init> ()V
 	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;JLcom/ditchoom/socket/TlsConfig;Lcom/ditchoom/socket/IoTuning;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/NameResolution;Lcom/ditchoom/socket/ConnectPacing;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/buffer/BufferFactory;
@@ -1303,6 +1306,7 @@ public final class com/ditchoom/socket/transport/FallbackVerdict$Companion {
 }
 
 public final class com/ditchoom/socket/transport/InMemoryCapabilityCache : com/ditchoom/socket/transport/CapabilityCache {
+	public fun <init> ()V
 	public synthetic fun <init> (JLkotlin/time/TimeSource;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLkotlin/time/TimeSource;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun order (Ljava/lang/String;Lcom/ditchoom/socket/transport/NetworkId;Ljava/util/List;)Ljava/util/List;

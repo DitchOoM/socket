@@ -638,6 +638,9 @@ final fun (com.ditchoom.socket/NetworkMonitor.Companion).com.ditchoom.socket/pro
 final fun (com.ditchoom.socket/ReachResolution).com.ditchoom.socket/permits(com.ditchoom.socket/NetworkState): kotlin/Boolean // com.ditchoom.socket/permits|permits@com.ditchoom.socket.ReachResolution(com.ditchoom.socket.NetworkState){}[0]
 final fun com.ditchoom.socket/enumerateNetworkInterfaces(): kotlin.collections/List<com.ditchoom.socket/NetworkInterfaceInfo> // com.ditchoom.socket/enumerateNetworkInterfaces|enumerateNetworkInterfaces(){}[0]
 final fun com.ditchoom.socket/networkMonitorScript(com.ditchoom.socket/MonitorCapability = ..., com.ditchoom.socket/NetworkState = ..., kotlin/Function1<com.ditchoom.socket/NetworkMonitorScriptBuilder, kotlin/Unit>): com.ditchoom.socket/NetworkMonitorScript // com.ditchoom.socket/networkMonitorScript|networkMonitorScript(com.ditchoom.socket.MonitorCapability;com.ditchoom.socket.NetworkState;kotlin.Function1<com.ditchoom.socket.NetworkMonitorScriptBuilder,kotlin.Unit>){}[0]
+final suspend fun (com.ditchoom.socket/NetworkMonitor.Companion).com.ditchoom.socket/open(): com.ditchoom.socket/NetworkMonitor // com.ditchoom.socket/open|open@com.ditchoom.socket.NetworkMonitor.Companion(){}[0]
+final suspend fun (com.ditchoom.socket/NetworkMonitor.Companion).com.ditchoom.socket/shared(): com.ditchoom.socket/NetworkMonitor // com.ditchoom.socket/shared|shared@com.ditchoom.socket.NetworkMonitor.Companion(){}[0]
+final suspend fun com.ditchoom.socket/listNetworkInterfaces(): kotlin.collections/List<com.ditchoom.socket/NetworkInterfaceInfo> // com.ditchoom.socket/listNetworkInterfaces|listNetworkInterfaces(){}[0]
 
 // Targets: [apple]
 final class com.ditchoom.socket/AppleNetworkMonitor : com.ditchoom.socket/NetworkMonitor { // com.ditchoom.socket/AppleNetworkMonitor|null[0]

@@ -1435,9 +1435,10 @@ final class com.ditchoom.socket/NWClientSocketWrapper : com.ditchoom.socket/Clie
 }
 
 // Targets: [apple]
-final class com.ditchoom.socket/NWServerWrapper : com.ditchoom.socket/ServerSocket { // com.ditchoom.socket/NWServerWrapper|null[0]
+final class com.ditchoom.socket/NWServerWrapper : com.ditchoom.socket/ServerSocket, com.ditchoom.socket/ServerSocketDiagnostics { // com.ditchoom.socket/NWServerWrapper|null[0]
     constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/NWServerWrapper.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
 
+    final fun diagnostics(): kotlin/String // com.ditchoom.socket/NWServerWrapper.diagnostics|diagnostics(){}[0]
     final fun isListening(): kotlin/Boolean // com.ditchoom.socket/NWServerWrapper.isListening|isListening(){}[0]
     final fun port(): kotlin/Int // com.ditchoom.socket/NWServerWrapper.port|port(){}[0]
     final suspend fun bind(kotlin/Int, kotlin/String?, kotlin/Int): kotlinx.coroutines.flow/Flow<com.ditchoom.socket/ClientSocket> // com.ditchoom.socket/NWServerWrapper.bind|bind(kotlin.Int;kotlin.String?;kotlin.Int){}[0]
@@ -1462,7 +1463,7 @@ open class com.ditchoom.socket/NWSocketWrapper : com.ditchoom.socket/ClientSocke
     open suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket/NWSocketWrapper.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
 
     final object Companion { // com.ditchoom.socket/NWSocketWrapper.Companion|null[0]
-        final fun mapSocketException(kotlin/Int, kotlin/String?, kotlin/String? = ...): com.ditchoom.socket/SocketException // com.ditchoom.socket/NWSocketWrapper.Companion.mapSocketException|mapSocketException(kotlin.Int;kotlin.String?;kotlin.String?){}[0]
+        final fun mapSocketException(kotlin/Int, kotlin/String?, kotlin/String? = ..., kotlin/Int = ...): com.ditchoom.socket/SocketException // com.ditchoom.socket/NWSocketWrapper.Companion.mapSocketException|mapSocketException(kotlin.Int;kotlin.String?;kotlin.String?;kotlin.Int){}[0]
     }
 }
 
