@@ -1,0 +1,78 @@
+name: "Apple failure capture"
+description: >-
+  Leave behind enough system evidence to explain a failed, crashed or hung Apple test job: crash
+  reports, the unified log for the test window, stacks of a stuck test process, network state, JVM
+  crash logs. `mode: start` early in the job; `mode: collect` with `if: failure() || cancelled()`.
+
+# Why this exists: on 2026-11-11 a macOS test binary died with "Segmentation fault: 11" and nothing
+# else, and it took a throwaway probe PR to get a stack. #850 collected the crash report for ONE job;
+# every other Apple job uploaded Gradle test reports only. An iOS-simulator public-endpoint test also
+# stalled in a QUIC handshake three times that day with no stacks of the stuck process. The logic is
+# in .github/scripts/apple-failure-capture.sh (tested by tests/apple-failure-capture.test.sh).
+#
+# HANG DESIGN (the choice the step-level alternative lost to): a job-level timeout cancels the job
+# and the steps after the test step may never run, so evidence cannot be collected AFTER the kill
+# and must be taken BEFORE it. `mode: start` therefore launches a detached watchdog that, at
+# `hang-budget-minutes` after the marker, samples every live test process (`sample <pid> 5`; JVM
+# `jcmd Thread.print`) and, with `kill-after-dump: "true"`, then ends the test processes so the test
+# step fails with the job still holding time to run `collect` and the upload. A step-level
+# `timeout-minutes` was not used for K/N jobs because it is relative to the START OF A STEP, and the
+# step that hangs is preceded by a link whose length varies 3x between runners (9 to 27 min on
+# 2026-11-11), so no step budget is both safe on a slow runner and early enough on a fast one; the
+# watchdog counts from the job's own marker. The JVM job already has a step-level
+# `timeout-minutes` that leaves the job time, so there the watchdog only dumps
+# (`kill-after-dump: "false"`) and the step timeout stays the one thing that ends the step.
+# Neither lengthens any timeout; `kill-after-dump` shortens only the last minutes of a job that
+# the job-level timeout would have cancelled anyway.
+#
+# Never changes the job's result (the caller sets continue-on-error: true) and never retries.
+
+inputs:
+  mode:
+    description: "`start` (marker + hang watchdog) or `collect` (gather and upload)"
+    required: true
+  hang-budget-minutes:
+    description: "start: minutes after the marker at which live test processes are sampled; 0 disables"
+    required: false
+    default: "0"
+  kill-after-dump:
+    description: "start: `true` ends the test processes once their stacks are written"
+    required: false
+    default: "false"
+  simulator-udid:
+    description: "collect: the booted simulator's UDID (its own unified log and CoreSimulator logs are added)"
+    required: false
+    default: ""
+  artifact-name:
+    description: "collect: the artifact name; must be unique per job and matrix shard"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mark the start and arm the hang watchdog
+      if: ${{ inputs.mode == 'start' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/apple-failure-capture.sh" start \
+          "${{ runner.temp }}/apple-failure-capture" "${{ inputs.hang-budget-minutes }}" \
+          "$([ "${{ inputs.kill-after-dump }}" = "true" ] && echo 1 || echo 0)"
+
+    # `|| true`: this step must never fail the job even if the script itself is broken.
+    - name: Collect crash reports, logs, stacks and network state
+      if: ${{ inputs.mode == 'collect' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/apple-failure-capture.sh" collect \
+          "${{ runner.temp }}/apple-failure-capture" "${{ runner.temp }}/apple-failure-capture-out" \
+          "${{ inputs.simulator-udid }}" || true
+
+    - name: Upload the capture
+      if: ${{ inputs.mode == 'collect' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/apple-failure-capture-out
+        retention-days: 14
+        if-no-files-found: ignore

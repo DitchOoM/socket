@@ -23,6 +23,7 @@ import platform.posix.EADDRINUSE
 import platform.posix.strerror
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
+import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -43,8 +44,7 @@ class NWServerWrapper(
 
     override fun diagnostics(): String = trace.render()
 
-    private var acceptChannel: Channel<ClientSocket>? = null
-    private val closeHandlers = mutableListOf<() -> Unit>()
+    private var acceptChannel: Channel<NWSocketWrapper>? = null
 
     @Volatile
     private var listenerReady = false
@@ -54,7 +54,9 @@ class NWServerWrapper(
         host: String?,
         backlog: Int,
     ): Flow<ClientSocket> {
-        val channel = Channel<ClientSocket>(Channel.UNLIMITED)
+        // A started nw_connection_t must be cancelled (connection.h: "a connection that has been started
+        // must be cancelled"), so a socket that never reaches a consumer is closed rather than dropped.
+        val channel = Channel<NWSocketWrapper>(Channel.UNLIMITED, onUndeliveredElement = { it.closeInternal() })
         acceptChannel = channel
         val ephemeral = port <= 0
         try {
@@ -125,7 +127,7 @@ class NWServerWrapper(
     private suspend fun listen(
         port: Int,
         backlog: Int,
-        channel: Channel<ClientSocket>,
+        channel: Channel<NWSocketWrapper>,
     ): ListenStart {
         val nwListener =
             nw_helper_create_listener(port, backlog)
@@ -150,7 +152,7 @@ class NWServerWrapper(
                             val clientSocket = NWSocketWrapper(config)
                             clientSocket.connection = conn
                             clientSocket.connectionReady = true
-                            channel.trySend(clientSocket)
+                            channel.handOut(clientSocket)
                         }
                     }
                     1, 4 -> { // waiting or failed before it was ever handed out
@@ -188,10 +190,6 @@ class NWServerWrapper(
                                 if (listener === nwListener) {
                                     listenerReady = false
                                     channel.close()
-                                    for (handler in closeHandlers) {
-                                        handler()
-                                    }
-                                    closeHandlers.clear()
                                 }
                             }
                         }
@@ -215,29 +213,23 @@ class NWServerWrapper(
         } ?: -1
 
     override suspend fun close() {
-        acceptChannel?.close()
+        val channel = acceptChannel
         acceptChannel = null
+        channel?.let {
+            it.close()
+            // Connections that were ready but never reached a consumer die with the server: nothing
+            // else will ever hold them, and an un-cancelled one stays open for the peer.
+            while (true) it.tryReceive().getOrNull()?.closeInternal() ?: break
+        }
         val nwListener = listener ?: return
         suspendCoroutine { continuation ->
-            var completed = false
-
-            fun complete() {
-                if (!completed) {
-                    completed = true
-                    continuation.resume(Unit)
-                }
-            }
-
-            closeHandlers.add { complete() }
+            val cancelled = ListenerCancelSettle(continuation)
 
             nw_helper_listener_set_state_handler(nwListener) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
                 trace.listenerState(state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
                 if (state == 4) { // cancelled
                     listenerReady = false
-                    for (handler in closeHandlers) {
-                        handler()
-                    }
-                    closeHandlers.clear()
+                    cancelled.on()
                 }
             }
 
@@ -245,7 +237,7 @@ class NWServerWrapper(
 
             // If already not ready (never started or already cancelled), complete immediately
             if (!listenerReady) {
-                complete()
+                cancelled.on()
             }
         }
         listener = null
@@ -255,4 +247,32 @@ class NWServerWrapper(
         /** Ports an ephemeral listen draws before giving up; a collision is rare. */
         const val MAX_EPHEMERAL_LISTEN_ATTEMPTS = 8
     }
+}
+
+/**
+ * Resumes a `close()` waiting for its listener to report `cancelled`, exactly once.
+ *
+ * Two parties can reach the resume: the NW state handler, on a concurrent queue, and the closer
+ * itself, which resumes at once when the listener is already not ready. When the `cancelled` callback
+ * is delivered before `nw_helper_listener_cancel` returns, both run together; a plain "completed" flag
+ * let both read `false` and both resume, and Kotlin/Native aborts the process on the second resume.
+ * Same shape as the UDP module's `NwConnectSettle`: a CAS before the resume.
+ */
+internal class ListenerCancelSettle(
+    private val continuation: Continuation<Unit>,
+) {
+    private val settled = AtomicInt(0)
+
+    fun on() {
+        if (settled.compareAndSet(0, 1)) continuation.resume(Unit)
+    }
+}
+
+/**
+ * Hands a ready connection's socket to the accept channel. When the channel is closed (the server
+ * closed, or its listener died, between the connection starting and becoming ready) nobody will ever
+ * take the socket, and a started nw_connection_t that is not cancelled stays open for its peer.
+ */
+internal fun Channel<NWSocketWrapper>.handOut(socket: NWSocketWrapper) {
+    if (trySend(socket).isFailure) socket.closeInternal()
 }

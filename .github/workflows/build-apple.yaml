@@ -425,6 +425,16 @@ jobs:
             tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
     steps:
       - uses: actions/checkout@v7
+      # The marker every failure-capture window starts from, and a hang watchdog: at 52 minutes (the
+      # job is cancelled at 60, and a cancelled job may run no further step) it samples every live
+      # test.kexe, then ends the test processes so the capture step below still gets its turn. 52 is
+      # the longest healthy run seen (43 min on the 2026-11-11 slow runners) plus margin; see the
+      # action for why this is a watchdog and not a step-level timeout-minutes.
+      - uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: start
+          hang-budget-minutes: "52"
+          kill-after-dump: "true"
       - uses: ./.github/actions/apple-quiche-env
         id: quiche_env
 
@@ -497,6 +507,19 @@ jobs:
       # (2026-09-25) logged "Failed to save: Unable to reserve cache with key gradle-macos-kn-3b71…
       # cache write denied: token has no writable scope". Only a workflow_dispatch release run ever
       # saved, so the entry went stale on every build-script change in between.
+
+      # Crash reports, the unified log for the test window (the booted simulator's own log too),
+      # stacks of a stuck test process and the network state: the evidence a bare "Segmentation
+      # fault: 11" or a 45-minute stall in a QUIC handshake (2026-11-11) did not leave. The simulator
+      # UDID is empty on the shards that boot none.
+      - name: Capture system evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: collect
+          simulator-udid: ${{ env.IOS_SIMULATOR_BOOTED_UDID }}
+          artifact-name: apple-capture-kn-${{ strategy.job-index }}
 
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}
@@ -591,6 +614,15 @@ jobs:
       # source sets, so the graph grew by every Apple cinterop, commonizeCInterop,
       # commonizeNativeDistribution and a K/N toolchain download (this job restores no ~/.konan),
       # all ahead of the first test. The K/N, link and publish jobs leave the property unset.
+      # Marker for the capture window, and a watchdog that jcmd-dumps the Gradle test worker at 15
+      # minutes. It does NOT kill: this step's own 20-minute timeout ends it and leaves the job its
+      # last 10 minutes for the capture, so the stacks are taken before that kill.
+      - uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: start
+          hang-budget-minutes: "15"
+          kill-after-dump: "false"
+
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
         timeout-minutes: 20
         env:
@@ -610,6 +642,16 @@ jobs:
       # (quiche/JNI/FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case
       # otherwise. continue-on-error: this is diagnostics for an already-failing job, and a finalize
       # 403 here must not replace the real failure with an artifact error in the job summary.
+      # hs_err/replay logs, JVM thread dumps, crash reports (a JNI/FFM fault in quiche is a native
+      # crash of `java`), the unified log and the network state.
+      - name: Capture system evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: collect
+          artifact-name: apple-capture-jvm-${{ matrix.backend.name }}
+
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
@@ -785,6 +827,15 @@ jobs:
       # Checkout supplies the committed <module>/testcerts/ the loopback suites fall back to.
       - uses: actions/checkout@v7
 
+      # The capture window's marker (what #850's /tmp/macos-arm64.started was) plus a watchdog: at
+      # 20 minutes (a healthy run is about 7, the job is cancelled at 30) it samples any live
+      # test.kexe and ends it, so a hung test leaves stacks instead of a cancelled job.
+      - uses: ./.github/actions/apple-failure-capture
+        with:
+          mode: start
+          hang-budget-minutes: "20"
+          kill-after-dump: "true"
+
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
       # (the artifact preserved the repo-root-relative structure), so running from repo root
       # resolves the per-module testcerts/ fallback — and drops the Gradle-generated
@@ -830,7 +881,6 @@ jobs:
           fi
           rc=0
           : > /tmp/macos-arm64.log
-          touch /tmp/macos-arm64.started
           while IFS= read -r bin; do
             echo "==================== $bin ===================="
             chmod +x "$bin"
@@ -849,40 +899,16 @@ jobs:
           done <<< "$found"
           exit $rc
 
-      # The crash reporter writes the report a few seconds after the process dies, with every
-      # thread's stack — the only record of where a segfault in a test binary happened.
-      - name: Collect crash reports (on failure)
-        if: ${{ failure() }}
+      # Replaces the crash-report collection #850 added here: one implementation for every Apple test
+      # job. The crash reporter writes the report a few seconds after the process dies, with every
+      # thread's stack, and the action waits for it and prints the crashed thread into this log.
+      - name: Capture system evidence (on failure)
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        run: |
-          set -uo pipefail
-          mkdir -p /tmp/crash-reports
-          for attempt in 1 2 3 4 5 6; do
-            find "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports \
-              -type f \( -name '*.ips' -o -name '*.crash' \) -newer /tmp/macos-arm64.started -print0 2>/dev/null \
-              | xargs -0 -I{} cp {} /tmp/crash-reports/ 2>/dev/null
-            [ -n "$(ls -A /tmp/crash-reports)" ] && break
-            sleep 5
-          done
-          if [ -z "$(ls -A /tmp/crash-reports)" ]; then
-            echo "no crash report was written within 30 s"
-            exit 0
-          fi
-          for report in /tmp/crash-reports/*; do
-            echo "::group::$report (first 400 lines)"
-            head -400 "$report"
-            echo "::endgroup::"
-          done
-
-      - name: Upload crash reports (on failure)
-        if: ${{ failure() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/apple-failure-capture
         with:
-          name: macos-arm64-crash-reports
-          path: /tmp/crash-reports
-          retention-days: 14
-          if-no-files-found: ignore
+          mode: collect
+          artifact-name: apple-capture-macos-arm64
 
       # Standalone .kexe runs print results to stdout (no JUnit XML like a Gradle run), so on
       # failure capture the combined log for diagnosis.
