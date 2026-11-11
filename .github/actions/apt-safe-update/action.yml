@@ -88,7 +88,31 @@ runs:
         # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
         # and --foreground keeps apt-get attached to the job's TTY so its progress still streams
         # instead of going silent until the whole thing exits.
+        # A mirror the runner cannot NAME looks, to apt, exactly like a mirror that crawls: an `Ign:`
+        # per index every 20 s until the budget is gone, twice, ~8 minutes for nothing. That is what
+        # the capture at the bottom of this step recorded on 2026-11-11 (run 43048328364, image
+        # ubuntu-26.04): `Could not resolve host` for azure.archive.ubuntu.com AND archive.ubuntu.com
+        # over both address families, through the runner's only resolver (Azure's 168.63.129.16 behind
+        # the systemd-resolved stub), while every other name the job had used resolved. So ask first,
+        # in seconds. If the runner's resolver cannot answer, add public resolvers to the default
+        # route's link and ask again; either way the log says which resolver knew the name.
         set +e
+        for host in azure.archive.ubuntu.com archive.ubuntu.com; do
+          if timeout 10 getent hosts "$host" >/dev/null; then
+            echo "resolver check: $host resolves through the runner's resolver"
+            continue
+          fi
+          echo "::warning::the runner's resolver cannot resolve $host — adding public resolvers and asking again."
+          link="$(ip route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+          current="$(resolvectl dns "$link" 2>/dev/null | sed 's/^[^:]*: *//')"
+          sudo resolvectl dns "$link" $current 1.1.1.1 8.8.8.8
+          sudo resolvectl flush-caches
+          if timeout 10 getent hosts "$host" >/dev/null; then
+            echo "resolver check: $host resolves once 1.1.1.1 and 8.8.8.8 are added to $link (was: $current)"
+          else
+            echo "::warning::$host still does not resolve with 1.1.1.1 and 8.8.8.8 added to $link (was: $current)."
+          fi
+        done
         timeout --foreground "${{ inputs.timeout }}" \
           sudo apt-get update -o Acquire::Retries=3
         rc=$?
