@@ -140,6 +140,36 @@ runs:
           echo "consuming the job's whole timeout-minutes budget and reporting as 'cancelled' with no"
           echo "work done and nothing in the log to explain why. Re-running the job is the immediate"
           echo "workaround."
+          # What the network looked like at that moment, because "both mirrors were slow" is a guess
+          # the log has never been able to check. On 2026-11-11 the harness-image job of two
+          # consecutive release runs (43026331414, 43037819869; image ubuntu-26.04) ended here with
+          # every index line an `Ign:` exactly 20 s after the last on BOTH mirrors — the shape of a
+          # connection that never opens, not of a transfer that crawls — while the ubuntu-24.04 jobs
+          # of the same runs fetched fine and both URLs answered 200 in under a second from outside.
+          # Nothing recorded which of name resolution, the IPv4 route, the IPv6 route or a proxy it
+          # was. Each probe is bounded, and none of them can change the step's result.
+          echo "::group::network state when apt-get update ran out of budget"
+          set +e
+          for host in azure.archive.ubuntu.com archive.ubuntu.com; do
+            echo "--- addresses of $host"
+            timeout 10 getent ahosts "$host" | awk '$2 == "STREAM" { print $1 }' | paste -sd' ' \
+              || echo "getent ahosts $host: failed"
+            for family in 4 6; do
+              echo "--- IPv$family GET of $host InRelease"
+              curl "-$family" --silent --show-error --output /dev/null --max-time 15 \
+                --write-out 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' \
+                "http://$host/ubuntu/dists/$(. /etc/os-release && echo "$VERSION_CODENAME")/InRelease" \
+                || echo "curl -$family $host: rc=$?"
+            done
+          done
+          echo "--- interfaces"; ip -brief address
+          echo "--- IPv4 routes"; ip route
+          echo "--- IPv6 routes"; ip -6 route
+          echo "--- resolver"; (resolvectl status 2>/dev/null || cat /etc/resolv.conf) | head -40
+          echo "--- proxy environment"; env | grep -i -E '^(https?|no|all)_proxy=' || echo "none set"
+          echo "--- apt Acquire settings"; apt-config dump | grep -i -E '^Acquire::(http|https|ForceIPv|Retries|Queue)' || true
+          echo "--- mirror list"; cat /etc/apt/apt-mirrors.txt 2>/dev/null || echo "no /etc/apt/apt-mirrors.txt"
+          echo "::endgroup::"
           exit 1
         fi
         exit "$rc"
