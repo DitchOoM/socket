@@ -849,6 +849,36 @@ jobs:
           done <<< "$found"
           exit $rc
 
+      - name: PROBE loop the Apple ownership tests (DO NOT MERGE)
+        run: |
+          set -uo pipefail
+          root=$(find . -path './build/bin/macosArm64/debugTest/test.kexe' -type f)
+          udp=$(find . -path './socket-udp/build/bin/macosArm64/debugTest/test.kexe' -type f)
+          [ -n "$root" ] && [ -n "$udp" ] || { echo "::error::missing test.kexe (root=$root udp=$udp)"; exit 1; }
+          chmod +x "$root" "$udp"
+          rootFilter='com.ditchoom.socket.AppleTcpInFlightOwnershipTests.*:com.ditchoom.socket.AppleListenerHandleLifetimeTests.*'
+          udpFilter='com.ditchoom.socket.udp.NwReadyConnectionOwnershipTests.*'
+          mkdir -p /tmp/probe
+          worker() {
+            local w=$1 pass=0 fail=0
+            for r in $(seq 1 50); do
+              if "$root" --ktest_filter="$rootFilter" > /tmp/probe/w$w.root.last 2>&1 \
+                 && "$udp" --ktest_filter="$udpFilter" > /tmp/probe/w$w.udp.last 2>&1; then
+                pass=$((pass+1))
+              else
+                fail=$((fail+1)); cp /tmp/probe/w$w.root.last /tmp/probe/w$w.root.fail$r; cp /tmp/probe/w$w.udp.last /tmp/probe/w$w.udp.fail$r
+              fi
+            done
+            echo "PROBE worker $w pass=$pass fail=$fail" > /tmp/probe/w$w.sum
+          }
+          for w in 1 2 3; do worker $w & done
+          wait
+          cat /tmp/probe/w*.sum
+          if grep -q 'fail=[1-9]' /tmp/probe/w*.sum; then
+            for f in /tmp/probe/*.fail*; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
+            exit 1
+          fi
+
       # The crash reporter writes the report a few seconds after the process dies, with every
       # thread's stack — the only record of where a segfault in a test binary happened.
       - name: Collect crash reports (on failure)
