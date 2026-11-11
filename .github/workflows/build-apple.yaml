@@ -831,6 +831,19 @@ jobs:
           rc=0
           : > /tmp/macos-arm64.log
           touch /tmp/macos-arm64.started
+          # PROBE (not for merge): loop the trust tests until the binary dies, to get its crash report.
+          q=./socket-quic-quiche/build/bin/macosArm64/debugTest/test.kexe
+          chmod +x "$q"
+          for i in $(seq 1 1500); do
+            "$q" --ktest_filter='*AppleSystemChainTrustTests*' > /tmp/probe.log 2>&1
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error::probe iteration $i exited $status"
+              tail -20 /tmp/probe.log
+              exit 1
+            fi
+          done
+          echo "probe: 1500 iterations, no failure"
           while IFS= read -r bin; do
             echo "==================== $bin ===================="
             chmod +x "$bin"
