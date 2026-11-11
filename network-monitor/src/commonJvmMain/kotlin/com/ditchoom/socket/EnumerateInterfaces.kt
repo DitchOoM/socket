@@ -24,8 +24,8 @@ internal actual fun platformNetworkInterfaces(): List<NetworkInterfaceInfo> =
                             .mapNotNull { it.hostAddress }
                             .filter { it.isNotEmpty() }
                             .toList(),
-                    isUp = runCatching { nif.isUp }.getOrDefault(false),
-                    isLoopback = runCatching { nif.isLoopback }.getOrDefault(false),
+                    isUp = flagOrGone { nif.isUp },
+                    isLoopback = flagOrGone { nif.isLoopback },
                 )
             }?.toList()
             ?: emptyList()
