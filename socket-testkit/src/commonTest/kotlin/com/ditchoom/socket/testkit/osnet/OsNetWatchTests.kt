@@ -171,6 +171,31 @@ class OsNetWatchTests {
     }
 
     @Test
+    fun theSourceLineSpellsTheCapabilityTheWayTheTraceCodecDoes() {
+        val capabilities =
+            listOf(
+                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted),
+                MonitorCapability(MonitorMechanism.Unknown, ReachResolution.LinkOnly),
+                MonitorCapability(MonitorMechanism.Polled(5.seconds), ReachResolution.RouteOnly),
+            )
+        for (capability in capabilities) {
+            val recording = Recording()
+            watchOn(FakeSource(OsNetworkReading(CellularStatus.NotReported, emptyList())), recording).declare(capability)
+            // `... NET_CAP <mechanism> <resolution>` — the codec lives in :socket-trace and is internal to it.
+            val tokens = TraceEvent.NetCapability(Duration.ZERO, capability).toString().split(' ')
+            val at = tokens.indexOf("NET_CAP")
+            assertTrue(at >= 0 && tokens.size == at + 3, "$tokens")
+            val mechanism = tokens[at + 1]
+            val resolution = tokens[at + 2]
+            assertTrue(
+                recording.lines.single().startsWith("OS-NET-SOURCE monitor=$mechanism/$resolution "),
+                "${recording.lines} vs $mechanism/$resolution",
+            )
+        }
+    }
+
+    @Test
     fun aConnectionsOwnTraceIsSeededWithTheNetworkTheDeviceWasAlreadyOn() {
         val recording = Recording()
         val source = FakeSource(readingOf(OsNetworkFixtures.cellularWithGlobalV6))

@@ -991,6 +991,7 @@ jobs:
             :socket-quic-quiche:jvmProcessResources :socket-quic-quiche:lincheckTest \
             :socket-quic-default:jvmTest \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
+            :socket-trace:jvmTest :socket-trace:testDebugUnitTest :socket-trace:jsNodeTest :socket-trace:wasmJsNodeTest :socket-trace:linuxX64Test :socket-trace:ktlintCheck \
             :socket-testkit:jvmTest :socket-testkit:testDebugUnitTest :socket-testkit:jsNodeTest :socket-testkit:wasmJsNodeTest :socket-testkit:linuxX64Test :socket-testkit:ktlintCheck \
             :socket-testsuite:jvmTest :socket-testsuite:mainThreadSafetyTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
             :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \

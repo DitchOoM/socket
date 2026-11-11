@@ -1,13 +1,13 @@
 package com.ditchoom.socket.testkit.osnet
 
 import com.ditchoom.socket.MonitorCapability
+import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
-import com.ditchoom.socket.testkit.trace.encodeMechanism
-import com.ditchoom.socket.testkit.trace.encodeResolution
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.time.Duration
 
@@ -69,7 +69,7 @@ public class OsNetWatch(
      */
     public fun declare(capability: MonitorCapability) {
         emit(
-            "OS-NET-SOURCE monitor=${encodeMechanism(capability.mechanism)}/${encodeResolution(capability.resolution)} " +
+            "OS-NET-SOURCE monitor=${mechanismToken(capability.mechanism)}/${resolutionToken(capability.resolution)} " +
                 "cellular=${source.cellularSignal.token}",
         )
     }
@@ -127,3 +127,23 @@ private val CellularSignal.token: String
             CellularSignal.Sampled -> "Sampled"
             CellularSignal.NotReported -> "NotReported"
         }
+
+// The `monitor=<mechanism>/<resolution>` tokens of the OS-NET-SOURCE line. These spell exactly what the
+// v1 trace codec (:socket-trace's `NET_CAP` line) writes for a MonitorCapability; the codec's own
+// functions are internal to that module, so the two spellings are pinned against each other by
+// OsNetWatchTests rather than shared.
+private fun mechanismToken(mechanism: MonitorMechanism): String =
+    when (mechanism) {
+        MonitorMechanism.PlatformSignalled -> "PlatformSignalled"
+        MonitorMechanism.Static -> "Static"
+        MonitorMechanism.Unknown -> "Unknown"
+        is MonitorMechanism.Polled -> "Polled(${mechanism.interval.inWholeNanoseconds})"
+    }
+
+private fun resolutionToken(resolution: ReachResolution): String =
+    when (resolution) {
+        ReachResolution.RouteAndInternet -> "RouteAndInternet"
+        ReachResolution.RouteOnly -> "RouteOnly"
+        ReachResolution.LinkOnly -> "LinkOnly"
+        ReachResolution.Asserted -> "Asserted"
+    }
