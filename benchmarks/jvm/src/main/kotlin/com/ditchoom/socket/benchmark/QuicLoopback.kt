@@ -107,15 +107,19 @@ internal class QuicLoopback : AutoCloseable {
     }
 }
 
+private const val DEFAULT_EXPECTED_BACKEND = "ffm"
+
 /**
  * Names the quiche backend this JVM loaded ("ffm" or "jni") and fails if it is not the one the build
- * asked for through `quiche.expectedJvmBackend`. Printed once per fork, so the JMH log says which
+ * asked for through `quiche.expectedJvmBackend` (ffm when unset, the build default). Printed once per fork, so the JMH log says which
  * backend every number came from.
  */
 internal fun assertQuicheBackend(): String {
     val actual = loadedQuicheBackend()
-    val expected = System.getProperty("quiche.expectedJvmBackend")
-    check(expected == null || expected == actual) {
+    // No property means the run did not come through the build (a profiler attached to the jar, a hand-typed
+    // java command): it is a request for the default backend, ffm, not an exemption from the check.
+    val expected = System.getProperty("quiche.expectedJvmBackend") ?: DEFAULT_EXPECTED_BACKEND
+    check(expected == actual) {
         "quiche backend mismatch: the build asked for '$expected' but this JVM loaded '$actual'. " +
             "The numbers would be reported under the wrong backend, so the run stops here."
     }
