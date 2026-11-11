@@ -3,11 +3,13 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -26,7 +28,16 @@ class DriverTurnFlushTests {
     private class RecordingApi(
         private val stub: StubQuicheApi,
     ) : QuicheApi by stub {
-        val calls = mutableListOf<String>()
+        /**
+         * Written by the loop, read by the test on another thread: a channel, not a list. `connTimeout` is
+         * the first thing the loop calls after a turn, so it marks where the turn ended.
+         */
+        val calls = Channel<String>(Channel.UNLIMITED)
+
+        override fun connTimeout(conn: QuicheConn): Duration? {
+            calls.trySend("connTimeout")
+            return stub.connTimeout(conn)
+        }
 
         override fun connStreamRecv(
             conn: QuicheConn,
@@ -34,7 +45,7 @@ class DriverTurnFlushTests {
             buf: Long,
             bufLen: Int,
         ): StreamRecvResult {
-            calls += "connStreamRecv"
+            calls.trySend("connStreamRecv")
             return stub.connStreamRecv(conn, streamId, buf, bufLen)
         }
 
@@ -44,7 +55,7 @@ class DriverTurnFlushTests {
             bufLen: Int,
             sendInfo: QuicheSendInfo,
         ): Int {
-            calls += "connSend"
+            calls.trySend("connSend")
             return stub.connSend(conn, buf, bufLen, sendInfo)
         }
     }
@@ -65,16 +76,25 @@ class DriverTurnFlushTests {
                 slot.advertiseWaitingRead(READ_SIZE)
                 stub.readableStreams.addLast(slot.id.id)
                 stub.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 8, fin = false))
-                api.calls.clear()
+                while (api.calls.tryReceive().isSuccess) Unit // earlier turns' calls are not under test
                 driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
-                withTimeout(2.seconds) { slot.dataSignal.receive() } // the hand-off is done: the bytes are queued
 
-                val consumed = api.calls.lastIndexOf("connStreamRecv")
-                assertTrue(consumed >= 0, "the loop never consumed the stream's bytes, so nothing was tested: ${api.calls}")
+                // The slot's signal fires from inside the turn, before the turn's last flush, so it is not
+                // where to look. Read the loop's calls until the turn ends (it asks quiche for its timer),
+                // starting from the call that consumed the bytes.
+                val afterConsume = mutableListOf<String>()
+                withTimeout(2.seconds) {
+                    while (api.calls.receive() != "connStreamRecv") Unit
+                    while (true) {
+                        val call = api.calls.receive()
+                        if (call == "connTimeout") break
+                        afterConsume += call
+                    }
+                }
                 assertTrue(
-                    api.calls.drop(consumed + 1).contains("connSend"),
+                    afterConsume.contains("connSend"),
                     "the loop consumed stream bytes (quiche now owes the peer flow-control credit) and ended the turn " +
-                        "without a flush; the credit waits for the next wake: ${api.calls}",
+                        "without a flush; the credit waits for the next wake: $afterConsume",
                 )
             } finally {
                 driver.destroy()
