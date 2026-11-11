@@ -60,7 +60,13 @@ fun runQuicTest(
             // test opened, as a SUPPRESSED exception: the type and message the test (or an
             // assertFailsWith around this call) sees are untouched, and Gradle's report prints it
             // under "Suppressed:" without anyone having captured stdout.
-            TraceRings.report()?.let { t.addSuppressed(QuicProtocolTimeline(it)) }
+            TraceRings.report()?.let {
+                t.addSuppressed(QuicProtocolTimeline(it))
+                // Kotlin/Native's test report prints a failure's stack and message but NOT its suppressed
+                // exceptions (measured on macosArm64), so there the timeline goes to the test's own output,
+                // which Gradle keeps in the report's system-out.
+                if (isKotlinNative()) println("QUIC-TIMELINE\n$it")
+            }
             throw t
         } finally {
             stall.disarm()
