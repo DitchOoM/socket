@@ -5,10 +5,10 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.ServerCertificateRejectedException
-import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
+import com.ditchoom.socket.ServerCertificateRejectedException
+import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
