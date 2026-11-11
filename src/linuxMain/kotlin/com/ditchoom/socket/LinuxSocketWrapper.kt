@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
@@ -35,7 +36,10 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     protected val readBufferSource: ReadBufferSource by lazy { ReadBufferSource(config) }
 
-    private val descriptor = SocketDescriptor()
+    /** Bytes of a recv that completed for a reader cancelled before it resumed; the next read returns them. */
+    private val salvage = RecvSalvage()
+
+    private val descriptor = SocketDescriptor(teardown = { salvage.discard() })
 
     /** Makes an accepted connection's descriptor this socket's. */
     internal fun adopt(fd: Int) {
@@ -73,6 +77,7 @@ open class LinuxSocketWrapper : ClientSocket {
         fd: Int,
         deadline: Duration,
     ): ReadBuffer {
+        (salvage.take() as? Salvaged.Held)?.let { return it.buffer }
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
@@ -83,7 +88,7 @@ open class LinuxSocketWrapper : ClientSocket {
             val nativeAccess = buffer.nativeMemoryAccess
             if (nativeAccess != null) {
                 val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-                val bytesRead = readWithIoUring(fd, ptr, bufferSize, deadline)
+                val bytesRead = readWithIoUring(fd, ptr, bufferSize, deadline, buffer)
 
                 return when {
                     bytesRead > 0 -> {
@@ -107,7 +112,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 val array = managedAccess.backingArray
                 val bytesRead =
                     array.usePinned { pinned ->
-                        readWithIoUring(fd, pinned.addressOf(0), bufferSize, deadline)
+                        readWithIoUring(fd, pinned.addressOf(0), bufferSize, deadline, buffer)
                     }
 
                 return when {
@@ -128,8 +133,9 @@ open class LinuxSocketWrapper : ClientSocket {
 
             throw SocketIOException("Buffer has no accessible memory for io_uring read")
         } catch (e: CancellationException) {
-            // Safe to free: submitAndWait ensures the kernel is done with the buffer
-            buffer.freeNativeMemory()
+            // Safe to free: submitAndWait ensures the kernel is done with the buffer. Unless the recv completed
+            // with bytes anyway: those are out of the socket, so the next read returns them.
+            if (!salvage.isHolding(buffer)) buffer.freeNativeMemory()
             throw e
         }
     }
@@ -139,8 +145,14 @@ open class LinuxSocketWrapper : ClientSocket {
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
+        buffer: PlatformBuffer,
     ): Int =
-        descriptor.submit(fd, SocketDescriptor.Lane.Read, timeout) { sqe, open ->
+        descriptor.submit(
+            fd,
+            SocketDescriptor.Lane.Read,
+            timeout,
+            abandoned = { received -> if (received > 0) salvage.hold(buffer, received) },
+        ) { sqe, open ->
             io_uring_prep_recv(sqe, open, ptr, size.convert(), 0)
         }
 

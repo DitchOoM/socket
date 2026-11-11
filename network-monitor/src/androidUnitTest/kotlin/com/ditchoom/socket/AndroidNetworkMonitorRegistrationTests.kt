@@ -83,6 +83,20 @@ class AndroidNetworkMonitorRegistrationTests {
             monitor.close()
         }
     }
+
+    @Test
+    fun closingTwiceUnregistersOnceInsteadOfThrowing() {
+        // The platform throws IllegalArgumentException("NetworkCallback was not registered") from the
+        // second unregister, so a scope teardown plus an explicit close (or two holders of a shared
+        // monitor) used to crash whichever closed second. RecordingConnectivityManager reproduces that.
+        RecordingConnectivityManager.reset()
+
+        val monitor = NetworkMonitor.android(context)
+        monitor.close()
+        monitor.close()
+
+        assertEquals(1, RecordingConnectivityManager.unregistrations, "a second close must be a no-op")
+    }
 }
 
 /** Records which registration entry point [AndroidNetworkMonitor] actually calls. */
@@ -104,13 +118,24 @@ class RecordingConnectivityManager : ShadowConnectivityManager() {
         super.registerDefaultNetworkCallback(networkCallback)
     }
 
+    @Implementation
+    override fun unregisterNetworkCallback(networkCallback: ConnectivityManager.NetworkCallback?) {
+        // Platform behaviour: an unregistered callback is an error, not a no-op.
+        require(unregistrations < registrations) { "NetworkCallback was not registered" }
+        unregistrations++
+        super.unregisterNetworkCallback(networkCallback)
+    }
+
     companion object {
+        val registrations get() = requestRegistrations + defaultCallbackRegistrations
+        var unregistrations = 0
         var requestRegistrations = 0
         var defaultCallbackRegistrations = 0
         var lastRequest: NetworkRequest? = null
 
         fun reset() {
             requestRegistrations = 0
+            unregistrations = 0
             defaultCallbackRegistrations = 0
             lastRequest = null
         }
