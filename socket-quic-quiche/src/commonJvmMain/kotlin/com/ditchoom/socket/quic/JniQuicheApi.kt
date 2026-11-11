@@ -415,12 +415,24 @@ object JniQuicheApi : QuicheApi {
         )
     }
 
+    /**
+     * [connPathStats]'s out-array, one per thread. An anonymous subclass rather than
+     * `ThreadLocal.withInitial`, which needs Android API 26 (minSdk is 24). The shim writes all 18 slots on
+     * success and the result is read only on success, so a stale value from an earlier call is never read.
+     */
+    private val pathStatsScratch: ThreadLocal<LongArray> =
+        object : ThreadLocal<LongArray>() {
+            override fun initialValue(): LongArray = LongArray(PATH_STATS_SLOTS)
+        }
+
     override fun connPathStats(
         conn: QuicheConn,
         pathIdx: Long,
     ): QuicPathStats? {
-        // 18-slot layout contract with quiche_jni.c nConnPathStats — see the shim comment there.
-        val out = LongArray(18)
+        // 18-slot layout contract with quiche_jni.c nConnPathStats — see the shim comment there. The
+        // array is this thread's own, refilled by every call and read back before anything else can run
+        // on the thread, so the per-flush path-validation poll (QuicheDriver.sendWindow) allocates none.
+        val out = pathStatsScratch.get()
         if (nConnPathStats(conn.handle, pathIdx, out) < 0) return null
         return QuicPathStats(
             validationState = out[0],
@@ -716,6 +728,7 @@ object JniQuicheApi : QuicheApi {
     override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
 
     private const val QUICHE_ERR_DONE = -1L
+    private const val PATH_STATS_SLOTS = 18 // quiche_jni.c nConnPathStats slot count
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---
     @JvmStatic private external fun nConfigNew(version: Int): Long
