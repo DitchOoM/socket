@@ -170,6 +170,13 @@ class StreamSlot(
             is StreamEnd.Reset -> take() ?: ReadResult.Reset
         }
 
+    /**
+     * Whether the driver answers this stream's `StreamRecv` with `Done` instead of asking quiche: bytes
+     * the loop already handed over wait in [pendingData] and come before anything quiche still holds, and
+     * a latched [end] means quiche reported the stream's end and has collected the stream.
+     */
+    internal fun answersStreamRecvWithDone(): Boolean = !pendingData.isEmpty || end != StreamEnd.Open
+
     /** A read returned bytes to its caller: [StreamReadState.HandedOff] back to [StreamReadState.Idle], never over [StreamReadState.Finished]. */
     internal fun returnHandOff() {
         readState.compareAndSet(StreamReadState.HandedOff, StreamReadState.Idle)

@@ -120,5 +120,5 @@ private fun handOffOptions(): ModelCheckingOptions =
         .iterations(HAND_OFF_SCENARIOS)
         .invocationsPerIteration(HAND_OFF_INVOCATIONS)
 
-private const val HAND_OFF_SCENARIOS = 10
-private const val HAND_OFF_INVOCATIONS = 1_000
+private val HAND_OFF_SCENARIOS = LincheckBudget.scaled(10)
+private val HAND_OFF_INVOCATIONS = LincheckBudget.scaled(1_000)
