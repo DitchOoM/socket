@@ -33,6 +33,7 @@ import platform.Security.SecTrustRef
 import platform.Security.SecTrustRefVar
 import platform.Security.errSecSuccess
 import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
+import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_global_queue
 import kotlin.coroutines.resume
 
@@ -40,8 +41,8 @@ import kotlin.coroutines.resume
  * [AppleTrustSource.SystemTrustStore]: the chain evaluated by Security.framework against the device trust
  * store with an SSL policy for the server name.
  *
- * Evaluated with `SecTrustEvaluateAsyncWithError`, which may fetch revocation data or intermediates and
- * answers on a dispatch queue when it is done. The coroutine suspends cancellably on that answer and
+ * Evaluated with `SecTrustEvaluateAsyncWithError`, called from the dispatch queue it answers on (its
+ * documented contract). It may fetch revocation data or intermediates and answers when it is done. The coroutine suspends cancellably on that answer and
  * holds no thread meanwhile; the synchronous `SecTrustEvaluateWithError` blocked one, and could not be
  * interrupted, so a slow evaluation held the connect past its deadline and past its cancellation.
  * (Available on every Apple target built here: macOS 10.15, iOS 13, tvOS 13, watchOS 6.)
@@ -89,29 +90,35 @@ private suspend fun evaluateWithSecTrust(
         is Prepared.Refused -> prepared.verdict
         is Prepared.Ready ->
             suspendCancellableCoroutine { continuation ->
-                val started =
-                    SecTrustEvaluateAsyncWithError(
-                        prepared.trust,
-                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.convert(), 0u),
-                    ) { _, trusted, error ->
-                        // Runs on a dispatch thread, once, possibly after the caller has gone: resuming a
-                        // cancelled continuation is ignored, and the objects are released here regardless.
-                        val verdict =
-                            when {
-                                trusted -> SystemTrustVerdict.Trusted
-                                error == null -> untrusted(SystemTrustFailure.RefusedWithoutError)
-                                else -> {
-                                    val description = CFBridgingRelease(CFErrorCopyDescription(error)).toString()
-                                    untrusted(SystemTrustFailure.Refused(CFErrorGetCode(error).convert(), description))
+                // Security.framework's contract (SecTrust.h): "this function MUST be called from that
+                // queue" — the one the callback is delivered on. So the call itself is dispatched there
+                // rather than made from whichever thread the coroutine happens to be on. Any work the
+                // evaluation does inline (the header allows the callback to run synchronously) then
+                // also happens on a dispatch thread, not on a coroutine dispatcher's.
+                val queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.convert(), 0u)
+                dispatch_async(queue) {
+                    val started =
+                        SecTrustEvaluateAsyncWithError(prepared.trust, queue) { _, trusted, error ->
+                            // Runs on a dispatch thread, once, possibly after the caller has gone: resuming
+                            // a cancelled continuation is ignored, and the objects are released here
+                            // regardless.
+                            val verdict =
+                                when {
+                                    trusted -> SystemTrustVerdict.Trusted
+                                    error == null -> untrusted(SystemTrustFailure.RefusedWithoutError)
+                                    else -> {
+                                        val description = CFBridgingRelease(CFErrorCopyDescription(error)).toString()
+                                        untrusted(SystemTrustFailure.Refused(CFErrorGetCode(error).convert(), description))
+                                    }
                                 }
-                            }
+                            prepared.owned.release()
+                            continuation.resume(verdict)
+                        }
+                    if (started != errSecSuccess) {
+                        // The callback will not run, so nothing else will release these.
                         prepared.owned.release()
-                        continuation.resume(verdict)
+                        continuation.resume(untrusted(SystemTrustFailure.TrustCreationFailed(started)))
                     }
-                if (started != errSecSuccess) {
-                    // The callback will not run, so nothing else will release these.
-                    prepared.owned.release()
-                    continuation.resume(untrusted(SystemTrustFailure.TrustCreationFailed(started)))
                 }
             }
     }
