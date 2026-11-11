@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -84,6 +85,95 @@ abstract class MigrationSimTestSuite {
                         closed,
                         "the server must end on the client's own NO_ERROR close, received " +
                             "${currentTime - sent}ms after it was sent — not on its idle timer",
+                    )
+                }
+            }
+        }
+
+    /**
+     * A write handed to the driver just before the connection's close still leaves before the close.
+     *
+     * RFC 9000 §10.2 lets an endpoint that has sent CONNECTION_CLOSE send nothing else, and quiche stops
+     * sending stream data the moment it is asked to close. So a close that runs in the same loop turn as
+     * the write before it, with no flush between them, discards the write without it ever being sent:
+     * the application's write returned, its close returned, and the bytes are simply gone. The loop used
+     * to flush after every command, so this could not happen; once it ran every queued command before
+     * one flush it could, whenever the close was queued while the write was still being run, which is
+     * how a thread that writes and then closes behaves on Android and the JVM. The HTTP/3 suite's
+     * `webTransport_clientOpensUniStream_serverReceives` caught it on an API 35 emulator: the client
+     * opened a uni stream, wrote, closed the connection, and the server's session ended with no stream.
+     *
+     * Here the write and the close are queued from two coroutines before the driver loop runs, so they
+     * are in its queue together, every run.
+     */
+    @Test
+    fun aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent() =
+        runTest {
+            val test = this
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 813_001L) {
+                    val stream = client.openStream()
+                    stream.writeText("first")
+                    val accepted = server.acceptStream()
+                    val first = withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }
+                    assertIs<ReadResult.Data>(first, "the stream must be open on both ends before the scenario starts")
+                        .buffer
+                        .freeIfNeeded()
+
+                    // Both coroutines run before the driver loop does, so the StreamSend and the Close are
+                    // queued back to back.
+                    test.launch { stream.writeText(LAST_WORDS) }
+                    test.launch { client.close() }
+
+                    var heard = ""
+                    while (true) {
+                        val r = runCatching { withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) } }.getOrNull()
+                        if (r !is ReadResult.Data) break
+                        heard += r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
+                        r.buffer.freeIfNeeded()
+                    }
+                    assertEquals(
+                        LAST_WORDS,
+                        heard,
+                        "the client's last write was queued right before its close and never reached the server: " +
+                            "the close ran before anything flushed it, traffic ${pipeTraffic()}",
+                    )
+                }
+            }
+        }
+
+    /**
+     * A read of the connection's state queued right behind a write sees the write sent.
+     *
+     * The driver loop runs several queued data-path commands before one flush. A command that reports
+     * on the connection must not be one of them: run behind an unflushed write, a stats read counts the
+     * write as unsent, and a stall snapshot run behind a received datagram saw quiche call a stream
+     * readable before its reader had been woken — a stall that does not exist (`DriverStallSnapshotTests`
+     * on the Linux runners). A reporting command runs on a settled turn, as it did when the loop flushed
+     * after every command. Here the write and the read are queued before the loop runs, every run.
+     */
+    @Test
+    fun aStatsReadQueuedRightBehindAWriteSeesItSent() =
+        runTest {
+            val test = this
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 813_002L) {
+                    val stream = client.openStream()
+                    stream.writeText("first")
+                    val accepted = server.acceptStream()
+                    assertIs<ReadResult.Data>(withTimeout(10.seconds) { accepted.read(IDLE_TIMEOUT_IN_THE_FIELD) }).buffer.freeIfNeeded()
+                    // Quiet: every ACK either side owes has gone out, so nothing but the write below is sent.
+                    delay(1.seconds)
+                    val before = assertNotNull(clientDriver.stats().connStats, "an established connection has stats").sentBytes
+
+                    test.launch { stream.writeText(LAST_WORDS) }
+                    val after = test.async { clientDriver.stats() }
+
+                    val sent = assertNotNull(after.await().connStats, "an established connection has stats").sentBytes
+                    assertTrue(
+                        sent >= before + LAST_WORDS.length,
+                        "the stats read queued behind a write must see that write sent: $before bytes sent before " +
+                            "the write, $sent after it",
                     )
                 }
             }
@@ -3623,6 +3713,40 @@ abstract class MigrationSimTestSuite {
                         }
 
                         assertEquals("before", echo("before"), "the connection must be healthy on Wi-Fi before the path dies")
+                        // The premise: the count decides, not the ceiling. Both are timed from the first
+                        // unanswered send, the count's fourth expiry lands (2^4 - 1) PTOs after it, and
+                        // SILENT_PATH_PATIENCE ends the wait at 4s whatever the count. So the count only
+                        // decides on a path whose PTO is under 4s / 15 = 267ms, which on this 120ms round
+                        // trip means an RTT variance that has decayed from RFC 9002 §5.3's first-sample
+                        // `rtt / 2` (60ms) to under ~30ms: a quarter off per sample, so four samples.
+                        //
+                        // How many samples the handshake and one echo leave is not this test's to fix. It
+                        // is the peers' ACK cadence: quiche samples once per ACK that newly acknowledges
+                        // its largest packet, and a driver that flushes after every second received
+                        // datagram (QuicheDriver.RECEIVES_PER_FLUSH) sends fewer ACKs than one that
+                        // flushed after each. With that cadence this point is reached with three samples
+                        // (rttvar 33.75ms, PTO 280ms), and with the whole queue read before one flush it
+                        // was two (PTO 325ms); either way the ceiling fired at three expiries, which is
+                        // the ceiling working as designed, not the count regressing. So echo until the
+                        // path is estimated well enough for the count to be the thing measured, and say
+                        // so if it never is.
+                        val atWarm =
+                            run {
+                                var reading = clientPathTimers().single { it.active }
+                                var echoes = 0
+                                while (reading.pto * COUNT_DECIDES_WITHIN_PTOS >= SILENT_PATH_PATIENCE && echoes < WARM_UP_ECHOES) {
+                                    assertEquals("warm$echoes", echo("warm$echoes"), "the path must stay healthy while it warms up")
+                                    echoes++
+                                    reading = clientPathTimers().single { it.active }
+                                }
+                                reading
+                            }
+                        assertTrue(
+                            atWarm.pto * COUNT_DECIDES_WITHIN_PTOS < SILENT_PATH_PATIENCE,
+                            "the scenario no longer reproduces its condition: after $WARM_UP_ECHOES echoes the " +
+                                "path is still estimated at $atWarm, so its fourth expiry would land after " +
+                                "the $SILENT_PATH_PATIENCE ceiling and the ceiling, not the count, would decide",
+                        )
                         awaitSpareDcids()
                         assertEquals(0, client.attempts.size, "nothing may migrate before the path dies")
 
@@ -4902,8 +5026,31 @@ abstract class MigrationSimTestSuite {
 
         const val DETERMINISM_SEED = 671_101L
 
-        /** Measured: the seeds whose reply loses its FIN when quiche is built without the FIN patch. */
-        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(30L, 71L, 107L, 124L)
+        /**
+         * Measured: the seeds among 0..1999 whose reply arrives whole and loses its FIN when quiche is built
+         * without `patchQuicheFinIsSentUntilAcknowledged`, every run; with the patch each ends with the FIN.
+         *
+         * A seed fixes the sim's loss draws, not which datagrams they land on: the pipe draws once per
+         * datagram in the order they are offered, so the set belongs to the driver's send cadence and is
+         * re-measured when that changes. Flushing after every second received datagram instead of every
+         * one ([QuicheDriver.RECEIVES_PER_FLUSH]) sends fewer ACKs and moved every later draw: of the
+         * previous set (30, 71, 107, 124) none loses its FIN unpatched any more (on the per-command loop it
+         * had already drifted to 12 and 17, so the test had stopped proving the patch). Seven seeds qualify
+         * now; these are the first four.
+         */
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(173L, 271L, 1009L, 1028L)
+
+        /**
+         * PTOs from the first unanswered send to the [SILENT_PATH_EXPIRY_THRESHOLD]-th expiry: `2^4 - 1`, each
+         * expiry doubling the one before (RFC 9002 §6.2.1).
+         */
+        val COUNT_DECIDES_WITHIN_PTOS = (1 shl SILENT_PATH_EXPIRY_THRESHOLD.toInt()) - 1
+
+        /** Echoes a healthy path gets to converge its RTT estimate before a scenario that needs it gives up. */
+        const val WARM_UP_ECHOES = 8
+
+        /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
+        const val LAST_WORDS = "last words"
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
