@@ -32,7 +32,7 @@ import kotlin.time.Duration.Companion.seconds
  * readiness.
  */
 class NioFullDuplexTests {
-    /** A plain-blocking peer: [onConnected] runs on its thread with the accepted socket's streams. */
+    /** A plain blocking-IO peer: `body` runs on its own thread with the one accepted connection. */
     private class Peer(
         body: (java.net.Socket) -> Unit,
     ) : AutoCloseable {
