@@ -403,6 +403,11 @@ jobs:
           # landed on it). It depends on no native artifact and no test, so it parallelises freely.
           - name: "ktlint"
             tasks: "ktlintCheck"
+          # Binary-compatibility gate: compares every published module's public ABI against the
+          # committed api/macos/ dumps (JVM, Android, JS, Wasm and every Apple klib). Linux klibs are
+          # not declared on macOS; build-linux.yaml's abi-linux job checks them against api/linux/.
+          - name: "ABI (binary compatibility)"
+            tasks: "checkKotlinAbi"
           # Compile (can't run — no device) the test sources for the Apple *device* targets that
           # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
           # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every

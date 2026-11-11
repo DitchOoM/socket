@@ -1,0 +1,835 @@
+public abstract interface class com/ditchoom/socket/AddressOwner {
+}
+
+public final class com/ditchoom/socket/AddressOwner$Link : com/ditchoom/socket/AddressOwner {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkId;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkId;)Lcom/ditchoom/socket/AddressOwner$Link;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/AddressOwner$Link;Lcom/ditchoom/socket/transport/NetworkId;ILjava/lang/Object;)Lcom/ditchoom/socket/AddressOwner$Link;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getId ()Lcom/ditchoom/socket/transport/NetworkId;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AddressOwner$NotReported : com/ditchoom/socket/AddressOwner {
+	public static final field INSTANCE Lcom/ditchoom/socket/AddressOwner$NotReported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AddressOwner$Unclaimed : com/ditchoom/socket/AddressOwner {
+	public static final field INSTANCE Lcom/ditchoom/socket/AddressOwner$Unclaimed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidApplicationContextKt {
+	public static final fun androidOrNull (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Lcom/ditchoom/socket/NetworkMonitor;
+	public static final fun hasAndroidApplicationContext (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Z
+	public static final fun installAndroidApplicationContext (Lcom/ditchoom/socket/NetworkMonitor$Companion;Landroid/content/Context;)V
+	public static final fun resetAndroidContextForTesting (Lcom/ditchoom/socket/NetworkMonitor$Companion;)V
+}
+
+public final class com/ditchoom/socket/AndroidNetworkMonitor : com/ditchoom/socket/NetworkMonitor {
+	public fun <init> (Landroid/content/Context;)V
+	public fun close ()V
+	public fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public fun getLinkAddresses ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getLinkQuality ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservationCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservations ()Lkotlinx/coroutines/flow/Flow;
+	public fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class com/ditchoom/socket/AndroidNetworkMonitorKt {
+	public static final fun android (Lcom/ditchoom/socket/NetworkMonitor$Companion;Landroid/content/Context;)Lcom/ditchoom/socket/NetworkMonitor;
+	public static final fun installAndroidContext (Lcom/ditchoom/socket/NetworkMonitor$Companion;Landroid/content/Context;)V
+}
+
+public abstract interface class com/ditchoom/socket/BlockReason {
+}
+
+public final class com/ditchoom/socket/BlockReason$CaptivePortal : com/ditchoom/socket/BlockReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/BlockReason$CaptivePortal;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/BlockReason$Suspended : com/ditchoom/socket/BlockReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/BlockReason$Suspended;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CellularStandby {
+	public static final field Companion Lcom/ditchoom/socket/CellularStandby$Companion;
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun hold ()Lcom/ditchoom/socket/CellularStandbyHold;
+}
+
+public final class com/ditchoom/socket/CellularStandby$Companion {
+	public final fun processDefault ()Lcom/ditchoom/socket/CellularStandby;
+}
+
+public final class com/ditchoom/socket/CellularStandbyHold : java/lang/AutoCloseable {
+	public fun close ()V
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public abstract interface class com/ditchoom/socket/CellularStandbyRefusal {
+}
+
+public final class com/ditchoom/socket/CellularStandbyRefusal$MissingPermission : com/ditchoom/socket/CellularStandbyRefusal {
+	public fun <init> (Ljava/lang/SecurityException;)V
+	public final fun component1 ()Ljava/lang/SecurityException;
+	public final fun copy (Ljava/lang/SecurityException;)Lcom/ditchoom/socket/CellularStandbyRefusal$MissingPermission;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/CellularStandbyRefusal$MissingPermission;Ljava/lang/SecurityException;ILjava/lang/Object;)Lcom/ditchoom/socket/CellularStandbyRefusal$MissingPermission;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/SecurityException;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CellularStandbyRefusal$NoApplicationContext : com/ditchoom/socket/CellularStandbyRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/CellularStandbyRefusal$NoApplicationContext;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/CellularStandbyState {
+}
+
+public final class com/ditchoom/socket/CellularStandbyState$Attached : com/ditchoom/socket/CellularStandbyState$Held {
+	public fun getHolders ()I
+	public final fun getLink ()Lcom/ditchoom/socket/NetworkState;
+	public final fun getNetwork ()Landroid/net/Network;
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/CellularStandbyState$Held : com/ditchoom/socket/CellularStandbyState {
+	public abstract fun getHolders ()I
+}
+
+public final class com/ditchoom/socket/CellularStandbyState$Refused : com/ditchoom/socket/CellularStandbyState$Held {
+	public fun getHolders ()I
+	public final fun getReason ()Lcom/ditchoom/socket/CellularStandbyRefusal;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CellularStandbyState$Released : com/ditchoom/socket/CellularStandbyState {
+	public static final field INSTANCE Lcom/ditchoom/socket/CellularStandbyState$Released;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/CellularStandbyState$Requesting : com/ditchoom/socket/CellularStandbyState$Held {
+	public fun getHolders ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/DefaultNetworkMonitorKt {
+	public static final fun default (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Lcom/ditchoom/socket/NetworkMonitor;
+}
+
+public final class com/ditchoom/socket/EnumerateInterfacesKt {
+	public static final fun enumerateNetworkInterfaces ()Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/InterfaceIndex {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/InterfaceIndex;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public abstract interface class com/ditchoom/socket/InternetAccess {
+}
+
+public abstract interface class com/ditchoom/socket/InternetAccess$Observed : com/ditchoom/socket/InternetAccess {
+}
+
+public final class com/ditchoom/socket/InternetAccess$Observed$Blocked : com/ditchoom/socket/InternetAccess$Observed {
+	public fun <init> (Lcom/ditchoom/socket/BlockReason;)V
+	public final fun component1 ()Lcom/ditchoom/socket/BlockReason;
+	public final fun copy (Lcom/ditchoom/socket/BlockReason;)Lcom/ditchoom/socket/InternetAccess$Observed$Blocked;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/InternetAccess$Observed$Blocked;Lcom/ditchoom/socket/BlockReason;ILjava/lang/Object;)Lcom/ditchoom/socket/InternetAccess$Observed$Blocked;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/socket/BlockReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/InternetAccess$Observed$Confirmed : com/ditchoom/socket/InternetAccess$Observed {
+	public static final field INSTANCE Lcom/ditchoom/socket/InternetAccess$Observed$Confirmed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/InternetAccess$Observed$Limited : com/ditchoom/socket/InternetAccess$Observed {
+	public static final field INSTANCE Lcom/ditchoom/socket/InternetAccess$Observed$Limited;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/InternetAccess$Observed$Pending : com/ditchoom/socket/InternetAccess$Observed {
+	public static final field INSTANCE Lcom/ditchoom/socket/InternetAccess$Observed$Pending;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/InternetAccess$Unobserved : com/ditchoom/socket/InternetAccess {
+	public static final field INSTANCE Lcom/ditchoom/socket/InternetAccess$Unobserved;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/JvmNetworkStateKt {
+	public static final fun resolveJvmNetworkState ()Lcom/ditchoom/socket/NetworkState;
+}
+
+public abstract interface class com/ditchoom/socket/LinkAddresses {
+}
+
+public final class com/ditchoom/socket/LinkAddresses$NotReported : com/ditchoom/socket/LinkAddresses {
+	public static final field INSTANCE Lcom/ditchoom/socket/LinkAddresses$NotReported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/LinkAddresses$Reported : com/ditchoom/socket/LinkAddresses {
+	public fun <init> (Ljava/util/Map;)V
+	public final fun component1 ()Ljava/util/Map;
+	public final fun copy (Ljava/util/Map;)Lcom/ditchoom/socket/LinkAddresses$Reported;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/LinkAddresses$Reported;Ljava/util/Map;ILjava/lang/Object;)Lcom/ditchoom/socket/LinkAddresses$Reported;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getByLink ()Ljava/util/Map;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/LinkAddressesKt {
+	public static final fun ownerOf (Lcom/ditchoom/socket/LinkAddresses;Lcom/ditchoom/socket/NumericAddress;)Lcom/ditchoom/socket/AddressOwner;
+}
+
+public abstract interface class com/ditchoom/socket/LinkQuality {
+}
+
+public final class com/ditchoom/socket/LinkQuality$Rssi : com/ditchoom/socket/LinkQuality {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/LinkQuality$Rssi;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/LinkQuality$Rssi;IILjava/lang/Object;)Lcom/ditchoom/socket/LinkQuality$Rssi;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDbm ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/LinkQuality$Unavailable : com/ditchoom/socket/LinkQuality {
+	public static final field INSTANCE Lcom/ditchoom/socket/LinkQuality$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/LinkQualityResolution {
+}
+
+public final class com/ditchoom/socket/LinkQualityResolution$None : com/ditchoom/socket/LinkQualityResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/LinkQualityResolution$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/LinkQualityResolution$Rssi : com/ditchoom/socket/LinkQualityResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/LinkQualityResolution$Rssi;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/MonitorCapability {
+	public fun <init> (Lcom/ditchoom/socket/MonitorMechanism;Lcom/ditchoom/socket/ReachResolution;Lcom/ditchoom/socket/LinkQualityResolution;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/MonitorMechanism;Lcom/ditchoom/socket/ReachResolution;Lcom/ditchoom/socket/LinkQualityResolution;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/socket/MonitorMechanism;
+	public final fun component2 ()Lcom/ditchoom/socket/ReachResolution;
+	public final fun component3 ()Lcom/ditchoom/socket/LinkQualityResolution;
+	public final fun copy (Lcom/ditchoom/socket/MonitorMechanism;Lcom/ditchoom/socket/ReachResolution;Lcom/ditchoom/socket/LinkQualityResolution;)Lcom/ditchoom/socket/MonitorCapability;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/MonitorCapability;Lcom/ditchoom/socket/MonitorMechanism;Lcom/ditchoom/socket/ReachResolution;Lcom/ditchoom/socket/LinkQualityResolution;ILjava/lang/Object;)Lcom/ditchoom/socket/MonitorCapability;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLinkQuality ()Lcom/ditchoom/socket/LinkQualityResolution;
+	public final fun getMechanism ()Lcom/ditchoom/socket/MonitorMechanism;
+	public final fun getResolution ()Lcom/ditchoom/socket/ReachResolution;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/MonitorMechanism {
+}
+
+public final class com/ditchoom/socket/MonitorMechanism$PlatformSignalled : com/ditchoom/socket/MonitorMechanism {
+	public static final field INSTANCE Lcom/ditchoom/socket/MonitorMechanism$PlatformSignalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/MonitorMechanism$Polled : com/ditchoom/socket/MonitorMechanism {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/MonitorMechanism$Polled;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/MonitorMechanism$Polled;JILjava/lang/Object;)Lcom/ditchoom/socket/MonitorMechanism$Polled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getInterval-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/MonitorMechanism$Static : com/ditchoom/socket/MonitorMechanism {
+	public static final field INSTANCE Lcom/ditchoom/socket/MonitorMechanism$Static;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/MonitorMechanism$Unknown : com/ditchoom/socket/MonitorMechanism {
+	public static final field INSTANCE Lcom/ditchoom/socket/MonitorMechanism$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkInterfaceInfo {
+	public synthetic fun <init> (Ljava/lang/String;JLcom/ditchoom/socket/transport/NetworkKind;Ljava/util/List;ZZLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2-iJE0-Ps ()J
+	public final fun component3 ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public final fun component4 ()Ljava/util/List;
+	public final fun component5 ()Z
+	public final fun component6 ()Z
+	public final fun copy-89fun3w (Ljava/lang/String;JLcom/ditchoom/socket/transport/NetworkKind;Ljava/util/List;ZZ)Lcom/ditchoom/socket/NetworkInterfaceInfo;
+	public static synthetic fun copy-89fun3w$default (Lcom/ditchoom/socket/NetworkInterfaceInfo;Ljava/lang/String;JLcom/ditchoom/socket/transport/NetworkKind;Ljava/util/List;ZZILjava/lang/Object;)Lcom/ditchoom/socket/NetworkInterfaceInfo;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddresses ()Ljava/util/List;
+	public final fun getIndex-iJE0-Ps ()J
+	public final fun getKind ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public final fun getName ()Ljava/lang/String;
+	public fun hashCode ()I
+	public final fun isLoopback ()Z
+	public final fun isUp ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkInterfaceInfoKt {
+	public static final fun listNetworkInterfaces (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/NetworkMonitor {
+	public static final field Companion Lcom/ditchoom/socket/NetworkMonitor$Companion;
+	public abstract fun close ()V
+	public fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public fun getLinkAddresses ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getLinkQuality ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservationCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservations ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class com/ditchoom/socket/NetworkMonitor$Companion {
+	public final fun getAlwaysAvailable ()Lcom/ditchoom/socket/NetworkMonitor;
+	public final fun installProcessDefault (Lcom/ditchoom/socket/NetworkMonitor;)V
+	public final fun installedProcessDefaultOrNull ()Lcom/ditchoom/socket/NetworkMonitor;
+	public final fun resetProcessDefaultForTesting ()V
+}
+
+public final class com/ditchoom/socket/NetworkMonitor$DefaultImpls {
+	public static fun getCapability (Lcom/ditchoom/socket/NetworkMonitor;)Lcom/ditchoom/socket/MonitorCapability;
+	public static fun getLinkAddresses (Lcom/ditchoom/socket/NetworkMonitor;)Lkotlinx/coroutines/flow/StateFlow;
+	public static fun getLinkQuality (Lcom/ditchoom/socket/NetworkMonitor;)Lkotlinx/coroutines/flow/StateFlow;
+	public static fun getObservationCount (Lcom/ditchoom/socket/NetworkMonitor;)Lkotlinx/coroutines/flow/StateFlow;
+	public static fun getObservations (Lcom/ditchoom/socket/NetworkMonitor;)Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorDefaultKt {
+	public static final fun open (Lcom/ditchoom/socket/NetworkMonitor$Companion;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun processDefault (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Lcom/ditchoom/socket/NetworkMonitor;
+	public static final fun shared (Lcom/ditchoom/socket/NetworkMonitor$Companion;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorInitializer : androidx/startup/Initializer {
+	public fun <init> ()V
+	public fun create (Landroid/content/Context;)Landroid/content/Context;
+	public synthetic fun create (Landroid/content/Context;)Ljava/lang/Object;
+	public fun dependencies ()Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorKt {
+	public static final fun pathChanges (Lcom/ditchoom/socket/NetworkMonitor;)Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorPermissionException : java/lang/IllegalStateException {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScript {
+	public static final field Companion Lcom/ditchoom/socket/NetworkMonitorScript$Companion;
+	public fun <init> (Lcom/ditchoom/socket/MonitorCapability;Lcom/ditchoom/socket/NetworkState;Ljava/util/List;)V
+	public final fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public final fun getDuration-UwyO8pc ()J
+	public final fun getInitialState ()Lcom/ditchoom/socket/NetworkState;
+	public final fun getTransitions ()Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScript$Companion {
+	public final fun steady (Lcom/ditchoom/socket/NetworkState;Lcom/ditchoom/socket/MonitorCapability;)Lcom/ditchoom/socket/NetworkMonitorScript;
+	public static synthetic fun steady$default (Lcom/ditchoom/socket/NetworkMonitorScript$Companion;Lcom/ditchoom/socket/NetworkState;Lcom/ditchoom/socket/MonitorCapability;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkMonitorScript;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScript$Transition {
+	public synthetic fun <init> (JLcom/ditchoom/socket/NetworkState;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLcom/ditchoom/socket/NetworkState;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/NetworkState;
+	public final fun component3 ()J
+	public final fun copy-KLykuaI (JLcom/ditchoom/socket/NetworkState;J)Lcom/ditchoom/socket/NetworkMonitorScript$Transition;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/socket/NetworkMonitorScript$Transition;JLcom/ditchoom/socket/NetworkState;JILjava/lang/Object;)Lcom/ditchoom/socket/NetworkMonitorScript$Transition;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAt-UwyO8pc ()J
+	public final fun getDroppedBefore ()J
+	public final fun getState ()Lcom/ditchoom/socket/NetworkState;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScriptBuilder {
+	public final fun after-VtjQ1oo (JLkotlin/jvm/functions/Function1;)V
+	public final fun stateAt-KLykuaI (JLcom/ditchoom/socket/NetworkState;J)V
+	public static synthetic fun stateAt-KLykuaI$default (Lcom/ditchoom/socket/NetworkMonitorScriptBuilder;JLcom/ditchoom/socket/NetworkState;JILjava/lang/Object;)V
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScriptBuilder$TransitionWindow {
+	public final fun state (Lcom/ditchoom/socket/NetworkState;J)V
+	public static synthetic fun state$default (Lcom/ditchoom/socket/NetworkMonitorScriptBuilder$TransitionWindow;Lcom/ditchoom/socket/NetworkState;JILjava/lang/Object;)V
+}
+
+public final class com/ditchoom/socket/NetworkMonitorScriptKt {
+	public static final fun networkMonitorScript (Lcom/ditchoom/socket/MonitorCapability;Lcom/ditchoom/socket/NetworkState;Lkotlin/jvm/functions/Function1;)Lcom/ditchoom/socket/NetworkMonitorScript;
+	public static synthetic fun networkMonitorScript$default (Lcom/ditchoom/socket/MonitorCapability;Lcom/ditchoom/socket/NetworkState;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkMonitorScript;
+}
+
+public abstract interface class com/ditchoom/socket/NetworkObservation {
+	public abstract fun getState ()Lcom/ditchoom/socket/NetworkState;
+}
+
+public final class com/ditchoom/socket/NetworkObservation$Sequenced : com/ditchoom/socket/NetworkObservation {
+	public synthetic fun <init> (Lcom/ditchoom/socket/NetworkState;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NetworkState;
+	public final fun component2-uibsbfk ()J
+	public final fun copy-llucZYs (Lcom/ditchoom/socket/NetworkState;J)Lcom/ditchoom/socket/NetworkObservation$Sequenced;
+	public static synthetic fun copy-llucZYs$default (Lcom/ditchoom/socket/NetworkObservation$Sequenced;Lcom/ditchoom/socket/NetworkState;JILjava/lang/Object;)Lcom/ditchoom/socket/NetworkObservation$Sequenced;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSequence-uibsbfk ()J
+	public fun getState ()Lcom/ditchoom/socket/NetworkState;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkObservation$Unsequenced : com/ditchoom/socket/NetworkObservation {
+	public fun <init> (Lcom/ditchoom/socket/NetworkState;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NetworkState;
+	public final fun copy (Lcom/ditchoom/socket/NetworkState;)Lcom/ditchoom/socket/NetworkObservation$Unsequenced;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NetworkObservation$Unsequenced;Lcom/ditchoom/socket/NetworkState;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkObservation$Unsequenced;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getState ()Lcom/ditchoom/socket/NetworkState;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/NetworkState {
+}
+
+public final class com/ditchoom/socket/NetworkState$LinkLocal : com/ditchoom/socket/NetworkState$Up {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkId;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkId;)Lcom/ditchoom/socket/NetworkState$LinkLocal;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NetworkState$LinkLocal;Lcom/ditchoom/socket/transport/NetworkId;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkState$LinkLocal;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getId ()Lcom/ditchoom/socket/transport/NetworkId;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkState$Offline : com/ditchoom/socket/NetworkState {
+	public static final field INSTANCE Lcom/ditchoom/socket/NetworkState$Offline;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkState$Routable : com/ditchoom/socket/NetworkState$Up {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/InternetAccess;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun component2 ()Lcom/ditchoom/socket/InternetAccess;
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/InternetAccess;)Lcom/ditchoom/socket/NetworkState$Routable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NetworkState$Routable;Lcom/ditchoom/socket/transport/NetworkId;Lcom/ditchoom/socket/InternetAccess;ILjava/lang/Object;)Lcom/ditchoom/socket/NetworkState$Routable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getId ()Lcom/ditchoom/socket/transport/NetworkId;
+	public final fun getInternet ()Lcom/ditchoom/socket/InternetAccess;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NetworkState$Unknown : com/ditchoom/socket/NetworkState {
+	public static final field INSTANCE Lcom/ditchoom/socket/NetworkState$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/NetworkState$Up : com/ditchoom/socket/NetworkState {
+	public abstract fun getId ()Lcom/ditchoom/socket/transport/NetworkId;
+}
+
+public final class com/ditchoom/socket/NetworkStateKt {
+	public static final fun getCanRouteOffLink (Lcom/ditchoom/socket/NetworkState;)Z
+	public static final fun getNeedsUserAction (Lcom/ditchoom/socket/NetworkState;)Z
+	public static final fun getNetworkId (Lcom/ditchoom/socket/NetworkState;)Lcom/ditchoom/socket/transport/NetworkId;
+	public static final fun getSupportsLinkLocal (Lcom/ditchoom/socket/NetworkState;)Z
+	public static final fun isTransient (Lcom/ditchoom/socket/NetworkState;)Z
+	public static final fun permits (Lcom/ditchoom/socket/ReachResolution;Lcom/ditchoom/socket/NetworkState;)Z
+}
+
+public abstract interface class com/ditchoom/socket/NumericAddress {
+	public static final field Companion Lcom/ditchoom/socket/NumericAddress$Companion;
+}
+
+public final class com/ditchoom/socket/NumericAddress$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/socket/ParsedAddress;
+}
+
+public final class com/ditchoom/socket/NumericAddress$V4 : com/ditchoom/socket/NumericAddress {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/NumericAddress$V4;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NumericAddress$V4;IILjava/lang/Object;)Lcom/ditchoom/socket/NumericAddress$V4;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBits ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/NumericAddress$V6 : com/ditchoom/socket/NumericAddress {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/socket/NumericAddress$V6;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/NumericAddress$V6;JJILjava/lang/Object;)Lcom/ditchoom/socket/NumericAddress$V6;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHi ()J
+	public final fun getLo ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ObservationRelay {
+	public static final field Companion Lcom/ditchoom/socket/ObservationRelay$Companion;
+	public static final field OBSERVATION_BUFFER I
+	public fun <init> (Lkotlinx/coroutines/flow/MutableStateFlow;)V
+	public final fun getCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getObservations ()Lkotlinx/coroutines/flow/Flow;
+	public final fun publish (Lcom/ditchoom/socket/NetworkState;)V
+	public final fun record (Lcom/ditchoom/socket/NetworkState;)V
+	public final fun recordAfterGap (Lcom/ditchoom/socket/NetworkState;J)V
+	public final fun recordUnchanged ()V
+}
+
+public final class com/ditchoom/socket/ObservationRelay$Companion {
+}
+
+public final class com/ditchoom/socket/ObservationSequence : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/socket/ObservationSequence$Companion;
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/ObservationSequence;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-ApaetG4 (J)I
+	public static fun compareTo-ApaetG4 (JJ)I
+	public static fun constructor-impl (J)J
+	public static final fun droppedSince-ApaetG4 (JJ)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun next-uibsbfk (J)J
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/ObservationSequence$Companion {
+	public final fun getNone-uibsbfk ()J
+}
+
+public abstract interface class com/ditchoom/socket/ParsedAddress {
+}
+
+public final class com/ditchoom/socket/ParsedAddress$Address : com/ditchoom/socket/ParsedAddress {
+	public fun <init> (Lcom/ditchoom/socket/NumericAddress;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NumericAddress;
+	public final fun copy (Lcom/ditchoom/socket/NumericAddress;)Lcom/ditchoom/socket/ParsedAddress$Address;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ParsedAddress$Address;Lcom/ditchoom/socket/NumericAddress;ILjava/lang/Object;)Lcom/ditchoom/socket/ParsedAddress$Address;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddress ()Lcom/ditchoom/socket/NumericAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ParsedAddress$NotNumeric : com/ditchoom/socket/ParsedAddress {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/ParsedAddress$NotNumeric;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/ParsedAddress$NotNumeric;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/ParsedAddress$NotNumeric;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLiteral ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/PollingNetworkMonitor : com/ditchoom/socket/NetworkMonitor {
+	public fun <init> ()V
+	public synthetic fun <init> (JLkotlin/jvm/functions/Function0;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLkotlin/jvm/functions/Function0;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close ()V
+	public fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public fun getLinkAddresses ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getLinkQuality ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservationCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservations ()Lkotlinx/coroutines/flow/Flow;
+	public fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class com/ditchoom/socket/PollingNetworkMonitorKt {
+	public static final fun polling-HG0u8IE (Lcom/ditchoom/socket/NetworkMonitor$Companion;J)Lcom/ditchoom/socket/NetworkMonitor;
+	public static synthetic fun polling-HG0u8IE$default (Lcom/ditchoom/socket/NetworkMonitor$Companion;JILjava/lang/Object;)Lcom/ditchoom/socket/NetworkMonitor;
+}
+
+public final class com/ditchoom/socket/RadioNetworkRequest : java/lang/AutoCloseable {
+	public static final field Companion Lcom/ditchoom/socket/RadioNetworkRequest$Companion;
+	public fun close ()V
+	public final fun getRadio ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class com/ditchoom/socket/RadioNetworkRequest$Companion {
+	public final fun open (Lcom/ditchoom/socket/transport/NetworkKind$Radio;)Lcom/ditchoom/socket/RadioNetworkRequest;
+}
+
+public abstract interface class com/ditchoom/socket/RadioNetworkState {
+}
+
+public abstract interface class com/ditchoom/socket/RadioNetworkState$Answered : com/ditchoom/socket/RadioNetworkState {
+}
+
+public final class com/ditchoom/socket/RadioNetworkState$Attached : com/ditchoom/socket/RadioNetworkState$Answered {
+	public final fun getNetwork ()Landroid/net/Network;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/RadioNetworkState$Closed : com/ditchoom/socket/RadioNetworkState$Answered {
+	public static final field INSTANCE Lcom/ditchoom/socket/RadioNetworkState$Closed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/RadioNetworkState$Refused : com/ditchoom/socket/RadioNetworkState$Answered {
+	public fun <init> (Lcom/ditchoom/socket/RadioRequestRefusal;)V
+	public final fun component1 ()Lcom/ditchoom/socket/RadioRequestRefusal;
+	public final fun copy (Lcom/ditchoom/socket/RadioRequestRefusal;)Lcom/ditchoom/socket/RadioNetworkState$Refused;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/RadioNetworkState$Refused;Lcom/ditchoom/socket/RadioRequestRefusal;ILjava/lang/Object;)Lcom/ditchoom/socket/RadioNetworkState$Refused;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/socket/RadioRequestRefusal;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/RadioNetworkState$Requesting : com/ditchoom/socket/RadioNetworkState {
+	public static final field INSTANCE Lcom/ditchoom/socket/RadioNetworkState$Requesting;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/RadioRequestRefusal {
+}
+
+public final class com/ditchoom/socket/RadioRequestRefusal$MissingPermission : com/ditchoom/socket/RadioRequestRefusal {
+	public fun <init> (Ljava/lang/SecurityException;)V
+	public final fun component1 ()Ljava/lang/SecurityException;
+	public final fun copy (Ljava/lang/SecurityException;)Lcom/ditchoom/socket/RadioRequestRefusal$MissingPermission;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/RadioRequestRefusal$MissingPermission;Ljava/lang/SecurityException;ILjava/lang/Object;)Lcom/ditchoom/socket/RadioRequestRefusal$MissingPermission;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/SecurityException;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/RadioRequestRefusal$NoApplicationContext : com/ditchoom/socket/RadioRequestRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/RadioRequestRefusal$NoApplicationContext;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/ReachResolution {
+}
+
+public final class com/ditchoom/socket/ReachResolution$Asserted : com/ditchoom/socket/ReachResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/ReachResolution$Asserted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ReachResolution$LinkOnly : com/ditchoom/socket/ReachResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/ReachResolution$LinkOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ReachResolution$RouteAndInternet : com/ditchoom/socket/ReachResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/ReachResolution$RouteAndInternet;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ReachResolution$RouteOnly : com/ditchoom/socket/ReachResolution {
+	public static final field INSTANCE Lcom/ditchoom/socket/ReachResolution$RouteOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/ScriptedNetworkMonitor : com/ditchoom/socket/NetworkMonitor {
+	public fun <init> (Lcom/ditchoom/socket/NetworkMonitorScript;)V
+	public fun close ()V
+	public fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public fun getLinkAddresses ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getLinkQuality ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservationCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getObservations ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getScript ()Lcom/ditchoom/socket/NetworkMonitorScript;
+	public fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun play (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun playIn (Lkotlinx/coroutines/CoroutineScope;)Lkotlinx/coroutines/Job;
+}
+
+public abstract interface class com/ditchoom/socket/transport/NetworkId {
+}
+
+public final class com/ditchoom/socket/transport/NetworkId$KindOnly : com/ditchoom/socket/transport/NetworkId {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkKind;)Lcom/ditchoom/socket/transport/NetworkId$KindOnly;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/NetworkId$KindOnly;Lcom/ditchoom/socket/transport/NetworkKind;ILjava/lang/Object;)Lcom/ditchoom/socket/transport/NetworkId$KindOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getKind ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/NetworkId$Link : com/ditchoom/socket/transport/NetworkId {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind;J)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public final fun component2 ()J
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkKind;J)Lcom/ditchoom/socket/transport/NetworkId$Link;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/NetworkId$Link;Lcom/ditchoom/socket/transport/NetworkKind;JILjava/lang/Object;)Lcom/ditchoom/socket/transport/NetworkId$Link;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHandle ()J
+	public final fun getKind ()Lcom/ditchoom/socket/transport/NetworkKind;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/NetworkId$Unidentified : com/ditchoom/socket/transport/NetworkId {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/NetworkId$Unidentified;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/transport/NetworkKind {
+}
+
+public final class com/ditchoom/socket/transport/NetworkKind$Cellular : com/ditchoom/socket/transport/NetworkKind$Radio {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/NetworkKind$Cellular;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/NetworkKind$Ethernet : com/ditchoom/socket/transport/NetworkKind {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/NetworkKind$Ethernet;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/NetworkKind$Other : com/ditchoom/socket/transport/NetworkKind {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/transport/NetworkKind$Other;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/NetworkKind$Other;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/transport/NetworkKind$Other;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRaw ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/transport/NetworkKind$Radio : com/ditchoom/socket/transport/NetworkKind {
+}
+
+public final class com/ditchoom/socket/transport/NetworkKind$Vpn : com/ditchoom/socket/transport/NetworkKind {
+	public fun <init> ()V
+	public fun <init> (Ljava/util/Set;)V
+	public synthetic fun <init> (Ljava/util/Set;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/util/Set;
+	public final fun copy (Ljava/util/Set;)Lcom/ditchoom/socket/transport/NetworkKind$Vpn;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/transport/NetworkKind$Vpn;Ljava/util/Set;ILjava/lang/Object;)Lcom/ditchoom/socket/transport/NetworkKind$Vpn;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTransports ()Ljava/util/Set;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/transport/NetworkKind$Wifi : com/ditchoom/socket/transport/NetworkKind$Radio {
+	public static final field INSTANCE Lcom/ditchoom/socket/transport/NetworkKind$Wifi;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+

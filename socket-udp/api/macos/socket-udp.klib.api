@@ -1,0 +1,708 @@
+// Klib ABI Dump
+// Targets: [iosArm64, iosSimulatorArm64, iosX64, js, macosArm64, macosX64, tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64, watchosSimulatorArm64, watchosX64]
+// Alias: apple => [iosArm64, iosSimulatorArm64, iosX64, macosArm64, macosX64, tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64, watchosSimulatorArm64, watchosX64]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <com.ditchoom:socket-udp>
+final enum class com.ditchoom.socket.udp/DeniedAccess : kotlin/Enum<com.ditchoom.socket.udp/DeniedAccess> { // com.ditchoom.socket.udp/DeniedAccess|null[0]
+    enum entry CellularData // com.ditchoom.socket.udp/DeniedAccess.CellularData|null[0]
+    enum entry LocalNetwork // com.ditchoom.socket.udp/DeniedAccess.LocalNetwork|null[0]
+    enum entry WifiData // com.ditchoom.socket.udp/DeniedAccess.WifiData|null[0]
+
+    final val entries // com.ditchoom.socket.udp/DeniedAccess.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.udp/DeniedAccess> // com.ditchoom.socket.udp/DeniedAccess.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun describe(): kotlin/String // com.ditchoom.socket.udp/DeniedAccess.describe|describe(){}[0]
+    final fun valueOf(kotlin/String): com.ditchoom.socket.udp/DeniedAccess // com.ditchoom.socket.udp/DeniedAccess.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.udp/DeniedAccess> // com.ditchoom.socket.udp/DeniedAccess.values|values#static(){}[0]
+}
+
+abstract interface com.ditchoom.socket.udp/MulticastDatagramChannel : com.ditchoom.buffer.flow/AddressedDatagramChannel { // com.ditchoom.socket.udp/MulticastDatagramChannel|null[0]
+    abstract suspend fun joinGroup(com.ditchoom.socket.udp/MulticastMembership) // com.ditchoom.socket.udp/MulticastDatagramChannel.joinGroup|joinGroup(com.ditchoom.socket.udp.MulticastMembership){}[0]
+    abstract suspend fun leaveGroup(com.ditchoom.socket.udp/MulticastMembership) // com.ditchoom.socket.udp/MulticastDatagramChannel.leaveGroup|leaveGroup(com.ditchoom.socket.udp.MulticastMembership){}[0]
+    abstract suspend fun setLoopbackEnabled(kotlin/Boolean) // com.ditchoom.socket.udp/MulticastDatagramChannel.setLoopbackEnabled|setLoopbackEnabled(kotlin.Boolean){}[0]
+    abstract suspend fun setOutboundInterface(com.ditchoom.socket.udp/MulticastInterface) // com.ditchoom.socket.udp/MulticastDatagramChannel.setOutboundInterface|setOutboundInterface(com.ditchoom.socket.udp.MulticastInterface){}[0]
+    abstract suspend fun setTimeToLive(kotlin/Int) // com.ditchoom.socket.udp/MulticastDatagramChannel.setTimeToLive|setTimeToLive(kotlin.Int){}[0]
+}
+
+abstract interface com.ditchoom.socket.udp/MultiplexedUdpSocket { // com.ditchoom.socket.udp/MultiplexedUdpSocket|null[0]
+    abstract val datagrams // com.ditchoom.socket.udp/MultiplexedUdpSocket.datagrams|{}datagrams[0]
+        abstract fun <get-datagrams>(): kotlinx.coroutines.flow/Flow<com.ditchoom.socket.udp/MultiplexedDatagram> // com.ditchoom.socket.udp/MultiplexedUdpSocket.datagrams.<get-datagrams>|<get-datagrams>(){}[0]
+    abstract val dropped // com.ditchoom.socket.udp/MultiplexedUdpSocket.dropped|{}dropped[0]
+        abstract fun <get-dropped>(): kotlinx.coroutines.flow/StateFlow<com.ditchoom.socket.udp/MultiplexedDropCounts> // com.ditchoom.socket.udp/MultiplexedUdpSocket.dropped.<get-dropped>|<get-dropped>(){}[0]
+    abstract val localAddress // com.ditchoom.socket.udp/MultiplexedUdpSocket.localAddress|{}localAddress[0]
+        abstract fun <get-localAddress>(): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/MultiplexedUdpSocket.localAddress.<get-localAddress>|<get-localAddress>(){}[0]
+    abstract val quic // com.ditchoom.socket.udp/MultiplexedUdpSocket.quic|{}quic[0]
+        abstract fun <get-quic>(): com.ditchoom.buffer.flow/AddressedDatagramChannel // com.ditchoom.socket.udp/MultiplexedUdpSocket.quic.<get-quic>|<get-quic>(){}[0]
+
+    abstract fun close() // com.ditchoom.socket.udp/MultiplexedUdpSocket.close|close(){}[0]
+    abstract suspend fun send(com.ditchoom.buffer/ReadBuffer, com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.buffer.flow/DatagramSendOptions = ...) // com.ditchoom.socket.udp/MultiplexedUdpSocket.send|send(com.ditchoom.buffer.ReadBuffer;com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.buffer.flow.DatagramSendOptions){}[0]
+}
+
+sealed interface com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError|null[0]
+    open fun describe(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.describe|describe(){}[0]
+
+    final class NotPermitted : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.NotPermitted|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/DatagramSendError.NotPermitted // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.NotPermitted.toString|toString(){}[0]
+    }
+
+    final class OsError : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.OsError|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/DatagramSendError.OsError.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/DatagramSendError.OsError.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.OsError.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.OsError.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/DatagramSendError.OsError // com.ditchoom.socket.udp/DatagramSendError.OsError.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.OsError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.OsError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.OsError.toString|toString(){}[0]
+    }
+
+    final class PlatformError : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.PlatformError|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/DatagramSendError.PlatformError.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val code // com.ditchoom.socket.udp/DatagramSendError.PlatformError.code|{}code[0]
+            final fun <get-code>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PlatformError.code.<get-code>|<get-code>(){}[0]
+        final val domain // com.ditchoom.socket.udp/DatagramSendError.PlatformError.domain|{}domain[0]
+            final fun <get-domain>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PlatformError.domain.<get-domain>|<get-domain>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PlatformError.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PlatformError.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/DatagramSendError.PlatformError // com.ditchoom.socket.udp/DatagramSendError.PlatformError.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.PlatformError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PlatformError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.PlatformError.toString|toString(){}[0]
+    }
+
+    final class SourceAddressUnavailable : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable|null[0]
+        constructor <init>(kotlin/String, com.ditchoom.socket.udp/SourceAddressRejection) // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.<init>|<init>(kotlin.String;com.ditchoom.socket.udp.SourceAddressRejection){}[0]
+
+        final val reason // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket.udp/SourceAddressRejection // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.reason.<get-reason>|<get-reason>(){}[0]
+        final val requestedHost // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.requestedHost|{}requestedHost[0]
+            final fun <get-requestedHost>(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.requestedHost.<get-requestedHost>|<get-requestedHost>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.component1|component1(){}[0]
+        final fun component2(): com.ditchoom.socket.udp/SourceAddressRejection // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.component2|component2(){}[0]
+        final fun copy(kotlin/String = ..., com.ditchoom.socket.udp/SourceAddressRejection = ...): com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.copy|copy(kotlin.String;com.ditchoom.socket.udp.SourceAddressRejection){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.SourceAddressUnavailable.toString|toString(){}[0]
+    }
+
+    final class TooLarge : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.TooLarge|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/DatagramSendError.TooLarge.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val attempted // com.ditchoom.socket.udp/DatagramSendError.TooLarge.attempted|{}attempted[0]
+            final fun <get-attempted>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.TooLarge.attempted.<get-attempted>|<get-attempted>(){}[0]
+        final val limit // com.ditchoom.socket.udp/DatagramSendError.TooLarge.limit|{}limit[0]
+            final fun <get-limit>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.TooLarge.limit.<get-limit>|<get-limit>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.TooLarge.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.TooLarge.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/DatagramSendError.TooLarge // com.ditchoom.socket.udp/DatagramSendError.TooLarge.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.TooLarge.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.TooLarge.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.TooLarge.toString|toString(){}[0]
+    }
+
+    final class Transport : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.Transport|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.udp/DatagramSendError.Transport.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val cause // com.ditchoom.socket.udp/DatagramSendError.Transport.cause|{}cause[0]
+            final fun <get-cause>(): kotlin/Throwable // com.ditchoom.socket.udp/DatagramSendError.Transport.cause.<get-cause>|<get-cause>(){}[0]
+
+        final fun component1(): kotlin/Throwable // com.ditchoom.socket.udp/DatagramSendError.Transport.component1|component1(){}[0]
+        final fun copy(kotlin/Throwable = ...): com.ditchoom.socket.udp/DatagramSendError.Transport // com.ditchoom.socket.udp/DatagramSendError.Transport.copy|copy(kotlin.Throwable){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.Transport.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.Transport.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.Transport.toString|toString(){}[0]
+    }
+
+    final class Unreachable : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.Unreachable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/DatagramSendError.Unreachable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/DatagramSendError.Unreachable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.Unreachable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.Unreachable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/DatagramSendError.Unreachable // com.ditchoom.socket.udp/DatagramSendError.Unreachable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.Unreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.Unreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.Unreachable.toString|toString(){}[0]
+    }
+
+    final object PortUnreachable : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.PortUnreachable|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.PortUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.PortUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.PortUnreachable.toString|toString(){}[0]
+    }
+
+    final object WouldBlock : com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.socket.udp/DatagramSendError.WouldBlock|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/DatagramSendError.WouldBlock.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/DatagramSendError.WouldBlock.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/DatagramSendError.WouldBlock.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface|null[0]
+    final class ByIndex : com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface.ByIndex|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/MulticastInterface.ByIndex.<init>|<init>(kotlin.Int){}[0]
+
+        final val index // com.ditchoom.socket.udp/MulticastInterface.ByIndex.index|{}index[0]
+            final fun <get-index>(): kotlin/Int // com.ditchoom.socket.udp/MulticastInterface.ByIndex.index.<get-index>|<get-index>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/MulticastInterface.ByIndex.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/MulticastInterface.ByIndex // com.ditchoom.socket.udp/MulticastInterface.ByIndex.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MulticastInterface.ByIndex.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MulticastInterface.ByIndex.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MulticastInterface.ByIndex.toString|toString(){}[0]
+    }
+
+    final class ByName : com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface.ByName|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket.udp/MulticastInterface.ByName.<init>|<init>(kotlin.String){}[0]
+
+        final val name // com.ditchoom.socket.udp/MulticastInterface.ByName.name|{}name[0]
+            final fun <get-name>(): kotlin/String // com.ditchoom.socket.udp/MulticastInterface.ByName.name.<get-name>|<get-name>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket.udp/MulticastInterface.ByName.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket.udp/MulticastInterface.ByName // com.ditchoom.socket.udp/MulticastInterface.ByName.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MulticastInterface.ByName.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MulticastInterface.ByName.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MulticastInterface.ByName.toString|toString(){}[0]
+    }
+
+    final object Default : com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface.Default|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MulticastInterface.Default.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MulticastInterface.Default.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MulticastInterface.Default.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.udp/MultiplexedProtocol { // com.ditchoom.socket.udp/MultiplexedProtocol|null[0]
+    sealed interface NonQuic : com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic|null[0]
+
+    final object Dtls : com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic { // com.ditchoom.socket.udp/MultiplexedProtocol.Dtls|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.Dtls.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.Dtls.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.Dtls.toString|toString(){}[0]
+    }
+
+    final object Quic : com.ditchoom.socket.udp/MultiplexedProtocol { // com.ditchoom.socket.udp/MultiplexedProtocol.Quic|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.Quic.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.Quic.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.Quic.toString|toString(){}[0]
+    }
+
+    final object RtpRtcp : com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic { // com.ditchoom.socket.udp/MultiplexedProtocol.RtpRtcp|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.RtpRtcp.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.RtpRtcp.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.RtpRtcp.toString|toString(){}[0]
+    }
+
+    final object Stun : com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic { // com.ditchoom.socket.udp/MultiplexedProtocol.Stun|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.Stun.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.Stun.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.Stun.toString|toString(){}[0]
+    }
+
+    final object TurnChannel : com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic { // com.ditchoom.socket.udp/MultiplexedProtocol.TurnChannel|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.TurnChannel.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.TurnChannel.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.TurnChannel.toString|toString(){}[0]
+    }
+
+    final object Unroutable : com.ditchoom.socket.udp/MultiplexedProtocol { // com.ditchoom.socket.udp/MultiplexedProtocol.Unroutable|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.Unroutable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.Unroutable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.Unroutable.toString|toString(){}[0]
+    }
+
+    final object Zrtp : com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic { // com.ditchoom.socket.udp/MultiplexedProtocol.Zrtp|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedProtocol.Zrtp.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedProtocol.Zrtp.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedProtocol.Zrtp.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection|null[0]
+    open fun describe(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.describe|describe(){}[0]
+
+    final class NotAssigned : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.NotAssigned.toString|toString(){}[0]
+    }
+
+    final class Undetermined : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val probeErrno // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.probeErrno|{}probeErrno[0]
+            final fun <get-probeErrno>(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.probeErrno.<get-probeErrno>|<get-probeErrno>(){}[0]
+        final val sendErrno // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.sendErrno|{}sendErrno[0]
+            final fun <get-sendErrno>(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.sendErrno.<get-sendErrno>|<get-sendErrno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/SourceAddressRejection.Undetermined // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.Undetermined.toString|toString(){}[0]
+    }
+
+    final class Unverified : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.Unverified|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.<init>|<init>(kotlin.Int){}[0]
+
+        final val probeErrno // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.probeErrno|{}probeErrno[0]
+            final fun <get-probeErrno>(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.probeErrno.<get-probeErrno>|<get-probeErrno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/SourceAddressRejection.Unverified // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.Unverified.toString|toString(){}[0]
+    }
+
+    final object NotBound : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.NotBound|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.NotBound.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.NotBound.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.NotBound.toString|toString(){}[0]
+    }
+
+    final object UnscopedLinkLocal : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.UnscopedLinkLocal|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.UnscopedLinkLocal.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.UnscopedLinkLocal.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.UnscopedLinkLocal.toString|toString(){}[0]
+    }
+
+    final object WrongFamily : com.ditchoom.socket.udp/SourceAddressRejection { // com.ditchoom.socket.udp/SourceAddressRejection.WrongFamily|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SourceAddressRejection.WrongFamily.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SourceAddressRejection.WrongFamily.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/SourceAddressRejection.WrongFamily.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError|null[0]
+    open fun describe(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.describe|describe(){}[0]
+
+    final class AddressInUse : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.AddressInUse|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpBindError.AddressInUse.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpBindError.AddressInUse.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.AddressInUse.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.AddressInUse.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpBindError.AddressInUse // com.ditchoom.socket.udp/UdpBindError.AddressInUse.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.AddressInUse.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.AddressInUse.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.AddressInUse.toString|toString(){}[0]
+    }
+
+    final class LocalAddressUnavailable : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.LocalAddressUnavailable.toString|toString(){}[0]
+    }
+
+    final class NotPermitted : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.NotPermitted|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpBindError.NotPermitted.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpBindError.NotPermitted.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.NotPermitted.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.NotPermitted.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpBindError.NotPermitted // com.ditchoom.socket.udp/UdpBindError.NotPermitted.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.NotPermitted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.NotPermitted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.NotPermitted.toString|toString(){}[0]
+    }
+
+    final class OsError : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.OsError|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpBindError.OsError.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpBindError.OsError.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.OsError.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.OsError.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpBindError.OsError // com.ditchoom.socket.udp/UdpBindError.OsError.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.OsError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.OsError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.OsError.toString|toString(){}[0]
+    }
+
+    final class SocketUnavailable : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpBindError.SocketUnavailable // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.SocketUnavailable.toString|toString(){}[0]
+    }
+
+    final class Transport : com.ditchoom.socket.udp/UdpBindError { // com.ditchoom.socket.udp/UdpBindError.Transport|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.udp/UdpBindError.Transport.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val cause // com.ditchoom.socket.udp/UdpBindError.Transport.cause|{}cause[0]
+            final fun <get-cause>(): kotlin/Throwable // com.ditchoom.socket.udp/UdpBindError.Transport.cause.<get-cause>|<get-cause>(){}[0]
+
+        final fun component1(): kotlin/Throwable // com.ditchoom.socket.udp/UdpBindError.Transport.component1|component1(){}[0]
+        final fun copy(kotlin/Throwable = ...): com.ditchoom.socket.udp/UdpBindError.Transport // com.ditchoom.socket.udp/UdpBindError.Transport.copy|copy(kotlin.Throwable){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpBindError.Transport.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpBindError.Transport.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpBindError.Transport.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError|null[0]
+    open fun describe(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.describe|describe(){}[0]
+
+    final class AddressInUse : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.AddressInUse|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.AddressInUse // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.AddressInUse.toString|toString(){}[0]
+    }
+
+    final class Denied : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.Denied|null[0]
+        constructor <init>(com.ditchoom.socket.udp/DeniedAccess) // com.ditchoom.socket.udp/UdpConnectError.Denied.<init>|<init>(com.ditchoom.socket.udp.DeniedAccess){}[0]
+
+        final val access // com.ditchoom.socket.udp/UdpConnectError.Denied.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket.udp/DeniedAccess // com.ditchoom.socket.udp/UdpConnectError.Denied.access.<get-access>|<get-access>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.udp/DeniedAccess // com.ditchoom.socket.udp/UdpConnectError.Denied.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.udp/DeniedAccess = ...): com.ditchoom.socket.udp/UdpConnectError.Denied // com.ditchoom.socket.udp/UdpConnectError.Denied.copy|copy(com.ditchoom.socket.udp.DeniedAccess){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.Denied.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.Denied.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.Denied.toString|toString(){}[0]
+    }
+
+    final class LocalAddressUnavailable : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.LocalAddressUnavailable.toString|toString(){}[0]
+    }
+
+    final class NotPermitted : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.NotPermitted|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.NotPermitted // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.NotPermitted.toString|toString(){}[0]
+    }
+
+    final class OsError : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.OsError|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.OsError.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.OsError.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.OsError.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.OsError.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.OsError // com.ditchoom.socket.udp/UdpConnectError.OsError.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.OsError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.OsError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.OsError.toString|toString(){}[0]
+    }
+
+    final class PlatformError : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.PlatformError|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.PlatformError.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val code // com.ditchoom.socket.udp/UdpConnectError.PlatformError.code|{}code[0]
+            final fun <get-code>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.PlatformError.code.<get-code>|<get-code>(){}[0]
+        final val domain // com.ditchoom.socket.udp/UdpConnectError.PlatformError.domain|{}domain[0]
+            final fun <get-domain>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.PlatformError.domain.<get-domain>|<get-domain>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.PlatformError.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.PlatformError.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.PlatformError // com.ditchoom.socket.udp/UdpConnectError.PlatformError.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.PlatformError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.PlatformError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.PlatformError.toString|toString(){}[0]
+    }
+
+    final class SocketUnavailable : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.SocketUnavailable.toString|toString(){}[0]
+    }
+
+    final class Transport : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.Transport|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.udp/UdpConnectError.Transport.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val cause // com.ditchoom.socket.udp/UdpConnectError.Transport.cause|{}cause[0]
+            final fun <get-cause>(): kotlin/Throwable // com.ditchoom.socket.udp/UdpConnectError.Transport.cause.<get-cause>|<get-cause>(){}[0]
+
+        final fun component1(): kotlin/Throwable // com.ditchoom.socket.udp/UdpConnectError.Transport.component1|component1(){}[0]
+        final fun copy(kotlin/Throwable = ...): com.ditchoom.socket.udp/UdpConnectError.Transport // com.ditchoom.socket.udp/UdpConnectError.Transport.copy|copy(kotlin.Throwable){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.Transport.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.Transport.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.Transport.toString|toString(){}[0]
+    }
+
+    final class Unreachable : com.ditchoom.socket.udp/UdpConnectError { // com.ditchoom.socket.udp/UdpConnectError.Unreachable|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/UdpConnectError.Unreachable.<init>|<init>(kotlin.Int){}[0]
+
+        final val errno // com.ditchoom.socket.udp/UdpConnectError.Unreachable.errno|{}errno[0]
+            final fun <get-errno>(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.Unreachable.errno.<get-errno>|<get-errno>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.Unreachable.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/UdpConnectError.Unreachable // com.ditchoom.socket.udp/UdpConnectError.Unreachable.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/UdpConnectError.Unreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/UdpConnectError.Unreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/UdpConnectError.Unreachable.toString|toString(){}[0]
+    }
+}
+
+final class com.ditchoom.socket.udp/DatagramSendException : kotlin/RuntimeException { // com.ditchoom.socket.udp/DatagramSendException|null[0]
+    constructor <init>(com.ditchoom.socket.udp/DatagramSendError) // com.ditchoom.socket.udp/DatagramSendException.<init>|<init>(com.ditchoom.socket.udp.DatagramSendError){}[0]
+
+    final val error // com.ditchoom.socket.udp/DatagramSendException.error|{}error[0]
+        final fun <get-error>(): com.ditchoom.socket.udp/DatagramSendError // com.ditchoom.socket.udp/DatagramSendException.error.<get-error>|<get-error>(){}[0]
+}
+
+final class com.ditchoom.socket.udp/MulticastMembership { // com.ditchoom.socket.udp/MulticastMembership|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.socket.udp/MulticastInterface = ...) // com.ditchoom.socket.udp/MulticastMembership.<init>|<init>(com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.socket.udp.MulticastInterface){}[0]
+
+    final val group // com.ditchoom.socket.udp/MulticastMembership.group|{}group[0]
+        final fun <get-group>(): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/MulticastMembership.group.<get-group>|<get-group>(){}[0]
+    final val networkInterface // com.ditchoom.socket.udp/MulticastMembership.networkInterface|{}networkInterface[0]
+        final fun <get-networkInterface>(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastMembership.networkInterface.<get-networkInterface>|<get-networkInterface>(){}[0]
+
+    final fun component1(): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/MulticastMembership.component1|component1(){}[0]
+    final fun component2(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastMembership.component2|component2(){}[0]
+    final fun copy(com.ditchoom.buffer.flow/SocketAddress = ..., com.ditchoom.socket.udp/MulticastInterface = ...): com.ditchoom.socket.udp/MulticastMembership // com.ditchoom.socket.udp/MulticastMembership.copy|copy(com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.socket.udp.MulticastInterface){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MulticastMembership.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MulticastMembership.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.udp/MulticastMembership.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.udp/MultiplexedDatagram { // com.ditchoom.socket.udp/MultiplexedDatagram|null[0]
+    final val datagram // com.ditchoom.socket.udp/MultiplexedDatagram.datagram|{}datagram[0]
+        final fun <get-datagram>(): com.ditchoom.buffer.flow/Datagram // com.ditchoom.socket.udp/MultiplexedDatagram.datagram.<get-datagram>|<get-datagram>(){}[0]
+    final val protocol // com.ditchoom.socket.udp/MultiplexedDatagram.protocol|{}protocol[0]
+        final fun <get-protocol>(): com.ditchoom.socket.udp/MultiplexedProtocol.NonQuic // com.ditchoom.socket.udp/MultiplexedDatagram.protocol.<get-protocol>|<get-protocol>(){}[0]
+}
+
+final class com.ditchoom.socket.udp/MultiplexedDropCounts { // com.ditchoom.socket.udp/MultiplexedDropCounts|null[0]
+    constructor <init>(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...) // com.ditchoom.socket.udp/MultiplexedDropCounts.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+
+    final val nonQuicOverflow // com.ditchoom.socket.udp/MultiplexedDropCounts.nonQuicOverflow|{}nonQuicOverflow[0]
+        final fun <get-nonQuicOverflow>(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.nonQuicOverflow.<get-nonQuicOverflow>|<get-nonQuicOverflow>(){}[0]
+    final val quicOverflow // com.ditchoom.socket.udp/MultiplexedDropCounts.quicOverflow|{}quicOverflow[0]
+        final fun <get-quicOverflow>(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.quicOverflow.<get-quicOverflow>|<get-quicOverflow>(){}[0]
+    final val unroutable // com.ditchoom.socket.udp/MultiplexedDropCounts.unroutable|{}unroutable[0]
+        final fun <get-unroutable>(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.unroutable.<get-unroutable>|<get-unroutable>(){}[0]
+
+    final fun component1(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.component1|component1(){}[0]
+    final fun component2(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.component2|component2(){}[0]
+    final fun component3(): kotlin/Long // com.ditchoom.socket.udp/MultiplexedDropCounts.component3|component3(){}[0]
+    final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.udp/MultiplexedDropCounts // com.ditchoom.socket.udp/MultiplexedDropCounts.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/MultiplexedDropCounts.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/MultiplexedDropCounts.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.udp/MultiplexedDropCounts.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.udp/SockAddrLayout { // com.ditchoom.socket.udp/SockAddrLayout|null[0]
+    constructor <init>(kotlin/Boolean, kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/SockAddrLayout.<init>|<init>(kotlin.Boolean;kotlin.Int;kotlin.Int){}[0]
+
+    final val afInet // com.ditchoom.socket.udp/SockAddrLayout.afInet|{}afInet[0]
+        final fun <get-afInet>(): kotlin/Int // com.ditchoom.socket.udp/SockAddrLayout.afInet.<get-afInet>|<get-afInet>(){}[0]
+    final val afInet6 // com.ditchoom.socket.udp/SockAddrLayout.afInet6|{}afInet6[0]
+        final fun <get-afInet6>(): kotlin/Int // com.ditchoom.socket.udp/SockAddrLayout.afInet6.<get-afInet6>|<get-afInet6>(){}[0]
+    final val hasLenByte // com.ditchoom.socket.udp/SockAddrLayout.hasLenByte|{}hasLenByte[0]
+        final fun <get-hasLenByte>(): kotlin/Boolean // com.ditchoom.socket.udp/SockAddrLayout.hasLenByte.<get-hasLenByte>|<get-hasLenByte>(){}[0]
+
+    final fun component1(): kotlin/Boolean // com.ditchoom.socket.udp/SockAddrLayout.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket.udp/SockAddrLayout.component2|component2(){}[0]
+    final fun component3(): kotlin/Int // com.ditchoom.socket.udp/SockAddrLayout.component3|component3(){}[0]
+    final fun copy(kotlin/Boolean = ..., kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/SockAddrLayout // com.ditchoom.socket.udp/SockAddrLayout.copy|copy(kotlin.Boolean;kotlin.Int;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/SockAddrLayout.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/SockAddrLayout.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.udp/SockAddrLayout.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.udp/SocketAddressCodec : com.ditchoom.buffer.codec/Codec<com.ditchoom.buffer.flow/SocketAddress> { // com.ditchoom.socket.udp/SocketAddressCodec|null[0]
+    constructor <init>(com.ditchoom.socket.udp/SockAddrLayout) // com.ditchoom.socket.udp/SocketAddressCodec.<init>|<init>(com.ditchoom.socket.udp.SockAddrLayout){}[0]
+
+    final fun decode(com.ditchoom.buffer/ReadBuffer, com.ditchoom.buffer.codec/DecodeContext): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/SocketAddressCodec.decode|decode(com.ditchoom.buffer.ReadBuffer;com.ditchoom.buffer.codec.DecodeContext){}[0]
+    final fun encode(com.ditchoom.buffer/WriteBuffer, com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.buffer.codec/EncodeContext) // com.ditchoom.socket.udp/SocketAddressCodec.encode|encode(com.ditchoom.buffer.WriteBuffer;com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.buffer.codec.EncodeContext){}[0]
+    final fun wireSize(com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.buffer.codec/EncodeContext): com.ditchoom.buffer.codec/WireSize // com.ditchoom.socket.udp/SocketAddressCodec.wireSize|wireSize(com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.buffer.codec.EncodeContext){}[0]
+}
+
+final class com.ditchoom.socket.udp/UdpBindException : kotlin/RuntimeException { // com.ditchoom.socket.udp/UdpBindException|null[0]
+    constructor <init>(kotlin/String, kotlin/Int, com.ditchoom.socket.udp/UdpBindError, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/UdpBindException.<init>|<init>(kotlin.String;kotlin.Int;com.ditchoom.socket.udp.UdpBindError;kotlin.Throwable?){}[0]
+
+    final val error // com.ditchoom.socket.udp/UdpBindException.error|{}error[0]
+        final fun <get-error>(): com.ditchoom.socket.udp/UdpBindError // com.ditchoom.socket.udp/UdpBindException.error.<get-error>|<get-error>(){}[0]
+    final val host // com.ditchoom.socket.udp/UdpBindException.host|{}host[0]
+        final fun <get-host>(): kotlin/String // com.ditchoom.socket.udp/UdpBindException.host.<get-host>|<get-host>(){}[0]
+    final val port // com.ditchoom.socket.udp/UdpBindException.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket.udp/UdpBindException.port.<get-port>|<get-port>(){}[0]
+}
+
+final class com.ditchoom.socket.udp/UdpConnectException : kotlin/RuntimeException { // com.ditchoom.socket.udp/UdpConnectException|null[0]
+    constructor <init>(com.ditchoom.socket.udp/UdpConnectError, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/UdpConnectException.<init>|<init>(com.ditchoom.socket.udp.UdpConnectError;kotlin.Throwable?){}[0]
+
+    final val error // com.ditchoom.socket.udp/UdpConnectException.error|{}error[0]
+        final fun <get-error>(): com.ditchoom.socket.udp/UdpConnectError // com.ditchoom.socket.udp/UdpConnectException.error.<get-error>|<get-error>(){}[0]
+}
+
+final value class com.ditchoom.socket.udp/TurnRelays { // com.ditchoom.socket.udp/TurnRelays|null[0]
+    constructor <init>(kotlin.collections/Set<com.ditchoom.buffer.flow/SocketAddress>) // com.ditchoom.socket.udp/TurnRelays.<init>|<init>(kotlin.collections.Set<com.ditchoom.buffer.flow.SocketAddress>){}[0]
+
+    final val addresses // com.ditchoom.socket.udp/TurnRelays.addresses|{}addresses[0]
+        final fun <get-addresses>(): kotlin.collections/Set<com.ditchoom.buffer.flow/SocketAddress> // com.ditchoom.socket.udp/TurnRelays.addresses.<get-addresses>|<get-addresses>(){}[0]
+
+    final fun classify(com.ditchoom.buffer/ReadBuffer, com.ditchoom.buffer.flow/SocketAddress): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/TurnRelays.classify|classify(com.ditchoom.buffer.ReadBuffer;com.ditchoom.buffer.flow.SocketAddress){}[0]
+    final fun classify(kotlin/Byte, com.ditchoom.buffer.flow/SocketAddress): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/TurnRelays.classify|classify(kotlin.Byte;com.ditchoom.buffer.flow.SocketAddress){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/TurnRelays.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/TurnRelays.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.udp/TurnRelays.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket.udp/TurnRelays.Companion|null[0]
+        final val None // com.ditchoom.socket.udp/TurnRelays.Companion.None|{}None[0]
+            final fun <get-None>(): com.ditchoom.socket.udp/TurnRelays // com.ditchoom.socket.udp/TurnRelays.Companion.None.<get-None>|<get-None>(){}[0]
+    }
+}
+
+sealed class com.ditchoom.socket.udp/MulticastException : kotlin/RuntimeException { // com.ditchoom.socket.udp/MulticastException|null[0]
+    final class ChannelClosed : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.ChannelClosed|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket.udp/MulticastException.ChannelClosed.<init>|<init>(kotlin.String){}[0]
+
+        final val operation // com.ditchoom.socket.udp/MulticastException.ChannelClosed.operation|{}operation[0]
+            final fun <get-operation>(): kotlin/String // com.ditchoom.socket.udp/MulticastException.ChannelClosed.operation.<get-operation>|<get-operation>(){}[0]
+    }
+
+    final class JoinFailed : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.JoinFailed|null[0]
+        constructor <init>(com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.socket.udp/MulticastInterface, kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/MulticastException.JoinFailed.<init>|<init>(com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.socket.udp.MulticastInterface;kotlin.String;kotlin.Throwable?){}[0]
+
+        final val group // com.ditchoom.socket.udp/MulticastException.JoinFailed.group|{}group[0]
+            final fun <get-group>(): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/MulticastException.JoinFailed.group.<get-group>|<get-group>(){}[0]
+        final val networkInterface // com.ditchoom.socket.udp/MulticastException.JoinFailed.networkInterface|{}networkInterface[0]
+            final fun <get-networkInterface>(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastException.JoinFailed.networkInterface.<get-networkInterface>|<get-networkInterface>(){}[0]
+    }
+
+    final class LeaveFailed : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.LeaveFailed|null[0]
+        constructor <init>(com.ditchoom.buffer.flow/SocketAddress, com.ditchoom.socket.udp/MulticastInterface, kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/MulticastException.LeaveFailed.<init>|<init>(com.ditchoom.buffer.flow.SocketAddress;com.ditchoom.socket.udp.MulticastInterface;kotlin.String;kotlin.Throwable?){}[0]
+
+        final val group // com.ditchoom.socket.udp/MulticastException.LeaveFailed.group|{}group[0]
+            final fun <get-group>(): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/MulticastException.LeaveFailed.group.<get-group>|<get-group>(){}[0]
+        final val networkInterface // com.ditchoom.socket.udp/MulticastException.LeaveFailed.networkInterface|{}networkInterface[0]
+            final fun <get-networkInterface>(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastException.LeaveFailed.networkInterface.<get-networkInterface>|<get-networkInterface>(){}[0]
+    }
+
+    final class NoSuchInterface : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.NoSuchInterface|null[0]
+        constructor <init>(com.ditchoom.socket.udp/MulticastInterface, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/MulticastException.NoSuchInterface.<init>|<init>(com.ditchoom.socket.udp.MulticastInterface;kotlin.Throwable?){}[0]
+
+        final val networkInterface // com.ditchoom.socket.udp/MulticastException.NoSuchInterface.networkInterface|{}networkInterface[0]
+            final fun <get-networkInterface>(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastException.NoSuchInterface.networkInterface.<get-networkInterface>|<get-networkInterface>(){}[0]
+    }
+
+    final class OptionFailed : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.OptionFailed|null[0]
+        constructor <init>(kotlin/String, kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket.udp/MulticastException.OptionFailed.<init>|<init>(kotlin.String;kotlin.String;kotlin.Throwable?){}[0]
+
+        final val option // com.ditchoom.socket.udp/MulticastException.OptionFailed.option|{}option[0]
+            final fun <get-option>(): kotlin/String // com.ditchoom.socket.udp/MulticastException.OptionFailed.option.<get-option>|<get-option>(){}[0]
+    }
+
+    final class UnsupportedInterface : com.ditchoom.socket.udp/MulticastException { // com.ditchoom.socket.udp/MulticastException.UnsupportedInterface|null[0]
+        constructor <init>(com.ditchoom.socket.udp/MulticastInterface, kotlin/String) // com.ditchoom.socket.udp/MulticastException.UnsupportedInterface.<init>|<init>(com.ditchoom.socket.udp.MulticastInterface;kotlin.String){}[0]
+
+        final val networkInterface // com.ditchoom.socket.udp/MulticastException.UnsupportedInterface.networkInterface|{}networkInterface[0]
+            final fun <get-networkInterface>(): com.ditchoom.socket.udp/MulticastInterface // com.ditchoom.socket.udp/MulticastException.UnsupportedInterface.networkInterface.<get-networkInterface>|<get-networkInterface>(){}[0]
+    }
+}
+
+final object com.ditchoom.socket.udp/UdpSocket { // com.ditchoom.socket.udp/UdpSocket|null[0]
+    final suspend fun bind(kotlin/String? = ..., kotlin/Int = ..., kotlin/Int = ..., com.ditchoom.buffer/BufferFactory = ...): com.ditchoom.buffer.flow/AddressedDatagramChannel // com.ditchoom.socket.udp/UdpSocket.bind|bind(kotlin.String?;kotlin.Int;kotlin.Int;com.ditchoom.buffer.BufferFactory){}[0]
+    final suspend fun bindMulticast(kotlin/Int, com.ditchoom.buffer.flow/AddressFamily = ..., kotlin/Int = ..., com.ditchoom.buffer/BufferFactory = ...): com.ditchoom.socket.udp/MulticastDatagramChannel // com.ditchoom.socket.udp/UdpSocket.bindMulticast|bindMulticast(kotlin.Int;com.ditchoom.buffer.flow.AddressFamily;kotlin.Int;com.ditchoom.buffer.BufferFactory){}[0]
+    final suspend fun connect(kotlin/String, kotlin/Int, kotlin/String? = ..., kotlin/Int = ..., kotlin/Int = ..., com.ditchoom.buffer/BufferFactory = ...): com.ditchoom.buffer.flow/ConnectedDatagramChannel // com.ditchoom.socket.udp/UdpSocket.connect|connect(kotlin.String;kotlin.Int;kotlin.String?;kotlin.Int;kotlin.Int;com.ditchoom.buffer.BufferFactory){}[0]
+    final suspend fun resolve(kotlin/String, kotlin/Int): com.ditchoom.buffer.flow/SocketAddress // com.ditchoom.socket.udp/UdpSocket.resolve|resolve(kotlin.String;kotlin.Int){}[0]
+}
+
+final const val com.ditchoom.socket.udp/ERRNO_NOT_SURFACED // com.ditchoom.socket.udp/ERRNO_NOT_SURFACED|{}ERRNO_NOT_SURFACED[0]
+    final fun <get-ERRNO_NOT_SURFACED>(): kotlin/Int // com.ditchoom.socket.udp/ERRNO_NOT_SURFACED.<get-ERRNO_NOT_SURFACED>|<get-ERRNO_NOT_SURFACED>(){}[0]
+final const val com.ditchoom.socket.udp/MAX_UDP_DATAGRAM_SIZE // com.ditchoom.socket.udp/MAX_UDP_DATAGRAM_SIZE|{}MAX_UDP_DATAGRAM_SIZE[0]
+    final fun <get-MAX_UDP_DATAGRAM_SIZE>(): kotlin/Int // com.ditchoom.socket.udp/MAX_UDP_DATAGRAM_SIZE.<get-MAX_UDP_DATAGRAM_SIZE>|<get-MAX_UDP_DATAGRAM_SIZE>(){}[0]
+final const val com.ditchoom.socket.udp/SOCKADDR_IN6_SIZE // com.ditchoom.socket.udp/SOCKADDR_IN6_SIZE|{}SOCKADDR_IN6_SIZE[0]
+    final fun <get-SOCKADDR_IN6_SIZE>(): kotlin/Int // com.ditchoom.socket.udp/SOCKADDR_IN6_SIZE.<get-SOCKADDR_IN6_SIZE>|<get-SOCKADDR_IN6_SIZE>(){}[0]
+final const val com.ditchoom.socket.udp/SOCKADDR_IN_SIZE // com.ditchoom.socket.udp/SOCKADDR_IN_SIZE|{}SOCKADDR_IN_SIZE[0]
+    final fun <get-SOCKADDR_IN_SIZE>(): kotlin/Int // com.ditchoom.socket.udp/SOCKADDR_IN_SIZE.<get-SOCKADDR_IN_SIZE>|<get-SOCKADDR_IN_SIZE>(){}[0]
+
+final fun (com.ditchoom.buffer.flow/AddressedDatagramChannel).com.ditchoom.socket.udp/demultiplex(kotlinx.coroutines/CoroutineScope, com.ditchoom.socket.udp/TurnRelays = ..., kotlin/Int = ...): com.ditchoom.socket.udp/MultiplexedUdpSocket // com.ditchoom.socket.udp/demultiplex|demultiplex@com.ditchoom.buffer.flow.AddressedDatagramChannel(kotlinx.coroutines.CoroutineScope;com.ditchoom.socket.udp.TurnRelays;kotlin.Int){}[0]
+final fun (com.ditchoom.buffer/ReadBuffer).com.ditchoom.socket.udp/classifyMultiplexedDatagram(): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/classifyMultiplexedDatagram|classifyMultiplexedDatagram@com.ditchoom.buffer.ReadBuffer(){}[0]
+final fun com.ditchoom.socket.udp/classifyMultiplexedDatagram(kotlin/Byte): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/classifyMultiplexedDatagram|classifyMultiplexedDatagram(kotlin.Byte){}[0]
+
+// Targets: [apple]
+final enum class com.ditchoom.socket.udp/NwRequiredInterface : kotlin/Enum<com.ditchoom.socket.udp/NwRequiredInterface> { // com.ditchoom.socket.udp/NwRequiredInterface|null[0]
+    enum entry Cellular // com.ditchoom.socket.udp/NwRequiredInterface.Cellular|null[0]
+    enum entry Wifi // com.ditchoom.socket.udp/NwRequiredInterface.Wifi|null[0]
+
+    final val entries // com.ditchoom.socket.udp/NwRequiredInterface.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.udp/NwRequiredInterface> // com.ditchoom.socket.udp/NwRequiredInterface.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.udp/NwRequiredInterface // com.ditchoom.socket.udp/NwRequiredInterface.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.udp/NwRequiredInterface> // com.ditchoom.socket.udp/NwRequiredInterface.values|values#static(){}[0]
+}
+
+// Targets: [apple]
+final val com.ditchoom.socket.udp/appleSockAddrLayout // com.ditchoom.socket.udp/appleSockAddrLayout|{}appleSockAddrLayout[0]
+    final fun <get-appleSockAddrLayout>(): com.ditchoom.socket.udp/SockAddrLayout // com.ditchoom.socket.udp/appleSockAddrLayout.<get-appleSockAddrLayout>|<get-appleSockAddrLayout>(){}[0]
+
+// Targets: [apple]
+final suspend fun (com.ditchoom.socket.udp/UdpSocket).com.ditchoom.socket.udp/connect(kotlin/String, kotlin/Int, kotlin/String?, kotlin/Int, kotlin/Int, com.ditchoom.buffer/BufferFactory, com.ditchoom.socket.udp/NwRequiredInterface): com.ditchoom.buffer.flow/ConnectedDatagramChannel // com.ditchoom.socket.udp/connect|connect@com.ditchoom.socket.udp.UdpSocket(kotlin.String;kotlin.Int;kotlin.String?;kotlin.Int;kotlin.Int;com.ditchoom.buffer.BufferFactory;com.ditchoom.socket.udp.NwRequiredInterface){}[0]

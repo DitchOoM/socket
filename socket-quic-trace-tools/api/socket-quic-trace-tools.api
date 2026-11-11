@@ -1,0 +1,16 @@
+public final class com/ditchoom/socket/quic/trace/tools/RetraceCliKt {
+	public static final fun main ([Ljava/lang/String;)V
+}
+
+public final class com/ditchoom/socket/quic/trace/tools/TraceDeobfuscator {
+	public static final field Companion Lcom/ditchoom/socket/quic/trace/tools/TraceDeobfuscator$Companion;
+	public fun <init> (Lkotlin/jvm/functions/Function1;)V
+	public final fun deobfuscate (Lcom/ditchoom/socket/testkit/trace/TraceEvent;)Lcom/ditchoom/socket/testkit/trace/TraceEvent;
+	public final fun deobfuscateAll (Ljava/util/List;)Ljava/util/List;
+	public final fun deobfuscateLine (Ljava/lang/String;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/trace/tools/TraceDeobfuscator$Companion {
+	public final fun fromMapping (Ljava/lang/String;)Lcom/ditchoom/socket/quic/trace/tools/TraceDeobfuscator;
+}
+

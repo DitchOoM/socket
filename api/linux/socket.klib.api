@@ -1,0 +1,1656 @@
+// Klib ABI Dump
+// Targets: [js, linuxArm64, linuxX64, wasmJs]
+// Alias: linux => [linuxArm64, linuxX64]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <com.ditchoom:socket>
+final enum class com.ditchoom.socket.transport/CacheScope : kotlin/Enum<com.ditchoom.socket.transport/CacheScope> { // com.ditchoom.socket.transport/CacheScope|null[0]
+    enum entry None // com.ditchoom.socket.transport/CacheScope.None|null[0]
+    enum entry PerHost // com.ditchoom.socket.transport/CacheScope.PerHost|null[0]
+    enum entry PerNetwork // com.ditchoom.socket.transport/CacheScope.PerNetwork|null[0]
+
+    final val entries // com.ditchoom.socket.transport/CacheScope.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.transport/CacheScope> // com.ditchoom.socket.transport/CacheScope.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.transport/CacheScope // com.ditchoom.socket.transport/CacheScope.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.transport/CacheScope> // com.ditchoom.socket.transport/CacheScope.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket.transport/TransportFamily : kotlin/Enum<com.ditchoom.socket.transport/TransportFamily> { // com.ditchoom.socket.transport/TransportFamily|null[0]
+    enum entry Tcp // com.ditchoom.socket.transport/TransportFamily.Tcp|null[0]
+    enum entry Udp // com.ditchoom.socket.transport/TransportFamily.Udp|null[0]
+
+    final val entries // com.ditchoom.socket.transport/TransportFamily.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.transport/TransportFamily> // com.ditchoom.socket.transport/TransportFamily.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.transport/TransportFamily // com.ditchoom.socket.transport/TransportFamily.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.transport/TransportFamily> // com.ditchoom.socket.transport/TransportFamily.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket/IpFamily : kotlin/Enum<com.ditchoom.socket/IpFamily> { // com.ditchoom.socket/IpFamily|null[0]
+    enum entry V4 // com.ditchoom.socket/IpFamily.V4|null[0]
+    enum entry V6 // com.ditchoom.socket/IpFamily.V6|null[0]
+
+    final val entries // com.ditchoom.socket/IpFamily.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket/IpFamily> // com.ditchoom.socket/IpFamily.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket/IpFamily // com.ditchoom.socket/IpFamily.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket/IpFamily> // com.ditchoom.socket/IpFamily.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket/NetworkAccess : kotlin/Enum<com.ditchoom.socket/NetworkAccess> { // com.ditchoom.socket/NetworkAccess|null[0]
+    enum entry CellularData // com.ditchoom.socket/NetworkAccess.CellularData|null[0]
+    enum entry LocalNetwork // com.ditchoom.socket/NetworkAccess.LocalNetwork|null[0]
+    enum entry WifiData // com.ditchoom.socket/NetworkAccess.WifiData|null[0]
+
+    final val description // com.ditchoom.socket/NetworkAccess.description|{}description[0]
+        final fun <get-description>(): kotlin/String // com.ditchoom.socket/NetworkAccess.description.<get-description>|<get-description>(){}[0]
+    final val entries // com.ditchoom.socket/NetworkAccess.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket/NetworkAccess> // com.ditchoom.socket/NetworkAccess.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket/NetworkAccess.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket/NetworkAccess> // com.ditchoom.socket/NetworkAccess.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket/TransportKind : kotlin/Enum<com.ditchoom.socket/TransportKind> { // com.ditchoom.socket/TransportKind|null[0]
+    enum entry QUIC // com.ditchoom.socket/TransportKind.QUIC|null[0]
+    enum entry TCP // com.ditchoom.socket/TransportKind.TCP|null[0]
+    enum entry WEB_SOCKET // com.ditchoom.socket/TransportKind.WEB_SOCKET|null[0]
+    enum entry WEB_TRANSPORT // com.ditchoom.socket/TransportKind.WEB_TRANSPORT|null[0]
+
+    final val entries // com.ditchoom.socket/TransportKind.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket/TransportKind> // com.ditchoom.socket/TransportKind.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket/TransportKind // com.ditchoom.socket/TransportKind.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket/TransportKind> // com.ditchoom.socket/TransportKind.values|values#static(){}[0]
+}
+
+abstract fun interface com.ditchoom.socket.transport/FallbackPolicy { // com.ditchoom.socket.transport/FallbackPolicy|null[0]
+    abstract fun classify(kotlin/Throwable): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/FallbackPolicy.classify|classify(kotlin.Throwable){}[0]
+}
+
+abstract fun interface com.ditchoom.socket.transport/Liveness { // com.ditchoom.socket.transport/Liveness|null[0]
+    abstract suspend fun probe(): com.ditchoom.socket.transport/Liveness.Result // com.ditchoom.socket.transport/Liveness.probe|probe(){}[0]
+
+    final enum class Result : kotlin/Enum<com.ditchoom.socket.transport/Liveness.Result> { // com.ditchoom.socket.transport/Liveness.Result|null[0]
+        enum entry Alive // com.ditchoom.socket.transport/Liveness.Result.Alive|null[0]
+        enum entry Dead // com.ditchoom.socket.transport/Liveness.Result.Dead|null[0]
+        enum entry Unknown // com.ditchoom.socket.transport/Liveness.Result.Unknown|null[0]
+
+        final val entries // com.ditchoom.socket.transport/Liveness.Result.entries|#static{}entries[0]
+            final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.transport/Liveness.Result> // com.ditchoom.socket.transport/Liveness.Result.entries.<get-entries>|<get-entries>#static(){}[0]
+
+        final fun valueOf(kotlin/String): com.ditchoom.socket.transport/Liveness.Result // com.ditchoom.socket.transport/Liveness.Result.valueOf|valueOf#static(kotlin.String){}[0]
+        final fun values(): kotlin/Array<com.ditchoom.socket.transport/Liveness.Result> // com.ditchoom.socket.transport/Liveness.Result.values|values#static(){}[0]
+    }
+}
+
+abstract fun interface com.ditchoom.socket/HostResolver { // com.ditchoom.socket/HostResolver|null[0]
+    abstract suspend fun resolve(kotlin/String): com.ditchoom.socket/Resolution // com.ditchoom.socket/HostResolver.resolve|resolve(kotlin.String){}[0]
+
+    final object Companion { // com.ditchoom.socket/HostResolver.Companion|null[0]
+        final fun platform(): com.ditchoom.socket/HostResolver // com.ditchoom.socket/HostResolver.Companion.platform|platform(){}[0]
+    }
+}
+
+abstract fun interface com.ditchoom.socket/ReconnectionClassifier { // com.ditchoom.socket/ReconnectionClassifier|null[0]
+    abstract suspend fun classify(kotlin/Throwable): com.ditchoom.socket/ReconnectDecision // com.ditchoom.socket/ReconnectionClassifier.classify|classify(kotlin.Throwable){}[0]
+}
+
+abstract interface <#A: kotlin/Any> com.ditchoom.socket.transport/SessionTransport { // com.ditchoom.socket.transport/SessionTransport|null[0]
+    abstract suspend fun close(#A) // com.ditchoom.socket.transport/SessionTransport.close|close(1:0){}[0]
+    abstract suspend fun establish(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig = ...): #A // com.ditchoom.socket.transport/SessionTransport.establish|establish(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+}
+
+abstract interface com.ditchoom.socket.transport/CapabilityCache { // com.ditchoom.socket.transport/CapabilityCache|null[0]
+    abstract fun order(kotlin/String, com.ditchoom.socket.transport/NetworkId, kotlin.collections/List<com.ditchoom.socket.transport/Transport>): kotlin.collections/List<com.ditchoom.socket.transport/Transport> // com.ditchoom.socket.transport/CapabilityCache.order|order(kotlin.String;com.ditchoom.socket.transport.NetworkId;kotlin.collections.List<com.ditchoom.socket.transport.Transport>){}[0]
+    abstract fun recordSuccess(kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/CapabilityCache.recordSuccess|recordSuccess(kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+    abstract fun recordUnsupported(com.ditchoom.socket.transport/CacheScope, kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/CapabilityCache.recordUnsupported|recordUnsupported(com.ditchoom.socket.transport.CacheScope;kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+}
+
+abstract interface com.ditchoom.socket.transport/MultiplexingTransport { // com.ditchoom.socket.transport/MultiplexingTransport|null[0]
+    abstract suspend fun <#A1: kotlin/Any?, #B1: kotlin/Any?> withMux(kotlin/String, kotlin/Int, com.ditchoom.buffer.codec/Codec<#A1>, kotlin/Int = ..., com.ditchoom.socket.transport/OverflowPolicy<#A1> = ..., com.ditchoom.socket/TransportConfig = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.buffer.flow/StreamMux<#A1>, #B1>): #B1 // com.ditchoom.socket.transport/MultiplexingTransport.withMux|withMux(kotlin.String;kotlin.Int;com.ditchoom.buffer.codec.Codec<0:0>;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<0:0>;com.ditchoom.socket.TransportConfig;kotlin.coroutines.SuspendFunction1<com.ditchoom.buffer.flow.StreamMux<0:0>,0:1>){0§<kotlin.Any?>;1§<kotlin.Any?>}[0]
+}
+
+abstract interface com.ditchoom.socket.transport/MuxIdentified { // com.ditchoom.socket.transport/MuxIdentified|null[0]
+    abstract val muxStreamId // com.ditchoom.socket.transport/MuxIdentified.muxStreamId|{}muxStreamId[0]
+        abstract fun <get-muxStreamId>(): kotlin/Long // com.ditchoom.socket.transport/MuxIdentified.muxStreamId.<get-muxStreamId>|<get-muxStreamId>(){}[0]
+}
+
+abstract interface com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.transport/Transport|null[0]
+    open val family // com.ditchoom.socket.transport/Transport.family|{}family[0]
+        open fun <get-family>(): com.ditchoom.socket.transport/TransportFamily // com.ditchoom.socket.transport/Transport.family.<get-family>|<get-family>(){}[0]
+
+    abstract suspend fun connect(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.transport/Transport.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+}
+
+abstract interface com.ditchoom.socket/ClientSocket : com.ditchoom.socket/SocketController { // com.ditchoom.socket/ClientSocket|null[0]
+    final object Companion // com.ditchoom.socket/ClientSocket.Companion|null[0]
+}
+
+abstract interface com.ditchoom.socket/ClientToServerSocket : com.ditchoom.socket/ClientSocket { // com.ditchoom.socket/ClientToServerSocket|null[0]
+    abstract suspend fun open(kotlin/Int, kotlin/String? = ...) // com.ditchoom.socket/ClientToServerSocket.open|open(kotlin.Int;kotlin.String?){}[0]
+}
+
+abstract interface com.ditchoom.socket/ConnectionFailure { // com.ditchoom.socket/ConnectionFailure|null[0]
+    abstract val reason // com.ditchoom.socket/ConnectionFailure.reason|{}reason[0]
+        abstract fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/ConnectionFailure.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+abstract interface com.ditchoom.socket/ServerSocket { // com.ditchoom.socket/ServerSocket|null[0]
+    abstract fun isListening(): kotlin/Boolean // com.ditchoom.socket/ServerSocket.isListening|isListening(){}[0]
+    abstract fun port(): kotlin/Int // com.ditchoom.socket/ServerSocket.port|port(){}[0]
+    abstract suspend fun bind(kotlin/Int = ..., kotlin/String? = ..., kotlin/Int = ...): kotlinx.coroutines.flow/Flow<com.ditchoom.socket/ClientSocket> // com.ditchoom.socket/ServerSocket.bind|bind(kotlin.Int;kotlin.String?;kotlin.Int){}[0]
+    abstract suspend fun close() // com.ditchoom.socket/ServerSocket.close|close(){}[0]
+
+    final object Companion // com.ditchoom.socket/ServerSocket.Companion|null[0]
+}
+
+abstract interface com.ditchoom.socket/SocketController : com.ditchoom.buffer.flow/ByteStream { // com.ditchoom.socket/SocketController|null[0]
+    abstract suspend fun localPort(): kotlin/Int // com.ditchoom.socket/SocketController.localPort|localPort(){}[0]
+    abstract suspend fun remotePort(): kotlin/Int // com.ditchoom.socket/SocketController.remotePort|remotePort(){}[0]
+}
+
+sealed interface <#A: in kotlin/Any?> com.ditchoom.socket.transport/OverflowPolicy { // com.ditchoom.socket.transport/OverflowPolicy|null[0]
+    final class <#A1: kotlin/Any?> DropNewest : com.ditchoom.socket.transport/OverflowPolicy<#A1> { // com.ditchoom.socket.transport/OverflowPolicy.DropNewest|null[0]
+        constructor <init>(kotlin/Function1<#A1, kotlin/Unit>) // com.ditchoom.socket.transport/OverflowPolicy.DropNewest.<init>|<init>(kotlin.Function1<1:0,kotlin.Unit>){}[0]
+
+        final val onOverflow // com.ditchoom.socket.transport/OverflowPolicy.DropNewest.onOverflow|{}onOverflow[0]
+            final fun <get-onOverflow>(): kotlin/Function1<#A1, kotlin/Unit> // com.ditchoom.socket.transport/OverflowPolicy.DropNewest.onOverflow.<get-onOverflow>|<get-onOverflow>(){}[0]
+    }
+
+    final class <#A1: kotlin/Any?> DropOldest : com.ditchoom.socket.transport/OverflowPolicy<#A1> { // com.ditchoom.socket.transport/OverflowPolicy.DropOldest|null[0]
+        constructor <init>(kotlin/Function1<#A1, kotlin/Unit>) // com.ditchoom.socket.transport/OverflowPolicy.DropOldest.<init>|<init>(kotlin.Function1<1:0,kotlin.Unit>){}[0]
+
+        final val onOverflow // com.ditchoom.socket.transport/OverflowPolicy.DropOldest.onOverflow|{}onOverflow[0]
+            final fun <get-onOverflow>(): kotlin/Function1<#A1, kotlin/Unit> // com.ditchoom.socket.transport/OverflowPolicy.DropOldest.onOverflow.<get-onOverflow>|<get-onOverflow>(){}[0]
+    }
+
+    final object Fail : com.ditchoom.socket.transport/OverflowPolicy<kotlin/Any?> { // com.ditchoom.socket.transport/OverflowPolicy.Fail|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.transport/OverflowPolicy.Fail.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.transport/OverflowPolicy.Fail.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.transport/OverflowPolicy.Fail.toString|toString(){}[0]
+    }
+
+    final object Suspend : com.ditchoom.socket.transport/OverflowPolicy<kotlin/Any?> { // com.ditchoom.socket.transport/OverflowPolicy.Suspend|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.transport/OverflowPolicy.Suspend.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.transport/OverflowPolicy.Suspend.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.transport/OverflowPolicy.Suspend.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/AttemptVerdict { // com.ditchoom.socket/AttemptVerdict|null[0]
+    final object Companion { // com.ditchoom.socket/AttemptVerdict.Companion|null[0]
+        final fun of(kotlin/Throwable): com.ditchoom.socket/AttemptVerdict // com.ditchoom.socket/AttemptVerdict.Companion.of|of(kotlin.Throwable){}[0]
+    }
+
+    final object Fatal : com.ditchoom.socket/AttemptVerdict { // com.ditchoom.socket/AttemptVerdict.Fatal|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/AttemptVerdict.Fatal.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/AttemptVerdict.Fatal.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/AttemptVerdict.Fatal.toString|toString(){}[0]
+    }
+
+    final object TryOthers : com.ditchoom.socket/AttemptVerdict { // com.ditchoom.socket/AttemptVerdict.TryOthers|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/AttemptVerdict.TryOthers.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/AttemptVerdict.TryOthers.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/AttemptVerdict.TryOthers.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure|null[0]
+    abstract val description // com.ditchoom.socket/CertificateHashPinningFailure.description|{}description[0]
+        abstract fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.description.<get-description>|<get-description>(){}[0]
+
+    final class CertificateParseFailed : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.<init>|<init>(kotlin.String){}[0]
+
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.description.<get-description>|<get-description>(){}[0]
+        final val detail // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.detail|{}detail[0]
+            final fun <get-detail>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.detail.<get-detail>|<get-detail>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateParseFailed.toString|toString(){}[0]
+    }
+
+    final class CertificateTooLarge : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.description.<get-description>|<get-description>(){}[0]
+        final val maxBytes // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.maxBytes|{}maxBytes[0]
+            final fun <get-maxBytes>(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.maxBytes.<get-maxBytes>|<get-maxBytes>(){}[0]
+        final val sizeBytes // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.sizeBytes|{}sizeBytes[0]
+            final fun <get-sizeBytes>(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.sizeBytes.<get-sizeBytes>|<get-sizeBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.CertificateTooLarge.toString|toString(){}[0]
+    }
+
+    final class HashMismatch : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch|null[0]
+        constructor <init>(kotlin/Int, kotlin/String) // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.<init>|<init>(kotlin.Int;kotlin.String){}[0]
+
+        final val computedLeafHash // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.computedLeafHash|{}computedLeafHash[0]
+            final fun <get-computedLeafHash>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.computedLeafHash.<get-computedLeafHash>|<get-computedLeafHash>(){}[0]
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.description.<get-description>|<get-description>(){}[0]
+        final val pinnedCount // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.pinnedCount|{}pinnedCount[0]
+            final fun <get-pinnedCount>(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.pinnedCount.<get-pinnedCount>|<get-pinnedCount>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.component1|component1(){}[0]
+        final fun component2(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/String = ...): com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.copy|copy(kotlin.Int;kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.HashMismatch.toString|toString(){}[0]
+    }
+
+    final class NotTemporallyValid : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid|null[0]
+        constructor <init>(kotlin.time/Instant, kotlin.time/Instant, kotlin.time/Instant) // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.<init>|<init>(kotlin.time.Instant;kotlin.time.Instant;kotlin.time.Instant){}[0]
+
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.description.<get-description>|<get-description>(){}[0]
+        final val notAfter // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.notAfter|{}notAfter[0]
+            final fun <get-notAfter>(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.notAfter.<get-notAfter>|<get-notAfter>(){}[0]
+        final val notBefore // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.notBefore|{}notBefore[0]
+            final fun <get-notBefore>(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.notBefore.<get-notBefore>|<get-notBefore>(){}[0]
+        final val now // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.now|{}now[0]
+            final fun <get-now>(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.now.<get-now>|<get-now>(){}[0]
+
+        final fun component1(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.component1|component1(){}[0]
+        final fun component2(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.component2|component2(){}[0]
+        final fun component3(): kotlin.time/Instant // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.component3|component3(){}[0]
+        final fun copy(kotlin.time/Instant = ..., kotlin.time/Instant = ..., kotlin.time/Instant = ...): com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.copy|copy(kotlin.time.Instant;kotlin.time.Instant;kotlin.time.Instant){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.NotTemporallyValid.toString|toString(){}[0]
+    }
+
+    final class UnsupportedPublicKey : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.<init>|<init>(kotlin.String){}[0]
+
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.description.<get-description>|<get-description>(){}[0]
+        final val detail // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.detail|{}detail[0]
+            final fun <get-detail>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.detail.<get-detail>|<get-detail>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.UnsupportedPublicKey.toString|toString(){}[0]
+    }
+
+    final class ValidityPeriodTooLong : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong|null[0]
+        constructor <init>(kotlin.time/Duration, kotlin.time/Duration) // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.<init>|<init>(kotlin.time.Duration;kotlin.time.Duration){}[0]
+
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.description.<get-description>|<get-description>(){}[0]
+        final val maxValidity // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.maxValidity|{}maxValidity[0]
+            final fun <get-maxValidity>(): kotlin.time/Duration // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.maxValidity.<get-maxValidity>|<get-maxValidity>(){}[0]
+        final val validity // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.validity|{}validity[0]
+            final fun <get-validity>(): kotlin.time/Duration // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.validity.<get-validity>|<get-validity>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.component1|component1(){}[0]
+        final fun component2(): kotlin.time/Duration // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.component2|component2(){}[0]
+        final fun copy(kotlin.time/Duration = ..., kotlin.time/Duration = ...): com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.copy|copy(kotlin.time.Duration;kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.ValidityPeriodTooLong.toString|toString(){}[0]
+    }
+
+    final object NoPeerCertificate : com.ditchoom.socket/CertificateHashPinningFailure { // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate|null[0]
+        final val description // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/CertificateHashPinningFailure.NoPeerCertificate.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ConnectPacing { // com.ditchoom.socket/ConnectPacing|null[0]
+    final class Staggered : com.ditchoom.socket/ConnectPacing { // com.ditchoom.socket/ConnectPacing.Staggered|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket/ConnectPacing.Staggered.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val attemptDelay // com.ditchoom.socket/ConnectPacing.Staggered.attemptDelay|{}attemptDelay[0]
+            final fun <get-attemptDelay>(): kotlin.time/Duration // com.ditchoom.socket/ConnectPacing.Staggered.attemptDelay.<get-attemptDelay>|<get-attemptDelay>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/ConnectPacing.Staggered.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket/ConnectPacing.Staggered // com.ditchoom.socket/ConnectPacing.Staggered.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectPacing.Staggered.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectPacing.Staggered.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectPacing.Staggered.toString|toString(){}[0]
+
+        final object Companion { // com.ditchoom.socket/ConnectPacing.Staggered.Companion|null[0]
+            final val RECOMMENDED // com.ditchoom.socket/ConnectPacing.Staggered.Companion.RECOMMENDED|{}RECOMMENDED[0]
+                final fun <get-RECOMMENDED>(): com.ditchoom.socket/ConnectPacing.Staggered // com.ditchoom.socket/ConnectPacing.Staggered.Companion.RECOMMENDED.<get-RECOMMENDED>|<get-RECOMMENDED>(){}[0]
+        }
+    }
+
+    final object Sequential : com.ditchoom.socket/ConnectPacing { // com.ditchoom.socket/ConnectPacing.Sequential|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectPacing.Sequential.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectPacing.Sequential.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectPacing.Sequential.toString|toString(){}[0]
+    }
+
+    final object Simultaneous : com.ditchoom.socket/ConnectPacing { // com.ditchoom.socket/ConnectPacing.Simultaneous|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectPacing.Simultaneous.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectPacing.Simultaneous.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectPacing.Simultaneous.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason|null[0]
+    abstract val description // com.ditchoom.socket/ConnectionFailureReason.description|{}description[0]
+        abstract fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.description.<get-description>|<get-description>(){}[0]
+
+    final class AccessDenied : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.AccessDenied|null[0]
+        constructor <init>(com.ditchoom.socket/NetworkAccess) // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.<init>|<init>(com.ditchoom.socket.NetworkAccess){}[0]
+
+        final val access // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.access.<get-access>|<get-access>(){}[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.description.<get-description>|<get-description>(){}[0]
+
+        final fun component1(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket/NetworkAccess = ...): com.ditchoom.socket/ConnectionFailureReason.AccessDenied // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.copy|copy(com.ditchoom.socket.NetworkAccess){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.AccessDenied.toString|toString(){}[0]
+    }
+
+    final class Unknown : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.Unknown|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/ConnectionFailureReason.Unknown.<init>|<init>(kotlin.String){}[0]
+
+        final val description // com.ditchoom.socket/ConnectionFailureReason.Unknown.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Unknown.description.<get-description>|<get-description>(){}[0]
+        final val raw // com.ditchoom.socket/ConnectionFailureReason.Unknown.raw|{}raw[0]
+            final fun <get-raw>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Unknown.raw.<get-raw>|<get-raw>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Unknown.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/ConnectionFailureReason.Unknown // com.ditchoom.socket/ConnectionFailureReason.Unknown.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.Unknown.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.Unknown.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Unknown.toString|toString(){}[0]
+    }
+
+    final object HostUnreachable : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.HostUnreachable.toString|toString(){}[0]
+    }
+
+    final object NetworkUnreachable : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.NetworkUnreachable.toString|toString(){}[0]
+    }
+
+    final object OutOfMemory : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.OutOfMemory.toString|toString(){}[0]
+    }
+
+    final object Refused : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.Refused|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.Refused.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Refused.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.Refused.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.Refused.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Refused.toString|toString(){}[0]
+    }
+
+    final object Timeout : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.Timeout|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.Timeout.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Timeout.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.Timeout.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.Timeout.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.Timeout.toString|toString(){}[0]
+    }
+
+    final object TlsBadCertificate : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsBadCertificate.toString|toString(){}[0]
+    }
+
+    final object TlsHandshake : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsHandshake.toString|toString(){}[0]
+    }
+
+    final object TlsProtocolMismatch : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.TlsProtocolMismatch.toString|toString(){}[0]
+    }
+
+    final object UnknownHost : com.ditchoom.socket/ConnectionFailureReason { // com.ditchoom.socket/ConnectionFailureReason.UnknownHost|null[0]
+        final val description // com.ditchoom.socket/ConnectionFailureReason.UnknownHost.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.UnknownHost.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionFailureReason.UnknownHost.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionFailureReason.UnknownHost.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionFailureReason.UnknownHost.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ConnectionState { // com.ditchoom.socket/ConnectionState|null[0]
+    open class Disconnected : com.ditchoom.socket/ConnectionState { // com.ditchoom.socket/ConnectionState.Disconnected|null[0]
+        constructor <init>(kotlin/Throwable? = ...) // com.ditchoom.socket/ConnectionState.Disconnected.<init>|<init>(kotlin.Throwable?){}[0]
+
+        final val t // com.ditchoom.socket/ConnectionState.Disconnected.t|{}t[0]
+            final fun <get-t>(): kotlin/Throwable? // com.ditchoom.socket/ConnectionState.Disconnected.t.<get-t>|<get-t>(){}[0]
+    }
+
+    final object Connected : com.ditchoom.socket/ConnectionState { // com.ditchoom.socket/ConnectionState.Connected|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionState.Connected.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionState.Connected.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionState.Connected.toString|toString(){}[0]
+    }
+
+    final object Connecting : com.ditchoom.socket/ConnectionState { // com.ditchoom.socket/ConnectionState.Connecting|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionState.Connecting.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionState.Connecting.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionState.Connecting.toString|toString(){}[0]
+    }
+
+    final object Initialized : com.ditchoom.socket/ConnectionState { // com.ditchoom.socket/ConnectionState.Initialized|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ConnectionState.Initialized.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ConnectionState.Initialized.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ConnectionState.Initialized.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/NameResolution { // com.ditchoom.socket/NameResolution|null[0]
+    final class Via : com.ditchoom.socket/NameResolution { // com.ditchoom.socket/NameResolution.Via|null[0]
+        constructor <init>(com.ditchoom.socket/HostResolver) // com.ditchoom.socket/NameResolution.Via.<init>|<init>(com.ditchoom.socket.HostResolver){}[0]
+
+        final val resolver // com.ditchoom.socket/NameResolution.Via.resolver|{}resolver[0]
+            final fun <get-resolver>(): com.ditchoom.socket/HostResolver // com.ditchoom.socket/NameResolution.Via.resolver.<get-resolver>|<get-resolver>(){}[0]
+
+        final fun component1(): com.ditchoom.socket/HostResolver // com.ditchoom.socket/NameResolution.Via.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket/HostResolver = ...): com.ditchoom.socket/NameResolution.Via // com.ditchoom.socket/NameResolution.Via.copy|copy(com.ditchoom.socket.HostResolver){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/NameResolution.Via.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/NameResolution.Via.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/NameResolution.Via.toString|toString(){}[0]
+    }
+
+    final object Platform : com.ditchoom.socket/NameResolution { // com.ditchoom.socket/NameResolution.Platform|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/NameResolution.Platform.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/NameResolution.Platform.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/NameResolution.Platform.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ReconnectDecision { // com.ditchoom.socket/ReconnectDecision|null[0]
+    final value class RetryAfter : com.ditchoom.socket/ReconnectDecision { // com.ditchoom.socket/ReconnectDecision.RetryAfter|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket/ReconnectDecision.RetryAfter.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val delay // com.ditchoom.socket/ReconnectDecision.RetryAfter.delay|{}delay[0]
+            final fun <get-delay>(): kotlin.time/Duration // com.ditchoom.socket/ReconnectDecision.RetryAfter.delay.<get-delay>|<get-delay>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ReconnectDecision.RetryAfter.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ReconnectDecision.RetryAfter.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ReconnectDecision.RetryAfter.toString|toString(){}[0]
+    }
+
+    final object GiveUp : com.ditchoom.socket/ReconnectDecision { // com.ditchoom.socket/ReconnectDecision.GiveUp|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ReconnectDecision.GiveUp.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ReconnectDecision.GiveUp.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ReconnectDecision.GiveUp.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution|null[0]
+    final class Failed : com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution.Failed|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable) // com.ditchoom.socket/Resolution.Failed.<init>|<init>(kotlin.String;kotlin.Throwable){}[0]
+
+        final val cause // com.ditchoom.socket/Resolution.Failed.cause|{}cause[0]
+            final fun <get-cause>(): kotlin/Throwable // com.ditchoom.socket/Resolution.Failed.cause.<get-cause>|<get-cause>(){}[0]
+        final val host // com.ditchoom.socket/Resolution.Failed.host|{}host[0]
+            final fun <get-host>(): kotlin/String // com.ditchoom.socket/Resolution.Failed.host.<get-host>|<get-host>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/Resolution.Failed.component1|component1(){}[0]
+        final fun component2(): kotlin/Throwable // com.ditchoom.socket/Resolution.Failed.component2|component2(){}[0]
+        final fun copy(kotlin/String = ..., kotlin/Throwable = ...): com.ditchoom.socket/Resolution.Failed // com.ditchoom.socket/Resolution.Failed.copy|copy(kotlin.String;kotlin.Throwable){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/Resolution.Failed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/Resolution.Failed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/Resolution.Failed.toString|toString(){}[0]
+    }
+
+    final class NoAddress : com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution.NoAddress|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/Resolution.NoAddress.<init>|<init>(kotlin.String){}[0]
+
+        final val host // com.ditchoom.socket/Resolution.NoAddress.host|{}host[0]
+            final fun <get-host>(): kotlin/String // com.ditchoom.socket/Resolution.NoAddress.host.<get-host>|<get-host>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/Resolution.NoAddress.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/Resolution.NoAddress // com.ditchoom.socket/Resolution.NoAddress.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/Resolution.NoAddress.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/Resolution.NoAddress.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/Resolution.NoAddress.toString|toString(){}[0]
+    }
+
+    final class Resolved : com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution.Resolved|null[0]
+        constructor <init>(kotlin.collections/List<com.ditchoom.socket/ResolvedAddress>) // com.ditchoom.socket/Resolution.Resolved.<init>|<init>(kotlin.collections.List<com.ditchoom.socket.ResolvedAddress>){}[0]
+
+        final val candidates // com.ditchoom.socket/Resolution.Resolved.candidates|{}candidates[0]
+            final fun <get-candidates>(): kotlin.collections/List<com.ditchoom.socket/ResolvedAddress> // com.ditchoom.socket/Resolution.Resolved.candidates.<get-candidates>|<get-candidates>(){}[0]
+
+        final fun component1(): kotlin.collections/List<com.ditchoom.socket/ResolvedAddress> // com.ditchoom.socket/Resolution.Resolved.component1|component1(){}[0]
+        final fun copy(kotlin.collections/List<com.ditchoom.socket/ResolvedAddress> = ...): com.ditchoom.socket/Resolution.Resolved // com.ditchoom.socket/Resolution.Resolved.copy|copy(kotlin.collections.List<com.ditchoom.socket.ResolvedAddress>){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/Resolution.Resolved.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/Resolution.Resolved.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/Resolution.Resolved.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection|null[0]
+    abstract val description // com.ditchoom.socket/ServerCertificateRejection.description|{}description[0]
+        abstract fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.description.<get-description>|<get-description>(){}[0]
+
+    final class CertificateTooLarge : com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.description.<get-description>|<get-description>(){}[0]
+        final val maxBytes // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.maxBytes|{}maxBytes[0]
+            final fun <get-maxBytes>(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.maxBytes.<get-maxBytes>|<get-maxBytes>(){}[0]
+        final val sizeBytes // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.sizeBytes|{}sizeBytes[0]
+            final fun <get-sizeBytes>(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.sizeBytes.<get-sizeBytes>|<get-sizeBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.CertificateTooLarge.toString|toString(){}[0]
+    }
+
+    final class ChainTooLong : com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.<init>|<init>(kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.description.<get-description>|<get-description>(){}[0]
+        final val maxCertificates // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.maxCertificates|{}maxCertificates[0]
+            final fun <get-maxCertificates>(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.maxCertificates.<get-maxCertificates>|<get-maxCertificates>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket/ServerCertificateRejection.ChainTooLong // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.ChainTooLong.toString|toString(){}[0]
+    }
+
+    final class RejectedByVerifier : com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.<init>|<init>(kotlin.String){}[0]
+
+        final val description // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.description.<get-description>|<get-description>(){}[0]
+        final val reason // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.reason|{}reason[0]
+            final fun <get-reason>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.reason.<get-reason>|<get-reason>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.copy|copy(kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.RejectedByVerifier.toString|toString(){}[0]
+    }
+
+    final class UntrustedBySystem : com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem|null[0]
+        constructor <init>(kotlin/String, com.ditchoom.socket/SystemTrustFailure) // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.<init>|<init>(kotlin.String;com.ditchoom.socket.SystemTrustFailure){}[0]
+
+        final val description // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.description.<get-description>|<get-description>(){}[0]
+        final val failure // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.failure|{}failure[0]
+            final fun <get-failure>(): com.ditchoom.socket/SystemTrustFailure // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.failure.<get-failure>|<get-failure>(){}[0]
+        final val serverName // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.serverName|{}serverName[0]
+            final fun <get-serverName>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.serverName.<get-serverName>|<get-serverName>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.component1|component1(){}[0]
+        final fun component2(): com.ditchoom.socket/SystemTrustFailure // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.component2|component2(){}[0]
+        final fun copy(kotlin/String = ..., com.ditchoom.socket/SystemTrustFailure = ...): com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.copy|copy(kotlin.String;com.ditchoom.socket.SystemTrustFailure){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.UntrustedBySystem.toString|toString(){}[0]
+    }
+
+    final object NoPeerCertificate : com.ditchoom.socket/ServerCertificateRejection { // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate|null[0]
+        final val description // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ServerCertificateRejection.NoPeerCertificate.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure|null[0]
+    abstract val description // com.ditchoom.socket/SystemTrustFailure.description|{}description[0]
+        abstract fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.description.<get-description>|<get-description>(){}[0]
+
+    final class CopyFailed : com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure.CopyFailed|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket/SystemTrustFailure.CopyFailed.<init>|<init>(kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/SystemTrustFailure.CopyFailed.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.CopyFailed.description.<get-description>|<get-description>(){}[0]
+        final val index // com.ditchoom.socket/SystemTrustFailure.CopyFailed.index|{}index[0]
+            final fun <get-index>(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.CopyFailed.index.<get-index>|<get-index>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.CopyFailed.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket/SystemTrustFailure.CopyFailed // com.ditchoom.socket/SystemTrustFailure.CopyFailed.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SystemTrustFailure.CopyFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.CopyFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.CopyFailed.toString|toString(){}[0]
+    }
+
+    final class Refused : com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure.Refused|null[0]
+        constructor <init>(kotlin/Long, kotlin/String) // com.ditchoom.socket/SystemTrustFailure.Refused.<init>|<init>(kotlin.Long;kotlin.String){}[0]
+
+        final val code // com.ditchoom.socket/SystemTrustFailure.Refused.code|{}code[0]
+            final fun <get-code>(): kotlin/Long // com.ditchoom.socket/SystemTrustFailure.Refused.code.<get-code>|<get-code>(){}[0]
+        final val description // com.ditchoom.socket/SystemTrustFailure.Refused.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.Refused.description.<get-description>|<get-description>(){}[0]
+        final val platformDescription // com.ditchoom.socket/SystemTrustFailure.Refused.platformDescription|{}platformDescription[0]
+            final fun <get-platformDescription>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.Refused.platformDescription.<get-platformDescription>|<get-platformDescription>(){}[0]
+
+        final fun component1(): kotlin/Long // com.ditchoom.socket/SystemTrustFailure.Refused.component1|component1(){}[0]
+        final fun component2(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.Refused.component2|component2(){}[0]
+        final fun copy(kotlin/Long = ..., kotlin/String = ...): com.ditchoom.socket/SystemTrustFailure.Refused // com.ditchoom.socket/SystemTrustFailure.Refused.copy|copy(kotlin.Long;kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SystemTrustFailure.Refused.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.Refused.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.Refused.toString|toString(){}[0]
+    }
+
+    final class TrustCreationFailed : com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.<init>|<init>(kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.description.<get-description>|<get-description>(){}[0]
+        final val osStatus // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.osStatus|{}osStatus[0]
+            final fun <get-osStatus>(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.osStatus.<get-osStatus>|<get-osStatus>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.TrustCreationFailed.toString|toString(){}[0]
+    }
+
+    final class UnreadableCertificate : com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.<init>|<init>(kotlin.Int){}[0]
+
+        final val description // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.description.<get-description>|<get-description>(){}[0]
+        final val index // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.index|{}index[0]
+            final fun <get-index>(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.index.<get-index>|<get-index>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.UnreadableCertificate.toString|toString(){}[0]
+    }
+
+    final object RefusedWithoutError : com.ditchoom.socket/SystemTrustFailure { // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError|null[0]
+        final val description // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError.description|{}description[0]
+            final fun <get-description>(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError.description.<get-description>|<get-description>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/SystemTrustFailure.RefusedWithoutError.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext|null[0]
+    abstract fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.describe|describe(){}[0]
+
+    final class Connect : com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext.Connect|null[0]
+        constructor <init>(kotlin.time/Duration, kotlin/String?, kotlin/Int) // com.ditchoom.socket/TimeoutContext.Connect.<init>|<init>(kotlin.time.Duration;kotlin.String?;kotlin.Int){}[0]
+
+        final val deadline // com.ditchoom.socket/TimeoutContext.Connect.deadline|{}deadline[0]
+            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Connect.deadline.<get-deadline>|<get-deadline>(){}[0]
+        final val host // com.ditchoom.socket/TimeoutContext.Connect.host|{}host[0]
+            final fun <get-host>(): kotlin/String? // com.ditchoom.socket/TimeoutContext.Connect.host.<get-host>|<get-host>(){}[0]
+        final val port // com.ditchoom.socket/TimeoutContext.Connect.port|{}port[0]
+            final fun <get-port>(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Connect.port.<get-port>|<get-port>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Connect.component1|component1(){}[0]
+        final fun component2(): kotlin/String? // com.ditchoom.socket/TimeoutContext.Connect.component2|component2(){}[0]
+        final fun component3(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Connect.component3|component3(){}[0]
+        final fun copy(kotlin.time/Duration = ..., kotlin/String? = ..., kotlin/Int = ...): com.ditchoom.socket/TimeoutContext.Connect // com.ditchoom.socket/TimeoutContext.Connect.copy|copy(kotlin.time.Duration;kotlin.String?;kotlin.Int){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.Connect.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TimeoutContext.Connect.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Connect.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/TimeoutContext.Connect.toString|toString(){}[0]
+    }
+
+    final class Platform : com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext.Platform|null[0]
+        constructor <init>(kotlin/String) // com.ditchoom.socket/TimeoutContext.Platform.<init>|<init>(kotlin.String){}[0]
+
+        final val detail // com.ditchoom.socket/TimeoutContext.Platform.detail|{}detail[0]
+            final fun <get-detail>(): kotlin/String // com.ditchoom.socket/TimeoutContext.Platform.detail.<get-detail>|<get-detail>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket/TimeoutContext.Platform.component1|component1(){}[0]
+        final fun copy(kotlin/String = ...): com.ditchoom.socket/TimeoutContext.Platform // com.ditchoom.socket/TimeoutContext.Platform.copy|copy(kotlin.String){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.Platform.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TimeoutContext.Platform.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Platform.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/TimeoutContext.Platform.toString|toString(){}[0]
+    }
+
+    final class Read : com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext.Read|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket/TimeoutContext.Read.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val deadline // com.ditchoom.socket/TimeoutContext.Read.deadline|{}deadline[0]
+            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Read.deadline.<get-deadline>|<get-deadline>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Read.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket/TimeoutContext.Read // com.ditchoom.socket/TimeoutContext.Read.copy|copy(kotlin.time.Duration){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.Read.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TimeoutContext.Read.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Read.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/TimeoutContext.Read.toString|toString(){}[0]
+    }
+
+    final class StreamOpen : com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext.StreamOpen|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket/TimeoutContext.StreamOpen.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val deadline // com.ditchoom.socket/TimeoutContext.StreamOpen.deadline|{}deadline[0]
+            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.StreamOpen.deadline.<get-deadline>|<get-deadline>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.StreamOpen.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket/TimeoutContext.StreamOpen // com.ditchoom.socket/TimeoutContext.StreamOpen.copy|copy(kotlin.time.Duration){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.StreamOpen.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TimeoutContext.StreamOpen.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/TimeoutContext.StreamOpen.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/TimeoutContext.StreamOpen.toString|toString(){}[0]
+    }
+
+    final class Write : com.ditchoom.socket/TimeoutContext { // com.ditchoom.socket/TimeoutContext.Write|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket/TimeoutContext.Write.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val deadline // com.ditchoom.socket/TimeoutContext.Write.deadline|{}deadline[0]
+            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Write.deadline.<get-deadline>|<get-deadline>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket/TimeoutContext.Write.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket/TimeoutContext.Write // com.ditchoom.socket/TimeoutContext.Write.copy|copy(kotlin.time.Duration){}[0]
+        final fun describe(): kotlin/String // com.ditchoom.socket/TimeoutContext.Write.describe|describe(){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TimeoutContext.Write.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/TimeoutContext.Write.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/TimeoutContext.Write.toString|toString(){}[0]
+    }
+}
+
+abstract class com.ditchoom.socket/PlatformIOException : kotlin/Exception { // com.ditchoom.socket/PlatformIOException|null[0]
+    constructor <init>(kotlin/String, kotlin/Throwable?) // com.ditchoom.socket/PlatformIOException.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+}
+
+abstract class com.ditchoom.socket/SocketClosedException : com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketClosedException|null[0]
+    constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketClosedException.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+
+    open val cause // com.ditchoom.socket/SocketClosedException.cause|{}cause[0]
+        open fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketClosedException.cause.<get-cause>|<get-cause>(){}[0]
+    open val message // com.ditchoom.socket/SocketClosedException.message|{}message[0]
+        open fun <get-message>(): kotlin/String // com.ditchoom.socket/SocketClosedException.message.<get-message>|<get-message>(){}[0]
+
+    final class BrokenPipe : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket/SocketClosedException.BrokenPipe|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketClosedException.BrokenPipe.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+    }
+
+    final class ConnectionReset : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket/SocketClosedException.ConnectionReset|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketClosedException.ConnectionReset.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+    }
+
+    final class EndOfStream : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket/SocketClosedException.EndOfStream|null[0]
+        constructor <init>(kotlin/String = ..., kotlin/Throwable? = ...) // com.ditchoom.socket/SocketClosedException.EndOfStream.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+    }
+
+    final class General : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket/SocketClosedException.General|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketClosedException.General.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+    }
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.transport/CodecConnection : com.ditchoom.buffer.flow/Connection<#A> { // com.ditchoom.socket.transport/CodecConnection|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ..., kotlin/Long = ...) // com.ditchoom.socket.transport/CodecConnection.<init>|<init>(com.ditchoom.buffer.flow.ByteStream;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext;kotlin.Long){}[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.codec/Codec<#A>, kotlinx.coroutines/CoroutineScope, kotlin/Int, com.ditchoom.socket.transport/OverflowPolicy<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ..., kotlin/Long = ...) // com.ditchoom.socket.transport/CodecConnection.<init>|<init>(com.ditchoom.buffer.flow.ByteStream;com.ditchoom.buffer.codec.Codec<1:0>;kotlinx.coroutines.CoroutineScope;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext;kotlin.Long){}[0]
+
+    final val codec // com.ditchoom.socket.transport/CodecConnection.codec|{}codec[0]
+        final fun <get-codec>(): com.ditchoom.buffer.codec/Codec<#A> // com.ditchoom.socket.transport/CodecConnection.codec.<get-codec>|<get-codec>(){}[0]
+    final val id // com.ditchoom.socket.transport/CodecConnection.id|{}id[0]
+        final fun <get-id>(): kotlin/Long // com.ditchoom.socket.transport/CodecConnection.id.<get-id>|<get-id>(){}[0]
+    final val lastDataReceived // com.ditchoom.socket.transport/CodecConnection.lastDataReceived|{}lastDataReceived[0]
+        final fun <get-lastDataReceived>(): kotlinx.coroutines.flow/StateFlow<kotlin.time/TimeSource.Monotonic.ValueTimeMark?> // com.ditchoom.socket.transport/CodecConnection.lastDataReceived.<get-lastDataReceived>|<get-lastDataReceived>(){}[0]
+    final val stream // com.ditchoom.socket.transport/CodecConnection.stream|{}stream[0]
+        final fun <get-stream>(): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.transport/CodecConnection.stream.<get-stream>|<get-stream>(){}[0]
+
+    final fun preSeed(com.ditchoom.buffer/ReadBuffer) // com.ditchoom.socket.transport/CodecConnection.preSeed|preSeed(com.ditchoom.buffer.ReadBuffer){}[0]
+    final fun receive(): kotlinx.coroutines.flow/Flow<#A> // com.ditchoom.socket.transport/CodecConnection.receive|receive(){}[0]
+    final suspend fun close() // com.ditchoom.socket.transport/CodecConnection.close|close(){}[0]
+    final suspend fun send(#A) // com.ditchoom.socket.transport/CodecConnection.send|send(1:0){}[0]
+
+    final object Companion { // com.ditchoom.socket.transport/CodecConnection.Companion|null[0]
+        final const val DEFAULT_OUTBOUND_CAPACITY // com.ditchoom.socket.transport/CodecConnection.Companion.DEFAULT_OUTBOUND_CAPACITY|{}DEFAULT_OUTBOUND_CAPACITY[0]
+            final fun <get-DEFAULT_OUTBOUND_CAPACITY>(): kotlin/Int // com.ditchoom.socket.transport/CodecConnection.Companion.DEFAULT_OUTBOUND_CAPACITY.<get-DEFAULT_OUTBOUND_CAPACITY>|<get-DEFAULT_OUTBOUND_CAPACITY>(){}[0]
+
+        final suspend fun <#A2: kotlin/Any?> connect(kotlin/String, kotlin/Int, com.ditchoom.buffer.codec/Codec<#A2>, kotlinx.coroutines/CoroutineScope, kotlin/Int = ..., com.ditchoom.socket.transport/OverflowPolicy<#A2> = ..., com.ditchoom.socket.transport/Transport = ..., com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ...): com.ditchoom.socket.transport/CodecConnection<#A2> // com.ditchoom.socket.transport/CodecConnection.Companion.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.buffer.codec.Codec<0:0>;kotlinx.coroutines.CoroutineScope;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<0:0>;com.ditchoom.socket.transport.Transport;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext){0§<kotlin.Any?>}[0]
+    }
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.transport/CodecReceiver : com.ditchoom.buffer.flow/Receiver<#A> { // com.ditchoom.socket.transport/CodecReceiver|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteSource, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., kotlin/Long = ...) // com.ditchoom.socket.transport/CodecReceiver.<init>|<init>(com.ditchoom.buffer.flow.ByteSource;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;kotlin.Long){}[0]
+
+    final val codec // com.ditchoom.socket.transport/CodecReceiver.codec|{}codec[0]
+        final fun <get-codec>(): com.ditchoom.buffer.codec/Codec<#A> // com.ditchoom.socket.transport/CodecReceiver.codec.<get-codec>|<get-codec>(){}[0]
+    final val id // com.ditchoom.socket.transport/CodecReceiver.id|{}id[0]
+        final fun <get-id>(): kotlin/Long // com.ditchoom.socket.transport/CodecReceiver.id.<get-id>|<get-id>(){}[0]
+    final val source // com.ditchoom.socket.transport/CodecReceiver.source|{}source[0]
+        final fun <get-source>(): com.ditchoom.buffer.flow/ByteSource // com.ditchoom.socket.transport/CodecReceiver.source.<get-source>|<get-source>(){}[0]
+
+    final fun receive(): kotlinx.coroutines.flow/Flow<#A> // com.ditchoom.socket.transport/CodecReceiver.receive|receive(){}[0]
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.transport/CodecSender : com.ditchoom.buffer.flow/Sender<#A> { // com.ditchoom.socket.transport/CodecSender|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteSink, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/EncodeContext = ..., kotlin/Long = ...) // com.ditchoom.socket.transport/CodecSender.<init>|<init>(com.ditchoom.buffer.flow.ByteSink;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.EncodeContext;kotlin.Long){}[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteSink, com.ditchoom.buffer.codec/Codec<#A>, kotlinx.coroutines/CoroutineScope, kotlin/Int, com.ditchoom.socket.transport/OverflowPolicy<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/EncodeContext = ..., kotlin/Long = ...) // com.ditchoom.socket.transport/CodecSender.<init>|<init>(com.ditchoom.buffer.flow.ByteSink;com.ditchoom.buffer.codec.Codec<1:0>;kotlinx.coroutines.CoroutineScope;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.EncodeContext;kotlin.Long){}[0]
+
+    final val codec // com.ditchoom.socket.transport/CodecSender.codec|{}codec[0]
+        final fun <get-codec>(): com.ditchoom.buffer.codec/Codec<#A> // com.ditchoom.socket.transport/CodecSender.codec.<get-codec>|<get-codec>(){}[0]
+    final val id // com.ditchoom.socket.transport/CodecSender.id|{}id[0]
+        final fun <get-id>(): kotlin/Long // com.ditchoom.socket.transport/CodecSender.id.<get-id>|<get-id>(){}[0]
+    final val sink // com.ditchoom.socket.transport/CodecSender.sink|{}sink[0]
+        final fun <get-sink>(): com.ditchoom.buffer.flow/ByteSink // com.ditchoom.socket.transport/CodecSender.sink.<get-sink>|<get-sink>(){}[0]
+
+    final suspend fun close() // com.ditchoom.socket.transport/CodecSender.close|close(){}[0]
+    final suspend fun send(#A) // com.ditchoom.socket.transport/CodecSender.send|send(1:0){}[0]
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.transport/ReconnectingConnection : com.ditchoom.buffer.flow/Connection<#A> { // com.ditchoom.socket.transport/ReconnectingConnection|null[0]
+    constructor <init>(kotlin.coroutines/SuspendFunction0<com.ditchoom.buffer.flow/Connection<#A>>, com.ditchoom.socket/ReconnectionClassifier = ..., kotlin/Function0<com.ditchoom.socket/NetworkMonitor> = ..., com.ditchoom.socket.transport/Liveness? = ...) // com.ditchoom.socket.transport/ReconnectingConnection.<init>|<init>(kotlin.coroutines.SuspendFunction0<com.ditchoom.buffer.flow.Connection<1:0>>;com.ditchoom.socket.ReconnectionClassifier;kotlin.Function0<com.ditchoom.socket.NetworkMonitor>;com.ditchoom.socket.transport.Liveness?){}[0]
+
+    final val id // com.ditchoom.socket.transport/ReconnectingConnection.id|{}id[0]
+        final fun <get-id>(): kotlin/Long // com.ditchoom.socket.transport/ReconnectingConnection.id.<get-id>|<get-id>(){}[0]
+    final val lastMessageReceived // com.ditchoom.socket.transport/ReconnectingConnection.lastMessageReceived|{}lastMessageReceived[0]
+        final fun <get-lastMessageReceived>(): kotlinx.coroutines.flow/StateFlow<kotlin.time/TimeSource.Monotonic.ValueTimeMark?> // com.ditchoom.socket.transport/ReconnectingConnection.lastMessageReceived.<get-lastMessageReceived>|<get-lastMessageReceived>(){}[0]
+    final val state // com.ditchoom.socket.transport/ReconnectingConnection.state|{}state[0]
+        final fun <get-state>(): kotlinx.coroutines.flow/StateFlow<com.ditchoom.socket/ConnectionState> // com.ditchoom.socket.transport/ReconnectingConnection.state.<get-state>|<get-state>(){}[0]
+
+    final fun receive(): kotlinx.coroutines.flow/Flow<#A> // com.ditchoom.socket.transport/ReconnectingConnection.receive|receive(){}[0]
+    final fun resetBackoff() // com.ditchoom.socket.transport/ReconnectingConnection.resetBackoff|resetBackoff(){}[0]
+    final suspend fun close() // com.ditchoom.socket.transport/ReconnectingConnection.close|close(){}[0]
+    final suspend fun send(#A) // com.ditchoom.socket.transport/ReconnectingConnection.send|send(1:0){}[0]
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket.transport/TypedMuxView : com.ditchoom.buffer.flow/StreamMux<#A> { // com.ditchoom.socket.transport/TypedMuxView|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteStreamMux, com.ditchoom.buffer.codec/Codec<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ...) // com.ditchoom.socket.transport/TypedMuxView.<init>|<init>(com.ditchoom.buffer.flow.ByteStreamMux;com.ditchoom.buffer.codec.Codec<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext){}[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteStreamMux, com.ditchoom.buffer.codec/Codec<#A>, kotlinx.coroutines/CoroutineScope, kotlin/Int, com.ditchoom.socket.transport/OverflowPolicy<#A>, com.ditchoom.socket/TransportConfig = ..., com.ditchoom.buffer.codec/DecodeContext = ..., com.ditchoom.buffer.codec/EncodeContext = ...) // com.ditchoom.socket.transport/TypedMuxView.<init>|<init>(com.ditchoom.buffer.flow.ByteStreamMux;com.ditchoom.buffer.codec.Codec<1:0>;kotlinx.coroutines.CoroutineScope;kotlin.Int;com.ditchoom.socket.transport.OverflowPolicy<1:0>;com.ditchoom.socket.TransportConfig;com.ditchoom.buffer.codec.DecodeContext;com.ditchoom.buffer.codec.EncodeContext){}[0]
+
+    final val codec // com.ditchoom.socket.transport/TypedMuxView.codec|{}codec[0]
+        final fun <get-codec>(): com.ditchoom.buffer.codec/Codec<#A> // com.ditchoom.socket.transport/TypedMuxView.codec.<get-codec>|<get-codec>(){}[0]
+    final val raw // com.ditchoom.socket.transport/TypedMuxView.raw|{}raw[0]
+        final fun <get-raw>(): com.ditchoom.buffer.flow/ByteStreamMux // com.ditchoom.socket.transport/TypedMuxView.raw.<get-raw>|<get-raw>(){}[0]
+
+    final suspend fun acceptBidirectional(): com.ditchoom.buffer.flow/Connection<#A> // com.ditchoom.socket.transport/TypedMuxView.acceptBidirectional|acceptBidirectional(){}[0]
+    final suspend fun acceptUnidirectional(): com.ditchoom.buffer.flow/Receiver<#A> // com.ditchoom.socket.transport/TypedMuxView.acceptUnidirectional|acceptUnidirectional(){}[0]
+    final suspend fun closeMintedConnections() // com.ditchoom.socket.transport/TypedMuxView.closeMintedConnections|closeMintedConnections(){}[0]
+    final suspend fun openBidirectional(): com.ditchoom.buffer.flow/Connection<#A> // com.ditchoom.socket.transport/TypedMuxView.openBidirectional|openBidirectional(){}[0]
+    final suspend fun openUnidirectional(): com.ditchoom.buffer.flow/Sender<#A> // com.ditchoom.socket.transport/TypedMuxView.openUnidirectional|openUnidirectional(){}[0]
+}
+
+final class <#A: kotlin/Any?> com.ditchoom.socket/SocketDataRead { // com.ditchoom.socket/SocketDataRead|null[0]
+    constructor <init>(#A, kotlin/Int) // com.ditchoom.socket/SocketDataRead.<init>|<init>(1:0;kotlin.Int){}[0]
+
+    final val bytesRead // com.ditchoom.socket/SocketDataRead.bytesRead|{}bytesRead[0]
+        final fun <get-bytesRead>(): kotlin/Int // com.ditchoom.socket/SocketDataRead.bytesRead.<get-bytesRead>|<get-bytesRead>(){}[0]
+    final val result // com.ditchoom.socket/SocketDataRead.result|{}result[0]
+        final fun <get-result>(): #A // com.ditchoom.socket/SocketDataRead.result.<get-result>|<get-result>(){}[0]
+
+    final fun component1(): #A // com.ditchoom.socket/SocketDataRead.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket/SocketDataRead.component2|component2(){}[0]
+    final fun copy(#A = ..., kotlin/Int = ...): com.ditchoom.socket/SocketDataRead<#A> // com.ditchoom.socket/SocketDataRead.copy|copy(1:0;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/SocketDataRead.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/SocketDataRead.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/SocketDataRead.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.transport/FallbackTransport : com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.transport/FallbackTransport|null[0]
+    constructor <init>(kotlin.collections/List<com.ditchoom.socket.transport/Transport>, com.ditchoom.socket.transport/FallbackPolicy = ..., com.ditchoom.socket.transport/CapabilityCache = ..., kotlin/Function0<com.ditchoom.socket.transport/NetworkId> = ..., kotlin/Function0<kotlin/Boolean> = ..., kotlin.time/Duration? = ...) // com.ditchoom.socket.transport/FallbackTransport.<init>|<init>(kotlin.collections.List<com.ditchoom.socket.transport.Transport>;com.ditchoom.socket.transport.FallbackPolicy;com.ditchoom.socket.transport.CapabilityCache;kotlin.Function0<com.ditchoom.socket.transport.NetworkId>;kotlin.Function0<kotlin.Boolean>;kotlin.time.Duration?){}[0]
+
+    final suspend fun connect(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.transport/FallbackTransport.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+
+    final object Companion { // com.ditchoom.socket.transport/FallbackTransport.Companion|null[0]
+        final val RECOMMENDED_STAGGER // com.ditchoom.socket.transport/FallbackTransport.Companion.RECOMMENDED_STAGGER|{}RECOMMENDED_STAGGER[0]
+            final fun <get-RECOMMENDED_STAGGER>(): kotlin.time/Duration // com.ditchoom.socket.transport/FallbackTransport.Companion.RECOMMENDED_STAGGER.<get-RECOMMENDED_STAGGER>|<get-RECOMMENDED_STAGGER>(){}[0]
+    }
+}
+
+final class com.ditchoom.socket.transport/FallbackVerdict { // com.ditchoom.socket.transport/FallbackVerdict|null[0]
+    constructor <init>(kotlin/Boolean, kotlin/Boolean, com.ditchoom.socket.transport/CacheScope) // com.ditchoom.socket.transport/FallbackVerdict.<init>|<init>(kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.transport.CacheScope){}[0]
+
+    final val cacheUnsupported // com.ditchoom.socket.transport/FallbackVerdict.cacheUnsupported|{}cacheUnsupported[0]
+        final fun <get-cacheUnsupported>(): kotlin/Boolean // com.ditchoom.socket.transport/FallbackVerdict.cacheUnsupported.<get-cacheUnsupported>|<get-cacheUnsupported>(){}[0]
+    final val fallback // com.ditchoom.socket.transport/FallbackVerdict.fallback|{}fallback[0]
+        final fun <get-fallback>(): kotlin/Boolean // com.ditchoom.socket.transport/FallbackVerdict.fallback.<get-fallback>|<get-fallback>(){}[0]
+    final val scope // com.ditchoom.socket.transport/FallbackVerdict.scope|{}scope[0]
+        final fun <get-scope>(): com.ditchoom.socket.transport/CacheScope // com.ditchoom.socket.transport/FallbackVerdict.scope.<get-scope>|<get-scope>(){}[0]
+
+    final fun component1(): kotlin/Boolean // com.ditchoom.socket.transport/FallbackVerdict.component1|component1(){}[0]
+    final fun component2(): kotlin/Boolean // com.ditchoom.socket.transport/FallbackVerdict.component2|component2(){}[0]
+    final fun component3(): com.ditchoom.socket.transport/CacheScope // com.ditchoom.socket.transport/FallbackVerdict.component3|component3(){}[0]
+    final fun copy(kotlin/Boolean = ..., kotlin/Boolean = ..., com.ditchoom.socket.transport/CacheScope = ...): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/FallbackVerdict.copy|copy(kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.transport.CacheScope){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.transport/FallbackVerdict.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.transport/FallbackVerdict.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.transport/FallbackVerdict.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket.transport/FallbackVerdict.Companion|null[0]
+        final val Fatal // com.ditchoom.socket.transport/FallbackVerdict.Companion.Fatal|{}Fatal[0]
+            final fun <get-Fatal>(): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/FallbackVerdict.Companion.Fatal.<get-Fatal>|<get-Fatal>(){}[0]
+        final val Transient // com.ditchoom.socket.transport/FallbackVerdict.Companion.Transient|{}Transient[0]
+            final fun <get-Transient>(): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/FallbackVerdict.Companion.Transient.<get-Transient>|<get-Transient>(){}[0]
+
+        final fun capability(com.ditchoom.socket.transport/CacheScope): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/FallbackVerdict.Companion.capability|capability(com.ditchoom.socket.transport.CacheScope){}[0]
+    }
+}
+
+final class com.ditchoom.socket.transport/InMemoryCapabilityCache : com.ditchoom.socket.transport/CapabilityCache { // com.ditchoom.socket.transport/InMemoryCapabilityCache|null[0]
+    constructor <init>(kotlin.time/Duration = ..., kotlin.time/TimeSource = ...) // com.ditchoom.socket.transport/InMemoryCapabilityCache.<init>|<init>(kotlin.time.Duration;kotlin.time.TimeSource){}[0]
+
+    final fun order(kotlin/String, com.ditchoom.socket.transport/NetworkId, kotlin.collections/List<com.ditchoom.socket.transport/Transport>): kotlin.collections/List<com.ditchoom.socket.transport/Transport> // com.ditchoom.socket.transport/InMemoryCapabilityCache.order|order(kotlin.String;com.ditchoom.socket.transport.NetworkId;kotlin.collections.List<com.ditchoom.socket.transport.Transport>){}[0]
+    final fun recordSuccess(kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/InMemoryCapabilityCache.recordSuccess|recordSuccess(kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+    final fun recordUnsupported(com.ditchoom.socket.transport/CacheScope, kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/InMemoryCapabilityCache.recordUnsupported|recordUnsupported(com.ditchoom.socket.transport.CacheScope;kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+}
+
+final class com.ditchoom.socket.transport/MemoryByteStream : com.ditchoom.buffer.flow/ByteStream { // com.ditchoom.socket.transport/MemoryByteStream|null[0]
+    constructor <init>(kotlinx.coroutines.channels/Channel<com.ditchoom.buffer/ReadBuffer>, kotlinx.coroutines.channels/Channel<com.ditchoom.buffer/ReadBuffer>, com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket.transport/MemoryByteStream.<init>|<init>(kotlinx.coroutines.channels.Channel<com.ditchoom.buffer.ReadBuffer>;kotlinx.coroutines.channels.Channel<com.ditchoom.buffer.ReadBuffer>;com.ditchoom.socket.TransportConfig){}[0]
+
+    final val isOpen // com.ditchoom.socket.transport/MemoryByteStream.isOpen|{}isOpen[0]
+        final fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket.transport/MemoryByteStream.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
+    final val readPolicy // com.ditchoom.socket.transport/MemoryByteStream.readPolicy|{}readPolicy[0]
+        final fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket.transport/MemoryByteStream.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    final val writePolicy // com.ditchoom.socket.transport/MemoryByteStream.writePolicy|{}writePolicy[0]
+        final fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket.transport/MemoryByteStream.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final suspend fun close() // com.ditchoom.socket.transport/MemoryByteStream.close|close(){}[0]
+    final suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket.transport/MemoryByteStream.read|read(kotlin.time.Duration){}[0]
+    final suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.transport/MemoryByteStream.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+}
+
+final class com.ditchoom.socket.transport/MemoryTransport : com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.transport/MemoryTransport|null[0]
+    constructor <init>() // com.ditchoom.socket.transport/MemoryTransport.<init>|<init>(){}[0]
+
+    final suspend fun connect(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.transport/MemoryTransport.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+
+    final object Companion { // com.ditchoom.socket.transport/MemoryTransport.Companion|null[0]
+        final fun createPair(com.ditchoom.socket/TransportConfig = ...): kotlin/Pair<com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.flow/ByteStream> // com.ditchoom.socket.transport/MemoryTransport.Companion.createPair|createPair(com.ditchoom.socket.TransportConfig){}[0]
+    }
+}
+
+final class com.ditchoom.socket.transport/SessionOwningByteStream : com.ditchoom.buffer.flow/ByteStream { // com.ditchoom.socket.transport/SessionOwningByteStream|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteStream, kotlin.coroutines/SuspendFunction0<kotlin/Unit>, kotlin/Function1<kotlin/Throwable, kotlin/Throwable> = ...) // com.ditchoom.socket.transport/SessionOwningByteStream.<init>|<init>(com.ditchoom.buffer.flow.ByteStream;kotlin.coroutines.SuspendFunction0<kotlin.Unit>;kotlin.Function1<kotlin.Throwable,kotlin.Throwable>){}[0]
+
+    final val isOpen // com.ditchoom.socket.transport/SessionOwningByteStream.isOpen|{}isOpen[0]
+        final fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket.transport/SessionOwningByteStream.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
+    final val readPolicy // com.ditchoom.socket.transport/SessionOwningByteStream.readPolicy|{}readPolicy[0]
+        final fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket.transport/SessionOwningByteStream.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    final val writePolicy // com.ditchoom.socket.transport/SessionOwningByteStream.writePolicy|{}writePolicy[0]
+        final fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket.transport/SessionOwningByteStream.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final suspend fun close() // com.ditchoom.socket.transport/SessionOwningByteStream.close|close(){}[0]
+    final suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket.transport/SessionOwningByteStream.read|read(kotlin.time.Duration){}[0]
+    final suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.transport/SessionOwningByteStream.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+    final suspend fun writeGathered(kotlin.collections/List<com.ditchoom.buffer/ReadBuffer>, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.transport/SessionOwningByteStream.writeGathered|writeGathered(kotlin.collections.List<com.ditchoom.buffer.ReadBuffer>;kotlin.time.Duration){}[0]
+}
+
+final class com.ditchoom.socket.transport/TcpTransport : com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.transport/TcpTransport|null[0]
+    constructor <init>() // com.ditchoom.socket.transport/TcpTransport.<init>|<init>(){}[0]
+
+    final suspend fun connect(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.buffer.flow/ByteStream // com.ditchoom.socket.transport/TcpTransport.connect|connect(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+}
+
+final class com.ditchoom.socket.transport/TransportFailure { // com.ditchoom.socket.transport/TransportFailure|null[0]
+    constructor <init>(com.ditchoom.socket.transport/Transport, kotlin/Throwable, com.ditchoom.socket.transport/FallbackVerdict) // com.ditchoom.socket.transport/TransportFailure.<init>|<init>(com.ditchoom.socket.transport.Transport;kotlin.Throwable;com.ditchoom.socket.transport.FallbackVerdict){}[0]
+
+    final val error // com.ditchoom.socket.transport/TransportFailure.error|{}error[0]
+        final fun <get-error>(): kotlin/Throwable // com.ditchoom.socket.transport/TransportFailure.error.<get-error>|<get-error>(){}[0]
+    final val transport // com.ditchoom.socket.transport/TransportFailure.transport|{}transport[0]
+        final fun <get-transport>(): com.ditchoom.socket.transport/Transport // com.ditchoom.socket.transport/TransportFailure.transport.<get-transport>|<get-transport>(){}[0]
+    final val verdict // com.ditchoom.socket.transport/TransportFailure.verdict|{}verdict[0]
+        final fun <get-verdict>(): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/TransportFailure.verdict.<get-verdict>|<get-verdict>(){}[0]
+
+    final fun component1(): com.ditchoom.socket.transport/Transport // com.ditchoom.socket.transport/TransportFailure.component1|component1(){}[0]
+    final fun component2(): kotlin/Throwable // com.ditchoom.socket.transport/TransportFailure.component2|component2(){}[0]
+    final fun component3(): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/TransportFailure.component3|component3(){}[0]
+    final fun copy(com.ditchoom.socket.transport/Transport = ..., kotlin/Throwable = ..., com.ditchoom.socket.transport/FallbackVerdict = ...): com.ditchoom.socket.transport/TransportFailure // com.ditchoom.socket.transport/TransportFailure.copy|copy(com.ditchoom.socket.transport.Transport;kotlin.Throwable;com.ditchoom.socket.transport.FallbackVerdict){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.transport/TransportFailure.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.transport/TransportFailure.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.transport/TransportFailure.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.transport/TransportSet { // com.ditchoom.socket.transport/TransportSet|null[0]
+    constructor <init>(com.ditchoom.socket.transport/Transport? = ..., com.ditchoom.socket.transport/Transport? = ..., com.ditchoom.socket.transport/Transport? = ..., com.ditchoom.socket.transport/Transport? = ...) // com.ditchoom.socket.transport/TransportSet.<init>|<init>(com.ditchoom.socket.transport.Transport?;com.ditchoom.socket.transport.Transport?;com.ditchoom.socket.transport.Transport?;com.ditchoom.socket.transport.Transport?){}[0]
+
+    final val quic // com.ditchoom.socket.transport/TransportSet.quic|{}quic[0]
+        final fun <get-quic>(): com.ditchoom.socket.transport/Transport? // com.ditchoom.socket.transport/TransportSet.quic.<get-quic>|<get-quic>(){}[0]
+    final val tcp // com.ditchoom.socket.transport/TransportSet.tcp|{}tcp[0]
+        final fun <get-tcp>(): com.ditchoom.socket.transport/Transport? // com.ditchoom.socket.transport/TransportSet.tcp.<get-tcp>|<get-tcp>(){}[0]
+    final val webSocket // com.ditchoom.socket.transport/TransportSet.webSocket|{}webSocket[0]
+        final fun <get-webSocket>(): com.ditchoom.socket.transport/Transport? // com.ditchoom.socket.transport/TransportSet.webSocket.<get-webSocket>|<get-webSocket>(){}[0]
+    final val webTransport // com.ditchoom.socket.transport/TransportSet.webTransport|{}webTransport[0]
+        final fun <get-webTransport>(): com.ditchoom.socket.transport/Transport? // com.ditchoom.socket.transport/TransportSet.webTransport.<get-webTransport>|<get-webTransport>(){}[0]
+}
+
+final class com.ditchoom.socket/CertificateHashPinningException : com.ditchoom.socket/SSLSocketException { // com.ditchoom.socket/CertificateHashPinningException|null[0]
+    constructor <init>(com.ditchoom.socket/CertificateHashPinningFailure, kotlin/Throwable? = ...) // com.ditchoom.socket/CertificateHashPinningException.<init>|<init>(com.ditchoom.socket.CertificateHashPinningFailure;kotlin.Throwable?){}[0]
+
+    final val failure // com.ditchoom.socket/CertificateHashPinningException.failure|{}failure[0]
+        final fun <get-failure>(): com.ditchoom.socket/CertificateHashPinningFailure // com.ditchoom.socket/CertificateHashPinningException.failure.<get-failure>|<get-failure>(){}[0]
+    final val reason // com.ditchoom.socket/CertificateHashPinningException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/CertificateHashPinningException.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+final class com.ditchoom.socket/DefaultReconnectionClassifier : com.ditchoom.socket/ReconnectionClassifier { // com.ditchoom.socket/DefaultReconnectionClassifier|null[0]
+    constructor <init>(kotlin.time/Duration = ..., kotlin.time/Duration = ..., kotlin/Double = ...) // com.ditchoom.socket/DefaultReconnectionClassifier.<init>|<init>(kotlin.time.Duration;kotlin.time.Duration;kotlin.Double){}[0]
+
+    final fun reset() // com.ditchoom.socket/DefaultReconnectionClassifier.reset|reset(){}[0]
+    final suspend fun classify(kotlin/Throwable): com.ditchoom.socket/ReconnectDecision // com.ditchoom.socket/DefaultReconnectionClassifier.classify|classify(kotlin.Throwable){}[0]
+
+    final object Companion { // com.ditchoom.socket/DefaultReconnectionClassifier.Companion|null[0]
+        final fun isNonRecoverable(kotlin/Throwable): kotlin/Boolean // com.ditchoom.socket/DefaultReconnectionClassifier.Companion.isNonRecoverable|isNonRecoverable(kotlin.Throwable){}[0]
+    }
+}
+
+final class com.ditchoom.socket/IoTuning { // com.ditchoom.socket/IoTuning|null[0]
+    constructor <init>(kotlin/Boolean? = ..., kotlin/Boolean? = ..., kotlin/Boolean? = ..., kotlin/Int? = ..., kotlin/Int? = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin.time/Duration = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin.time/Duration = ...) // com.ditchoom.socket/IoTuning.<init>|<init>(kotlin.Boolean?;kotlin.Boolean?;kotlin.Boolean?;kotlin.Int?;kotlin.Int?;kotlin.Int;kotlin.Int;kotlin.time.Duration;kotlin.Int;kotlin.Int;kotlin.time.Duration){}[0]
+
+    final val defaultBufferSize // com.ditchoom.socket/IoTuning.defaultBufferSize|{}defaultBufferSize[0]
+        final fun <get-defaultBufferSize>(): kotlin/Int // com.ditchoom.socket/IoTuning.defaultBufferSize.<get-defaultBufferSize>|<get-defaultBufferSize>(){}[0]
+    final val ioQueueDepth // com.ditchoom.socket/IoTuning.ioQueueDepth|{}ioQueueDepth[0]
+        final fun <get-ioQueueDepth>(): kotlin/Int // com.ditchoom.socket/IoTuning.ioQueueDepth.<get-ioQueueDepth>|<get-ioQueueDepth>(){}[0]
+    final val ioQueueRetries // com.ditchoom.socket/IoTuning.ioQueueRetries|{}ioQueueRetries[0]
+        final fun <get-ioQueueRetries>(): kotlin/Int // com.ditchoom.socket/IoTuning.ioQueueRetries.<get-ioQueueRetries>|<get-ioQueueRetries>(){}[0]
+    final val ioRetryDelay // com.ditchoom.socket/IoTuning.ioRetryDelay|{}ioRetryDelay[0]
+        final fun <get-ioRetryDelay>(): kotlin.time/Duration // com.ditchoom.socket/IoTuning.ioRetryDelay.<get-ioRetryDelay>|<get-ioRetryDelay>(){}[0]
+    final val keepAlive // com.ditchoom.socket/IoTuning.keepAlive|{}keepAlive[0]
+        final fun <get-keepAlive>(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.keepAlive.<get-keepAlive>|<get-keepAlive>(){}[0]
+    final val outboundDrainOnClose // com.ditchoom.socket/IoTuning.outboundDrainOnClose|{}outboundDrainOnClose[0]
+        final fun <get-outboundDrainOnClose>(): kotlin.time/Duration // com.ditchoom.socket/IoTuning.outboundDrainOnClose.<get-outboundDrainOnClose>|<get-outboundDrainOnClose>(){}[0]
+    final val readBufferSize // com.ditchoom.socket/IoTuning.readBufferSize|{}readBufferSize[0]
+        final fun <get-readBufferSize>(): kotlin/Int // com.ditchoom.socket/IoTuning.readBufferSize.<get-readBufferSize>|<get-readBufferSize>(){}[0]
+    final val receiveBuffer // com.ditchoom.socket/IoTuning.receiveBuffer|{}receiveBuffer[0]
+        final fun <get-receiveBuffer>(): kotlin/Int? // com.ditchoom.socket/IoTuning.receiveBuffer.<get-receiveBuffer>|<get-receiveBuffer>(){}[0]
+    final val reuseAddress // com.ditchoom.socket/IoTuning.reuseAddress|{}reuseAddress[0]
+        final fun <get-reuseAddress>(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.reuseAddress.<get-reuseAddress>|<get-reuseAddress>(){}[0]
+    final val sendBuffer // com.ditchoom.socket/IoTuning.sendBuffer|{}sendBuffer[0]
+        final fun <get-sendBuffer>(): kotlin/Int? // com.ditchoom.socket/IoTuning.sendBuffer.<get-sendBuffer>|<get-sendBuffer>(){}[0]
+    final val tcpNoDelay // com.ditchoom.socket/IoTuning.tcpNoDelay|{}tcpNoDelay[0]
+        final fun <get-tcpNoDelay>(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.tcpNoDelay.<get-tcpNoDelay>|<get-tcpNoDelay>(){}[0]
+
+    final fun component1(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.component1|component1(){}[0]
+    final fun component10(): kotlin/Int // com.ditchoom.socket/IoTuning.component10|component10(){}[0]
+    final fun component11(): kotlin.time/Duration // com.ditchoom.socket/IoTuning.component11|component11(){}[0]
+    final fun component2(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.component2|component2(){}[0]
+    final fun component3(): kotlin/Boolean? // com.ditchoom.socket/IoTuning.component3|component3(){}[0]
+    final fun component4(): kotlin/Int? // com.ditchoom.socket/IoTuning.component4|component4(){}[0]
+    final fun component5(): kotlin/Int? // com.ditchoom.socket/IoTuning.component5|component5(){}[0]
+    final fun component6(): kotlin/Int // com.ditchoom.socket/IoTuning.component6|component6(){}[0]
+    final fun component7(): kotlin/Int // com.ditchoom.socket/IoTuning.component7|component7(){}[0]
+    final fun component8(): kotlin.time/Duration // com.ditchoom.socket/IoTuning.component8|component8(){}[0]
+    final fun component9(): kotlin/Int // com.ditchoom.socket/IoTuning.component9|component9(){}[0]
+    final fun copy(kotlin/Boolean? = ..., kotlin/Boolean? = ..., kotlin/Boolean? = ..., kotlin/Int? = ..., kotlin/Int? = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin.time/Duration = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin.time/Duration = ...): com.ditchoom.socket/IoTuning // com.ditchoom.socket/IoTuning.copy|copy(kotlin.Boolean?;kotlin.Boolean?;kotlin.Boolean?;kotlin.Int?;kotlin.Int?;kotlin.Int;kotlin.Int;kotlin.time.Duration;kotlin.Int;kotlin.Int;kotlin.time.Duration){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/IoTuning.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/IoTuning.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/IoTuning.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket/NetworkCapabilities { // com.ditchoom.socket/NetworkCapabilities|null[0]
+    constructor <init>(kotlin.collections/Set<com.ditchoom.socket/TransportKind>) // com.ditchoom.socket/NetworkCapabilities.<init>|<init>(kotlin.collections.Set<com.ditchoom.socket.TransportKind>){}[0]
+
+    final val transports // com.ditchoom.socket/NetworkCapabilities.transports|{}transports[0]
+        final fun <get-transports>(): kotlin.collections/Set<com.ditchoom.socket/TransportKind> // com.ditchoom.socket/NetworkCapabilities.transports.<get-transports>|<get-transports>(){}[0]
+
+    final fun component1(): kotlin.collections/Set<com.ditchoom.socket/TransportKind> // com.ditchoom.socket/NetworkCapabilities.component1|component1(){}[0]
+    final fun copy(kotlin.collections/Set<com.ditchoom.socket/TransportKind> = ...): com.ditchoom.socket/NetworkCapabilities // com.ditchoom.socket/NetworkCapabilities.copy|copy(kotlin.collections.Set<com.ditchoom.socket.TransportKind>){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/NetworkCapabilities.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/NetworkCapabilities.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/NetworkCapabilities.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket/OutboundQueueFullException : com.ditchoom.socket/SocketException { // com.ditchoom.socket/OutboundQueueFullException|null[0]
+    constructor <init>(kotlin/Int) // com.ditchoom.socket/OutboundQueueFullException.<init>|<init>(kotlin.Int){}[0]
+
+    final val capacity // com.ditchoom.socket/OutboundQueueFullException.capacity|{}capacity[0]
+        final fun <get-capacity>(): kotlin/Int // com.ditchoom.socket/OutboundQueueFullException.capacity.<get-capacity>|<get-capacity>(){}[0]
+}
+
+final class com.ditchoom.socket/ReadBufferSource { // com.ditchoom.socket/ReadBufferSource|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig) // com.ditchoom.socket/ReadBufferSource.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final fun acquire(kotlin/Int): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket/ReadBufferSource.acquire|acquire(kotlin.Int){}[0]
+}
+
+final class com.ditchoom.socket/ResolvedAddress { // com.ditchoom.socket/ResolvedAddress|null[0]
+    constructor <init>(kotlin/String, com.ditchoom.socket/IpFamily) // com.ditchoom.socket/ResolvedAddress.<init>|<init>(kotlin.String;com.ditchoom.socket.IpFamily){}[0]
+
+    final val family // com.ditchoom.socket/ResolvedAddress.family|{}family[0]
+        final fun <get-family>(): com.ditchoom.socket/IpFamily // com.ditchoom.socket/ResolvedAddress.family.<get-family>|<get-family>(){}[0]
+    final val ip // com.ditchoom.socket/ResolvedAddress.ip|{}ip[0]
+        final fun <get-ip>(): kotlin/String // com.ditchoom.socket/ResolvedAddress.ip.<get-ip>|<get-ip>(){}[0]
+
+    final fun component1(): kotlin/String // com.ditchoom.socket/ResolvedAddress.component1|component1(){}[0]
+    final fun component2(): com.ditchoom.socket/IpFamily // com.ditchoom.socket/ResolvedAddress.component2|component2(){}[0]
+    final fun copy(kotlin/String = ..., com.ditchoom.socket/IpFamily = ...): com.ditchoom.socket/ResolvedAddress // com.ditchoom.socket/ResolvedAddress.copy|copy(kotlin.String;com.ditchoom.socket.IpFamily){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolvedAddress.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolvedAddress.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/ResolvedAddress.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket/SSLHandshakeFailedException : com.ditchoom.socket/SSLSocketException { // com.ditchoom.socket/SSLHandshakeFailedException|null[0]
+    constructor <init>(kotlin/Exception) // com.ditchoom.socket/SSLHandshakeFailedException.<init>|<init>(kotlin.Exception){}[0]
+    constructor <init>(kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket/ConnectionFailureReason = ...) // com.ditchoom.socket/SSLHandshakeFailedException.<init>|<init>(kotlin.String;kotlin.Throwable?;com.ditchoom.socket.ConnectionFailureReason){}[0]
+
+    final val reason // com.ditchoom.socket/SSLHandshakeFailedException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SSLHandshakeFailedException.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+final class com.ditchoom.socket/SSLProtocolException : com.ditchoom.socket/SSLSocketException { // com.ditchoom.socket/SSLProtocolException|null[0]
+    constructor <init>(kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket/ConnectionFailureReason = ...) // com.ditchoom.socket/SSLProtocolException.<init>|<init>(kotlin.String;kotlin.Throwable?;com.ditchoom.socket.ConnectionFailureReason){}[0]
+
+    final val reason // com.ditchoom.socket/SSLProtocolException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SSLProtocolException.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+final class com.ditchoom.socket/ServerCertificateRejectedException : com.ditchoom.socket/SSLSocketException { // com.ditchoom.socket/ServerCertificateRejectedException|null[0]
+    constructor <init>(com.ditchoom.socket/ServerCertificateRejection) // com.ditchoom.socket/ServerCertificateRejectedException.<init>|<init>(com.ditchoom.socket.ServerCertificateRejection){}[0]
+
+    final val reason // com.ditchoom.socket/ServerCertificateRejectedException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/ServerCertificateRejectedException.reason.<get-reason>|<get-reason>(){}[0]
+    final val rejection // com.ditchoom.socket/ServerCertificateRejectedException.rejection|{}rejection[0]
+        final fun <get-rejection>(): com.ditchoom.socket/ServerCertificateRejection // com.ditchoom.socket/ServerCertificateRejectedException.rejection.<get-rejection>|<get-rejection>(){}[0]
+}
+
+final class com.ditchoom.socket/SocketIOException : com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketIOException|null[0]
+    constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketIOException.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+
+    final val cause // com.ditchoom.socket/SocketIOException.cause|{}cause[0]
+        final fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketIOException.cause.<get-cause>|<get-cause>(){}[0]
+    final val message // com.ditchoom.socket/SocketIOException.message|{}message[0]
+        final fun <get-message>(): kotlin/String // com.ditchoom.socket/SocketIOException.message.<get-message>|<get-message>(){}[0]
+}
+
+final class com.ditchoom.socket/SocketTimeoutException : com.ditchoom.socket/ConnectionFailure, com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketTimeoutException|null[0]
+    constructor <init>(com.ditchoom.socket/TimeoutContext, kotlin/String? = ..., kotlin/Int = ..., kotlin/Throwable? = ...) // com.ditchoom.socket/SocketTimeoutException.<init>|<init>(com.ditchoom.socket.TimeoutContext;kotlin.String?;kotlin.Int;kotlin.Throwable?){}[0]
+    constructor <init>(kotlin/String, kotlin/String? = ..., kotlin/Int = ..., kotlin/Throwable? = ...) // com.ditchoom.socket/SocketTimeoutException.<init>|<init>(kotlin.String;kotlin.String?;kotlin.Int;kotlin.Throwable?){}[0]
+
+    final val cause // com.ditchoom.socket/SocketTimeoutException.cause|{}cause[0]
+        final fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketTimeoutException.cause.<get-cause>|<get-cause>(){}[0]
+    final val context // com.ditchoom.socket/SocketTimeoutException.context|{}context[0]
+        final fun <get-context>(): com.ditchoom.socket/TimeoutContext // com.ditchoom.socket/SocketTimeoutException.context.<get-context>|<get-context>(){}[0]
+    final val host // com.ditchoom.socket/SocketTimeoutException.host|{}host[0]
+        final fun <get-host>(): kotlin/String? // com.ditchoom.socket/SocketTimeoutException.host.<get-host>|<get-host>(){}[0]
+    final val message // com.ditchoom.socket/SocketTimeoutException.message|{}message[0]
+        final fun <get-message>(): kotlin/String // com.ditchoom.socket/SocketTimeoutException.message.<get-message>|<get-message>(){}[0]
+    final val port // com.ditchoom.socket/SocketTimeoutException.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket/SocketTimeoutException.port.<get-port>|<get-port>(){}[0]
+    final val reason // com.ditchoom.socket/SocketTimeoutException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketTimeoutException.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+final class com.ditchoom.socket/SocketUnknownHostException : com.ditchoom.socket/ConnectionFailure, com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketUnknownHostException|null[0]
+    constructor <init>(kotlin/String?, kotlin/String = ..., kotlin/Throwable? = ...) // com.ditchoom.socket/SocketUnknownHostException.<init>|<init>(kotlin.String?;kotlin.String;kotlin.Throwable?){}[0]
+
+    final val cause // com.ditchoom.socket/SocketUnknownHostException.cause|{}cause[0]
+        final fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketUnknownHostException.cause.<get-cause>|<get-cause>(){}[0]
+    final val hostname // com.ditchoom.socket/SocketUnknownHostException.hostname|{}hostname[0]
+        final fun <get-hostname>(): kotlin/String? // com.ditchoom.socket/SocketUnknownHostException.hostname.<get-hostname>|<get-hostname>(){}[0]
+    final val reason // com.ditchoom.socket/SocketUnknownHostException.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketUnknownHostException.reason.<get-reason>|<get-reason>(){}[0]
+}
+
+final class com.ditchoom.socket/SocketWriteStalledException : com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketWriteStalledException|null[0]
+    constructor <init>(com.ditchoom.buffer.flow/ByteSinkStalledException) // com.ditchoom.socket/SocketWriteStalledException.<init>|<init>(com.ditchoom.buffer.flow.ByteSinkStalledException){}[0]
+
+    final val accepted // com.ditchoom.socket/SocketWriteStalledException.accepted|{}accepted[0]
+        final fun <get-accepted>(): kotlin/Int // com.ditchoom.socket/SocketWriteStalledException.accepted.<get-accepted>|<get-accepted>(){}[0]
+    final val pending // com.ditchoom.socket/SocketWriteStalledException.pending|{}pending[0]
+        final fun <get-pending>(): kotlin/Int // com.ditchoom.socket/SocketWriteStalledException.pending.<get-pending>|<get-pending>(){}[0]
+    final val stall // com.ditchoom.socket/SocketWriteStalledException.stall|{}stall[0]
+        final fun <get-stall>(): com.ditchoom.buffer.flow/ByteSinkStalledException // com.ditchoom.socket/SocketWriteStalledException.stall.<get-stall>|<get-stall>(){}[0]
+}
+
+final class com.ditchoom.socket/SuspendingSocketInputStream { // com.ditchoom.socket/SuspendingSocketInputStream|null[0]
+    constructor <init>(kotlin.time/Duration, com.ditchoom.buffer.flow/ByteSource) // com.ditchoom.socket/SuspendingSocketInputStream.<init>|<init>(kotlin.time.Duration;com.ditchoom.buffer.flow.ByteSource){}[0]
+
+    final suspend fun readBuffer(kotlin/Int? = ...): com.ditchoom.buffer/ReadBuffer // com.ditchoom.socket/SuspendingSocketInputStream.readBuffer|readBuffer(kotlin.Int?){}[0]
+    final suspend fun readByte(): kotlin/Byte // com.ditchoom.socket/SuspendingSocketInputStream.readByte|readByte(){}[0]
+    final suspend fun readUnsignedByte(): kotlin/UByte // com.ditchoom.socket/SuspendingSocketInputStream.readUnsignedByte|readUnsignedByte(){}[0]
+}
+
+final class com.ditchoom.socket/TlsConfig { // com.ditchoom.socket/TlsConfig|null[0]
+    constructor <init>(kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ...) // com.ditchoom.socket/TlsConfig.<init>|<init>(kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean){}[0]
+
+    final val allowExpiredCertificates // com.ditchoom.socket/TlsConfig.allowExpiredCertificates|{}allowExpiredCertificates[0]
+        final fun <get-allowExpiredCertificates>(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.allowExpiredCertificates.<get-allowExpiredCertificates>|<get-allowExpiredCertificates>(){}[0]
+    final val allowSelfSigned // com.ditchoom.socket/TlsConfig.allowSelfSigned|{}allowSelfSigned[0]
+        final fun <get-allowSelfSigned>(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.allowSelfSigned.<get-allowSelfSigned>|<get-allowSelfSigned>(){}[0]
+    final val verifyCertificates // com.ditchoom.socket/TlsConfig.verifyCertificates|{}verifyCertificates[0]
+        final fun <get-verifyCertificates>(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.verifyCertificates.<get-verifyCertificates>|<get-verifyCertificates>(){}[0]
+    final val verifyHostname // com.ditchoom.socket/TlsConfig.verifyHostname|{}verifyHostname[0]
+        final fun <get-verifyHostname>(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.verifyHostname.<get-verifyHostname>|<get-verifyHostname>(){}[0]
+
+    final fun component1(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.component1|component1(){}[0]
+    final fun component2(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.component2|component2(){}[0]
+    final fun component3(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.component3|component3(){}[0]
+    final fun component4(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.component4|component4(){}[0]
+    final fun copy(kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ...): com.ditchoom.socket/TlsConfig // com.ditchoom.socket/TlsConfig.copy|copy(kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TlsConfig.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/TlsConfig.hashCode|hashCode(){}[0]
+    final fun isInsecure(): kotlin/Boolean // com.ditchoom.socket/TlsConfig.isInsecure|isInsecure(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/TlsConfig.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket/TlsConfig.Companion|null[0]
+        final val DEFAULT // com.ditchoom.socket/TlsConfig.Companion.DEFAULT|{}DEFAULT[0]
+            final fun <get-DEFAULT>(): com.ditchoom.socket/TlsConfig // com.ditchoom.socket/TlsConfig.Companion.DEFAULT.<get-DEFAULT>|<get-DEFAULT>(){}[0]
+        final val INSECURE // com.ditchoom.socket/TlsConfig.Companion.INSECURE|{}INSECURE[0]
+            final fun <get-INSECURE>(): com.ditchoom.socket/TlsConfig // com.ditchoom.socket/TlsConfig.Companion.INSECURE.<get-INSECURE>|<get-INSECURE>(){}[0]
+    }
+}
+
+final class com.ditchoom.socket/TransportConfig { // com.ditchoom.socket/TransportConfig|null[0]
+    constructor <init>(com.ditchoom.buffer/BufferFactory = ..., com.ditchoom.buffer.flow/ReadPolicy = ..., com.ditchoom.buffer.flow/WritePolicy = ..., kotlin.time/Duration = ..., com.ditchoom.socket/TlsConfig? = ..., com.ditchoom.socket/IoTuning = ..., com.ditchoom.socket.transport/NetworkId = ..., com.ditchoom.socket/NameResolution = ..., com.ditchoom.socket/ConnectPacing = ...) // com.ditchoom.socket/TransportConfig.<init>|<init>(com.ditchoom.buffer.BufferFactory;com.ditchoom.buffer.flow.ReadPolicy;com.ditchoom.buffer.flow.WritePolicy;kotlin.time.Duration;com.ditchoom.socket.TlsConfig?;com.ditchoom.socket.IoTuning;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.NameResolution;com.ditchoom.socket.ConnectPacing){}[0]
+
+    final val bufferFactory // com.ditchoom.socket/TransportConfig.bufferFactory|{}bufferFactory[0]
+        final fun <get-bufferFactory>(): com.ditchoom.buffer/BufferFactory // com.ditchoom.socket/TransportConfig.bufferFactory.<get-bufferFactory>|<get-bufferFactory>(){}[0]
+    final val connectPacing // com.ditchoom.socket/TransportConfig.connectPacing|{}connectPacing[0]
+        final fun <get-connectPacing>(): com.ditchoom.socket/ConnectPacing // com.ditchoom.socket/TransportConfig.connectPacing.<get-connectPacing>|<get-connectPacing>(){}[0]
+    final val connectTimeout // com.ditchoom.socket/TransportConfig.connectTimeout|{}connectTimeout[0]
+        final fun <get-connectTimeout>(): kotlin.time/Duration // com.ditchoom.socket/TransportConfig.connectTimeout.<get-connectTimeout>|<get-connectTimeout>(){}[0]
+    final val io // com.ditchoom.socket/TransportConfig.io|{}io[0]
+        final fun <get-io>(): com.ditchoom.socket/IoTuning // com.ditchoom.socket/TransportConfig.io.<get-io>|<get-io>(){}[0]
+    final val nameResolution // com.ditchoom.socket/TransportConfig.nameResolution|{}nameResolution[0]
+        final fun <get-nameResolution>(): com.ditchoom.socket/NameResolution // com.ditchoom.socket/TransportConfig.nameResolution.<get-nameResolution>|<get-nameResolution>(){}[0]
+    final val networkId // com.ditchoom.socket/TransportConfig.networkId|{}networkId[0]
+        final fun <get-networkId>(): com.ditchoom.socket.transport/NetworkId // com.ditchoom.socket/TransportConfig.networkId.<get-networkId>|<get-networkId>(){}[0]
+    final val readPolicy // com.ditchoom.socket/TransportConfig.readPolicy|{}readPolicy[0]
+        final fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket/TransportConfig.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    final val tls // com.ditchoom.socket/TransportConfig.tls|{}tls[0]
+        final fun <get-tls>(): com.ditchoom.socket/TlsConfig? // com.ditchoom.socket/TransportConfig.tls.<get-tls>|<get-tls>(){}[0]
+    final val writePolicy // com.ditchoom.socket/TransportConfig.writePolicy|{}writePolicy[0]
+        final fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket/TransportConfig.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final fun component1(): com.ditchoom.buffer/BufferFactory // com.ditchoom.socket/TransportConfig.component1|component1(){}[0]
+    final fun component2(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket/TransportConfig.component2|component2(){}[0]
+    final fun component3(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket/TransportConfig.component3|component3(){}[0]
+    final fun component4(): kotlin.time/Duration // com.ditchoom.socket/TransportConfig.component4|component4(){}[0]
+    final fun component5(): com.ditchoom.socket/TlsConfig? // com.ditchoom.socket/TransportConfig.component5|component5(){}[0]
+    final fun component6(): com.ditchoom.socket/IoTuning // com.ditchoom.socket/TransportConfig.component6|component6(){}[0]
+    final fun component7(): com.ditchoom.socket.transport/NetworkId // com.ditchoom.socket/TransportConfig.component7|component7(){}[0]
+    final fun component8(): com.ditchoom.socket/NameResolution // com.ditchoom.socket/TransportConfig.component8|component8(){}[0]
+    final fun component9(): com.ditchoom.socket/ConnectPacing // com.ditchoom.socket/TransportConfig.component9|component9(){}[0]
+    final fun copy(com.ditchoom.buffer/BufferFactory = ..., com.ditchoom.buffer.flow/ReadPolicy = ..., com.ditchoom.buffer.flow/WritePolicy = ..., kotlin.time/Duration = ..., com.ditchoom.socket/TlsConfig? = ..., com.ditchoom.socket/IoTuning = ..., com.ditchoom.socket.transport/NetworkId = ..., com.ditchoom.socket/NameResolution = ..., com.ditchoom.socket/ConnectPacing = ...): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/TransportConfig.copy|copy(com.ditchoom.buffer.BufferFactory;com.ditchoom.buffer.flow.ReadPolicy;com.ditchoom.buffer.flow.WritePolicy;kotlin.time.Duration;com.ditchoom.socket.TlsConfig?;com.ditchoom.socket.IoTuning;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.NameResolution;com.ditchoom.socket.ConnectPacing){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/TransportConfig.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket/TransportConfig.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket/TransportConfig.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket/TransportConfig.Companion|null[0]
+        final val LOW_LATENCY // com.ditchoom.socket/TransportConfig.Companion.LOW_LATENCY|{}LOW_LATENCY[0]
+            final fun <get-LOW_LATENCY>(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/TransportConfig.Companion.LOW_LATENCY.<get-LOW_LATENCY>|<get-LOW_LATENCY>(){}[0]
+
+        final fun tlsDefault(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/TransportConfig.Companion.tlsDefault|tlsDefault(){}[0]
+        final fun tlsInsecure(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/TransportConfig.Companion.tlsInsecure|tlsInsecure(){}[0]
+    }
+}
+
+final class com.ditchoom.socket/TransportsExhausted : com.ditchoom.socket/SocketException { // com.ditchoom.socket/TransportsExhausted|null[0]
+    constructor <init>(kotlin/String, kotlin/Int, kotlin.collections/List<com.ditchoom.socket.transport/TransportFailure>) // com.ditchoom.socket/TransportsExhausted.<init>|<init>(kotlin.String;kotlin.Int;kotlin.collections.List<com.ditchoom.socket.transport.TransportFailure>){}[0]
+
+    final val failures // com.ditchoom.socket/TransportsExhausted.failures|{}failures[0]
+        final fun <get-failures>(): kotlin.collections/List<com.ditchoom.socket.transport/TransportFailure> // com.ditchoom.socket/TransportsExhausted.failures.<get-failures>|<get-failures>(){}[0]
+    final val host // com.ditchoom.socket/TransportsExhausted.host|{}host[0]
+        final fun <get-host>(): kotlin/String // com.ditchoom.socket/TransportsExhausted.host.<get-host>|<get-host>(){}[0]
+    final val port // com.ditchoom.socket/TransportsExhausted.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket/TransportsExhausted.port.<get-port>|<get-port>(){}[0]
+}
+
+sealed class com.ditchoom.socket/SSLSocketException : com.ditchoom.socket/ConnectionFailure, com.ditchoom.socket/SocketException // com.ditchoom.socket/SSLSocketException|null[0]
+
+sealed class com.ditchoom.socket/SocketConnectionException : com.ditchoom.socket/ConnectionFailure, com.ditchoom.socket/SocketException { // com.ditchoom.socket/SocketConnectionException|null[0]
+    open val cause // com.ditchoom.socket/SocketConnectionException.cause|{}cause[0]
+        open fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketConnectionException.cause.<get-cause>|<get-cause>(){}[0]
+    open val message // com.ditchoom.socket/SocketConnectionException.message|{}message[0]
+        open fun <get-message>(): kotlin/String // com.ditchoom.socket/SocketConnectionException.message.<get-message>|<get-message>(){}[0]
+
+    final class HostUnreachable : com.ditchoom.socket/SocketConnectionException { // com.ditchoom.socket/SocketConnectionException.HostUnreachable|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketConnectionException.HostUnreachable.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+
+        final val reason // com.ditchoom.socket/SocketConnectionException.HostUnreachable.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketConnectionException.HostUnreachable.reason.<get-reason>|<get-reason>(){}[0]
+    }
+
+    final class NetworkUnreachable : com.ditchoom.socket/SocketConnectionException { // com.ditchoom.socket/SocketConnectionException.NetworkUnreachable|null[0]
+        constructor <init>(kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketConnectionException.NetworkUnreachable.<init>|<init>(kotlin.String;kotlin.Throwable?){}[0]
+
+        final val reason // com.ditchoom.socket/SocketConnectionException.NetworkUnreachable.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketConnectionException.NetworkUnreachable.reason.<get-reason>|<get-reason>(){}[0]
+    }
+
+    final class Other : com.ditchoom.socket/SocketConnectionException { // com.ditchoom.socket/SocketConnectionException.Other|null[0]
+        constructor <init>(com.ditchoom.socket/ConnectionFailureReason, kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket/SocketConnectionException.Other.<init>|<init>(com.ditchoom.socket.ConnectionFailureReason;kotlin.String;kotlin.Throwable?){}[0]
+
+        final val reason // com.ditchoom.socket/SocketConnectionException.Other.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketConnectionException.Other.reason.<get-reason>|<get-reason>(){}[0]
+    }
+
+    final class Refused : com.ditchoom.socket/SocketConnectionException { // com.ditchoom.socket/SocketConnectionException.Refused|null[0]
+        constructor <init>(kotlin/String?, kotlin/Int, kotlin/Throwable? = ..., kotlin/String? = ...) // com.ditchoom.socket/SocketConnectionException.Refused.<init>|<init>(kotlin.String?;kotlin.Int;kotlin.Throwable?;kotlin.String?){}[0]
+
+        final val host // com.ditchoom.socket/SocketConnectionException.Refused.host|{}host[0]
+            final fun <get-host>(): kotlin/String? // com.ditchoom.socket/SocketConnectionException.Refused.host.<get-host>|<get-host>(){}[0]
+        final val platformError // com.ditchoom.socket/SocketConnectionException.Refused.platformError|{}platformError[0]
+            final fun <get-platformError>(): kotlin/String? // com.ditchoom.socket/SocketConnectionException.Refused.platformError.<get-platformError>|<get-platformError>(){}[0]
+        final val port // com.ditchoom.socket/SocketConnectionException.Refused.port|{}port[0]
+            final fun <get-port>(): kotlin/Int // com.ditchoom.socket/SocketConnectionException.Refused.port.<get-port>|<get-port>(){}[0]
+        final val reason // com.ditchoom.socket/SocketConnectionException.Refused.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket/ConnectionFailureReason // com.ditchoom.socket/SocketConnectionException.Refused.reason.<get-reason>|<get-reason>(){}[0]
+    }
+}
+
+sealed class com.ditchoom.socket/SocketException : com.ditchoom.socket/PlatformIOException { // com.ditchoom.socket/SocketException|null[0]
+    open val cause // com.ditchoom.socket/SocketException.cause|{}cause[0]
+        open fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket/SocketException.cause.<get-cause>|<get-cause>(){}[0]
+    open val message // com.ditchoom.socket/SocketException.message|{}message[0]
+        open fun <get-message>(): kotlin/String // com.ditchoom.socket/SocketException.message.<get-message>|<get-message>(){}[0]
+}
+
+final object com.ditchoom.socket.transport/DefaultFallbackPolicy : com.ditchoom.socket.transport/FallbackPolicy { // com.ditchoom.socket.transport/DefaultFallbackPolicy|null[0]
+    final fun classify(kotlin/Throwable): com.ditchoom.socket.transport/FallbackVerdict // com.ditchoom.socket.transport/DefaultFallbackPolicy.classify|classify(kotlin.Throwable){}[0]
+}
+
+final object com.ditchoom.socket.transport/NoOpCapabilityCache : com.ditchoom.socket.transport/CapabilityCache { // com.ditchoom.socket.transport/NoOpCapabilityCache|null[0]
+    final fun order(kotlin/String, com.ditchoom.socket.transport/NetworkId, kotlin.collections/List<com.ditchoom.socket.transport/Transport>): kotlin.collections/List<com.ditchoom.socket.transport/Transport> // com.ditchoom.socket.transport/NoOpCapabilityCache.order|order(kotlin.String;com.ditchoom.socket.transport.NetworkId;kotlin.collections.List<com.ditchoom.socket.transport.Transport>){}[0]
+    final fun recordSuccess(kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/NoOpCapabilityCache.recordSuccess|recordSuccess(kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+    final fun recordUnsupported(com.ditchoom.socket.transport/CacheScope, kotlin/String, com.ditchoom.socket.transport/NetworkId, com.ditchoom.socket.transport/Transport) // com.ditchoom.socket.transport/NoOpCapabilityCache.recordUnsupported|recordUnsupported(com.ditchoom.socket.transport.CacheScope;kotlin.String;com.ditchoom.socket.transport.NetworkId;com.ditchoom.socket.transport.Transport){}[0]
+}
+
+final fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readFlow(kotlin.time/Duration = ...): kotlinx.coroutines.flow/Flow<com.ditchoom.buffer/ReadBuffer> // com.ditchoom.data/readFlow|readFlow@com.ditchoom.buffer.flow.ByteSource(kotlin.time.Duration){}[0]
+final fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readFlowLines(com.ditchoom.buffer/Charset = ..., kotlin.time/Duration = ...): kotlinx.coroutines.flow/Flow<kotlin/String> // com.ditchoom.data/readFlowLines|readFlowLines@com.ditchoom.buffer.flow.ByteSource(com.ditchoom.buffer.Charset;kotlin.time.Duration){}[0]
+final fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readFlowString(com.ditchoom.buffer/Charset = ..., kotlin.time/Duration = ...): kotlinx.coroutines.flow/Flow<kotlin/String> // com.ditchoom.data/readFlowString|readFlowString@com.ditchoom.buffer.flow.ByteSource(com.ditchoom.buffer.Charset;kotlin.time.Duration){}[0]
+final fun (com.ditchoom.buffer.flow/ReadResult).com.ditchoom.data/freeIfData() // com.ditchoom.data/freeIfData|freeIfData@com.ditchoom.buffer.flow.ReadResult(){}[0]
+final fun (com.ditchoom.socket/ClientSocket.Companion).com.ditchoom.socket/allocate(com.ditchoom.socket/TransportConfig = ...): com.ditchoom.socket/ClientToServerSocket // com.ditchoom.socket/allocate|allocate@com.ditchoom.socket.ClientSocket.Companion(com.ditchoom.socket.TransportConfig){}[0]
+final fun (com.ditchoom.socket/ServerSocket.Companion).com.ditchoom.socket/allocate(com.ditchoom.socket/TransportConfig = ...): com.ditchoom.socket/ServerSocket // com.ditchoom.socket/allocate|allocate@com.ditchoom.socket.ServerSocket.Companion(com.ditchoom.socket.TransportConfig){}[0]
+final fun (kotlin/BooleanArray).com.ditchoom.data/toByte(): kotlin/Byte // com.ditchoom.data/toByte|toByte@kotlin.BooleanArray(){}[0]
+final fun (kotlin/Byte).com.ditchoom.data/get(kotlin/Int): kotlin/Boolean // com.ditchoom.data/get|get@kotlin.Byte(kotlin.Int){}[0]
+final fun (kotlin/Byte).com.ditchoom.data/last4Bits(): kotlin/Byte // com.ditchoom.data/last4Bits|last4Bits@kotlin.Byte(){}[0]
+final fun (kotlin/Byte).com.ditchoom.data/toBooleanArray(): kotlin/BooleanArray // com.ditchoom.data/toBooleanArray|toBooleanArray@kotlin.Byte(){}[0]
+final fun com.ditchoom.socket.transport/defaultTransportChain(com.ditchoom.socket.transport/TransportSet): kotlin.collections/List<com.ditchoom.socket.transport/Transport> // com.ditchoom.socket.transport/defaultTransportChain|defaultTransportChain(com.ditchoom.socket.transport.TransportSet){}[0]
+final fun com.ditchoom.socket/happyEyeballsOrder(kotlin.collections/List<com.ditchoom.socket/ResolvedAddress>): kotlin.collections/List<com.ditchoom.socket/ResolvedAddress> // com.ditchoom.socket/happyEyeballsOrder|happyEyeballsOrder(kotlin.collections.List<com.ditchoom.socket.ResolvedAddress>){}[0]
+final fun com.ditchoom.socket/networkCapabilities(): com.ditchoom.socket/NetworkCapabilities // com.ditchoom.socket/networkCapabilities|networkCapabilities(){}[0]
+final suspend fun (com.ditchoom.buffer.flow/ByteSink).com.ditchoom.data/writeString(kotlin/String, com.ditchoom.buffer/Charset = ..., kotlin.time/Duration = ...): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.data/writeString|writeString@com.ditchoom.buffer.flow.ByteSink(kotlin.String;com.ditchoom.buffer.Charset;kotlin.time.Duration){}[0]
+final suspend fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readBuffer(kotlin.time/Duration = ...): com.ditchoom.buffer/ReadBuffer // com.ditchoom.data/readBuffer|readBuffer@com.ditchoom.buffer.flow.ByteSource(kotlin.time.Duration){}[0]
+final suspend fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readInto(com.ditchoom.buffer/WriteBuffer, kotlin.time/Duration = ...): kotlin/Int // com.ditchoom.data/readInto|readInto@com.ditchoom.buffer.flow.ByteSource(com.ditchoom.buffer.WriteBuffer;kotlin.time.Duration){}[0]
+final suspend fun (com.ditchoom.buffer.flow/ByteSource).com.ditchoom.data/readString(com.ditchoom.buffer/Charset = ..., kotlin.time/Duration = ...): kotlin/String // com.ditchoom.data/readString|readString@com.ditchoom.buffer.flow.ByteSource(com.ditchoom.buffer.Charset;kotlin.time.Duration){}[0]
+final suspend fun (com.ditchoom.socket/ClientSocket.Companion).com.ditchoom.socket/connect(kotlin/Int, kotlin/String? = ..., com.ditchoom.socket/TransportConfig = ...): com.ditchoom.socket/ClientToServerSocket // com.ditchoom.socket/connect|connect@com.ditchoom.socket.ClientSocket.Companion(kotlin.Int;kotlin.String?;com.ditchoom.socket.TransportConfig){}[0]
+final suspend fun (com.ditchoom.socket/NameResolution).com.ditchoom.socket/candidatesFor(kotlin/String): kotlin.collections/List<com.ditchoom.socket/ResolvedAddress> // com.ditchoom.socket/candidatesFor|candidatesFor@com.ditchoom.socket.NameResolution(kotlin.String){}[0]
+final suspend fun <#A: kotlin/Any, #B: kotlin/Any?> (com.ditchoom.socket.transport/SessionTransport<#A>).com.ditchoom.socket.transport/use(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig = ..., kotlin.coroutines/SuspendFunction1<#A, #B>): #B // com.ditchoom.socket.transport/use|use@com.ditchoom.socket.transport.SessionTransport<0:0>(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig;kotlin.coroutines.SuspendFunction1<0:0,0:1>){0§<kotlin.Any>;1§<kotlin.Any?>}[0]
+final suspend fun <#A: kotlin/Any?, #B: kotlin/Any?> com.ditchoom.socket/connectRace(kotlin.collections/List<#A>, com.ditchoom.socket/ConnectPacing, kotlin/Function1<kotlin/Throwable, com.ditchoom.socket/AttemptVerdict>, kotlin.coroutines/SuspendFunction1<#B, kotlin/Unit>, kotlin.coroutines/SuspendFunction1<#A, #B>): #B // com.ditchoom.socket/connectRace|connectRace(kotlin.collections.List<0:0>;com.ditchoom.socket.ConnectPacing;kotlin.Function1<kotlin.Throwable,com.ditchoom.socket.AttemptVerdict>;kotlin.coroutines.SuspendFunction1<0:1,kotlin.Unit>;kotlin.coroutines.SuspendFunction1<0:0,0:1>){0§<kotlin.Any?>;1§<kotlin.Any?>}[0]
+final suspend fun <#A: kotlin/Any?> (com.ditchoom.socket/ClientSocket.Companion).com.ditchoom.socket/connect(kotlin/Int, kotlin/String? = ..., com.ditchoom.socket/TransportConfig = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.socket/ClientSocket, #A>): #A // com.ditchoom.socket/connect|connect@com.ditchoom.socket.ClientSocket.Companion(kotlin.Int;kotlin.String?;com.ditchoom.socket.TransportConfig;kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.ClientSocket,0:0>){0§<kotlin.Any?>}[0]
+
+// Targets: [linux]
+final class com.ditchoom.socket/LinuxClientSocket : com.ditchoom.socket/ClientToServerSocket { // com.ditchoom.socket/LinuxClientSocket|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/LinuxClientSocket.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final val isOpen // com.ditchoom.socket/LinuxClientSocket.isOpen|{}isOpen[0]
+        final fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket/LinuxClientSocket.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
+    final val readPolicy // com.ditchoom.socket/LinuxClientSocket.readPolicy|{}readPolicy[0]
+        final fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket/LinuxClientSocket.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    final val writePolicy // com.ditchoom.socket/LinuxClientSocket.writePolicy|{}writePolicy[0]
+        final fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket/LinuxClientSocket.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final suspend fun close() // com.ditchoom.socket/LinuxClientSocket.close|close(){}[0]
+    final suspend fun localPort(): kotlin/Int // com.ditchoom.socket/LinuxClientSocket.localPort|localPort(){}[0]
+    final suspend fun open(kotlin/Int, kotlin/String?) // com.ditchoom.socket/LinuxClientSocket.open|open(kotlin.Int;kotlin.String?){}[0]
+    final suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket/LinuxClientSocket.read|read(kotlin.time.Duration){}[0]
+    final suspend fun remotePort(): kotlin/Int // com.ditchoom.socket/LinuxClientSocket.remotePort|remotePort(){}[0]
+    final suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket/LinuxClientSocket.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+}
+
+// Targets: [linux]
+final class com.ditchoom.socket/LinuxServerSocket : com.ditchoom.socket/ServerSocket { // com.ditchoom.socket/LinuxServerSocket|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/LinuxServerSocket.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final fun isListening(): kotlin/Boolean // com.ditchoom.socket/LinuxServerSocket.isListening|isListening(){}[0]
+    final fun port(): kotlin/Int // com.ditchoom.socket/LinuxServerSocket.port|port(){}[0]
+    final suspend fun bind(kotlin/Int, kotlin/String?, kotlin/Int): kotlinx.coroutines.flow/Flow<com.ditchoom.socket/ClientSocket> // com.ditchoom.socket/LinuxServerSocket.bind|bind(kotlin.Int;kotlin.String?;kotlin.Int){}[0]
+    final suspend fun close() // com.ditchoom.socket/LinuxServerSocket.close|close(){}[0]
+}
+
+// Targets: [linux]
+open class com.ditchoom.socket/LinuxSocketWrapper : com.ditchoom.socket/ClientSocket { // com.ditchoom.socket/LinuxSocketWrapper|null[0]
+    constructor <init>() // com.ditchoom.socket/LinuxSocketWrapper.<init>|<init>(){}[0]
+
+    final val readBufferSource // com.ditchoom.socket/LinuxSocketWrapper.readBufferSource|{}readBufferSource[0]
+        final fun <get-readBufferSource>(): com.ditchoom.socket/ReadBufferSource // com.ditchoom.socket/LinuxSocketWrapper.readBufferSource.<get-readBufferSource>|<get-readBufferSource>(){}[0]
+    open val isOpen // com.ditchoom.socket/LinuxSocketWrapper.isOpen|{}isOpen[0]
+        open fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket/LinuxSocketWrapper.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
+    open val readPolicy // com.ditchoom.socket/LinuxSocketWrapper.readPolicy|{}readPolicy[0]
+        open fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket/LinuxSocketWrapper.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    open val writePolicy // com.ditchoom.socket/LinuxSocketWrapper.writePolicy|{}writePolicy[0]
+        open fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket/LinuxSocketWrapper.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final var config // com.ditchoom.socket/LinuxSocketWrapper.config|{}config[0]
+        final fun <get-config>(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/LinuxSocketWrapper.config.<get-config>|<get-config>(){}[0]
+        final fun <set-config>(com.ditchoom.socket/TransportConfig) // com.ditchoom.socket/LinuxSocketWrapper.config.<set-config>|<set-config>(com.ditchoom.socket.TransportConfig){}[0]
+
+    open suspend fun close() // com.ditchoom.socket/LinuxSocketWrapper.close|close(){}[0]
+    open suspend fun localPort(): kotlin/Int // com.ditchoom.socket/LinuxSocketWrapper.localPort|localPort(){}[0]
+    open suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket/LinuxSocketWrapper.read|read(kotlin.time.Duration){}[0]
+    open suspend fun remotePort(): kotlin/Int // com.ditchoom.socket/LinuxSocketWrapper.remotePort|remotePort(){}[0]
+    open suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket/LinuxSocketWrapper.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+}
+
+// Targets: [linux]
+final object com.ditchoom.socket/IoUringManager { // com.ditchoom.socket/IoUringManager|null[0]
+    final fun cancelOperation(kotlin/Long) // com.ditchoom.socket/IoUringManager.cancelOperation|cancelOperation(kotlin.Long){}[0]
+    final fun cleanup() // com.ditchoom.socket/IoUringManager.cleanup|cleanup(){}[0]
+    final fun getRing(): kotlinx.cinterop/CPointer<com.ditchoom.socket.linux/io_uring> // com.ditchoom.socket/IoUringManager.getRing|getRing(){}[0]
+    final fun nextUserData(): kotlin/Long // com.ditchoom.socket/IoUringManager.nextUserData|nextUserData(){}[0]
+    final fun onSocketClosed() // com.ditchoom.socket/IoUringManager.onSocketClosed|onSocketClosed(){}[0]
+    final fun onSocketOpened() // com.ditchoom.socket/IoUringManager.onSocketOpened|onSocketOpened(){}[0]
+    final fun registerOperation(kotlin.time/Duration? = ...): kotlin/Pair<kotlin/Long, kotlinx.coroutines/CompletableDeferred<kotlin/Int>> // com.ditchoom.socket/IoUringManager.registerOperation|registerOperation(kotlin.time.Duration?){}[0]
+    final fun submitNoWaitUnsafe(kotlin/Function1<kotlinx.cinterop/CPointer<com.ditchoom.socket.linux/io_uring_sqe>, kotlin/Unit>) // com.ditchoom.socket/IoUringManager.submitNoWaitUnsafe|submitNoWaitUnsafe(kotlin.Function1<kotlinx.cinterop.CPointer<com.ditchoom.socket.linux.io_uring_sqe>,kotlin.Unit>){}[0]
+    final suspend fun submitAndWait(kotlin.time/Duration? = ..., kotlin/Function1<kotlin/Int, kotlin/Unit> = ..., kotlin/Function2<kotlinx.cinterop/CPointer<com.ditchoom.socket.linux/io_uring_sqe>, kotlin/Long, kotlin/Unit>): kotlin/Int // com.ditchoom.socket/IoUringManager.submitAndWait|submitAndWait(kotlin.time.Duration?;kotlin.Function1<kotlin.Int,kotlin.Unit>;kotlin.Function2<kotlinx.cinterop.CPointer<com.ditchoom.socket.linux.io_uring_sqe>,kotlin.Long,kotlin.Unit>){}[0]
+    final suspend fun submitNoWait(kotlin/Function1<kotlinx.cinterop/CPointer<com.ditchoom.socket.linux/io_uring_sqe>, kotlin/Unit>) // com.ditchoom.socket/IoUringManager.submitNoWait|submitNoWait(kotlin.Function1<kotlinx.cinterop.CPointer<com.ditchoom.socket.linux.io_uring_sqe>,kotlin.Unit>){}[0]
+    final suspend fun submitRegistered(kotlin/Long, kotlinx.coroutines/CompletableDeferred<kotlin/Int>, kotlin.time/Duration? = ..., kotlin/Function1<kotlinx.cinterop/CPointer<com.ditchoom.socket.linux/io_uring_sqe>, kotlin/Unit>): kotlin/Int // com.ditchoom.socket/IoUringManager.submitRegistered|submitRegistered(kotlin.Long;kotlinx.coroutines.CompletableDeferred<kotlin.Int>;kotlin.time.Duration?;kotlin.Function1<kotlinx.cinterop.CPointer<com.ditchoom.socket.linux.io_uring_sqe>,kotlin.Unit>){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/IpAddress { // com.ditchoom.socket/IpAddress|null[0]
+    constructor <init>() // com.ditchoom.socket/IpAddress.<init>|<init>(){}[0]
+
+    final val address // com.ditchoom.socket/IpAddress.address|{}address[0]
+        final fun <get-address>(): kotlin/String // com.ditchoom.socket/IpAddress.address.<get-address>|<get-address>(){}[0]
+    final val family // com.ditchoom.socket/IpAddress.family|{}family[0]
+        final fun <get-family>(): kotlin/String // com.ditchoom.socket/IpAddress.family.<get-family>|<get-family>(){}[0]
+    final val port // com.ditchoom.socket/IpAddress.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket/IpAddress.port.<get-port>|<get-port>(){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/Net { // com.ditchoom.socket/Net|null[0]
+    constructor <init>() // com.ditchoom.socket/Net.<init>|<init>(){}[0]
+
+    final object Companion { // com.ditchoom.socket/Net.Companion|null[0]
+        final fun connect(com.ditchoom.socket/Options, kotlin/Function0<kotlin/Unit>): com.ditchoom.socket/Socket // com.ditchoom.socket/Net.Companion.connect|connect(com.ditchoom.socket.Options;kotlin.Function0<kotlin.Unit>){}[0]
+        final fun createServer(kotlin/Function1<com.ditchoom.socket/Socket, kotlin/Unit> = ...): com.ditchoom.socket/Server // com.ditchoom.socket/Net.Companion.createServer|createServer(kotlin.Function1<com.ditchoom.socket.Socket,kotlin.Unit>){}[0]
+    }
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/NodeClientSocket : com.ditchoom.socket/ClientToServerSocket, com.ditchoom.socket/NodeSocket { // com.ditchoom.socket/NodeClientSocket|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/NodeClientSocket.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final fun int8ArrayOf(kotlin/Any): org.khronos.webgl/Int8Array // com.ditchoom.socket/NodeClientSocket.int8ArrayOf|int8ArrayOf(kotlin.Any){}[0]
+    final suspend fun open(kotlin/Int, kotlin/String?) // com.ditchoom.socket/NodeClientSocket.open|open(kotlin.Int;kotlin.String?){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/NodeServerSocket : com.ditchoom.socket/ServerSocket { // com.ditchoom.socket/NodeServerSocket|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/NodeServerSocket.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final fun int8ArrayOf(kotlin/Any): org.khronos.webgl/Int8Array // com.ditchoom.socket/NodeServerSocket.int8ArrayOf|int8ArrayOf(kotlin.Any){}[0]
+    final fun isListening(): kotlin/Boolean // com.ditchoom.socket/NodeServerSocket.isListening|isListening(){}[0]
+    final fun port(): kotlin/Int // com.ditchoom.socket/NodeServerSocket.port|port(){}[0]
+    final suspend fun bind(kotlin/Int, kotlin/String?, kotlin/Int): kotlinx.coroutines.flow/Flow<com.ditchoom.socket/ClientSocket> // com.ditchoom.socket/NodeServerSocket.bind|bind(kotlin.Int;kotlin.String?;kotlin.Int){}[0]
+    final suspend fun close() // com.ditchoom.socket/NodeServerSocket.close|close(){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/OnRead { // com.ditchoom.socket/OnRead|null[0]
+    constructor <init>(kotlin/Function0<org.khronos.webgl/Uint8Array>? = ..., kotlin/Function2<kotlin/Int, org.khronos.webgl/Uint8Array, kotlin/Boolean>? = ...) // com.ditchoom.socket/OnRead.<init>|<init>(kotlin.Function0<org.khronos.webgl.Uint8Array>?;kotlin.Function2<kotlin.Int,org.khronos.webgl.Uint8Array,kotlin.Boolean>?){}[0]
+
+    final var buffer // com.ditchoom.socket/OnRead.buffer|{}buffer[0]
+        final fun <get-buffer>(): kotlin/Function0<org.khronos.webgl/Uint8Array>? // com.ditchoom.socket/OnRead.buffer.<get-buffer>|<get-buffer>(){}[0]
+        final fun <set-buffer>(kotlin/Function0<org.khronos.webgl/Uint8Array>?) // com.ditchoom.socket/OnRead.buffer.<set-buffer>|<set-buffer>(kotlin.Function0<org.khronos.webgl.Uint8Array>?){}[0]
+    final var callback // com.ditchoom.socket/OnRead.callback|{}callback[0]
+        final fun <get-callback>(): kotlin/Function2<kotlin/Int, org.khronos.webgl/Uint8Array, kotlin/Boolean>? // com.ditchoom.socket/OnRead.callback.<get-callback>|<get-callback>(){}[0]
+        final fun <set-callback>(kotlin/Function2<kotlin/Int, org.khronos.webgl/Uint8Array, kotlin/Boolean>?) // com.ditchoom.socket/OnRead.callback.<set-callback>|<set-callback>(kotlin.Function2<kotlin.Int,org.khronos.webgl.Uint8Array,kotlin.Boolean>?){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/Options { // com.ditchoom.socket/Options|null[0]
+    constructor <init>(kotlin/Int, kotlin/String? = ..., com.ditchoom.socket/OnRead? = ..., kotlin/Boolean = ..., kotlin/String? = ..., kotlin/Array<kotlin/String>? = ...) // com.ditchoom.socket/Options.<init>|<init>(kotlin.Int;kotlin.String?;com.ditchoom.socket.OnRead?;kotlin.Boolean;kotlin.String?;kotlin.Array<kotlin.String>?){}[0]
+
+    final val ca // com.ditchoom.socket/Options.ca|{}ca[0]
+        final fun <get-ca>(): kotlin/Array<kotlin/String>? // com.ditchoom.socket/Options.ca.<get-ca>|<get-ca>(){}[0]
+    final val host // com.ditchoom.socket/Options.host|{}host[0]
+        final fun <get-host>(): kotlin/String? // com.ditchoom.socket/Options.host.<get-host>|<get-host>(){}[0]
+    final val onread // com.ditchoom.socket/Options.onread|{}onread[0]
+        final fun <get-onread>(): com.ditchoom.socket/OnRead? // com.ditchoom.socket/Options.onread.<get-onread>|<get-onread>(){}[0]
+    final val port // com.ditchoom.socket/Options.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket/Options.port.<get-port>|<get-port>(){}[0]
+    final val rejectUnauthorized // com.ditchoom.socket/Options.rejectUnauthorized|{}rejectUnauthorized[0]
+        final fun <get-rejectUnauthorized>(): kotlin/Boolean // com.ditchoom.socket/Options.rejectUnauthorized.<get-rejectUnauthorized>|<get-rejectUnauthorized>(){}[0]
+    final val servername // com.ditchoom.socket/Options.servername|{}servername[0]
+        final fun <get-servername>(): kotlin/String? // com.ditchoom.socket/Options.servername.<get-servername>|<get-servername>(){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/Server { // com.ditchoom.socket/Server|null[0]
+    constructor <init>() // com.ditchoom.socket/Server.<init>|<init>(){}[0]
+
+    final var listening // com.ditchoom.socket/Server.listening|{}listening[0]
+        final fun <get-listening>(): kotlin/Boolean // com.ditchoom.socket/Server.listening.<get-listening>|<get-listening>(){}[0]
+        final fun <set-listening>(kotlin/Boolean) // com.ditchoom.socket/Server.listening.<set-listening>|<set-listening>(kotlin.Boolean){}[0]
+    final var maxConnections // com.ditchoom.socket/Server.maxConnections|{}maxConnections[0]
+        final fun <get-maxConnections>(): kotlin/Int // com.ditchoom.socket/Server.maxConnections.<get-maxConnections>|<get-maxConnections>(){}[0]
+        final fun <set-maxConnections>(kotlin/Int) // com.ditchoom.socket/Server.maxConnections.<set-maxConnections>|<set-maxConnections>(kotlin.Int){}[0]
+
+    final fun <#A1: kotlin/Any?> on(kotlin/String, kotlin/Function1<#A1, kotlin/Unit>) // com.ditchoom.socket/Server.on|on(kotlin.String;kotlin.Function1<0:0,kotlin.Unit>){0§<kotlin.Any?>}[0]
+    final fun address(): com.ditchoom.socket/IpAddress? // com.ditchoom.socket/Server.address|address(){}[0]
+    final fun close(kotlin/Function0<kotlin/Unit>): com.ditchoom.socket/Server // com.ditchoom.socket/Server.close|close(kotlin.Function0<kotlin.Unit>){}[0]
+    final fun getConnections(kotlin/Function2<kotlin/Any, kotlin/Int, kotlin/Unit>): com.ditchoom.socket/Server // com.ditchoom.socket/Server.getConnections|getConnections(kotlin.Function2<kotlin.Any,kotlin.Int,kotlin.Unit>){}[0]
+    final fun listen(kotlin/Int = ..., kotlin/String = ..., kotlin/Int = ..., kotlin/Function0<kotlin/Unit> = ...): com.ditchoom.socket/Server // com.ditchoom.socket/Server.listen|listen(kotlin.Int;kotlin.String;kotlin.Int;kotlin.Function0<kotlin.Unit>){}[0]
+    final fun on(kotlin/String, kotlin/Function0<kotlin/Unit>) // com.ditchoom.socket/Server.on|on(kotlin.String;kotlin.Function0<kotlin.Unit>){}[0]
+    final fun removeAllListeners(): com.ditchoom.socket/Server // com.ditchoom.socket/Server.removeAllListeners|removeAllListeners(){}[0]
+    final fun unref(): com.ditchoom.socket/Server // com.ditchoom.socket/Server.unref|unref(){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/Socket { // com.ditchoom.socket/Socket|null[0]
+    constructor <init>() // com.ditchoom.socket/Socket.<init>|<init>(){}[0]
+
+    final var localPort // com.ditchoom.socket/Socket.localPort|{}localPort[0]
+        final fun <get-localPort>(): kotlin/Int // com.ditchoom.socket/Socket.localPort.<get-localPort>|<get-localPort>(){}[0]
+        final fun <set-localPort>(kotlin/Int) // com.ditchoom.socket/Socket.localPort.<set-localPort>|<set-localPort>(kotlin.Int){}[0]
+    final var remoteAddress // com.ditchoom.socket/Socket.remoteAddress|{}remoteAddress[0]
+        final fun <get-remoteAddress>(): kotlin/String? // com.ditchoom.socket/Socket.remoteAddress.<get-remoteAddress>|<get-remoteAddress>(){}[0]
+        final fun <set-remoteAddress>(kotlin/String?) // com.ditchoom.socket/Socket.remoteAddress.<set-remoteAddress>|<set-remoteAddress>(kotlin.String?){}[0]
+    final var remotePort // com.ditchoom.socket/Socket.remotePort|{}remotePort[0]
+        final fun <get-remotePort>(): kotlin/Int // com.ditchoom.socket/Socket.remotePort.<get-remotePort>|<get-remotePort>(){}[0]
+        final fun <set-remotePort>(kotlin/Int) // com.ditchoom.socket/Socket.remotePort.<set-remotePort>|<set-remotePort>(kotlin.Int){}[0]
+
+    final fun destroy(): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.destroy|destroy(){}[0]
+    final fun end(kotlin/Function0<kotlin/Unit>): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.end|end(kotlin.Function0<kotlin.Unit>){}[0]
+    final fun on(kotlin/String, kotlin/Function1<kotlin/Any, kotlin/Unit>) // com.ditchoom.socket/Socket.on|on(kotlin.String;kotlin.Function1<kotlin.Any,kotlin.Unit>){}[0]
+    final fun removeAllListeners(): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.removeAllListeners|removeAllListeners(){}[0]
+    final fun resume(): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.resume|resume(){}[0]
+    final fun setNoDelay(kotlin/Boolean = ...): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.setNoDelay|setNoDelay(kotlin.Boolean){}[0]
+    final fun setTimeout(kotlin/Int, kotlin/Function0<kotlin/Unit>? = ...): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.setTimeout|setTimeout(kotlin.Int;kotlin.Function0<kotlin.Unit>?){}[0]
+    final fun unref(): com.ditchoom.socket/Socket // com.ditchoom.socket/Socket.unref|unref(){}[0]
+    final fun write(org.khronos.webgl/Uint8Array, kotlin/Function0<kotlin/Unit>): kotlin/Boolean // com.ditchoom.socket/Socket.write|write(org.khronos.webgl.Uint8Array;kotlin.Function0<kotlin.Unit>){}[0]
+}
+
+// Targets: [js]
+final class com.ditchoom.socket/Tls { // com.ditchoom.socket/Tls|null[0]
+    constructor <init>() // com.ditchoom.socket/Tls.<init>|<init>(){}[0]
+
+    final object Companion { // com.ditchoom.socket/Tls.Companion|null[0]
+        final fun connect(com.ditchoom.socket/Options, kotlin/Function0<kotlin/Unit>): com.ditchoom.socket/Socket // com.ditchoom.socket/Tls.Companion.connect|connect(com.ditchoom.socket.Options;kotlin.Function0<kotlin.Unit>){}[0]
+    }
+}
+
+// Targets: [js]
+open class com.ditchoom.socket/NodeSocket : com.ditchoom.socket/ClientSocket { // com.ditchoom.socket/NodeSocket|null[0]
+    constructor <init>(com.ditchoom.socket/TransportConfig = ...) // com.ditchoom.socket/NodeSocket.<init>|<init>(com.ditchoom.socket.TransportConfig){}[0]
+
+    final val config // com.ditchoom.socket/NodeSocket.config|{}config[0]
+        final fun <get-config>(): com.ditchoom.socket/TransportConfig // com.ditchoom.socket/NodeSocket.config.<get-config>|<get-config>(){}[0]
+    open val isOpen // com.ditchoom.socket/NodeSocket.isOpen|{}isOpen[0]
+        open fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket/NodeSocket.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
+    open val readPolicy // com.ditchoom.socket/NodeSocket.readPolicy|{}readPolicy[0]
+        open fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket/NodeSocket.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
+    open val writePolicy // com.ditchoom.socket/NodeSocket.writePolicy|{}writePolicy[0]
+        open fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket/NodeSocket.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
+
+    final fun cleanSocket(com.ditchoom.socket/Socket) // com.ditchoom.socket/NodeSocket.cleanSocket|cleanSocket(com.ditchoom.socket.Socket){}[0]
+    open suspend fun close() // com.ditchoom.socket/NodeSocket.close|close(){}[0]
+    open suspend fun localPort(): kotlin/Int // com.ditchoom.socket/NodeSocket.localPort|localPort(){}[0]
+    open suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket/NodeSocket.read|read(kotlin.time.Duration){}[0]
+    open suspend fun remotePort(): kotlin/Int // com.ditchoom.socket/NodeSocket.remotePort|remotePort(){}[0]
+    open suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket/NodeSocket.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+}
+
+// Targets: [js]
+final val com.ditchoom.socket/isNodeJs // com.ditchoom.socket/isNodeJs|{}isNodeJs[0]
+    final fun <get-isNodeJs>(): kotlin/Boolean // com.ditchoom.socket/isNodeJs.<get-isNodeJs>|<get-isNodeJs>(){}[0]
+
+// Targets: [js]
+final suspend fun (com.ditchoom.socket/Server).com.ditchoom.socket/listenSuspend(kotlin/Int, kotlin/String?, kotlin/Int) // com.ditchoom.socket/listenSuspend|listenSuspend@com.ditchoom.socket.Server(kotlin.Int;kotlin.String?;kotlin.Int){}[0]
+
+// Targets: [js]
+final suspend fun (com.ditchoom.socket/Socket).com.ditchoom.socket/write(org.khronos.webgl/Uint8Array) // com.ditchoom.socket/write|write@com.ditchoom.socket.Socket(org.khronos.webgl.Uint8Array){}[0]
+
+// Targets: [js]
+final suspend fun com.ditchoom.socket/connect(kotlin/Boolean, com.ditchoom.socket/Options, kotlin.time/Duration? = ...): com.ditchoom.socket/Socket // com.ditchoom.socket/connect|connect(kotlin.Boolean;com.ditchoom.socket.Options;kotlin.time.Duration?){}[0]
