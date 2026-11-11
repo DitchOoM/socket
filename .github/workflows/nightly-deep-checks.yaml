@@ -134,8 +134,12 @@ jobs:
 
       - name: Model check at LINCHECK_SCALE=${{ env.LINCHECK_SCALE }}
         run: |
+          # -PlinuxTargets=false: the models are JVM tests. With the Linux native targets configured,
+          # the task graph reaches the root project's liburing cinterop and :buildLiburingArm64, which
+          # needs the aarch64 cross-compiler this job does not install — the first scheduled run
+          # (43002973289) ended there, "Cross-compiler not found for ARM64", before any model ran.
           .github/scripts/gradle-retry.sh :socket-quic-quiche:lincheckTest \
-            --rerun --no-daemon --no-configuration-cache
+            -PlinuxTargets=false --rerun --no-daemon --no-configuration-cache
 
       # Lincheck fails open when its instrumentation cannot hook a class, so a green task is not yet
       # evidence that anything was explored. Require the models to have run and to have seen the scale.
