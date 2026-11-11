@@ -556,8 +556,10 @@ jobs:
         backend:
           - name: "JNI"
             args: ""
+            jfr: "false"
           - name: "FFM"
             args: "-PquicheJvmBackend=ffm"
+            jfr: "true"
     env:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
       # See the provisioning step below: this asserts the alias exists, so a skip for want of it
@@ -623,6 +625,13 @@ jobs:
           hang-budget-minutes: "15"
           kill-after-dump: "false"
 
+      # Flight Recorder ring on the test worker: FFM traced, JNI untraced (`jfr` matrix flag), so the
+      # recorder is never this lane's only configuration. Dumped only on a failed test or a hung worker.
+      - uses: ./.github/actions/jvm-flight-recorder
+        with:
+          mode: start
+          enabled: ${{ matrix.backend.jfr }}
+
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
         timeout-minutes: 20
         env:
@@ -651,6 +660,14 @@ jobs:
         with:
           mode: collect
           artifact-name: apple-capture-jvm-${{ matrix.backend.name }}
+
+      - name: Flight recorder ring (on failure)
+        if: ${{ (failure() || cancelled()) && matrix.backend.jfr == 'true' }}
+        continue-on-error: true
+        uses: ./.github/actions/jvm-flight-recorder
+        with:
+          mode: collect
+          artifact-name: jfr-ring-macos-jvm-${{ matrix.backend.name }}
 
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}

@@ -1,0 +1,82 @@
+name: "JVM flight recorder ring"
+description: >-
+  Keep the last ~60 s of every Gradle test worker JVM (Java Flight Recorder, trimmed to what explains
+  a stall) in a bounded on-disk ring and write it out ONLY when a test fails or the worker hangs.
+  `mode: start` before the Gradle step; `mode: collect` with `if: failure() || cancelled()`.
+
+# Why this exists: a test report says "timed out" and nothing about what each thread was doing. The
+# 2026-11-11 Linux soak stall, the iOS handshake stalls and the macOS segfault each needed a
+# throwaway probe PR to see the threads. The Apple/Linux/Android failure captures take stacks at one
+# instant; a ring is the TIMELINE leading up to it (who parked, for how long, on what; GC pauses;
+# which thread was burning CPU; where blocking socket reads sat).
+#
+# HOW: `start` installs .github/gradle/jfr-ring.init.gradle into the Gradle user home (it does nothing
+# without the -PciJfrRing property this step exports, so it is inert for every other step and for
+# local builds) and arms a detached idle watchdog. The init script adds -XX:StartFlightRecording
+# (disk ring, maxage=60s, maxsize=20m, .github/jfr/stall-ring.jfc) to every Test worker except
+# lincheckTest, which must stay on a clean JVM. Three ways a recording gets written, all only when
+# something is wrong:
+#   - a test FAILS while the worker lives on: Gradle's afterTest runs `jcmd JFR.dump` at that moment
+#     (the minute that led to the failure, not the minute at the end of the task);
+#   - the task FAILS: the worker's exit dump (dumponexit) is kept if the task failed and deleted if it
+#     passed. This is the only path that catches a failing LAST test: measured locally, a worker with
+#     nothing left to run exits before Gradle delivers the failure event, so `jcmd` finds no process;
+#   - a worker is HUNG: the watchdog sees a live worker and no test-results file written for
+#     `hang-idle-minutes` and dumps it before the job's own timeout or watchdog kills it. The
+#     Linux lane's 15-minute silence watchdog is longer than the default 10 here on purpose.
+# A recorder that cannot write its file ABORTS the JVM at startup, so the directory is created first.
+# Neither path retries or lengthens anything; the caller sets continue-on-error on the collect step.
+#
+# TRACED vs UNTRACED: instrumentation has hidden the race it was built to catch on this project, so
+# callers pass `enabled: false` for a lane that must stay untraced. See the workflows for which.
+#
+# Inputs are strings; `enabled` is compared to 'true'.
+
+inputs:
+  mode:
+    description: "`start` (install, arm) or `collect` (compress, cap, upload)"
+    required: true
+  enabled:
+    description: "`false` makes the whole action a no-op (an untraced lane)"
+    required: false
+    default: "true"
+  hang-idle-minutes:
+    description: "start: minutes with no test result written, while a worker is alive, before it is dumped"
+    required: false
+    default: "10"
+  artifact-name:
+    description: "collect: artifact name; unique per job and matrix shard"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Arm the JFR ring
+      if: ${{ inputs.mode == 'start' && inputs.enabled == 'true' }}
+      shell: bash
+      run: |
+        gh_dir="$(cd "${{ github.action_path }}/../.." && pwd)"
+        dir="${RUNNER_TEMP}/jfr-ring"
+        # Gradle on Windows needs C:/... paths, not /d/a/...
+        if command -v cygpath >/dev/null 2>&1; then dir="$(cygpath -m "$dir")"; gh_dir="$(cygpath -m "$gh_dir")"; fi
+        "$gh_dir/scripts/jfr-ring.sh" start "$dir" "$(( ${{ inputs.hang-idle-minutes }} * 60 ))"
+        echo "ORG_GRADLE_PROJECT_ciJfrRing=$dir" >> "$GITHUB_ENV"
+        echo "ORG_GRADLE_PROJECT_ciJfrRingHome=$gh_dir" >> "$GITHUB_ENV"
+        echo "JFR_RING_DIR=$dir" >> "$GITHUB_ENV"
+
+    # `|| true`: this step must never fail the job even if the script itself is broken.
+    - name: Collect the recordings
+      if: ${{ inputs.mode == 'collect' && inputs.enabled == 'true' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/jfr-ring.sh" collect "$JFR_RING_DIR" "${RUNNER_TEMP}/jfr-ring-out" || true
+
+    - name: Upload the recordings
+      if: ${{ inputs.mode == 'collect' && inputs.enabled == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/jfr-ring-out
+        retention-days: 14
+        if-no-files-found: ignore
