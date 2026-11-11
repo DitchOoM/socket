@@ -8,6 +8,11 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.SystemTrustFailure
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlin.time.Instant
 
 // A real certificate is a few KiB and a real chain three or four deep; the caps only stop a hostile peer
@@ -70,7 +75,7 @@ internal suspend fun verifyServerCertificateChain(
         when (platformTrust) {
             PlatformChainTrust.InHandshake -> Unit
             is PlatformChainTrust.AfterHandshake ->
-                when (val verdict = platformTrust.evaluate(serverName, chain.map { it.slice() })) {
+                when (val verdict = platformTrust.evaluateWithoutHoldingTheCaller(serverName, chain, bufferFactory)) {
                     SystemTrustVerdict.Trusted -> Unit
                     is SystemTrustVerdict.Untrusted ->
                         throw ServerCertificateRejectedException(
@@ -91,6 +96,53 @@ internal suspend fun verifyServerCertificateChain(
     } finally {
         chain.forEach { it.freeNativeMemory() }
     }
+}
+
+/**
+ * Where an evaluation that outlives the connect that asked for it finishes. Nothing in it is ever
+ * cancelled: an evaluation is a blocking platform call that cannot be interrupted, so the only choice
+ * is whose thread waits for it.
+ */
+private val abandonedEvaluations = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+/**
+ * Put [chain] to the platform trust store without making the connect wait on it uninterruptibly.
+ *
+ * A platform evaluator (iOS's `SecTrustEvaluateWithError`) blocks its thread while the OS fetches
+ * revocation data or missing intermediates, and nothing can interrupt it. Awaited in the connect's own
+ * coroutine, that call held the connect past its timeout and past its cancellation. So the evaluation
+ * runs on its own, and the connect only awaits its verdict, which a cancellation or deadline leaves at
+ * once. The evaluation then finishes on its own thread and its verdict is dropped.
+ *
+ * The evaluator is handed copies of the chain, freed when it returns: [chain] belongs to the caller,
+ * who frees it as soon as this returns, which may be while the evaluation is still running.
+ */
+private suspend fun PlatformChainTrust.AfterHandshake.evaluateWithoutHoldingTheCaller(
+    serverName: String,
+    chain: List<PlatformBuffer>,
+    bufferFactory: BufferFactory,
+): SystemTrustVerdict {
+    val owned =
+        chain.map { der ->
+            bufferFactory.allocate(der.remaining()).also {
+                it.write(der.slice())
+                it.resetForRead()
+            }
+        }
+    val verdict = CompletableDeferred<SystemTrustVerdict>()
+    abandonedEvaluations.launch {
+        try {
+            verdict.complete(evaluate(serverName, owned.map { it.slice() }))
+        } catch (t: Throwable) {
+            verdict.completeExceptionally(t)
+        } finally {
+            owned.forEach { it.freeNativeMemory() }
+        }
+    }
+    return reportingStall(
+        "the platform trust store's verdict on the server's chain",
+        { "server=$serverName chain=${chain.size} certificate(s); the connect is waiting on a blocking platform call" },
+    ) { verdict.await() }
 }
 
 /** Read every certificate of the chain into [into], each positioned for reading. */
