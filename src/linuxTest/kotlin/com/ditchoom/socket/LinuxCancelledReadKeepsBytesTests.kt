@@ -24,7 +24,7 @@ class LinuxCancelledReadKeepsBytesTests {
         runTestNoTimeSkipping(timeout = 30.seconds) {
             val server = ServerSocket.allocate()
             val accepted = server.bind()
-            val serverSide = CompletableDeferred<ClientToServerSocket>()
+            val serverSide = CompletableDeferred<ClientSocket>()
             val collection = launch { accepted.collect { serverSide.complete(it) } }
             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             try {
@@ -45,7 +45,7 @@ class LinuxCancelledReadKeepsBytesTests {
         runTestNoTimeSkipping(timeout = 30.seconds) {
             val server = ServerSocket.allocate()
             val accepted = server.bind()
-            val serverSide = CompletableDeferred<ClientToServerSocket>()
+            val serverSide = CompletableDeferred<ClientSocket>()
             val collection = launch { accepted.collect { serverSide.complete(it) } }
             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             try {
