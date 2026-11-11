@@ -94,7 +94,39 @@ class ReconnectingConnection<T>(
 ) : Connection<T> {
     override val id: Long = 0L
 
-    private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Initialized)
+    /**
+     * The connection this object holds, and the [ConnectionState] that follows from it.
+     *
+     * The held connection exists only in [Held], the one case whose [state] is
+     * [ConnectionState.Connected]; every other case holds nothing. "Connected without a connection"
+     * and "Disconnected while holding one" have no representation.
+     */
+    private sealed interface Slot<out T> {
+        val state: ConnectionState
+
+        data object Idle : Slot<Nothing> {
+            override val state: ConnectionState = ConnectionState.Initialized
+        }
+
+        data object Connecting : Slot<Nothing> {
+            override val state: ConnectionState = ConnectionState.Connecting
+        }
+
+        class Held<T>(
+            val connection: Connection<T>,
+        ) : Slot<T> {
+            override val state: ConnectionState = ConnectionState.Connected
+        }
+
+        class Down(
+            override val state: ConnectionState.Disconnected,
+        ) : Slot<Nothing>
+    }
+
+    @Volatile
+    private var slot: Slot<T> = Slot.Idle
+
+    private val _state = MutableStateFlow(slot.state)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
     private val _lastMessageReceived = MutableStateFlow<TimeSource.Monotonic.ValueTimeMark?>(null)
@@ -102,23 +134,59 @@ class ReconnectingConnection<T>(
     /** Timestamp of the most recent decoded message, or `null` if none received yet. */
     val lastMessageReceived: StateFlow<TimeSource.Monotonic.ValueTimeMark?> = _lastMessageReceived.asStateFlow()
 
-    @Volatile
-    private var currentConnection: Connection<T>? = null
-
     /**
-     * Guards the handoff of [currentConnection] between the reconnect loop and [close].
+     * Orders the reconnect loop against [close], and makes each [slot] change and its publication to
+     * [_state] one step.
      *
      * `@Volatile` publishes the field; it does not make "connect, then adopt" and "read, then close"
-     * two atomic steps. Without this lock `close()` can read [currentConnection] while the loop is
-     * still inside `connect()`, close nothing, and leave the loop to adopt and collect a connection
-     * nobody will ever close — the loop parks inside `receive()` and never reaches the `!closed`
-     * check that would have stopped it. Found by ReconnectingConnectionTeardownProbeTests under the
-     * full suite's load, having passed when run alone.
+     * two atomic steps. Without this lock `close()` can read the slot while the loop is still inside
+     * `connect()`, close nothing, and leave the loop to adopt and collect a connection nobody will
+     * ever close. Found by ReconnectingConnectionTeardownProbeTests under the full suite's load.
+     * A compare-and-set on [slot] alone would not replace it: [_state] is a second write that would
+     * no longer be ordered with the first.
      *
-     * Distinct from [collecting], which excludes two collectors from each other; this one orders a
-     * collector against a closer.
+     * Distinct from [collecting], which excludes two collectors from each other.
      */
     private val connectionHandoff = Mutex()
+
+    /** Moves to [next], publishes its state, and returns what was there. */
+    private suspend fun settle(next: Slot<T>): Slot<T> =
+        connectionHandoff.withLock {
+            val previous = slot
+            slot = next
+            _state.value = next.state
+            previous
+        }
+
+    /** Adopts [conn] as [Slot.Held]. Returns false if [close] got there first; [conn] is then the caller's to close. */
+    private suspend fun hold(conn: Connection<T>): Boolean =
+        connectionHandoff.withLock {
+            if (closed) {
+                false
+            } else {
+                slot = Slot.Held(conn)
+                _state.value = slot.state
+                true
+            }
+        }
+
+    /** Moves to [Slot.Connecting] unless [close] already ended this connection. */
+    private suspend fun beginConnecting() {
+        connectionHandoff.withLock {
+            if (!closed) {
+                slot = Slot.Connecting
+                _state.value = slot.state
+            }
+        }
+    }
+
+    /** Moves to [Slot.Down] and closes whatever was held. */
+    private suspend fun release(cause: ConnectionState.Disconnected) {
+        when (val previous = settle(Slot.Down(cause))) {
+            is Slot.Held -> previous.connection.close()
+            Slot.Idle, Slot.Connecting, is Slot.Down -> Unit
+        }
+    }
 
     @Volatile
     private var backoffReset = false
@@ -170,7 +238,7 @@ class ReconnectingConnection<T>(
             // two collectors in 2/300 attempts (236/300 contended) — see
             // ReconnectingConnectionCollectorRaceTests. Two collectors here is worse than the same
             // defect was in CodecConnection: each runs the whole loop below, so each calls connect()
-            // and each writes currentConnection, and the loser's connection is left with no reference
+            // and each adopts a connection, and the loser's connection is left with no reference
             // to close it.
             check(collecting.tryLock()) { "receive() is already being collected" }
             try {
@@ -190,7 +258,7 @@ class ReconnectingConnection<T>(
                     // to close. Found by ReconnectingConnectionTeardownProbeTests.
                     while (currentCoroutineContext().isActive && !closed) {
                         try {
-                            _state.value = ConnectionState.Connecting
+                            beginConnecting()
                             if (retryDelay > Duration.ZERO && !backoffReset) {
                                 // Race the backoff against a network-path change: a change of network
                                 // identity is the strongest signal a failing reconnect may now succeed, so
@@ -201,23 +269,14 @@ class ReconnectingConnection<T>(
                             }
                             backoffReset = false
                             val conn = connect()
-                            val adopted =
-                                connectionHandoff.withLock {
-                                    if (closed) {
-                                        false
-                                    } else {
-                                        currentConnection = conn
-                                        true
-                                    }
-                                }
+                            val adopted = hold(conn)
                             if (!adopted) {
-                                // close() ran while connect() was in flight, so it read a null
-                                // currentConnection and closed nothing. This connection is ours.
+                                // close() ran while connect() was in flight, so it found nothing held
+                                // and closed nothing. This connection is ours.
                                 conn.close()
                                 return@flow
                             }
                             livenessLost = false
-                            _state.value = ConnectionState.Connected
                             val livenessJob = launchLivenessJob(monitor, conn)
                             try {
                                 conn.receive().collect {
@@ -231,29 +290,30 @@ class ReconnectingConnection<T>(
                                 // A liveness probe fired by a network-path change judged the connection
                                 // dead and tore it down. The path just changed, so reconnect now rather
                                 // than waiting out a backoff.
-                                connectionHandoff.withLock { currentConnection = null }
-                                _state.value =
-                                    ConnectionState.Disconnected(
-                                        SocketIOException("connection liveness lost after network change"),
-                                    )
+                                settle(
+                                    Slot.Down(
+                                        ConnectionState.Disconnected(
+                                            SocketIOException("connection liveness lost after network change"),
+                                        ),
+                                    ),
+                                )
                                 retryDelay = Duration.ZERO
                                 continue
                             }
-                            // Stream ended cleanly — no retry
-                            _state.value = ConnectionState.Disconnected()
+                            // Stream ended cleanly — no retry. The finished stream does not close the
+                            // transport, so the slot is the last reference: release closes it.
+                            release(ConnectionState.Disconnected())
                             return@flow
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            connectionHandoff.withLock { currentConnection = null }
                             if (closed) {
                                 // This exception is our own teardown surfacing through the reader,
-                                // not a fault to classify: close() shut the transport underneath it
-                                // and has already published Disconnected(). Retrying here is how a
-                                // closed connection reopens itself.
+                                // not a fault to classify: close() owns the slot and publishes
+                                // Disconnected(). Retrying here is how a closed connection reopens itself.
                                 return@flow
                             }
-                            _state.value = ConnectionState.Disconnected(e)
+                            settle(Slot.Down(ConnectionState.Disconnected(e)))
                             if (livenessLost) {
                                 // Connection was torn down by a liveness probe after a network change;
                                 // its receive() surfaced the teardown as an error. Reconnect now.
@@ -291,20 +351,22 @@ class ReconnectingConnection<T>(
         check(!closed) { "ReconnectingConnection is closed" }
         check(collecting.isLocked) { "send() requires receive() to be collected (it drives reconnection)" }
         while (currentCoroutineContext().isActive && !closed) {
-            val conn = currentConnection
-            if (conn == null) {
-                // Wait for reconnection to complete
-                state.first { it == ConnectionState.Connected || closed }
-                if (closed) throw IllegalStateException("ReconnectingConnection is closed")
-                continue
-            }
-            try {
-                conn.send(message)
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Connection dropped during send — wait for reconnect
+            when (val held = slot) {
+                is Slot.Held -> {
+                    try {
+                        held.connection.send(message)
+                        return
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Connection dropped during send — wait for reconnect
+                    }
+                }
+                Slot.Idle, Slot.Connecting, is Slot.Down -> {
+                    // Wait for reconnection to complete
+                    state.first { it == ConnectionState.Connected || closed }
+                    if (closed) throw IllegalStateException("ReconnectingConnection is closed")
+                }
             }
         }
         throw IllegalStateException("ReconnectingConnection is closed")
@@ -312,12 +374,9 @@ class ReconnectingConnection<T>(
 
     override suspend fun close() =
         teardown.runOnce {
-            // Under the lock so a connect() in flight cannot slip a connection in behind this read.
             // `closed` is already true here (runOnce completes the latch before invoking this), so a
             // loop that takes the lock after this sees it and closes its own connection instead.
-            val conn = connectionHandoff.withLock { currentConnection.also { currentConnection = null } }
-            conn?.close()
-            _state.value = ConnectionState.Disconnected()
+            release(ConnectionState.Disconnected())
         }
 
     /**
