@@ -148,6 +148,10 @@ actual object UdpSocket {
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
         trace: NwConnectTrace = NwConnectTrace(),
+        /** The peer's address once the connection is ready; a seam so a test can make this step throw. */
+        peerOf: suspend (platform.Network.nw_connection_t) -> SocketAddress = { ready ->
+            copyConnectionSockaddr(ready, local = false) ?: resolve(remoteHost, remotePort)
+        },
         create: () -> platform.Network.nw_connection_t,
     ): ConnectedDatagramChannel {
         trace.mark("create begun")
@@ -183,7 +187,7 @@ actual object UdpSocket {
             nw_udp_cancel(conn)
             throw t
         }
-        val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
+        val peer = peerOf(conn)
         val local = copyConnectionSockaddr(conn, local = true)
         return NwUdpDatagramChannel(
             conn,
