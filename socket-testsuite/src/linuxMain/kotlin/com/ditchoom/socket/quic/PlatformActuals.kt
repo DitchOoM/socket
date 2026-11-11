@@ -20,4 +20,4 @@ actual fun armStallDump(
     return StallDump { }
 }
 
-actual fun traceRingRequested(): Boolean = getenv("QUIC_TEST_TRACE_RING")?.toKString() == "1"
+internal actual fun traceRingRequested(): Boolean = getenv("QUIC_TEST_TRACE_RING")?.toKString() == "1"

@@ -9,7 +9,7 @@ import kotlin.time.Duration
 
 actual fun isAppleKNative(): Boolean = true
 
-actual fun traceRingRequested(): Boolean = getenv("QUIC_TEST_TRACE_RING")?.toKString() == "1"
+internal actual fun traceRingRequested(): Boolean = getenv("QUIC_TEST_TRACE_RING")?.toKString() == "1"
 
 actual fun isKotlinNative(): Boolean = true
 

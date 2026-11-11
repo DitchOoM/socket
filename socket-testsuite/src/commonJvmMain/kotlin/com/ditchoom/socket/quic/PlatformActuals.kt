@@ -7,7 +7,7 @@ import kotlin.time.Duration
 actual fun isAppleKNative(): Boolean = false
 
 // Android: an instrumented test inherits the DEVICE's environment, so this is off there unless a device sets it.
-actual fun traceRingRequested(): Boolean = System.getenv("QUIC_TEST_TRACE_RING") == "1"
+internal actual fun traceRingRequested(): Boolean = System.getenv("QUIC_TEST_TRACE_RING") == "1"
 
 actual fun isKotlinNative(): Boolean = false
 
