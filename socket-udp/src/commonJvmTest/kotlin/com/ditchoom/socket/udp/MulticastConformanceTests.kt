@@ -123,8 +123,11 @@ class MulticastConformanceTests {
         mcTest {
             val nif = usableMulticastInterface() ?: return@mcTest logSkip("no multicast interface for e2e")
             val iface = MulticastInterface.ByName(nif.name)
-            val port = 42_042 // a fixed multicast port both sides agree on (SO_REUSEADDR is set)
-            val receiver = bindMc(port)
+            // Port 0, and the group uses the port the receiver was given. SO_REUSEADDR only shares a port
+            // among sockets that all asked for it; a fixed port (it was 42_042) is inside Linux's ephemeral
+            // range, so a socket that did not ask may already own it and refuse this bind.
+            val receiver = bindMc(0)
+            val port = receiver.localAddress.port
             val group = UdpSocket.resolve("239.42.42.42", port)
             try {
                 receiver.joinGroup(MulticastMembership(group, iface))
@@ -161,8 +164,9 @@ class MulticastConformanceTests {
             val nif =
                 usableMulticastInterface(wantV6 = true) ?: return@mcTest logSkip("no IPv6 multicast interface for e2e")
             val iface = MulticastInterface.ByName(nif.name)
-            val port = 42_043
-            val receiver = UdpSocket.bindMulticast(port, AddressFamily.IPv6).also { opened.add(it) }
+            // Port 0, for the reason given on the IPv4 test above.
+            val receiver = UdpSocket.bindMulticast(0, AddressFamily.IPv6).also { opened.add(it) }
+            val port = receiver.localAddress.port
             val group = UdpSocket.resolve("ff02::114", port) // an unassigned link-local group, same-host scope
             try {
                 receiver.joinGroup(MulticastMembership(group, iface))
