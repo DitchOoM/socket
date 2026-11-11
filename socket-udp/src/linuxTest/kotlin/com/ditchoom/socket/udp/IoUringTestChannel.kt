@@ -45,7 +45,10 @@ internal class BoundIoUringChannel(
  * channel class, same [IoUringManager.onSocketOpened] accounting — plus the [beforeSubmit] seam.
  */
 @ExperimentalDatagramApi
-internal fun boundLoopbackIoUringChannel(beforeSubmit: suspend () -> Unit = {}): BoundIoUringChannel {
+internal fun boundLoopbackIoUringChannel(
+    beforeSubmit: suspend () -> Unit = {},
+    beforeSendSubmit: suspend () -> Unit = {},
+): BoundIoUringChannel {
     val fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     check(fd >= 0) { "socket(AF_INET, SOCK_DGRAM) failed" }
     val boundLocal =
@@ -73,6 +76,7 @@ internal fun boundLoopbackIoUringChannel(beforeSubmit: suspend () -> Unit = {}):
             localAddress = boundLocal,
             ipv6 = false,
             beforeSubmit = beforeSubmit,
+            beforeSendSubmit = beforeSendSubmit,
         )
     IoUringManager.onSocketOpened()
     return BoundIoUringChannel(fd, channel)
