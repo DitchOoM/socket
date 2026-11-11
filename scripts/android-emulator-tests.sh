@@ -477,6 +477,15 @@ done
 kill "$LOGCAT_PID" 2>/dev/null || true
 wait "$LOGCAT_PID" 2>/dev/null || true
 
+# A test process that died is named from the logcat: its package, signal, thread, abort message and
+# the test it had started last.
+# shellcheck source=scripts/android-process-death.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-process-death.sh"
+while IFS= read -r death; do
+  echo "::error title=Test process died (API ${API_LEVEL})::$(gh_escape "${death}
+Logcat: ${LOGCAT_FILE} (artifact android-test-reports-${API_LEVEL})")"
+done < <(named_process_deaths "$LOGCAT_FILE")
+
 # Prove the transport on EVERY run, including green ones. The report is only READ on failure and
 # the artifact is only uploaded on failure, so a streamer that silently captured nothing would go
 # unnoticed until the next occurrence of the ~1-in-120 flake this lane exists to diagnose — burning

@@ -1,0 +1,2603 @@
+public final class com/ditchoom/socket/testkit/NetworkMonitorRecorder {
+	public static final field Companion Lcom/ditchoom/socket/testkit/NetworkMonitorRecorder$Companion;
+	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lkotlin/jvm/functions/Function0;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lkotlin/jvm/functions/Function0;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun capability (Lcom/ditchoom/socket/MonitorCapability;)V
+	public final fun observe (Lcom/ditchoom/socket/NetworkMonitor;Lkotlinx/coroutines/CoroutineScope;)Lkotlinx/coroutines/Job;
+	public final fun state (Lcom/ditchoom/socket/NetworkState;)V
+}
+
+public final class com/ditchoom/socket/testkit/NetworkMonitorRecorder$Companion {
+}
+
+public final class com/ditchoom/socket/testkit/NetworkMonitorRecorderKt {
+	public static final fun networkMonitorScriptFromTrace (Ljava/util/List;)Lcom/ditchoom/socket/NetworkMonitorScript;
+	public static final fun weakestCapabilityFor (Ljava/util/List;)Lcom/ditchoom/socket/MonitorCapability;
+}
+
+public final class com/ditchoom/socket/testkit/TestTimeScaleKt {
+	public static final field TEST_TIME_SCALE_ENV Ljava/lang/String;
+	public static final fun getScaled-LRDsOJo (J)J
+	public static final fun testTimeScale ()D
+}
+
+public final class com/ditchoom/socket/testkit/echo/DeviceSignals {
+	public fun <init> ()V
+	public final fun getMovedAt-UwyO8pc ()J
+	public final fun getNetworkChangedAt-UwyO8pc ()J
+	public final fun moved-LRDsOJo (J)V
+	public final fun networkChanged-LRDsOJo (J)V
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoCorruption;
+	public final fun decodeOrFail (Ljava/lang/String;[BILjava/util/Collection;)Ljava/lang/String;
+	public static synthetic fun decodeOrFail$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption;Ljava/lang/String;[BILjava/util/Collection;ILjava/lang/Object;)Ljava/lang/String;
+	public final fun describeEchoCorruption (Ljava/lang/String;[BILjava/util/Collection;)Ljava/lang/String;
+	public static synthetic fun describeEchoCorruption$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption;Ljava/lang/String;[BILjava/util/Collection;ILjava/lang/Object;)Ljava/lang/String;
+	public final fun read (Ljava/lang/String;[BLjava/util/Collection;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading;
+	public static synthetic fun read$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption;Ljava/lang/String;[BLjava/util/Collection;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public abstract fun getSummary ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$AnotherPayloadWhole : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$AnotherPayloadWhole;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$AnotherPayloadWhole;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$AnotherPayloadWhole;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPayload ()Ljava/lang/String;
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$ContainsAnotherPayload : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$ContainsAnotherPayload;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$ContainsAnotherPayload;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$ContainsAnotherPayload;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPayload ()Ljava/lang/String;
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NonTextNoise : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NonTextNoise;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NonTextNoise;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NonTextNoise;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPrintableBytes ()I
+	public fun getSummary ()Ljava/lang/String;
+	public final fun getTotalBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NothingReturned : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$NothingReturned;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$PrefixThenOverwrittenTail : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$PrefixThenOverwrittenTail;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoCorruption$Reading$UnidentifiedText : com/ditchoom/socket/testkit/echo/EchoCorruption$Reading {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoCorruption$Reading$UnidentifiedText;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoFailure {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoFailure$ConnectionClosed : com/ditchoom/socket/testkit/echo/EchoFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/EchoFailure$ConnectionClosed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoFailure$ConnectionClosed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoFailure$ConnectionClosed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoFailure$Exchange : com/ditchoom/socket/testkit/echo/EchoFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoFailure$Exchange;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLedger {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/RttEstimate;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/echo/RttEstimate;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun abandon ()Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;
+	public final fun getOwedBytes ()I
+	public final fun getReadDeadline-UwyO8pc ()J
+	public final fun getRtt ()Lcom/ditchoom/socket/testkit/echo/RttEstimate;
+	public final fun nextOverdue ()Lcom/ditchoom/socket/testkit/echo/NextOverdue;
+	public final fun overdue-LRDsOJo (J)Ljava/util/List;
+	public final fun received-HG0u8IE (Ljava/lang/String;J)Lcom/ditchoom/socket/testkit/echo/EchoRead;
+	public final fun sent-SxA4cEA (ILjava/lang/String;J)V
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLivenessTotals {
+	public fun <init> ()V
+	public synthetic fun <init> (JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun absorb (ILcom/ditchoom/socket/testkit/echo/EchoSessionReport;)V
+	public final fun verdict ()Lcom/ditchoom/socket/testkit/echo/RunLiveness;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoLivenessVerdict {
+	public static final field Companion Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Companion;
+	public abstract fun getAnswered ()I
+	public abstract fun getLimit-UwyO8pc ()J
+	public abstract fun getLongestQuiet ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public abstract fun getSummary ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Companion {
+	public final fun getQUIET_LIMIT-UwyO8pc ()J
+	public final fun of-SxA4cEA (ILcom/ditchoom/socket/testkit/echo/QuietGap;J)Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Live : com/ditchoom/socket/testkit/echo/EchoLivenessVerdict {
+	public synthetic fun <init> (ILcom/ditchoom/socket/testkit/echo/QuietGap;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-SxA4cEA (ILcom/ditchoom/socket/testkit/echo/QuietGap;J)Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Live;
+	public static synthetic fun copy-SxA4cEA$default (Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Live;ILcom/ditchoom/socket/testkit/echo/QuietGap;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Live;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAnswered ()I
+	public fun getLimit-UwyO8pc ()J
+	public fun getLongestQuiet ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent : com/ditchoom/socket/testkit/echo/EchoLivenessVerdict {
+	public synthetic fun <init> (ILcom/ditchoom/socket/testkit/echo/QuietGap;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-SxA4cEA (ILcom/ditchoom/socket/testkit/echo/QuietGap;J)Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;
+	public static synthetic fun copy-SxA4cEA$default (Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;ILcom/ditchoom/socket/testkit/echo/QuietGap;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAnswered ()I
+	public fun getLimit-UwyO8pc ()J
+	public fun getLongestQuiet ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public fun getSummary ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoop {
+	public static final field Companion Lcom/ditchoom/socket/testkit/echo/EchoLoop$Companion;
+	public static final field TROUBLE_OVERDUE_RUN I
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoStream;Lcom/ditchoom/socket/testkit/echo/EchoSession;Lcom/ditchoom/socket/testkit/echo/EchoPace;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;JLkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoStream;Lcom/ditchoom/socket/testkit/echo/EchoSession;Lcom/ditchoom/socket/testkit/echo/EchoPace;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;JLkotlin/jvm/functions/Function1;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun run-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoop$Companion {
+	public final fun getTROUBLE_LATENESS-UwyO8pc ()J
+	public final fun getWRITE_DEADLINE-UwyO8pc ()J
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoLoopEnd {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEnd$ConnectionClosed : com/ditchoom/socket/testkit/echo/EchoLoopEnd {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$ConnectionClosed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$ConnectionClosed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$ConnectionClosed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEnd$Left : com/ditchoom/socket/testkit/echo/EchoLoopEnd {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$Left;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$Left;Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$Left;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStep ()Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEnd$WalkOver : com/ditchoom/socket/testkit/echo/EchoLoopEnd {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoLoopEnd$WalkOver;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$Failed : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Failed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Failed;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Failed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOwedBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$IntegrityBroken : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$IntegrityBroken;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$IntegrityBroken;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$IntegrityBroken;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAtByte ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$Overdue : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoOverdue;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/EchoOverdue;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/EchoOverdue;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Overdue;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Overdue;Lcom/ditchoom/socket/testkit/echo/EchoOverdue;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Overdue;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOverdue ()Lcom/ditchoom/socket/testkit/echo/EchoOverdue;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$Progress : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Progress;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Progress;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Progress;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getExchanges ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$Read : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Read;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Read;Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Read;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRead ()Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$Round : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Round;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Round;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$Round;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSeq ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoLoopEvent$WriteTimedOut : com/ditchoom/socket/testkit/echo/EchoLoopEvent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$WriteTimedOut;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$WriteTimedOut;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoLoopEvent$WriteTimedOut;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOwedBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoOutcome {
+	public abstract fun getRoundTrip-UwyO8pc ()J
+	public abstract fun getSeq ()I
+	public abstract fun line (I)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoOutcome$Late : com/ditchoom/socket/testkit/echo/EchoOutcome {
+	public synthetic fun <init> (IJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-5qebJ5I (IJJ)Lcom/ditchoom/socket/testkit/echo/EchoOutcome$Late;
+	public static synthetic fun copy-5qebJ5I$default (Lcom/ditchoom/socket/testkit/echo/EchoOutcome$Late;IJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoOutcome$Late;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public fun getRoundTrip-UwyO8pc ()J
+	public fun getSeq ()I
+	public fun hashCode ()I
+	public fun line (I)Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoOutcome$OnTime : com/ditchoom/socket/testkit/echo/EchoOutcome {
+	public synthetic fun <init> (IJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-HG0u8IE (IJ)Lcom/ditchoom/socket/testkit/echo/EchoOutcome$OnTime;
+	public static synthetic fun copy-HG0u8IE$default (Lcom/ditchoom/socket/testkit/echo/EchoOutcome$OnTime;IJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoOutcome$OnTime;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getRoundTrip-UwyO8pc ()J
+	public fun getSeq ()I
+	public fun hashCode ()I
+	public fun line (I)Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoOverdue {
+	public synthetic fun <init> (IJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-5qebJ5I (IJJ)Lcom/ditchoom/socket/testkit/echo/EchoOverdue;
+	public static synthetic fun copy-5qebJ5I$default (Lcom/ditchoom/socket/testkit/echo/EchoOverdue;IJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoOverdue;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeadline-UwyO8pc ()J
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getSeq ()I
+	public final fun getWaited-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoPace {
+	public static final field Companion Lcom/ditchoom/socket/testkit/echo/EchoPace$Companion;
+	public abstract fun connected-LRDsOJo (J)V
+	public abstract fun getSchedule ()Ljava/lang/String;
+	public abstract fun next-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/PaceStep;
+	public abstract fun pathChanged-LRDsOJo (J)V
+	public abstract fun troubled-LRDsOJo (J)V
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoPace$Adaptive : com/ditchoom/socket/testkit/echo/EchoPace {
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/echo/DeviceSignals;JJJJJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/echo/DeviceSignals;JJJJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connected-LRDsOJo (J)V
+	public final fun getFast-UwyO8pc ()J
+	public final fun getIdle-UwyO8pc ()J
+	public fun getSchedule ()Ljava/lang/String;
+	public fun next-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/PaceStep;
+	public fun pathChanged-LRDsOJo (J)V
+	public fun troubled-LRDsOJo (J)V
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoPace$Companion {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoPace$Fixed : com/ditchoom/socket/testkit/echo/EchoPace {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connected-LRDsOJo (J)V
+	public final fun getInterval-UwyO8pc ()J
+	public fun getSchedule ()Ljava/lang/String;
+	public fun next-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/PaceStep;
+	public fun pathChanged-LRDsOJo (J)V
+	public fun troubled-LRDsOJo (J)V
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoRead {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoRead$Consumed : com/ditchoom/socket/testkit/echo/EchoRead {
+	public fun <init> (Ljava/util/List;I)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun component2 ()I
+	public final fun copy (Ljava/util/List;I)Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;Ljava/util/List;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoRead$Consumed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOutcomes ()Ljava/util/List;
+	public final fun getOwedBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoRead$Diverged : com/ditchoom/socket/testkit/echo/EchoRead {
+	public fun <init> (ILjava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/EchoRead$Diverged;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoRead$Diverged;ILjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoRead$Diverged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAtByte ()I
+	public final fun getDetail ()Ljava/lang/String;
+	public final fun getExpected ()Ljava/lang/String;
+	public final fun getReceived ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoSession {
+	public static final field Companion Lcom/ditchoom/socket/testkit/echo/EchoSession$Companion;
+	public static final field WRITE_TIMEOUT_STREAK_LIMIT I
+	public synthetic fun <init> (JJIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun close-HG0u8IE (Lcom/ditchoom/socket/testkit/echo/SessionEnd;J)Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;
+	public final fun ended-HG0u8IE (Lcom/ditchoom/socket/testkit/echo/SessionEnd;J)V
+	public final fun getExchanges ()I
+	public final fun getOwedBytes ()I
+	public final fun getReadDeadline-UwyO8pc ()J
+	public final fun nextOverdue ()Lcom/ditchoom/socket/testkit/echo/NextOverdue;
+	public final fun overdue-LRDsOJo (J)Ljava/util/List;
+	public final fun reply-SxA4cEA (ILcom/ditchoom/socket/testkit/echo/StreamReply;J)Lcom/ditchoom/socket/testkit/echo/EchoStep;
+	public final fun sent-SxA4cEA (ILjava/lang/String;J)V
+	public final fun writeTimedOut-5qebJ5I (IJJ)Lcom/ditchoom/socket/testkit/echo/EchoStep;
+	public final fun writeTorn-SxA4cEA (ILcom/ditchoom/socket/testkit/echo/EchoWrite$Torn;J)Lcom/ditchoom/socket/testkit/echo/EchoStep;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoSession$Companion {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoSessionReport {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/SessionEnd;Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/SessionEnd;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;
+	public final fun component3 ()Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/SessionEnd;Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;)Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;Lcom/ditchoom/socket/testkit/echo/SessionEnd;Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnd ()Lcom/ditchoom/socket/testkit/echo/SessionEnd;
+	public final fun getLiveness ()Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;
+	public final fun getUnanswered ()Lcom/ditchoom/socket/testkit/echo/EchoUnanswered;
+	public fun hashCode ()I
+	public final fun lines (Ljava/lang/String;)Ljava/util/List;
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoStep {
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoStep$Exchanged : com/ditchoom/socket/testkit/echo/EchoStep {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoStep$Exchanged$Judged : com/ditchoom/socket/testkit/echo/EchoStep$Exchanged {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoRead;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/EchoRead;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/EchoRead;)Lcom/ditchoom/socket/testkit/echo/EchoStep$Exchanged$Judged;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoStep$Exchanged$Judged;Lcom/ditchoom/socket/testkit/echo/EchoRead;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoStep$Exchanged$Judged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRead ()Lcom/ditchoom/socket/testkit/echo/EchoRead;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoStep$Exchanged$StillOwed : com/ditchoom/socket/testkit/echo/EchoStep$Exchanged {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoStep$Exchanged$StillOwed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoStep$Reconnect : com/ditchoom/socket/testkit/echo/EchoStep {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/SessionEnd;II)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/SessionEnd;
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/SessionEnd;II)Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;Lcom/ditchoom/socket/testkit/echo/SessionEnd;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoStep$Reconnect;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnd ()Lcom/ditchoom/socket/testkit/echo/SessionEnd;
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getOwedBytes ()I
+	public final fun getSeq ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoStep$WriteTimedOut : com/ditchoom/socket/testkit/echo/EchoStep {
+	public synthetic fun <init> (IJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun component3 ()I
+	public final fun copy-8Mi8wO0 (IJI)Lcom/ditchoom/socket/testkit/echo/EchoStep$WriteTimedOut;
+	public static synthetic fun copy-8Mi8wO0$default (Lcom/ditchoom/socket/testkit/echo/EchoStep$WriteTimedOut;IJIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoStep$WriteTimedOut;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getConsecutive ()I
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getSeq ()I
+	public final fun getWaited-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoStream {
+	public abstract fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun write-8Mi8wO0 (Ljava/lang/String;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoUnanswered {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoUnanswered$None : com/ditchoom/socket/testkit/echo/EchoUnanswered {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoUnanswered$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoUnanswered$Some : com/ditchoom/socket/testkit/echo/EchoUnanswered {
+	public fun <init> (III)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (III)Lcom/ditchoom/socket/testkit/echo/EchoUnanswered$Some;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoUnanswered$Some;IIIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoUnanswered$Some;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCount ()I
+	public final fun getFirstSeq ()I
+	public final fun getLastSeq ()I
+	public final fun getLine ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/EchoWrite {
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoWrite$TimedOut : com/ditchoom/socket/testkit/echo/EchoWrite {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoWrite$TimedOut;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoWrite$Torn : com/ditchoom/socket/testkit/echo/EchoWrite {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/echo/EchoWrite$Torn;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/EchoWrite$Torn;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/EchoWrite$Torn;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAccepted ()I
+	public final fun getPending ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoWrite$Written : com/ditchoom/socket/testkit/echo/EchoWrite {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/EchoWrite$Written;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/EchoWriteFullyKt {
+	public static final fun writeEcho-exY8QGI (Lcom/ditchoom/buffer/flow/ByteSink;Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/NextOverdue {
+}
+
+public final class com/ditchoom/socket/testkit/echo/NextOverdue$At : com/ditchoom/socket/testkit/echo/NextOverdue {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/NextOverdue$At;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/testkit/echo/NextOverdue$At;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/NextOverdue$At;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAt-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/NextOverdue$None : com/ditchoom/socket/testkit/echo/NextOverdue {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/NextOverdue$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/PaceReason : java/lang/Enum {
+	public static final field Moving Lcom/ditchoom/socket/testkit/echo/PaceReason;
+	public static final field Network Lcom/ditchoom/socket/testkit/echo/PaceReason;
+	public static final field Settling Lcom/ditchoom/socket/testkit/echo/PaceReason;
+	public static final field Trouble Lcom/ditchoom/socket/testkit/echo/PaceReason;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getToken ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/PaceReason;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/echo/PaceReason;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/PaceStep {
+	public abstract fun getInterval-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/testkit/echo/PaceStep$Changed : com/ditchoom/socket/testkit/echo/PaceStep {
+	public synthetic fun <init> (JLjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy-VtjQ1oo (JLjava/lang/String;)Lcom/ditchoom/socket/testkit/echo/PaceStep$Changed;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/echo/PaceStep$Changed;JLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/PaceStep$Changed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getInterval-UwyO8pc ()J
+	public final fun getLine ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/PaceStep$Same : com/ditchoom/socket/testkit/echo/PaceStep {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/PaceStep$Same;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/testkit/echo/PaceStep$Same;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/PaceStep$Same;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getInterval-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/QuietGap {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-QTBD994 (JJ)Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public static synthetic fun copy-QTBD994$default (Lcom/ditchoom/socket/testkit/echo/QuietGap;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrom-UwyO8pc ()J
+	public final fun getLength-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/RttEstimate {
+	public static final field Companion Lcom/ditchoom/socket/testkit/echo/RttEstimate$Companion;
+	public fun getProbeTimeout-UwyO8pc ()J
+	public abstract fun getSmoothed-UwyO8pc ()J
+	public abstract fun getVariance-UwyO8pc ()J
+	public abstract fun with-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;
+}
+
+public final class com/ditchoom/socket/testkit/echo/RttEstimate$Companion {
+	public final fun getGRANULARITY-UwyO8pc ()J
+	public final fun getINITIAL_RTT-UwyO8pc ()J
+	public final fun getMAX_ACK_DELAY-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/testkit/echo/RttEstimate$DefaultImpls {
+	public static fun getProbeTimeout-UwyO8pc (Lcom/ditchoom/socket/testkit/echo/RttEstimate;)J
+}
+
+public final class com/ditchoom/socket/testkit/echo/RttEstimate$Sampled : com/ditchoom/socket/testkit/echo/RttEstimate {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-QTBD994 (JJ)Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;
+	public static synthetic fun copy-QTBD994$default (Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getProbeTimeout-UwyO8pc ()J
+	public fun getSmoothed-UwyO8pc ()J
+	public fun getVariance-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun with-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;
+}
+
+public final class com/ditchoom/socket/testkit/echo/RttEstimate$Unsampled : com/ditchoom/socket/testkit/echo/RttEstimate {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/RttEstimate$Unsampled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getProbeTimeout-UwyO8pc ()J
+	public fun getSmoothed-UwyO8pc ()J
+	public fun getVariance-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun with-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/RttEstimate$Sampled;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/RunLiveness {
+	public abstract fun getLine ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/RunLiveness$Live : com/ditchoom/socket/testkit/echo/RunLiveness {
+	public synthetic fun <init> (IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun component4 ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun component5-UwyO8pc ()J
+	public final fun component6 ()Ljava/util/Map;
+	public final fun copy-myKFqkg (IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;)Lcom/ditchoom/socket/testkit/echo/RunLiveness$Live;
+	public static synthetic fun copy-myKFqkg$default (Lcom/ditchoom/socket/testkit/echo/RunLiveness$Live;IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/RunLiveness$Live;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAnswered ()I
+	public final fun getConnections ()I
+	public final fun getEndings ()Ljava/util/Map;
+	public final fun getLimit-UwyO8pc ()J
+	public fun getLine ()Ljava/lang/String;
+	public final fun getLongestQuiet ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun getWorstConnection ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/RunLiveness$NeverConnected : com/ditchoom/socket/testkit/echo/RunLiveness {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/RunLiveness$NeverConnected;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/RunLiveness$Silent : com/ditchoom/socket/testkit/echo/RunLiveness {
+	public synthetic fun <init> (IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun component4 ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun component5-UwyO8pc ()J
+	public final fun component6 ()Ljava/util/Map;
+	public final fun copy-myKFqkg (IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;)Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;
+	public static synthetic fun copy-myKFqkg$default (Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;IIILcom/ditchoom/socket/testkit/echo/QuietGap;JLjava/util/Map;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAnswered ()I
+	public final fun getConnections ()I
+	public final fun getEndings ()Ljava/util/Map;
+	public final fun getLimit-UwyO8pc ()J
+	public fun getLine ()Ljava/lang/String;
+	public final fun getLongestQuiet ()Lcom/ditchoom/socket/testkit/echo/QuietGap;
+	public final fun getWorstConnection ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/SessionEnd {
+	public abstract fun getLabel ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$ConnectionDead : com/ditchoom/socket/testkit/echo/SessionEnd {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/SessionEnd$ConnectionDead;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$ScopeFailed : com/ditchoom/socket/testkit/echo/SessionEnd {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/SessionEnd$ScopeFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone : com/ditchoom/socket/testkit/echo/SessionEnd {
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$PeerEndedStream : com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$PeerEndedStream;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$PeerResetStream : com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$PeerResetStream;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WriteTorn : com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WriteTorn;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WriteTorn;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WriteTorn;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAccepted ()I
+	public fun getLabel ()Ljava/lang/String;
+	public final fun getPending ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WritesStalled : com/ditchoom/socket/testkit/echo/SessionEnd$StreamGone {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WritesStalled;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WritesStalled;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/SessionEnd$StreamGone$WritesStalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getConsecutiveTimeouts ()I
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/SessionEnd$WalkOver : com/ditchoom/socket/testkit/echo/SessionEnd {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/SessionEnd$WalkOver;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/echo/StreamReply {
+}
+
+public final class com/ditchoom/socket/testkit/echo/StreamReply$Echoed : com/ditchoom/socket/testkit/echo/StreamReply {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/echo/StreamReply$Echoed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/echo/StreamReply$Echoed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/echo/StreamReply$Echoed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getText ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/StreamReply$PeerEnded : com/ditchoom/socket/testkit/echo/StreamReply {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/StreamReply$PeerEnded;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/StreamReply$PeerReset : com/ditchoom/socket/testkit/echo/StreamReply {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/StreamReply$PeerReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/echo/StreamReply$StillOwed : com/ditchoom/socket/testkit/echo/StreamReply {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/echo/StreamReply$StillOwed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/ByteEdit {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/fault/ByteEdit;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/ByteEdit;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/ByteEdit;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFlipMask ()I
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Delivery {
+	public synthetic fun <init> (JLjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy-VtjQ1oo (JLjava/util/List;)Lcom/ditchoom/socket/testkit/fault/Delivery;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/fault/Delivery;JLjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Delivery;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAfterDelay-UwyO8pc ()J
+	public final fun getEdits ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/fault/Fault {
+}
+
+public final class com/ditchoom/socket/testkit/fault/Fault$Corrupt : com/ditchoom/socket/testkit/fault/Fault {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/fault/Fault$Corrupt;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/Fault$Corrupt;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Fault$Corrupt;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFlipMask ()I
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Fault$Delay : com/ditchoom/socket/testkit/fault/Fault {
+	public synthetic fun <init> (JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-QTBD994 (JJ)Lcom/ditchoom/socket/testkit/fault/Fault$Delay;
+	public static synthetic fun copy-QTBD994$default (Lcom/ditchoom/socket/testkit/fault/Fault$Delay;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Fault$Delay;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBy-UwyO8pc ()J
+	public final fun getJitter-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Fault$Drop : com/ditchoom/socket/testkit/fault/Fault {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/fault/Fault$Drop;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Fault$Duplicate : com/ditchoom/socket/testkit/fault/Fault {
+	public fun <init> ()V
+	public synthetic fun <init> (JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/testkit/fault/Fault$Duplicate;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/testkit/fault/Fault$Duplicate;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Fault$Duplicate;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSpacing-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Fault$Reorder : com/ditchoom/socket/testkit/fault/Fault {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/fault/Fault$Reorder;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/Fault$Reorder;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Fault$Reorder;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMaxHoldSlots ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/FaultSchedule {
+	public static final field Companion Lcom/ditchoom/socket/testkit/fault/FaultSchedule$Companion;
+	public static final field DEFAULT_SEED J
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFaults ()Ljava/util/List;
+	public final fun getSeed ()J
+	public final fun getTermination ()Lcom/ditchoom/socket/testkit/fault/Termination;
+	public fun hashCode ()I
+	public final fun isClean ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/FaultSchedule$Companion {
+	public final fun getCLEAN ()Lcom/ditchoom/socket/testkit/fault/FaultSchedule;
+	public final fun invoke (JLkotlin/jvm/functions/Function1;)Lcom/ditchoom/socket/testkit/fault/FaultSchedule;
+	public static synthetic fun invoke$default (Lcom/ditchoom/socket/testkit/fault/FaultSchedule$Companion;JLkotlin/jvm/functions/Function1;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/FaultSchedule;
+}
+
+public final class com/ditchoom/socket/testkit/fault/FaultScheduleBuilder {
+	public final fun blackholeFrom (I)V
+	public final fun corrupt (III)V
+	public static synthetic fun corrupt$default (Lcom/ditchoom/socket/testkit/fault/FaultScheduleBuilder;IIIILjava/lang/Object;)V
+	public final fun delay-QTBD994 (JJ)V
+	public static synthetic fun delay-QTBD994$default (Lcom/ditchoom/socket/testkit/fault/FaultScheduleBuilder;JJILjava/lang/Object;)V
+	public final fun drop (D)V
+	public final fun drop (I)V
+	public final fun dropEvery (II)V
+	public static synthetic fun dropEvery$default (Lcom/ditchoom/socket/testkit/fault/FaultScheduleBuilder;IIILjava/lang/Object;)V
+	public final fun duplicate-HG0u8IE (IJ)V
+	public static synthetic fun duplicate-HG0u8IE$default (Lcom/ditchoom/socket/testkit/fault/FaultScheduleBuilder;IJILjava/lang/Object;)V
+	public final fun reorder (I)V
+	public final fun resetAfter (I)V
+}
+
+public final class com/ditchoom/socket/testkit/fault/FaultScheduleCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/fault/FaultScheduleCodec;
+	public final fun decode (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/fault/FaultSchedule;
+	public final fun encode (Lcom/ditchoom/socket/testkit/fault/FaultSchedule;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/ImpairmentEngine {
+	public fun <init> (Lcom/ditchoom/socket/testkit/fault/FaultSchedule;)V
+	public final fun decide ()Lcom/ditchoom/socket/testkit/fault/UnitDecision;
+	public final fun getNextExpectedIndex ()I
+	public final fun terminatesAt (I)Z
+}
+
+public final class com/ditchoom/socket/testkit/fault/ScheduledFault {
+	public fun <init> (Lcom/ditchoom/socket/testkit/fault/UnitSelector;Lcom/ditchoom/socket/testkit/fault/Fault;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/fault/UnitSelector;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/fault/Fault;
+	public final fun copy (Lcom/ditchoom/socket/testkit/fault/UnitSelector;Lcom/ditchoom/socket/testkit/fault/Fault;)Lcom/ditchoom/socket/testkit/fault/ScheduledFault;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/ScheduledFault;Lcom/ditchoom/socket/testkit/fault/UnitSelector;Lcom/ditchoom/socket/testkit/fault/Fault;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/ScheduledFault;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFault ()Lcom/ditchoom/socket/testkit/fault/Fault;
+	public final fun getSelector ()Lcom/ditchoom/socket/testkit/fault/UnitSelector;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/fault/Termination {
+}
+
+public final class com/ditchoom/socket/testkit/fault/Termination$None : com/ditchoom/socket/testkit/fault/Termination {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/fault/Termination$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/Termination$ResetAfterUnits : com/ditchoom/socket/testkit/fault/Termination {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/fault/Termination$ResetAfterUnits;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/Termination$ResetAfterUnits;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/Termination$ResetAfterUnits;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCount ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/fault/UnitDecision {
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitDecision$Delivered : com/ditchoom/socket/testkit/fault/UnitDecision {
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/socket/testkit/fault/UnitDecision$Delivered;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitDecision$Delivered;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitDecision$Delivered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCopies ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitDecision$Dropped : com/ditchoom/socket/testkit/fault/UnitDecision {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/fault/UnitDecision$Dropped;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/fault/UnitSelector {
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$All : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/fault/UnitSelector$All;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$Every : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public fun <init> (II)V
+	public synthetic fun <init> (IIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Every;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitSelector$Every;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Every;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getN ()I
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$From : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/fault/UnitSelector$From;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitSelector$From;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitSelector$From;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFromInclusive ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$Index : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Index;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitSelector$Index;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Index;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getNth ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$Probabilistic : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public fun <init> (D)V
+	public final fun component1 ()D
+	public final fun copy (D)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Probabilistic;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitSelector$Probabilistic;DILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Probabilistic;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProbability ()D
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/fault/UnitSelector$Range : com/ditchoom/socket/testkit/fault/UnitSelector {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Range;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/fault/UnitSelector$Range;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/fault/UnitSelector$Range;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFromInclusive ()I
+	public final fun getUntilExclusive ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/migration/ConnectionVerdict {
+	public abstract fun getLine ()Ljava/lang/String;
+	public abstract fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+}
+
+public final class com/ditchoom/socket/testkit/migration/ConnectionVerdict$Silenced : com/ditchoom/socket/testkit/migration/ConnectionVerdict {
+	public fun <init> (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;
+	public final fun copy (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;)Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Silenced;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Silenced;Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Silenced;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun getSilent ()Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict$Silent;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/ConnectionVerdict$Standing : com/ditchoom/socket/testkit/migration/ConnectionVerdict {
+	public fun <init> (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun copy (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;)Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Standing;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Standing;Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict$Standing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolProbeHistory {
+	public fun <init> ()V
+	public fun <init> (IIIIII)V
+	public synthetic fun <init> (IIIIIIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun component4 ()I
+	public final fun component5 ()I
+	public final fun component6 ()I
+	public final fun copy (IIIIII)Lcom/ditchoom/socket/testkit/migration/PoolProbeHistory;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolProbeHistory;IIIIIIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolProbeHistory;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAnsweredAfterUnanswered ()I
+	public final fun getAttempts ()I
+	public final fun getNoSpareAfterUnanswered ()I
+	public final fun getProbedAfterUnanswered ()I
+	public final fun getSucceededAfterUnanswered ()I
+	public final fun getUnanswered ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public final fun verdict ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Exhausted : com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Exhausted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Exhausted;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Exhausted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getNoSpareAfter ()I
+	public final fun getUnanswered ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverLostAProbe : com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverLostAProbe;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverLostAProbe;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverLostAProbe;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttempts ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRecovered : com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRecovered;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRecovered;IIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRecovered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProbedAfter ()I
+	public final fun getUnanswered ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRetried : com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRetried;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRetried;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$NeverRetried;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getUnanswered ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Recovered : com/ditchoom/socket/testkit/migration/PoolRecoveryVerdict {
+	public fun <init> (III)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (III)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Recovered;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Recovered;IIIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict$Recovered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAnsweredAfter ()I
+	public final fun getSucceededAfter ()I
+	public final fun getUnanswered ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/migration/RunVerdict {
+	public abstract fun getLine ()Ljava/lang/String;
+	public abstract fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+}
+
+public final class com/ditchoom/socket/testkit/migration/RunVerdict$NoConnection : com/ditchoom/socket/testkit/migration/RunVerdict {
+	public fun <init> (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun copy (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;)Lcom/ditchoom/socket/testkit/migration/RunVerdict$NoConnection;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/RunVerdict$NoConnection;Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/RunVerdict$NoConnection;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/RunVerdict$Silenced : com/ditchoom/socket/testkit/migration/RunVerdict {
+	public fun <init> (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;
+	public final fun copy (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;)Lcom/ditchoom/socket/testkit/migration/RunVerdict$Silenced;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/RunVerdict$Silenced;Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/RunVerdict$Silenced;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun getSilent ()Lcom/ditchoom/socket/testkit/echo/RunLiveness$Silent;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/RunVerdict$Standing : com/ditchoom/socket/testkit/migration/RunVerdict {
+	public fun <init> (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;I)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public final fun component2 ()I
+	public final fun copy (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;I)Lcom/ditchoom/socket/testkit/migration/RunVerdict$Standing;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/migration/RunVerdict$Standing;Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/migration/RunVerdict$Standing;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getConnections ()I
+	public fun getLine ()Ljava/lang/String;
+	public fun getPool ()Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/migration/WalkVerdictKt {
+	public static final fun forConnection (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;Lcom/ditchoom/socket/testkit/echo/EchoLivenessVerdict;)Lcom/ditchoom/socket/testkit/migration/ConnectionVerdict;
+	public static final fun forRun (Lcom/ditchoom/socket/testkit/migration/PoolRecoveryVerdict;ILcom/ditchoom/socket/testkit/echo/RunLiveness;)Lcom/ditchoom/socket/testkit/migration/RunVerdict;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/AddressScope : java/lang/Enum {
+	public static final field Absent Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public static final field Global Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public static final field LinkLocal Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public static final field SiteLocal Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/osnet/CellularBearer {
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Cdma : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Cdma;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Gsm : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Gsm;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Lte : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Lte;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$None : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$NotReported : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$NotReported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Nr : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Nr;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Other : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Other;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Other;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Other;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRaw ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularBearer$Umts : com/ditchoom/socket/testkit/osnet/CellularBearer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularBearer$Umts;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularData : java/lang/Enum {
+	public static final field Connected Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static final field Connecting Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static final field Disconnected Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static final field NotReported Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static final field Suspended Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/osnet/CellularData;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularRegistration : java/lang/Enum {
+	public static final field EmergencyOnly Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static final field InService Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static final field NotReported Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static final field OutOfService Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static final field PowerOff Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularRoaming : java/lang/Enum {
+	public static final field Home Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public static final field NotReported Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public static final field Roaming Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/osnet/CellularSignal {
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularSignal$NotReported : com/ditchoom/socket/testkit/osnet/CellularSignal {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularSignal$NotReported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularSignal$Sampled : com/ditchoom/socket/testkit/osnet/CellularSignal {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularSignal$Sampled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularSignal$Signalled : com/ditchoom/socket/testkit/osnet/CellularSignal {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularSignal$Signalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/osnet/CellularStatus {
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularStatus$NotReported : com/ditchoom/socket/testkit/osnet/CellularStatus {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/CellularStatus$NotReported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/CellularStatus$Reported : com/ditchoom/socket/testkit/osnet/CellularStatus {
+	public fun <init> (Lcom/ditchoom/socket/testkit/osnet/SimState;Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;Lcom/ditchoom/socket/testkit/osnet/CellularData;Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;Lcom/ditchoom/socket/testkit/osnet/CellularBearer;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public final fun component3 ()Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public final fun component4 ()Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public final fun component5 ()Lcom/ditchoom/socket/testkit/osnet/CellularBearer;
+	public final fun copy (Lcom/ditchoom/socket/testkit/osnet/SimState;Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;Lcom/ditchoom/socket/testkit/osnet/CellularData;Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;Lcom/ditchoom/socket/testkit/osnet/CellularBearer;)Lcom/ditchoom/socket/testkit/osnet/CellularStatus$Reported;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/osnet/CellularStatus$Reported;Lcom/ditchoom/socket/testkit/osnet/SimState;Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;Lcom/ditchoom/socket/testkit/osnet/CellularData;Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;Lcom/ditchoom/socket/testkit/osnet/CellularBearer;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/osnet/CellularStatus$Reported;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBearer ()Lcom/ditchoom/socket/testkit/osnet/CellularBearer;
+	public final fun getData ()Lcom/ditchoom/socket/testkit/osnet/CellularData;
+	public final fun getRegistration ()Lcom/ditchoom/socket/testkit/osnet/CellularRegistration;
+	public final fun getRoaming ()Lcom/ditchoom/socket/testkit/osnet/CellularRoaming;
+	public final fun getSim ()Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsLink {
+	public fun <init> (Ljava/lang/String;Ljava/util/List;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy (Ljava/lang/String;Ljava/util/List;)Lcom/ditchoom/socket/testkit/osnet/OsLink;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/osnet/OsLink;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/osnet/OsLink;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddresses ()Ljava/util/List;
+	public final fun getName ()Ljava/lang/String;
+	public final fun getV4 ()Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public final fun getV6 ()Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetWatch {
+	public fun <init> (Lcom/ditchoom/socket/testkit/osnet/OsNetworkSource;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/testkit/echo/DeviceSignals;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/osnet/OsNetworkSource;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/testkit/echo/DeviceSignals;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun declare (Lcom/ditchoom/socket/MonitorCapability;)V
+	public final fun follow (Lcom/ditchoom/socket/NetworkMonitor;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sample (Lcom/ditchoom/socket/NetworkState;)V
+	public final fun seed (Lcom/ditchoom/socket/testkit/trace/TraceSink;)V
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetworkFacts {
+	public fun <init> (Lcom/ditchoom/socket/NetworkState;Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NetworkState;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/osnet/CellularStatus;
+	public final fun component3 ()Ljava/util/List;
+	public final fun copy (Lcom/ditchoom/socket/NetworkState;Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;)Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;Lcom/ditchoom/socket/NetworkState;Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCellular ()Lcom/ditchoom/socket/testkit/osnet/CellularStatus;
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getLinks ()Ljava/util/List;
+	public final fun getState ()Lcom/ditchoom/socket/NetworkState;
+	public final fun getV4 ()Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public final fun getV6 ()Lcom/ditchoom/socket/testkit/osnet/AddressScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetworkFixtures {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/osnet/OsNetworkFixtures;
+	public final fun getAirplaneMode ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getAll ()Ljava/util/List;
+	public final fun getCellularWithGlobalV6 ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getIosWifiWithCellularIdle ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getNoCellularRadio ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getRegisteredNoBearer ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getWifiNoGlobalV6 ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun getWifiScanning ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetworkKt {
+	public static final fun osLinksFrom (Ljava/util/List;)Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetworkReading {
+	public fun <init> (Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/osnet/CellularStatus;
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy (Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;)Lcom/ditchoom/socket/testkit/osnet/OsNetworkReading;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/osnet/OsNetworkReading;Lcom/ditchoom/socket/testkit/osnet/CellularStatus;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/osnet/OsNetworkReading;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCellular ()Lcom/ditchoom/socket/testkit/osnet/CellularStatus;
+	public final fun getLinks ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/osnet/OsNetworkSource {
+	public static final field Companion Lcom/ditchoom/socket/testkit/osnet/OsNetworkSource$Companion;
+	public abstract fun getCellularSignal ()Lcom/ditchoom/socket/testkit/osnet/CellularSignal;
+	public abstract fun read ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkReading;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/OsNetworkSource$Companion {
+	public final fun getNone ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkSource;
+}
+
+public final class com/ditchoom/socket/testkit/osnet/SimState : java/lang/Enum {
+	public static final field Absent Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public static final field Locked Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public static final field NotReported Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public static final field Ready Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/osnet/SimState;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/osnet/SimState;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/skip/SkipGate {
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipGate$HostCannotProvideIt : com/ditchoom/socket/testkit/skip/SkipGate {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipGate$HostCannotProvideIt;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipGate$HostCannotProvideIt;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipGate$HostCannotProvideIt;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCapability ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipGate$LaneMustRunEveryTest : com/ditchoom/socket/testkit/skip/SkipGate {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/skip/SkipGate$LaneMustRunEveryTest;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/skip/SkipReason {
+	public abstract fun getDetail ()Ljava/lang/String;
+	public abstract fun getLabel ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$BlockedByIssue : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (ILjava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$BlockedByIssue;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$BlockedByIssue;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$BlockedByIssue;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public final fun getIssue ()I
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$HarnessUnreachableFromDevice : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$HarnessUnreachableFromDevice;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$HarnessUnreachableFromDevice;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$HarnessUnreachableFromDevice;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$HostBehaviourDiffers : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$HostBehaviourDiffers;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$HostBehaviourDiffers;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$HostBehaviourDiffers;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$NativeLibraryUnavailable : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$NativeLibraryUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$NativeLibraryUnavailable;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$NativeLibraryUnavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$OptInLaneNotRequested : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$OptInLaneNotRequested;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$OptInLaneNotRequested;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$OptInLaneNotRequested;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksFixtures : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksFixtures;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksFixtures;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksFixtures;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksNetworkServices : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksNetworkServices;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksNetworkServices;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$SimulatorLacksNetworkServices;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/SkipReason$TransportUnavailable : com/ditchoom/socket/testkit/skip/SkipReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/skip/SkipReason$TransportUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/skip/SkipReason$TransportUnavailable;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/skip/SkipReason$TransportUnavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDetail ()Ljava/lang/String;
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/skip/TestSkipKt {
+	public static final field REQUIRE_ALL_TESTS_ENV Ljava/lang/String;
+	public static final field SKIP_MARKER Ljava/lang/String;
+	public static final fun recordSkip (Ljava/lang/String;Lcom/ditchoom/socket/testkit/skip/SkipReason;Lcom/ditchoom/socket/testkit/skip/SkipGate;)V
+	public static final fun recordSkip (Lkotlin/reflect/KClass;Lcom/ditchoom/socket/testkit/skip/SkipReason;Lcom/ditchoom/socket/testkit/skip/SkipGate;)V
+	public static synthetic fun recordSkip$default (Ljava/lang/String;Lcom/ditchoom/socket/testkit/skip/SkipReason;Lcom/ditchoom/socket/testkit/skip/SkipGate;ILjava/lang/Object;)V
+	public static synthetic fun recordSkip$default (Lkotlin/reflect/KClass;Lcom/ditchoom/socket/testkit/skip/SkipReason;Lcom/ditchoom/socket/testkit/skip/SkipGate;ILjava/lang/Object;)V
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceBudget {
+	public static final field BYTES_PER_EXCHANGE J
+	public static final field CEILING_MB J
+	public static final field Companion Lcom/ditchoom/socket/testkit/trace/TraceBudget$Companion;
+	public static final field FLOOR_MB J
+	public fun <init> (JJI)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun component3 ()I
+	public final fun copy (JJI)Lcom/ditchoom/socket/testkit/trace/TraceBudget;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/trace/TraceBudget;JJIILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceBudget;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBytes ()J
+	public final fun getLanes ()I
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getMegabytes ()J
+	public final fun getPlannedExchanges ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public final fun withMegabytes (J)Lcom/ditchoom/socket/testkit/trace/TraceBudget;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceBudget$Companion {
+	public final fun forWalk-8Mi8wO0 (IJI)Lcom/ditchoom/socket/testkit/trace/TraceBudget;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/trace/TraceEvent {
+	public static final field Companion Lcom/ditchoom/socket/testkit/trace/TraceEvent$Companion;
+	public abstract fun getAt-UwyO8pc ()J
+	public fun isInput ()Z
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent;
+	public final fun parseAll (Ljava/lang/String;)Ljava/util/List;
+	public final fun parseAll (Ljava/util/List;)Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$DefaultImpls {
+	public static fun isInput (Lcom/ditchoom/socket/testkit/trace/TraceEvent;)Z
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$DgramIn : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()I
+	public final fun component3 ()Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun copy-rnQQ1Ag (JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramIn;
+	public static synthetic fun copy-rnQQ1Ag$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramIn;JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramIn;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getLen ()I
+	public final fun getPath ()Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public final fun getPayloadHex ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$DgramOut : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()I
+	public final fun component3 ()Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun copy-rnQQ1Ag (JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramOut;
+	public static synthetic fun copy-rnQQ1Ag$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramOut;JILcom/ditchoom/socket/testkit/trace/TracePath;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$DgramOut;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getLen ()I
+	public final fun getPath ()Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public final fun getPayloadHex ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Drop : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy-KLykuaI (JLjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Drop;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Drop;JLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Drop;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getMessage ()Ljava/lang/String;
+	public final fun getType ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Error : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy-KLykuaI (JLjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Error;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Error;JLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Error;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getMessage ()Ljava/lang/String;
+	public final fun getType ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Liveness : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/transport/Liveness$Result;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/transport/Liveness$Result;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/socket/transport/Liveness$Result;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Liveness;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Liveness;JLcom/ditchoom/socket/transport/Liveness$Result;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Liveness;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getResult ()Lcom/ditchoom/socket/transport/Liveness$Result;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Migration : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;ILcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public final fun component3 ()I
+	public final fun component4 ()Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public final fun copy-rnQQ1Ag (JLcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;ILcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Migration;
+	public static synthetic fun copy-rnQQ1Ag$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Migration;JLcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;ILcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Migration;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getAttempt ()I
+	public final fun getOutcome ()Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public final fun getTrigger ()Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Net : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/NetworkState;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/NetworkState;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/socket/NetworkState;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Net;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Net;JLcom/ditchoom/socket/NetworkState;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Net;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getState ()Lcom/ditchoom/socket/NetworkState;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$NetCapability : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/MonitorCapability;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/MonitorCapability;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/socket/MonitorCapability;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetCapability;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetCapability;JLcom/ditchoom/socket/MonitorCapability;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetCapability;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getCapability ()Lcom/ditchoom/socket/MonitorCapability;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$NetGap : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()J
+	public final fun copy-VtjQ1oo (JJ)Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetGap;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetGap;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$NetGap;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getDropped ()J
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$OsNet : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$OsNet;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$OsNet;JLcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$OsNet;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getFacts ()Lcom/ditchoom/socket/testkit/osnet/OsNetworkFacts;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$PathState : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()I
+	public final fun copy-rnQQ1Ag (JLjava/lang/String;Ljava/lang/String;I)Lcom/ditchoom/socket/testkit/trace/TraceEvent$PathState;
+	public static synthetic fun copy-rnQQ1Ag$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$PathState;JLjava/lang/String;Ljava/lang/String;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$PathState;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getLocalHost ()Ljava/lang/String;
+	public final fun getLocalPort ()I
+	public final fun getPhase ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$QlogRefused : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy-VtjQ1oo (JLjava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$QlogRefused;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$QlogRefused;JLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$QlogRefused;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getPath ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Silence : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/testkit/trace/TraceSilencePhase;JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public final fun component3 ()J
+	public final fun component4-UwyO8pc ()J
+	public final fun copy-A4u-v98 (JLcom/ditchoom/socket/testkit/trace/TraceSilencePhase;JJ)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Silence;
+	public static synthetic fun copy-A4u-v98$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Silence;JLcom/ditchoom/socket/testkit/trace/TraceSilencePhase;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Silence;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getElapsed-UwyO8pc ()J
+	public final fun getExpiries ()J
+	public final fun getPhase ()Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$State : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy-KLykuaI (JLjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$State;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$State;JLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$State;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getDetail ()Ljava/lang/String;
+	public final fun getName ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$Stats : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLcom/ditchoom/socket/testkit/trace/TracePathStats;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/trace/TracePathStats;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/socket/testkit/trace/TracePathStats;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Stats;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$Stats;JLcom/ditchoom/socket/testkit/trace/TracePathStats;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$Stats;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getStats ()Lcom/ditchoom/socket/testkit/trace/TracePathStats;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$StreamLoss : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JJILjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()J
+	public final fun component3 ()I
+	public final fun component4 ()Ljava/lang/String;
+	public final fun copy-rnQQ1Ag (JJILjava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$StreamLoss;
+	public static synthetic fun copy-rnQQ1Ag$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$StreamLoss;JJILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$StreamLoss;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getBytes ()I
+	public final fun getCause ()Ljava/lang/String;
+	public final fun getStreamId ()J
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$TrafficSecretsRefused : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy-VtjQ1oo (JLjava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$TrafficSecretsRefused;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$TrafficSecretsRefused;JLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$TrafficSecretsRefused;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public final fun getPath ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceMigrationOutcome : java/lang/Enum {
+	public static final field AlreadyInProgress Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field BackendCannotMigrate Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field ConnectionClosed Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field EndpointNotSelectable Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field HandshakeNotConfirmed Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field LocalPathOpenTimedOut Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field LocalPathUnavailable Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field NoSpareConnectionId Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field PathNotValidated Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field PeerForbids Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field PolicyForbids Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field ProbeRejected Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field ServerConnection Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field Succeeded Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static final field SwitchRejected Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/trace/TraceMigrationOutcome;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceMigrationTrigger : java/lang/Enum {
+	public static final field LinkChanged Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public static final field PathStoppedAnswering Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public static final field ReturnFromStandby Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/trace/TraceMigrationTrigger;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TracePath {
+	public fun <init> (IIJJ)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()J
+	public final fun component4 ()J
+	public final fun copy (IIJJ)Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/trace/TracePath;IIJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TracePath;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFamily ()I
+	public final fun getHi ()J
+	public final fun getLo ()J
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TracePathStats {
+	public synthetic fun <init> (JZJJJJJJJJJJJJJJJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()J
+	public final fun component10-UwyO8pc ()J
+	public final fun component11-UwyO8pc ()J
+	public final fun component12 ()J
+	public final fun component13 ()J
+	public final fun component14 ()J
+	public final fun component15 ()J
+	public final fun component16 ()J
+	public final fun component17 ()J
+	public final fun component18 ()J
+	public final fun component2 ()Z
+	public final fun component3 ()J
+	public final fun component4 ()J
+	public final fun component5 ()J
+	public final fun component6 ()J
+	public final fun component7 ()J
+	public final fun component8-UwyO8pc ()J
+	public final fun component9-UwyO8pc ()J
+	public final fun copy-LA5qt0U (JZJJJJJJJJJJJJJJJJ)Lcom/ditchoom/socket/testkit/trace/TracePathStats;
+	public static synthetic fun copy-LA5qt0U$default (Lcom/ditchoom/socket/testkit/trace/TracePathStats;JZJJJJJJJJJJJJJJJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TracePathStats;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getActive ()Z
+	public final fun getCwnd ()J
+	public final fun getDeliveryRate ()J
+	public final fun getLost ()J
+	public final fun getLostBytes ()J
+	public final fun getMaxRtt-UwyO8pc ()J
+	public final fun getMinRtt-UwyO8pc ()J
+	public final fun getPmtu ()J
+	public final fun getRecv ()J
+	public final fun getRecvBytes ()J
+	public final fun getRetrans ()J
+	public final fun getRtt-UwyO8pc ()J
+	public final fun getRttvar-UwyO8pc ()J
+	public final fun getSent ()J
+	public final fun getSentBytes ()J
+	public final fun getStreamRetransBytes ()J
+	public final fun getTotalPtoCount ()J
+	public final fun getValidationState ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/trace/TraceSilencePhase : java/lang/Enum {
+	public static final field Building Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public static final field Declared Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public static final field None Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/trace/TraceSilencePhase;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/trace/TraceSink {
+	public abstract fun emit (Lcom/ditchoom/socket/testkit/trace/TraceEvent;)V
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/AddressFamily {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/AddressFamily$Companion;
+	public abstract fun getLabel ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AddressFamily$Companion {
+	public final fun of (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/walk/AddressFamily;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AddressFamily$ResolverChoice : com/ditchoom/socket/testkit/walk/AddressFamily {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/AddressFamily$ResolverChoice;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AddressFamily$V4 : com/ditchoom/socket/testkit/walk/AddressFamily {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/AddressFamily$V4;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AddressFamily$V6 : com/ditchoom/socket/testkit/walk/AddressFamily {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/AddressFamily$V6;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/AttemptOutcome {
+}
+
+public final class com/ditchoom/socket/testkit/walk/AttemptOutcome$Established : com/ditchoom/socket/testkit/walk/AttemptOutcome {
+	public fun <init> (Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;
+	public final fun copy (Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;)Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$Established;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$Established;Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$Established;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReport ()Lcom/ditchoom/socket/testkit/echo/EchoSessionReport;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AttemptOutcome$NeverEstablished : com/ditchoom/socket/testkit/walk/AttemptOutcome {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/ConnectFailure;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/ConnectFailure;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/ConnectFailure;)Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$NeverEstablished;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$NeverEstablished;Lcom/ditchoom/socket/testkit/walk/ConnectFailure;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/AttemptOutcome$NeverEstablished;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFailure ()Lcom/ditchoom/socket/testkit/walk/ConnectFailure;
+	public fun hashCode ()I
+	public final fun line (ILcom/ditchoom/socket/testkit/walk/WalkTarget;)Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/AttemptTotals {
+	public fun <init> ()V
+	public final fun absorb (Lcom/ditchoom/socket/testkit/walk/AttemptOutcome;)V
+	public final fun add (Lcom/ditchoom/socket/testkit/walk/AttemptTotals;)V
+	public final fun getLine ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/BuildRevision {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/BuildRevision$Companion;
+	public abstract fun getLine ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/BuildRevision$Commit : com/ditchoom/socket/testkit/walk/BuildRevision {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$Commit;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/BuildRevision$Commit;Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$Commit;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public final fun getSha ()Ljava/lang/String;
+	public final fun getTree ()Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/BuildRevision$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/walk/BuildRevision;
+}
+
+public final class com/ditchoom/socket/testkit/walk/BuildRevision$Unknown : com/ditchoom/socket/testkit/walk/BuildRevision {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$Unknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/BuildRevision$Unknown;Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision : java/lang/Enum {
+	public static final field NotPackaged Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public static final field NotStamped Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public static final field Unreadable Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/walk/BuildRevision$UnknownRevision;
+}
+
+public final class com/ditchoom/socket/testkit/walk/BuildRevision$WorkTree : java/lang/Enum {
+	public static final field Clean Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+	public static final field Dirty Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+	public static fun values ()[Lcom/ditchoom/socket/testkit/walk/BuildRevision$WorkTree;
+}
+
+public final class com/ditchoom/socket/testkit/walk/ConnectAttempt {
+	public fun <init> ()V
+	public final fun established-LRDsOJo (J)Lcom/ditchoom/socket/testkit/echo/EchoSession;
+	public final fun failed-SxA4cEA (Lcom/ditchoom/socket/testkit/walk/ConnectFailure;Lcom/ditchoom/socket/testkit/echo/SessionEnd;J)Lcom/ditchoom/socket/testkit/walk/AttemptOutcome;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/ConnectFailure {
+	public abstract fun getLabel ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/ConnectFailure$Threw : com/ditchoom/socket/testkit/walk/ConnectFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/testkit/walk/ConnectFailure$Threw;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/ConnectFailure$Threw;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/ConnectFailure$Threw;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public final fun getType ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/ConnectFailure$UnresolvedRoute : com/ditchoom/socket/testkit/walk/ConnectFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/ConnectFailure$UnresolvedRoute;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLabel ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/DiskFree {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/DiskFree$Companion;
+	public abstract fun getLine ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/DiskFree$Companion {
+	public final fun ofReading (J)Lcom/ditchoom/socket/testkit/walk/DiskFree;
+}
+
+public final class com/ditchoom/socket/testkit/walk/DiskFree$Known : com/ditchoom/socket/testkit/walk/DiskFree {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/testkit/walk/DiskFree$Known;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/DiskFree$Known;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/DiskFree$Known;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBytes ()J
+	public fun getLine ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/DiskFree$Unknown : com/ditchoom/socket/testkit/walk/DiskFree {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/DiskFree$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getLine ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/LanePhase {
+	public abstract fun getAttempt ()I
+	public fun getLabel ()Ljava/lang/String;
+	public abstract fun getName ()Ljava/lang/String;
+	public abstract fun getSince-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$Backoff : com/ditchoom/socket/testkit/walk/LanePhase$Watched {
+	public synthetic fun <init> (IJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-5qebJ5I (IJJ)Lcom/ditchoom/socket/testkit/walk/LanePhase$Backoff;
+	public static synthetic fun copy-5qebJ5I$default (Lcom/ditchoom/socket/testkit/walk/LanePhase$Backoff;IJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LanePhase$Backoff;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAttempt ()I
+	public fun getLabel ()Ljava/lang/String;
+	public fun getName ()Ljava/lang/String;
+	public fun getOwed ()Ljava/lang/String;
+	public fun getOwedSince-UwyO8pc ()J
+	public fun getSince-UwyO8pc ()J
+	public final fun getUntil-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$Connecting : com/ditchoom/socket/testkit/walk/LanePhase$Watched {
+	public synthetic fun <init> (IJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-HG0u8IE (IJ)Lcom/ditchoom/socket/testkit/walk/LanePhase$Connecting;
+	public static synthetic fun copy-HG0u8IE$default (Lcom/ditchoom/socket/testkit/walk/LanePhase$Connecting;IJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LanePhase$Connecting;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAttempt ()I
+	public fun getLabel ()Ljava/lang/String;
+	public fun getName ()Ljava/lang/String;
+	public fun getOwed ()Ljava/lang/String;
+	public fun getOwedSince-UwyO8pc ()J
+	public fun getSince-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$DefaultImpls {
+	public static fun getLabel (Lcom/ditchoom/socket/testkit/walk/LanePhase;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$Echoing : com/ditchoom/socket/testkit/walk/LanePhase$Watched {
+	public synthetic fun <init> (IJIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun component3 ()I
+	public final fun component4-UwyO8pc ()J
+	public final fun copy-i3evvOE (IJIJ)Lcom/ditchoom/socket/testkit/walk/LanePhase$Echoing;
+	public static synthetic fun copy-i3evvOE$default (Lcom/ditchoom/socket/testkit/walk/LanePhase$Echoing;IJIJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LanePhase$Echoing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAttempt ()I
+	public fun getLabel ()Ljava/lang/String;
+	public final fun getLoopTicks ()I
+	public fun getName ()Ljava/lang/String;
+	public fun getOwed ()Ljava/lang/String;
+	public fun getOwedSince-UwyO8pc ()J
+	public final fun getSilentSince-UwyO8pc ()J
+	public fun getSince-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$WalkOver : com/ditchoom/socket/testkit/walk/LanePhase {
+	public synthetic fun <init> (IJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-HG0u8IE (IJ)Lcom/ditchoom/socket/testkit/walk/LanePhase$WalkOver;
+	public static synthetic fun copy-HG0u8IE$default (Lcom/ditchoom/socket/testkit/walk/LanePhase$WalkOver;IJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LanePhase$WalkOver;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAttempt ()I
+	public fun getLabel ()Ljava/lang/String;
+	public fun getName ()Ljava/lang/String;
+	public fun getSince-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/LanePhase$Watched : com/ditchoom/socket/testkit/walk/LanePhase {
+	public abstract fun getOwed ()Ljava/lang/String;
+	public abstract fun getOwedSince-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/testkit/walk/LanePhase$Watched$DefaultImpls {
+	public static fun getLabel (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;)Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/LaneRadio {
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneRadio$Default : com/ditchoom/socket/testkit/walk/LaneRadio {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/LaneRadio$Default;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneRadio$Pinned : com/ditchoom/socket/testkit/walk/LaneRadio {
+	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind$Radio;)V
+	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;
+	public final fun copy (Lcom/ditchoom/socket/transport/NetworkKind$Radio;)Lcom/ditchoom/socket/testkit/walk/LaneRadio$Pinned;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/LaneRadio$Pinned;Lcom/ditchoom/socket/transport/NetworkKind$Radio;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LaneRadio$Pinned;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRadio ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch {
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/walk/WalkLane;Lcom/ditchoom/socket/testkit/walk/StallBounds;Lkotlin/jvm/functions/Function0;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun backingOff-LRDsOJo (J)V
+	public final fun beat ()Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat;
+	public final fun connected ()V
+	public final fun getAttempt ()I
+	public final fun getLane ()Lcom/ditchoom/socket/testkit/walk/WalkLane;
+	public final fun getLoopTicks ()I
+	public final fun getPhase ()Lcom/ditchoom/socket/testkit/walk/LanePhase;
+	public final fun nextAttempt ()I
+	public final fun progressed (I)V
+	public final fun walkOver ()V
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$OnTime : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$OnTime;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$Overdue : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Overdue;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Overdue;Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Overdue;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getExpectation ()Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public final fun getPhase ()Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$Recovered : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/LanePhase;Lcom/ditchoom/socket/testkit/walk/LanePhase;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/LanePhase;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/walk/LanePhase;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/LanePhase;Lcom/ditchoom/socket/testkit/walk/LanePhase;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Recovered;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Recovered;Lcom/ditchoom/socket/testkit/walk/LanePhase;Lcom/ditchoom/socket/testkit/walk/LanePhase;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Recovered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getNow ()Lcom/ditchoom/socket/testkit/walk/LanePhase;
+	public final fun getStalled ()Lcom/ditchoom/socket/testkit/walk/LanePhase;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$Stalled : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Stalled;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Stalled;Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Stalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getExpectation ()Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public final fun getPhase ()Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;
+	public fun hashCode ()I
+	public final fun line (I)Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$StillStalled : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$StillStalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/LaneWatch$Beat$Unwatched : com/ditchoom/socket/testkit/walk/LaneWatch$Beat {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/LaneWatch$Beat$Unwatched;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/StallBounds {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/StallBounds$Companion;
+	public synthetic fun <init> (JJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun component3-UwyO8pc ()J
+	public final fun copy-WzaCiaA (JJJ)Lcom/ditchoom/socket/testkit/walk/StallBounds;
+	public static synthetic fun copy-WzaCiaA$default (Lcom/ditchoom/socket/testkit/walk/StallBounds;JJJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/StallBounds;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun expectation-HG0u8IE (Lcom/ditchoom/socket/testkit/walk/LanePhase$Watched;J)Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public final fun getBackoffOverrun-UwyO8pc ()J
+	public final fun getConnect-UwyO8pc ()J
+	public final fun getEchoSilence-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/StallBounds$Companion {
+	public final fun forConnect-WzaCiaA (JJJ)Lcom/ditchoom/socket/testkit/walk/StallBounds;
+}
+
+public final class com/ditchoom/socket/testkit/walk/StallBounds$Expectation {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun copy-QTBD994 (JJ)Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public static synthetic fun copy-QTBD994$default (Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;JJILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/StallBounds$Expectation;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBound-UwyO8pc ()J
+	public final fun getOverdue ()Z
+	public final fun getWaited-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkLane {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/WalkLane$Companion;
+	public static final field RUN_TOKEN Ljava/lang/String;
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/WalkTarget;ILcom/ditchoom/socket/testkit/walk/LaneRadio;)V
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/WalkTarget;ILcom/ditchoom/socket/testkit/walk/LaneRadio;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public final fun component3 ()I
+	public final fun component4 ()Lcom/ditchoom/socket/testkit/walk/LaneRadio;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/WalkTarget;ILcom/ditchoom/socket/testkit/walk/LaneRadio;)Lcom/ditchoom/socket/testkit/walk/WalkLane;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/WalkLane;Ljava/lang/String;Lcom/ditchoom/socket/testkit/walk/WalkTarget;ILcom/ditchoom/socket/testkit/walk/LaneRadio;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/WalkLane;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun fileStem (I)Ljava/lang/String;
+	public final fun getIndex ()I
+	public final fun getLabel ()Ljava/lang/String;
+	public final fun getRadio ()Lcom/ditchoom/socket/testkit/walk/LaneRadio;
+	public final fun getTarget ()Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public final fun getToken ()Ljava/lang/String;
+	public fun hashCode ()I
+	public final fun log (Lkotlin/jvm/functions/Function1;)Lkotlin/jvm/functions/Function1;
+	public final fun stagger-UqaQ4Hc (JI)J
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkLane$Companion {
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTarget {
+	public fun <init> (Ljava/lang/String;I)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun connectionTag (I)Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;I)Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/WalkTarget;Ljava/lang/String;IILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getFamily ()Lcom/ditchoom/socket/testkit/walk/AddressFamily;
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTargets {
+	public static final field Companion Lcom/ditchoom/socket/testkit/walk/WalkTargets$Companion;
+	public static final field SEPARATOR C
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/WalkTarget;Ljava/util/List;Ljava/util/List;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/walk/WalkTarget;Ljava/util/List;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public final fun component2 ()Ljava/util/List;
+	public final fun component3 ()Ljava/util/List;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/WalkTarget;Ljava/util/List;Ljava/util/List;)Lcom/ditchoom/socket/testkit/walk/WalkTargets;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/WalkTargets;Lcom/ditchoom/socket/testkit/walk/WalkTarget;Ljava/util/List;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/WalkTargets;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAll ()Ljava/util/List;
+	public final fun getFirst ()Lcom/ditchoom/socket/testkit/walk/WalkTarget;
+	public final fun getLanes ()Ljava/util/List;
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getPinned ()Ljava/util/List;
+	public final fun getRest ()Ljava/util/List;
+	public fun hashCode ()I
+	public final fun lanesLine-LRDsOJo (J)Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTargets$Companion {
+	public final fun parse (Ljava/lang/String;I)Lcom/ditchoom/socket/testkit/walk/WalkTargetsParse;
+	public final fun radios (Ljava/lang/String;)Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTargetsKt {
+	public static final fun getToken (Lcom/ditchoom/socket/transport/NetworkKind$Radio;)Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/testkit/walk/WalkTargetsParse {
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTargetsParse$NoHost : com/ditchoom/socket/testkit/walk/WalkTargetsParse {
+	public static final field INSTANCE Lcom/ditchoom/socket/testkit/walk/WalkTargetsParse$NoHost;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testkit/walk/WalkTargetsParse$Parsed : com/ditchoom/socket/testkit/walk/WalkTargetsParse {
+	public fun <init> (Lcom/ditchoom/socket/testkit/walk/WalkTargets;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/walk/WalkTargets;
+	public final fun copy (Lcom/ditchoom/socket/testkit/walk/WalkTargets;)Lcom/ditchoom/socket/testkit/walk/WalkTargetsParse$Parsed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testkit/walk/WalkTargetsParse$Parsed;Lcom/ditchoom/socket/testkit/walk/WalkTargets;ILjava/lang/Object;)Lcom/ditchoom/socket/testkit/walk/WalkTargetsParse$Parsed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTargets ()Lcom/ditchoom/socket/testkit/walk/WalkTargets;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
