@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -9,7 +10,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.suspendCoroutine
 import kotlin.test.Test
@@ -18,7 +18,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-import com.ditchoom.data.readBuffer
 
 /**
  * A started `nw_connection_t` must be cancelled by whoever holds it last, and a listener's close must

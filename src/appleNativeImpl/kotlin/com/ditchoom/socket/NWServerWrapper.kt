@@ -54,7 +54,9 @@ class NWServerWrapper(
         host: String?,
         backlog: Int,
     ): Flow<ClientSocket> {
-        val channel = Channel<NWSocketWrapper>(Channel.UNLIMITED)
+        // A started nw_connection_t must be cancelled (connection.h: "a connection that has been started
+        // must be cancelled"), so a socket that never reaches a consumer is closed rather than dropped.
+        val channel = Channel<NWSocketWrapper>(Channel.UNLIMITED, onUndeliveredElement = { it.closeInternal() })
         acceptChannel = channel
         val ephemeral = port <= 0
         try {
@@ -213,7 +215,12 @@ class NWServerWrapper(
     override suspend fun close() {
         val channel = acceptChannel
         acceptChannel = null
-        channel?.close()
+        channel?.let {
+            it.close()
+            // Connections that were ready but never reached a consumer die with the server: nothing
+            // else will ever hold them, and an un-cancelled one stays open for the peer.
+            while (true) it.tryReceive().getOrNull()?.closeInternal() ?: break
+        }
         val nwListener = listener ?: return
         suspendCoroutine { continuation ->
             val cancelled = ListenerCancelSettle(continuation)
@@ -249,21 +256,23 @@ class NWServerWrapper(
  * itself, which resumes at once when the listener is already not ready. When the `cancelled` callback
  * is delivered before `nw_helper_listener_cancel` returns, both run together; a plain "completed" flag
  * let both read `false` and both resume, and Kotlin/Native aborts the process on the second resume.
+ * Same shape as the UDP module's `NwConnectSettle`: a CAS before the resume.
  */
 internal class ListenerCancelSettle(
     private val continuation: Continuation<Unit>,
 ) {
-    private var completed = false
+    private val settled = AtomicInt(0)
 
     fun on() {
-        if (!completed) {
-            completed = true
-            continuation.resume(Unit)
-        }
+        if (settled.compareAndSet(0, 1)) continuation.resume(Unit)
     }
 }
 
-/** Hands a ready connection's socket to the accept channel. */
+/**
+ * Hands a ready connection's socket to the accept channel. When the channel is closed (the server
+ * closed, or its listener died, between the connection starting and becoming ready) nobody will ever
+ * take the socket, and a started nw_connection_t that is not cancelled stays open for its peer.
+ */
 internal fun Channel<NWSocketWrapper>.handOut(socket: NWSocketWrapper) {
-    trySend(socket)
+    if (trySend(socket).isFailure) socket.closeInternal()
 }

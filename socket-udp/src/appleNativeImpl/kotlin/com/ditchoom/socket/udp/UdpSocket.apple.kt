@@ -187,15 +187,22 @@ actual object UdpSocket {
             nw_udp_cancel(conn)
             throw t
         }
-        val peer = peerOf(conn)
-        val local = copyConnectionSockaddr(conn, local = true)
-        return NwUdpDatagramChannel(
-            conn,
-            peer,
-            local?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown,
-            receiveBufferSize,
-            bufferFactory,
-        )
+        // The connection is ready, so it is started, and a started nw_connection_t must be cancelled
+        // (connection.h): anything below that throws (the peer lookup resolves a name) takes it down.
+        try {
+            val peer = peerOf(conn)
+            val local = copyConnectionSockaddr(conn, local = true)
+            return NwUdpDatagramChannel(
+                conn,
+                peer,
+                local?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown,
+                receiveBufferSize,
+                bufferFactory,
+            )
+        } catch (t: Throwable) {
+            nw_udp_cancel(conn)
+            throw t
+        }
     }
 
     actual suspend fun bindMulticast(
