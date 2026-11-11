@@ -35,6 +35,7 @@ import platform.Security.errSecSuccess
 import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_global_queue
+import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resume
 
 /**
@@ -47,8 +48,13 @@ import kotlin.coroutines.resume
  * interrupted, so a slow evaluation held the connect past its deadline and past its cancellation.
  * (Available on every Apple target built here: macOS 10.15, iOS 13, tvOS 13, watchOS 6.)
  *
- * The callback owns the chain's Core Foundation objects and releases them when it runs, whether or not
- * anything is still waiting: a cancelled evaluation is abandoned, not freed under Security.framework.
+ * The chain's Core Foundation objects are released when BOTH the call into Security.framework has
+ * returned and its callback has run, in whichever order those happen ([TwoPartyHold]), and whether or
+ * not anything is still waiting: a cancelled evaluation is abandoned, not freed under Security.framework.
+ * Releasing them from the callback alone is a use-after-free: the callback is delivered on a concurrent
+ * queue and can run on another thread while `SecTrustEvaluateAsyncWithError` is still executing, which
+ * then touches the trust object it was given (the crash was in `dispatch_group_leave` under
+ * `SecTrustEvaluateIfNecessaryFastAsync`, inside that call).
  * Every certificate is copied into a CFData before the call, so nothing here refers to the caller's
  * buffers once it has started.
  */
@@ -67,6 +73,22 @@ private class OwnedCf {
     fun release() {
         objects.forEach { if (it != null) CFRelease(it) }
         objects.clear()
+    }
+}
+
+/**
+ * Something two parties each hold until they are done with it, released by whichever lets go last and
+ * exactly once. Here the parties are the call into Security.framework and the callback it delivers; they
+ * finish on different threads in either order, so the count is the only thing both can agree on.
+ */
+internal class TwoPartyHold(
+    private val release: () -> Unit,
+) {
+    private val holders = AtomicInt(2)
+
+    /** One party is done. The second call, from whichever thread, releases. */
+    fun letGo() {
+        if (holders.decrementAndGet() == 0) release()
     }
 }
 
@@ -96,12 +118,13 @@ private suspend fun evaluateWithSecTrust(
                 // evaluation does inline (the header allows the callback to run synchronously) then
                 // also happens on a dispatch thread, not on a coroutine dispatcher's.
                 val queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.convert(), 0u)
+                val hold = TwoPartyHold(prepared.owned::release)
                 dispatch_async(queue) {
                     val started =
                         SecTrustEvaluateAsyncWithError(prepared.trust, queue) { _, trusted, error ->
-                            // Runs on a dispatch thread, once, possibly after the caller has gone: resuming
-                            // a cancelled continuation is ignored, and the objects are released here
-                            // regardless.
+                            // Runs on a dispatch thread, once, possibly after the caller has gone (resuming
+                            // a cancelled continuation is ignored) and possibly before the call that
+                            // started it has returned, so it only lets go of its share of the objects.
                             val verdict =
                                 when {
                                     trusted -> SystemTrustVerdict.Trusted
@@ -111,14 +134,16 @@ private suspend fun evaluateWithSecTrust(
                                         untrusted(SystemTrustFailure.Refused(CFErrorGetCode(error).convert(), description))
                                     }
                                 }
-                            prepared.owned.release()
+                            hold.letGo()
                             continuation.resume(verdict)
                         }
                     if (started != errSecSuccess) {
-                        // The callback will not run, so nothing else will release these.
-                        prepared.owned.release()
+                        // The callback will not run, so its share is let go here.
+                        hold.letGo()
                         continuation.resume(untrusted(SystemTrustFailure.TrustCreationFailed(started)))
                     }
+                    // The call has returned: Security.framework is no longer executing with the trust.
+                    hold.letGo()
                 }
             }
     }
