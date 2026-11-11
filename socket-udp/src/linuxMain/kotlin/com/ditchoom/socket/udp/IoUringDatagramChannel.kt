@@ -162,7 +162,9 @@ private const val NO_OP_IN_FLIGHT = 0L
  * add only the mode-specific send arity, so the base type cannot express "send without knowing the
  * mode".
  *
- * Not thread-safe (buffer-flow contract): confine [receive] and the send path each to one coroutine.
+ * Receive from one coroutine. Send from any number: each send's buffers and submission are its own, and the
+ * socket-wide send options are put in force by a [SendOptionGate], which runs overlapping sends that want the
+ * same options together and serializes those that want different ones.
  */
 @ExperimentalDatagramApi
 internal abstract class IoUringDatagramChannelCore(
@@ -283,6 +285,21 @@ internal abstract class IoUringDatagramChannelCore(
             v.value = value
             setsockopt(fd, level, optName, v.ptr, sizeOf<IntVar>().convert())
         }
+    }
+
+    private val sendOptionGate = SendOptionGate()
+
+    /** The socket-wide options [options] needs in force; the TOS octet is -1 when it names neither ECN nor DSCP. */
+    private fun sendWire(options: DatagramSendOptions): SendOptionGate.Wire {
+        val named = options.ecn != EcnPreference.OsDefault || options.dscp >= 0
+        val tos =
+            if (named) {
+                ((if (options.dscp >= 0) options.dscp else 0) shl 2) or
+                    (if (options.ecn != EcnPreference.OsDefault) options.ecn.codepoint else 0)
+            } else {
+                -1
+            }
+        return SendOptionGate.Wire(tos, options.dontFragment, if (options.hopLimit >= 0) options.hopLimit else -1)
     }
 
     private fun applyControlPlane(options: DatagramSendOptions) {
@@ -497,7 +514,17 @@ internal abstract class IoUringDatagramChannelCore(
         // hole: those options are the caller's own request and are re-applied on change, so the socket
         // is left in the state the caller asked for either way.
         val pin = sourcePinFor(options.fromLocal)
-        applyControlPlane(options)
+        sendOptionGate.hold(sendWire(options), putInForce = { applyControlPlane(options) }) {
+            sendWithOptionsInForce(payload, target, pin)
+        }
+    }
+
+    /** The send itself, run while the gate holds this send's options in force. */
+    private suspend fun sendWithOptionsInForce(
+        payload: ReadBuffer,
+        target: SocketAddress?,
+        pin: SourcePin,
+    ) {
         beforeSendSubmit()
         // Send the readable window [position, limit) straight from the buffer's native memory — no
         // copy, and reading position()/remaining() does not consume it (send-does-not-consume).
@@ -536,6 +563,7 @@ internal abstract class IoUringDatagramChannelCore(
             // Check the CQE result. io_uring reports failure as a negative `res` carrying -errno, and
             // discarding it made a failed sendmsg indistinguishable from a delivered datagram — which
             // for quiche means a packet counted as in flight that never left the host.
+            val submitted = AtomicLong(NO_OP_IN_FLIGHT)
             val res =
                 IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
                     // On the poller thread, exactly like receive's: a close that got here first means
@@ -543,11 +571,14 @@ internal abstract class IoUringDatagramChannelCore(
                     if (handoff.closed) {
                         io_uring_prep_nop(sqe)
                     } else {
+                        submitted.value = userData
                         inFlightSend.value = userData
                         io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
                     }
                 }
-            inFlightSend.value = NO_OP_IN_FLIGHT
+            // Only this send's own slot: overlapping senders each write the field, and a finished one must not
+            // erase another's in-flight send.
+            inFlightSend.compareAndSet(submitted.value, NO_OP_IN_FLIGHT)
             // Checked before `res`: a nop reports 0, which would otherwise read as a delivered datagram.
             if (handoff.closed) error("sink is closed")
             if (res < 0) throw DatagramSendException(sendFailure(-res, attempted = len, pin = pin))
