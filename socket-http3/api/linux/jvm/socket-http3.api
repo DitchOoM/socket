@@ -374,6 +374,15 @@ public final class com/ditchoom/socket/http3/Http3PromisedRequest {
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/socket/http3/Http3ReplaySafety {
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3ReplaySafety$Companion;
+	public abstract fun isReplaySafe (Lcom/ditchoom/socket/http3/Http3ServerRequest;)Z
+}
+
+public final class com/ditchoom/socket/http3/Http3ReplaySafety$Companion {
+	public final fun getSafeMethods ()Lcom/ditchoom/socket/http3/Http3ReplaySafety;
+}
+
 public final class com/ditchoom/socket/http3/Http3Request {
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;)V
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
@@ -1573,10 +1582,16 @@ public final class com/ditchoom/socket/http3/WithHttp3ConnectionKt {
 }
 
 public final class com/ditchoom/socket/http3/WithHttp3ServerKt {
-	public static final fun serveHttp3 (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveHttp3 (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final synthetic fun serveHttp3 (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun serveHttp3$default (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static synthetic fun serveHttp3$default (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
-	public static final fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static final fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun withHttp3Server-J1moZ4E (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun withHttp3Server-J1moZ4E (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-J1moZ4E$default (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-J1moZ4E$default (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final synthetic fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final synthetic fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun withHttp3Server-j-K6F28$default (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static synthetic fun withHttp3Server-j-K6F28$default (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }

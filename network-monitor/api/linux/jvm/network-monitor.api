@@ -253,6 +253,10 @@ public final class com/ditchoom/socket/NetworkInterfaceInfo {
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/NetworkInterfaceInfoKt {
+	public static final fun listNetworkInterfaces (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public abstract interface class com/ditchoom/socket/NetworkMonitor {
 	public static final field Companion Lcom/ditchoom/socket/NetworkMonitor$Companion;
 	public abstract fun close ()V
@@ -280,7 +284,9 @@ public final class com/ditchoom/socket/NetworkMonitor$DefaultImpls {
 }
 
 public final class com/ditchoom/socket/NetworkMonitorDefaultKt {
+	public static final fun open (Lcom/ditchoom/socket/NetworkMonitor$Companion;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun processDefault (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Lcom/ditchoom/socket/NetworkMonitor;
+	public static final fun shared (Lcom/ditchoom/socket/NetworkMonitor$Companion;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/socket/NetworkMonitorKt {
@@ -512,6 +518,7 @@ public final class com/ditchoom/socket/ParsedAddress$NotNumeric : com/ditchoom/s
 }
 
 public final class com/ditchoom/socket/PollingNetworkMonitor : com/ditchoom/socket/NetworkMonitor {
+	public fun <init> ()V
 	public synthetic fun <init> (JLkotlin/jvm/functions/Function0;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLkotlin/jvm/functions/Function0;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun close ()V

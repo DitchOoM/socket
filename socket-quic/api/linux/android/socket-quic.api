@@ -167,6 +167,17 @@ public final class com/ditchoom/socket/quic/EngineCapabilities {
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/socket/quic/FinishingWrite : com/ditchoom/buffer/flow/HalfCloseable {
+	public abstract fun writeFullyAndShutdownSend-8Mi8wO0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/FinishingWrite$DefaultImpls {
+	public static fun read (Lcom/ditchoom/socket/quic/FinishingWrite;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun write-egxuoLU (Lcom/ditchoom/socket/quic/FinishingWrite;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-OVV_2m0 (Lcom/ditchoom/socket/quic/FinishingWrite;Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static fun writeGathered-egxuoLU (Lcom/ditchoom/socket/quic/FinishingWrite;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public final class com/ditchoom/socket/quic/FlowControl {
 	public fun <init> ()V
 	public fun <init> (JJJJJJLjava/lang/Long;Ljava/lang/Long;)V
@@ -610,6 +621,8 @@ public final class com/ditchoom/socket/quic/PeerCertificateSupport$Available : c
 	public fun <init> (Lcom/ditchoom/socket/quic/PeerCertificateBackend;)V
 	public final fun generate (Lcom/ditchoom/socket/quic/PeerCertificateValidity;Lkotlin/time/Instant;)Lcom/ditchoom/socket/quic/PeerCertificate;
 	public static synthetic fun generate$default (Lcom/ditchoom/socket/quic/PeerCertificateSupport$Available;Lcom/ditchoom/socket/quic/PeerCertificateValidity;Lkotlin/time/Instant;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/PeerCertificate;
+	public final fun mint (Lcom/ditchoom/socket/quic/PeerCertificateValidity;Lkotlin/time/Instant;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun mint$default (Lcom/ditchoom/socket/quic/PeerCertificateSupport$Available;Lcom/ditchoom/socket/quic/PeerCertificateValidity;Lkotlin/time/Instant;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/socket/quic/PeerCertificateSupport$Unavailable : com/ditchoom/socket/quic/PeerCertificateSupport {
@@ -752,19 +765,24 @@ public final class com/ditchoom/socket/quic/QuicBufferFactoryKt {
 }
 
 public final class com/ditchoom/socket/quic/QuicByteStream : com/ditchoom/buffer/flow/ByteStream, com/ditchoom/buffer/flow/HalfCloseable, com/ditchoom/buffer/flow/Resettable, com/ditchoom/socket/transport/MuxIdentified {
+	public synthetic fun <init> (JLcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/socket/quic/QuicStreamOrigin;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLcom/ditchoom/buffer/flow/ByteStream;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun getMuxStreamId ()J
+	public final fun getOrigin ()Lcom/ditchoom/socket/quic/QuicStreamOrigin;
 	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
 	public final fun getStreamId-2h5TKLY ()J
 	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
 	public fun isOpen ()Z
+	public final fun markReplaySafe ()V
 	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun reset (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun shutdownSend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun writeFullyAndShutdownSend-8Mi8wO0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun writeFullyAndShutdownSend-8Mi8wO0$default (Lcom/ditchoom/socket/quic/QuicByteStream;Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
@@ -1241,6 +1259,9 @@ public final class com/ditchoom/socket/quic/QuicEngine$DefaultImpls {
 	public static fun connect-myKFqkg (Lcom/ditchoom/socket/quic/QuicEngine;Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicEngine;Lcom/ditchoom/socket/quic/QuicClientBinding;Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static fun getPeerCertificates (Lcom/ditchoom/socket/quic/QuicEngine;)Lcom/ditchoom/socket/quic/PeerCertificateSupport;
+}
+
+public abstract interface annotation class com/ditchoom/socket/quic/QuicEngineSpi : java/lang/annotation/Annotation {
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicError : com/ditchoom/buffer/flow/DatagramCloseReason {
@@ -2002,6 +2023,22 @@ public final class com/ditchoom/socket/quic/QuicStreamOpenException : java/lang/
 	public synthetic fun <init> (JILjava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getQuicheErrorCode ()I
 	public final fun getStreamId ()J
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicStreamOrigin {
+}
+
+public final class com/ditchoom/socket/quic/QuicStreamOrigin$Confirmed : com/ditchoom/socket/quic/QuicStreamOrigin {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicStreamOrigin$Confirmed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicStreamOrigin$Early : com/ditchoom/socket/quic/QuicStreamOrigin {
+	public fun <init> (Lkotlin/jvm/functions/Function1;)V
+	public final fun awaitConfirmation (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun toString ()Ljava/lang/String;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicStreamReadError {

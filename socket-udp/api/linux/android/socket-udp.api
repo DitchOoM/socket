@@ -1,3 +1,43 @@
+public final class com/ditchoom/socket/udp/DatagramEventLoop : kotlinx/coroutines/CoroutineDispatcher, kotlinx/coroutines/Delay {
+	public final fun awaitReadable (Ljava/nio/channels/SelectableChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun awaitWritable (Ljava/nio/channels/SelectableChannel;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun channelClosing (Ljava/nio/channels/SelectableChannel;)V
+	public fun delay (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun dispatch (Lkotlin/coroutines/CoroutineContext;Ljava/lang/Runnable;)V
+	public final fun getHolders ()I
+	public final fun getRunningThread ()Ljava/lang/Thread;
+	public final fun hold ()Lcom/ditchoom/socket/udp/DatagramEventLoopHold;
+	public fun invokeOnTimeout (JLjava/lang/Runnable;Lkotlin/coroutines/CoroutineContext;)Lkotlinx/coroutines/DisposableHandle;
+	public final fun isLoopThread ()Z
+	public final fun isRunning ()Z
+	public fun scheduleResumeAfterDelay (JLkotlinx/coroutines/CancellableContinuation;)V
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/DatagramEventLoopGroup {
+	public static final field Companion Lcom/ditchoom/socket/udp/DatagramEventLoopGroup$Companion;
+	public synthetic fun <init> (ILjava/lang/String;JLjava/util/concurrent/ThreadFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (ILjava/lang/String;JLjava/util/concurrent/ThreadFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getLoops ()Ljava/util/List;
+	public final fun hold (Lcom/ditchoom/socket/udp/DatagramEventLoop;)Lcom/ditchoom/socket/udp/DatagramEventLoopHold;
+	public static synthetic fun hold$default (Lcom/ditchoom/socket/udp/DatagramEventLoopGroup;Lcom/ditchoom/socket/udp/DatagramEventLoop;ILjava/lang/Object;)Lcom/ditchoom/socket/udp/DatagramEventLoopHold;
+	public final fun next ()Lcom/ditchoom/socket/udp/DatagramEventLoop;
+	public final fun runningThreads ()Ljava/util/List;
+}
+
+public final class com/ditchoom/socket/udp/DatagramEventLoopGroup$Companion {
+	public final fun getDEFAULT_LINGER-UwyO8pc ()J
+}
+
+public final class com/ditchoom/socket/udp/DatagramEventLoopHold {
+	public final fun getLoop ()Lcom/ditchoom/socket/udp/DatagramEventLoop;
+	public final fun release ()V
+}
+
+public final class com/ditchoom/socket/udp/DatagramEventLoopUnavailableException : java/lang/IllegalStateException {
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+}
+
 public abstract interface class com/ditchoom/socket/udp/DatagramSendError {
 	public fun describe ()Ljava/lang/String;
 }
@@ -133,6 +173,9 @@ public final class com/ditchoom/socket/udp/DeniedAccess : java/lang/Enum {
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/udp/DeniedAccess;
 	public static fun values ()[Lcom/ditchoom/socket/udp/DeniedAccess;
+}
+
+public abstract interface annotation class com/ditchoom/socket/udp/InternalDatagramLoopApi : java/lang/annotation/Annotation {
 }
 
 public final class com/ditchoom/socket/udp/InternedJvmSocketAddressKt {

@@ -66,6 +66,7 @@ public final class com/ditchoom/socket/quic/DriverStreamAdapter : com/ditchoom/s
 	public fun streamRead-EMXYt14 (JLcom/ditchoom/buffer/BufferFactory;IJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun streamShutdown-bXwp3W0 (JIJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun streamWrite-DziFI38 (JLcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun streamWriteAndFinish-DziFI38 (JLcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/socket/quic/DriverTime {
@@ -151,6 +152,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connFree-ObL0uzk (J)V
 	public fun connIsClosed-ObL0uzk (J)Z
 	public fun connIsEstablished-ObL0uzk (J)Z
+	public fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public fun connIsInEarlyData-ObL0uzk (J)Z
 	public fun connIsResumed-ObL0uzk (J)Z
 	public fun connIsTimedOut-ObL0uzk (J)Z
@@ -606,6 +608,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connFree-ObL0uzk (J)V
 	public abstract fun connIsClosed-ObL0uzk (J)Z
 	public abstract fun connIsEstablished-ObL0uzk (J)Z
+	public abstract fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public abstract fun connIsInEarlyData-ObL0uzk (J)Z
 	public abstract fun connIsResumed-ObL0uzk (J)Z
 	public abstract fun connIsTimedOut-ObL0uzk (J)Z
@@ -968,13 +971,15 @@ public abstract interface class com/ditchoom/socket/quic/QuicheStreamAdapter {
 	public abstract fun streamRead-EMXYt14 (JLcom/ditchoom/buffer/BufferFactory;IJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun streamShutdown-bXwp3W0 (JIJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun streamWrite-DziFI38 (JLcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun streamWriteAndFinish-DziFI38 (JLcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/socket/quic/QuicheStreamAdapter$DefaultImpls {
 	public static fun releaseUndeliveredReads (Lcom/ditchoom/socket/quic/QuicheStreamAdapter;)V
+	public static fun streamWriteAndFinish-DziFI38 (Lcom/ditchoom/socket/quic/QuicheStreamAdapter;JLcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
-public final class com/ditchoom/socket/quic/QuicheStreamByteStream : com/ditchoom/buffer/flow/ByteStream, com/ditchoom/buffer/flow/HalfCloseable, com/ditchoom/buffer/flow/Resettable {
+public final class com/ditchoom/socket/quic/QuicheStreamByteStream : com/ditchoom/buffer/flow/ByteStream, com/ditchoom/buffer/flow/Resettable, com/ditchoom/socket/quic/FinishingWrite {
 	public static final field Companion Lcom/ditchoom/socket/quic/QuicheStreamByteStream$Companion;
 	public synthetic fun <init> (JLcom/ditchoom/socket/quic/QuicheStreamAdapter;Lcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLcom/ditchoom/socket/quic/QuicheStreamAdapter;Lcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
@@ -989,6 +994,7 @@ public final class com/ditchoom/socket/quic/QuicheStreamByteStream : com/ditchoo
 	public fun shutdownSend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeFullyAndShutdownSend-8Mi8wO0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
@@ -1286,7 +1292,6 @@ public final class com/ditchoom/socket/quic/StreamSlot {
 	public final fun getReadState ()Ljava/util/concurrent/atomic/AtomicReference;
 	public final fun getWritableSignal ()Lkotlinx/coroutines/channels/Channel;
 	public final fun holdsUnread ()Z
-	public final fun setEnd (Lcom/ditchoom/socket/quic/StreamEnd;)V
 }
 
 public abstract interface class com/ditchoom/socket/quic/UdpChannel {
@@ -1321,6 +1326,7 @@ public final class com/ditchoom/socket/quic/trace/QuicTraceRecorder {
 	public final fun connectionState (Lcom/ditchoom/socket/quic/QuicConnectionState;)V
 	public final fun drop (Ljava/lang/Throwable;)V
 	public final fun error (Ljava/lang/Throwable;)V
+	public final fun flush (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun livenessResult (Lcom/ditchoom/socket/transport/Liveness$Result;)V
 	public final fun networkCapability (Lcom/ditchoom/socket/MonitorCapability;)V
 	public final fun networkState (Lcom/ditchoom/socket/NetworkState;)V

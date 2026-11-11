@@ -141,6 +141,7 @@ public final class com/ditchoom/socket/testkit/echo/EchoLedger {
 }
 
 public final class com/ditchoom/socket/testkit/echo/EchoLivenessTotals {
+	public fun <init> ()V
 	public synthetic fun <init> (JILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun absorb (ILcom/ditchoom/socket/testkit/echo/EchoSessionReport;)V
@@ -938,6 +939,7 @@ public final class com/ditchoom/socket/testkit/fault/Fault$Drop : com/ditchoom/s
 }
 
 public final class com/ditchoom/socket/testkit/fault/Fault$Duplicate : com/ditchoom/socket/testkit/fault/Fault {
+	public fun <init> ()V
 	public synthetic fun <init> (JILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J

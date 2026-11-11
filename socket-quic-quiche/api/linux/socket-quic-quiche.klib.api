@@ -78,6 +78,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     abstract fun connFree(com.ditchoom.socket.quic/QuicheConn) // com.ditchoom.socket.quic/QuicheApi.connFree|connFree(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsClosed(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsClosed|connIsClosed(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsEstablished(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsEstablished|connIsEstablished(com.ditchoom.socket.quic.QuicheConn){}[0]
+    abstract fun connIsHandshakeConfirmed(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsHandshakeConfirmed|connIsHandshakeConfirmed(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsInEarlyData(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsInEarlyData|connIsInEarlyData(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsResumed(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsResumed|connIsResumed(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsTimedOut(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsTimedOut|connIsTimedOut(com.ditchoom.socket.quic.QuicheConn){}[0]
@@ -150,6 +151,7 @@ abstract interface com.ditchoom.socket.quic/QuicheStreamAdapter { // com.ditchoo
     abstract suspend fun streamShutdown(com.ditchoom.socket.quic/QuicStreamId, kotlin/Int, kotlin/Long) // com.ditchoom.socket.quic/QuicheStreamAdapter.streamShutdown|streamShutdown(com.ditchoom.socket.quic.QuicStreamId;kotlin.Int;kotlin.Long){}[0]
     abstract suspend fun streamWrite(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): kotlin/Int // com.ditchoom.socket.quic/QuicheStreamAdapter.streamWrite|streamWrite(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
     open fun releaseUndeliveredReads() // com.ditchoom.socket.quic/QuicheStreamAdapter.releaseUndeliveredReads|releaseUndeliveredReads(){}[0]
+    open suspend fun streamWriteAndFinish(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration) // com.ditchoom.socket.quic/QuicheStreamAdapter.streamWriteAndFinish|streamWriteAndFinish(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
 }
 
 abstract interface com.ditchoom.socket.quic/UdpChannel { // com.ditchoom.socket.quic/UdpChannel|null[0]
@@ -973,6 +975,7 @@ final class com.ditchoom.socket.quic.trace/QuicTraceRecorder { // com.ditchoom.s
     final fun trafficSecretsRefused(kotlin/String) // com.ditchoom.socket.quic.trace/QuicTraceRecorder.trafficSecretsRefused|trafficSecretsRefused(kotlin.String){}[0]
     final fun wrap(com.ditchoom.socket.quic/UdpChannel, com.ditchoom.socket.quic/PathKey? = ...): com.ditchoom.socket.quic/UdpChannel // com.ditchoom.socket.quic.trace/QuicTraceRecorder.wrap|wrap(com.ditchoom.socket.quic.UdpChannel;com.ditchoom.socket.quic.PathKey?){}[0]
     final fun wrap(com.ditchoom.socket.transport/Liveness): com.ditchoom.socket.transport/Liveness // com.ditchoom.socket.quic.trace/QuicTraceRecorder.wrap|wrap(com.ditchoom.socket.transport.Liveness){}[0]
+    final suspend fun flush() // com.ditchoom.socket.quic.trace/QuicTraceRecorder.flush|flush(){}[0]
 }
 
 final class com.ditchoom.socket.quic/DriverStreamAdapter : com.ditchoom.socket.quic/QuicheStreamAdapter { // com.ditchoom.socket.quic/DriverStreamAdapter|null[0]
@@ -983,6 +986,7 @@ final class com.ditchoom.socket.quic/DriverStreamAdapter : com.ditchoom.socket.q
     final suspend fun streamRead(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer/BufferFactory, kotlin/Int, kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket.quic/DriverStreamAdapter.streamRead|streamRead(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.BufferFactory;kotlin.Int;kotlin.time.Duration){}[0]
     final suspend fun streamShutdown(com.ditchoom.socket.quic/QuicStreamId, kotlin/Int, kotlin/Long) // com.ditchoom.socket.quic/DriverStreamAdapter.streamShutdown|streamShutdown(com.ditchoom.socket.quic.QuicStreamId;kotlin.Int;kotlin.Long){}[0]
     final suspend fun streamWrite(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): kotlin/Int // com.ditchoom.socket.quic/DriverStreamAdapter.streamWrite|streamWrite(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+    final suspend fun streamWriteAndFinish(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration) // com.ditchoom.socket.quic/DriverStreamAdapter.streamWriteAndFinish|streamWriteAndFinish(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
 }
 
 final class com.ditchoom.socket.quic/NewPath { // com.ditchoom.socket.quic/NewPath|null[0]
@@ -1236,7 +1240,7 @@ final class com.ditchoom.socket.quic/QuicheDriver { // com.ditchoom.socket.quic/
     }
 }
 
-final class com.ditchoom.socket.quic/QuicheStreamByteStream : com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.flow/HalfCloseable, com.ditchoom.buffer.flow/Resettable { // com.ditchoom.socket.quic/QuicheStreamByteStream|null[0]
+final class com.ditchoom.socket.quic/QuicheStreamByteStream : com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.flow/Resettable, com.ditchoom.socket.quic/FinishingWrite { // com.ditchoom.socket.quic/QuicheStreamByteStream|null[0]
     constructor <init>(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.socket.quic/QuicheStreamAdapter, com.ditchoom.buffer/BufferFactory, kotlin/Int = ..., com.ditchoom.buffer.flow/ReadPolicy = ..., com.ditchoom.buffer.flow/WritePolicy = ...) // com.ditchoom.socket.quic/QuicheStreamByteStream.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.socket.quic.QuicheStreamAdapter;com.ditchoom.buffer.BufferFactory;kotlin.Int;com.ditchoom.buffer.flow.ReadPolicy;com.ditchoom.buffer.flow.WritePolicy){}[0]
 
     final val isOpen // com.ditchoom.socket.quic/QuicheStreamByteStream.isOpen|{}isOpen[0]
@@ -1253,6 +1257,7 @@ final class com.ditchoom.socket.quic/QuicheStreamByteStream : com.ditchoom.buffe
     final suspend fun reset(kotlin/Long) // com.ditchoom.socket.quic/QuicheStreamByteStream.reset|reset(kotlin.Long){}[0]
     final suspend fun shutdownSend() // com.ditchoom.socket.quic/QuicheStreamByteStream.shutdownSend|shutdownSend(){}[0]
     final suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.quic/QuicheStreamByteStream.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+    final suspend fun writeFullyAndShutdownSend(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration) // com.ditchoom.socket.quic/QuicheStreamByteStream.writeFullyAndShutdownSend|writeFullyAndShutdownSend(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
 
     final object Companion { // com.ditchoom.socket.quic/QuicheStreamByteStream.Companion|null[0]
         final val DEFAULT_STREAM_DEADLINE // com.ditchoom.socket.quic/QuicheStreamByteStream.Companion.DEFAULT_STREAM_DEADLINE|{}DEFAULT_STREAM_DEADLINE[0]
@@ -1289,6 +1294,8 @@ final class com.ditchoom.socket.quic/StreamSlot { // com.ditchoom.socket.quic/St
 
     final val dataSignal // com.ditchoom.socket.quic/StreamSlot.dataSignal|{}dataSignal[0]
         final fun <get-dataSignal>(): kotlinx.coroutines.channels/Channel<kotlin/Unit> // com.ditchoom.socket.quic/StreamSlot.dataSignal.<get-dataSignal>|<get-dataSignal>(){}[0]
+    final val end // com.ditchoom.socket.quic/StreamSlot.end|{}end[0]
+        final fun <get-end>(): com.ditchoom.socket.quic/StreamEnd // com.ditchoom.socket.quic/StreamSlot.end.<get-end>|<get-end>(){}[0]
     final val id // com.ditchoom.socket.quic/StreamSlot.id|{}id[0]
         final fun <get-id>(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.quic/StreamSlot.id.<get-id>|<get-id>(){}[0]
     final val pendingData // com.ditchoom.socket.quic/StreamSlot.pendingData|{}pendingData[0]
@@ -1297,10 +1304,6 @@ final class com.ditchoom.socket.quic/StreamSlot { // com.ditchoom.socket.quic/St
         final fun <get-readState>(): kotlin.concurrent.atomics/AtomicReference<com.ditchoom.socket.quic/StreamReadState> // com.ditchoom.socket.quic/StreamSlot.readState.<get-readState>|<get-readState>(){}[0]
     final val writableSignal // com.ditchoom.socket.quic/StreamSlot.writableSignal|{}writableSignal[0]
         final fun <get-writableSignal>(): kotlinx.coroutines.channels/Channel<kotlin/Unit> // com.ditchoom.socket.quic/StreamSlot.writableSignal.<get-writableSignal>|<get-writableSignal>(){}[0]
-
-    final var end // com.ditchoom.socket.quic/StreamSlot.end|{}end[0]
-        final fun <get-end>(): com.ditchoom.socket.quic/StreamEnd // com.ditchoom.socket.quic/StreamSlot.end.<get-end>|<get-end>(){}[0]
-        final fun <set-end>(com.ditchoom.socket.quic/StreamEnd) // com.ditchoom.socket.quic/StreamSlot.end.<set-end>|<set-end>(com.ditchoom.socket.quic.StreamEnd){}[0]
 
     final fun holdsUnread(): kotlin/Boolean // com.ditchoom.socket.quic/StreamSlot.holdsUnread|holdsUnread(){}[0]
 }

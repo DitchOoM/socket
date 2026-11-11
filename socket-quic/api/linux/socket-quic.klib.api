@@ -6,6 +6,10 @@
 // - Show declarations: true
 
 // Library unique name: <com.ditchoom:socket-quic>
+open annotation class com.ditchoom.socket.quic/QuicEngineSpi : kotlin/Annotation { // com.ditchoom.socket.quic/QuicEngineSpi|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicEngineSpi.<init>|<init>(){}[0]
+}
+
 final enum class com.ditchoom.socket.quic.trace/QlogClosed : kotlin/Enum<com.ditchoom.socket.quic.trace/QlogClosed> { // com.ditchoom.socket.quic.trace/QlogClosed|null[0]
     enum entry Established // com.ditchoom.socket.quic.trace/QlogClosed.Established|null[0]
     enum entry Inherited // com.ditchoom.socket.quic.trace/QlogClosed.Inherited|null[0]
@@ -68,6 +72,10 @@ final enum class com.ditchoom.socket.quic/KeyMaterialPart : kotlin/Enum<com.ditc
 
 abstract fun interface com.ditchoom.socket.quic/ServerCertVerifier { // com.ditchoom.socket.quic/ServerCertVerifier|null[0]
     abstract suspend fun verify(com.ditchoom.socket.quic/PeerCertificateChain): com.ditchoom.socket.quic/ServerCertVerdict // com.ditchoom.socket.quic/ServerCertVerifier.verify|verify(com.ditchoom.socket.quic.PeerCertificateChain){}[0]
+}
+
+abstract interface com.ditchoom.socket.quic/FinishingWrite : com.ditchoom.buffer.flow/HalfCloseable { // com.ditchoom.socket.quic/FinishingWrite|null[0]
+    abstract suspend fun writeFullyAndShutdownSend(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration) // com.ditchoom.socket.quic/FinishingWrite.writeFullyAndShutdownSend|writeFullyAndShutdownSend(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
 }
 
 abstract interface com.ditchoom.socket.quic/P256KeyPair : kotlin/AutoCloseable { // com.ditchoom.socket.quic/P256KeyPair|null[0]
@@ -1026,6 +1034,7 @@ sealed interface com.ditchoom.socket.quic/PeerCertificateSupport { // com.ditcho
         constructor <init>(com.ditchoom.socket.quic/PeerCertificateBackend) // com.ditchoom.socket.quic/PeerCertificateSupport.Available.<init>|<init>(com.ditchoom.socket.quic.PeerCertificateBackend){}[0]
 
         final fun generate(com.ditchoom.socket.quic/PeerCertificateValidity = ..., kotlin.time/Instant = ...): com.ditchoom.socket.quic/PeerCertificate // com.ditchoom.socket.quic/PeerCertificateSupport.Available.generate|generate(com.ditchoom.socket.quic.PeerCertificateValidity;kotlin.time.Instant){}[0]
+        final suspend fun mint(com.ditchoom.socket.quic/PeerCertificateValidity = ..., kotlin.time/Instant = ...): com.ditchoom.socket.quic/PeerCertificate // com.ditchoom.socket.quic/PeerCertificateSupport.Available.mint|mint(com.ditchoom.socket.quic.PeerCertificateValidity;kotlin.time.Instant){}[0]
     }
 
     final object Unavailable : com.ditchoom.socket.quic/PeerCertificateSupport { // com.ditchoom.socket.quic/PeerCertificateSupport.Unavailable|null[0]
@@ -2009,6 +2018,21 @@ sealed interface com.ditchoom.socket.quic/QuicStreamAbort { // com.ditchoom.sock
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicStreamOrigin { // com.ditchoom.socket.quic/QuicStreamOrigin|null[0]
+    final class Early : com.ditchoom.socket.quic/QuicStreamOrigin { // com.ditchoom.socket.quic/QuicStreamOrigin.Early|null[0]
+        constructor <init>(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicStreamOrigin.Early.<init>|<init>(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamOrigin.Early.toString|toString(){}[0]
+        final suspend fun awaitConfirmation() // com.ditchoom.socket.quic/QuicStreamOrigin.Early.awaitConfirmation|awaitConfirmation(){}[0]
+    }
+
+    final object Confirmed : com.ditchoom.socket.quic/QuicStreamOrigin { // com.ditchoom.socket.quic/QuicStreamOrigin.Confirmed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamOrigin.Confirmed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamOrigin.Confirmed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamOrigin.Confirmed.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.socket.quic/QuicStreamReadError|null[0]
     final class Quiche : com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.socket.quic/QuicStreamReadError.Quiche|null[0]
         constructor <init>(kotlin/Int) // com.ditchoom.socket.quic/QuicStreamReadError.Quiche.<init>|<init>(kotlin.Int){}[0]
@@ -2546,11 +2570,14 @@ final class com.ditchoom.socket.quic/PinnedRadioUnavailableException : kotlin/Ru
 
 final class com.ditchoom.socket.quic/QuicByteStream : com.ditchoom.buffer.flow/ByteStream, com.ditchoom.buffer.flow/HalfCloseable, com.ditchoom.buffer.flow/Resettable, com.ditchoom.socket.transport/MuxIdentified { // com.ditchoom.socket.quic/QuicByteStream|null[0]
     constructor <init>(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer.flow/ByteStream) // com.ditchoom.socket.quic/QuicByteStream.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.flow.ByteStream){}[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer.flow/ByteStream, com.ditchoom.socket.quic/QuicStreamOrigin) // com.ditchoom.socket.quic/QuicByteStream.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.flow.ByteStream;com.ditchoom.socket.quic.QuicStreamOrigin){}[0]
 
     final val isOpen // com.ditchoom.socket.quic/QuicByteStream.isOpen|{}isOpen[0]
         final fun <get-isOpen>(): kotlin/Boolean // com.ditchoom.socket.quic/QuicByteStream.isOpen.<get-isOpen>|<get-isOpen>(){}[0]
     final val muxStreamId // com.ditchoom.socket.quic/QuicByteStream.muxStreamId|{}muxStreamId[0]
         final fun <get-muxStreamId>(): kotlin/Long // com.ditchoom.socket.quic/QuicByteStream.muxStreamId.<get-muxStreamId>|<get-muxStreamId>(){}[0]
+    final val origin // com.ditchoom.socket.quic/QuicByteStream.origin|{}origin[0]
+        final fun <get-origin>(): com.ditchoom.socket.quic/QuicStreamOrigin // com.ditchoom.socket.quic/QuicByteStream.origin.<get-origin>|<get-origin>(){}[0]
     final val readPolicy // com.ditchoom.socket.quic/QuicByteStream.readPolicy|{}readPolicy[0]
         final fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket.quic/QuicByteStream.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
     final val streamId // com.ditchoom.socket.quic/QuicByteStream.streamId|{}streamId[0]
@@ -2558,11 +2585,13 @@ final class com.ditchoom.socket.quic/QuicByteStream : com.ditchoom.buffer.flow/B
     final val writePolicy // com.ditchoom.socket.quic/QuicByteStream.writePolicy|{}writePolicy[0]
         final fun <get-writePolicy>(): com.ditchoom.buffer.flow/WritePolicy // com.ditchoom.socket.quic/QuicByteStream.writePolicy.<get-writePolicy>|<get-writePolicy>(){}[0]
 
+    final fun markReplaySafe() // com.ditchoom.socket.quic/QuicByteStream.markReplaySafe|markReplaySafe(){}[0]
     final suspend fun close() // com.ditchoom.socket.quic/QuicByteStream.close|close(){}[0]
     final suspend fun read(kotlin.time/Duration): com.ditchoom.buffer.flow/ReadResult // com.ditchoom.socket.quic/QuicByteStream.read|read(kotlin.time.Duration){}[0]
     final suspend fun reset(kotlin/Long) // com.ditchoom.socket.quic/QuicByteStream.reset|reset(kotlin.Long){}[0]
     final suspend fun shutdownSend() // com.ditchoom.socket.quic/QuicByteStream.shutdownSend|shutdownSend(){}[0]
     final suspend fun write(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.quic/QuicByteStream.write|write(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
+    final suspend fun writeFullyAndShutdownSend(com.ditchoom.buffer/ReadBuffer, kotlin.time/Duration = ...) // com.ditchoom.socket.quic/QuicByteStream.writeFullyAndShutdownSend|writeFullyAndShutdownSend(com.ditchoom.buffer.ReadBuffer;kotlin.time.Duration){}[0]
     final suspend fun writeGathered(kotlin.collections/List<com.ditchoom.buffer/ReadBuffer>, kotlin.time/Duration): com.ditchoom.buffer.flow/BytesWritten // com.ditchoom.socket.quic/QuicByteStream.writeGathered|writeGathered(kotlin.collections.List<com.ditchoom.buffer.ReadBuffer>;kotlin.time.Duration){}[0]
 }
 
