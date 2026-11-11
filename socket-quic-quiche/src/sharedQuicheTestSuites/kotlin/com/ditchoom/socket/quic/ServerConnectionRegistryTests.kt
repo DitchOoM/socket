@@ -101,6 +101,33 @@ class ServerConnectionRegistryTests {
             )
         }
 
+    // ── A source id belongs to one connection: a second driver announcing it does not take the route ──
+
+    @Test
+    fun aProjectionNeverTakesAnIdAnotherLiveDriverRoutes() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
+            val first = idleDriver()
+            val second = idleDriver()
+            registry.trackLiveDriver(first)
+            registry.routeDriver(cid(1), first)
+            registry.trackLiveDriver(second)
+
+            // The second driver's spare ids include the first connection's SCID: two ids drawn equal.
+            registry.enqueueRouteProjection(second, setOf(cid(2), cid(1), cid(3)))
+            val contested: Any = registry.drainRoutingQueues()
+
+            assertSame(first, registry.driverForDcid(cid(1)), "the id stays with the connection that already owned it")
+            assertSame(second, registry.driverForDcid(cid(2)), "the second driver's other ids route to it")
+            assertSame(second, registry.driverForDcid(cid(3)), "the second driver's other ids route to it")
+            assertEquals<Any>(listOf(cid(1)), contested, "the id the second driver could not have is reported")
+
+            // When the second driver goes away it takes only what it held: the first connection keeps routing.
+            registry.enqueueCleanup(second)
+            registry.drainRoutingQueues()
+            assertSame(first, registry.driverForDcid(cid(1)), "retiring the second driver does not unroute the first")
+        }
+
     // ── The tripwire: freeing a recv_info still in flight fails loudly, not as a native SIGSEGV ──
 
     @Test
