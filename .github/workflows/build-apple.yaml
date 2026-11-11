@@ -830,13 +830,59 @@ jobs:
           fi
           rc=0
           : > /tmp/macos-arm64.log
+          touch /tmp/macos-arm64.started
           while IFS= read -r bin; do
             echo "==================== $bin ===================="
             chmod +x "$bin"
             # cwd = repo root so each module's <module>/testcerts/cert.* fallback resolves.
-            "$bin" 2>&1 | tee -a /tmp/macos-arm64.log || rc=1
+            "$bin" 2>&1 | tee -a /tmp/macos-arm64.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -ne 0 ]; then
+              rc=1
+              # 128+n is death by signal n. A test binary that dies this way prints nothing of its own:
+              # on 2026-11-11 two jobs (130689942683, 130691016976) ended with only the shell's
+              # "Segmentation fault: 11" under AppleSystemChainTrustTests, and no stack to say where.
+              if [ "$status" -gt 128 ]; then
+                echo "::error::$bin died on signal $((status - 128)); the last test it started: $(grep -a '^\[ RUN ' /tmp/macos-arm64.log | tail -1)"
+              fi
+            fi
           done <<< "$found"
           exit $rc
+
+      # The crash reporter writes the report a few seconds after the process dies, with every
+      # thread's stack — the only record of where a segfault in a test binary happened.
+      - name: Collect crash reports (on failure)
+        if: ${{ failure() }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/crash-reports
+          for attempt in 1 2 3 4 5 6; do
+            find "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports \
+              -type f \( -name '*.ips' -o -name '*.crash' \) -newer /tmp/macos-arm64.started -print0 2>/dev/null \
+              | xargs -0 -I{} cp {} /tmp/crash-reports/ 2>/dev/null
+            [ -n "$(ls -A /tmp/crash-reports)" ] && break
+            sleep 5
+          done
+          if [ -z "$(ls -A /tmp/crash-reports)" ]; then
+            echo "no crash report was written within 30 s"
+            exit 0
+          fi
+          for report in /tmp/crash-reports/*; do
+            echo "::group::$report (first 400 lines)"
+            head -400 "$report"
+            echo "::endgroup::"
+          done
+
+      - name: Upload crash reports (on failure)
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-crash-reports
+          path: /tmp/crash-reports
+          retention-days: 14
+          if-no-files-found: ignore
 
       # Standalone .kexe runs print results to stdout (no JUnit XML like a Gradle run), so on
       # failure capture the combined log for diagnosis.
