@@ -270,8 +270,8 @@ internal suspend fun buildLinuxQuicConnection(
             progress = ConnectProgress.DriverStarted(udpChannel)
             val resumption =
                 runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
-                quicConn.awaitEstablished(timeout)
-            }
+                    quicConn.awaitEstablished(timeout)
+                }
             // Connection owns teardown via onRelease now — hand ownership over before the pin check so
             // the failure `finally` releases nothing; a pin mismatch tears down via quicConn.close().
             progress = ConnectProgress.ConnectionOwnsTeardown
