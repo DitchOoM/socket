@@ -112,9 +112,14 @@ open class NWSocketWrapper(
                     // TimeoutCancellationException; surface the uniform type (§4.1, Axis 3).
                     throw SocketTimeoutException(TimeoutContext.Read(deadline), cause = e)
                 } catch (e: Throwable) {
-                    // The receive itself failed / hit EOF (deferred completed exceptionally) — drop the
-                    // single-flight state so the next read() starts a fresh receive.
-                    inFlightRead = null
+                    // Only a receive that itself failed or hit EOF (its deferred completed exceptionally)
+                    // ends single-flight: the next read() starts a fresh receive. A waiter cancelled from
+                    // outside (Job.cancel, a race loser, scope shutdown) abandons only its wait, exactly
+                    // like the deadline branch above: the receive is still outstanding in Network.framework
+                    // and its bytes belong to the connection, so the next read() re-awaits it. Forgetting
+                    // it here would post a second receive and the first one's bytes would be completed into
+                    // a deferred nobody awaits.
+                    if (pending.isCancelled) inFlightRead = null
                     throw e
                 }
             inFlightRead = null
@@ -186,10 +191,16 @@ open class NWSocketWrapper(
                     // back-pressure (RFC_WRITE_TIMEOUT_CONTRACT §1) without arming a timeout that could
                     // kill the connection. Only an opt-in Bounded(d) write bounds the send.
                     if (deadline.isInfinite()) {
-                        performSend(conn, nsData, buffer, bytesToWrite)
+                        performSend(conn, nsData)
                     } else {
-                        withTimeout(deadline) { performSend(conn, nsData, buffer, bytesToWrite) }
+                        withTimeout(deadline) { performSend(conn, nsData) }
                     }
+                    // Committed here, on the awaiting caller, only once the send completed and this call
+                    // is still the buffer's owner. The completion block runs on a dispatch thread at any
+                    // time up to cancel, including after a cancelled write returned the buffer to its
+                    // caller, so it must never touch the buffer.
+                    buffer.position(buffer.position() + bytesToWrite)
+                    bytesToWrite
                 }
             } catch (e: TimeoutCancellationException) {
                 // An opt-in Bounded(d) write blew its deadline. DESTRUCTIVE (RFC §4): Network.framework
@@ -206,15 +217,14 @@ open class NWSocketWrapper(
     /**
      * Issues a single native `nw_helper_send_tcp` and suspends until Network.framework reports the send
      * completed (or failed). Runs no timeout of its own — enforcement is the caller's `withTimeout` — so
-     * an infinite (default) write simply suspends on back-pressure. On success advances [buffer]'s
-     * position by [bytesToWrite], matching the JVM NIO write contract.
+     * an infinite (default) write simply suspends on back-pressure. The completion block captures only
+     * the continuation, never the caller's buffer: a cancelled caller's send is already queued in
+     * Network.framework and completes later, whoever owns the buffer by then.
      */
     private suspend fun performSend(
         conn: nw_connection_t,
         nsData: NSData,
-        buffer: ReadBuffer,
-        bytesToWrite: Int,
-    ): Int =
+    ): Unit =
         suspendCancellableCoroutine { continuation ->
             nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
                 if (errorDomain != 0) {
@@ -222,8 +232,7 @@ open class NWSocketWrapper(
                         mapSocketException(errorDomain, errorDesc),
                     )
                 } else {
-                    buffer.position(buffer.position() + bytesToWrite)
-                    continuation.resume(bytesToWrite)
+                    continuation.resume(Unit)
                 }
             }
         }
