@@ -672,7 +672,10 @@ class QuicheDriver(
         try {
             val closed = CompletableDeferred<Unit>()
             commands.send(QuicheCmd.Close(reason, closed))
-            closed.await()
+            reportingStall(
+                "the driver to answer Close in $coroutineName",
+                { "closed.isCompleted=${closed.isCompleted} driver.isActive=${driverJob?.isActive}" },
+            ) { closed.await() }
         } catch (_: ClosedSendChannelException) {
             // Settled on its own in the same instant — its own reason stands.
         }
@@ -2148,7 +2151,12 @@ class QuicheDriver(
                     entry.readerJob?.cancel()
                 }
                 for (entry in paths.values.toList()) {
-                    entry.readerJob?.join()
+                    entry.readerJob?.let { reader ->
+                        reportingStall(
+                            "reader ${entry.key} to exit in $coroutineName",
+                            { "reader.isActive=${reader.isActive} reader.isCompleted=${reader.isCompleted}" },
+                        ) { reader.join() }
+                    }
                 }
                 cleanup()
                 // The trace reaches the application's sink off this loop; let what this connection
@@ -2277,8 +2285,10 @@ class QuicheDriver(
                     try {
                         // Bytes this loop already handed the stream (to a read parked in awaitData that has
                         // since moved on) come before anything quiche still holds: answer Done so the read
-                        // takes them from the queue, rather than reading past them out of order.
-                        if (slot != null && !slot.pendingData.isEmpty) {
+                        // takes them from the queue, rather than reading past them out of order. The same
+                        // answer once the end is latched: every latch follows quiche reporting the stream's
+                        // end, so quiche holds nothing more and has collected the stream.
+                        if (slot != null && slot.answersStreamRecvWithDone()) {
                             StreamRecvResult.Done
                         } else {
                             api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
@@ -4271,7 +4281,12 @@ class QuicheDriver(
 
     suspend fun destroy() {
         commands.close()
-        driverJob?.join()
+        driverJob?.let { driver ->
+            reportingStall(
+                "the driver loop to exit in $coroutineName",
+                { "driver.isActive=${driver.isActive} driver.isCompleted=${driver.isCompleted}" },
+            ) { driver.join() }
+        }
     }
 
     /** Copies the peer's chain out of quiche (loop only, `conn` still alive). Bounded; empty on any failure. */

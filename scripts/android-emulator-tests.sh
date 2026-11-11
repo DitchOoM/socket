@@ -268,8 +268,13 @@ Full capture: ${HANG_FILE} (artifact android-test-reports-${API_LEVEL})")"
 NO_TESTS_FILE="emulator-diagnostics/no-tests-ran-api${API_LEVEL}.txt"
 ADB_JOURNAL="emulator-diagnostics/adb-journal.txt"
 
-failed_adb_commands() {
-  grep -F ' FAILED ' "$ADB_JOURNAL" 2>/dev/null || echo "(none recorded in $ADB_JOURNAL)"
+# shellcheck source=scripts/android-test-outcomes.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-test-outcomes.sh"
+
+abnormal_adb_commands() {
+  local failed
+  failed=$(failed_adb_commands "$ADB_JOURNAL")
+  echo "${failed:-(none besides the expected non-zero exits, in $ADB_JOURNAL)}"
 }
 
 capture_no_tests_ran() {
@@ -280,8 +285,8 @@ capture_no_tests_ran() {
     grep -nE 'Running tests on devices|test-result.pb|AndroidTestRunner|connectedDebugAndroidTest|Failed to|FAILED' \
       "$GRADLE_OUT_FILE" 2>/dev/null | tail -60 || true
     echo
-    echo "--- adb commands that failed ---"
-    failed_adb_commands
+    echo "--- adb commands that ended abnormally ---"
+    abnormal_adb_commands
     echo
     echo "--- adb journal, last 150 entries ---"
     tail -150 "$ADB_JOURNAL" 2>/dev/null || echo "(no journal at $ADB_JOURNAL)"
@@ -394,28 +399,42 @@ if [ "$NETWORK_READY" = "1" ]; then
   # module with instrumented-test sources must therefore have a result file that counts at least
   # one test.
   if [ "$TEST_RUN_HUNG" = "0" ]; then
+    TESTS_FAILED=""
+    NOT_STARTED=""
     RAN_NOTHING=""
     while IFS= read -r module; do
-      tests=""
-      for xml in "$module"/build/outputs/androidTest-results/connected/debug/TEST-*.xml; do
-        [ -e "$xml" ] || continue
-        tests=$(grep -o '<testsuites tests="[0-9]*"' "$xml" | head -1 | grep -o '[0-9][0-9]*' || true)
-      done
-      if [ -z "$tests" ] || [ "$tests" = "0" ]; then
-        RAN_NOTHING="${RAN_NOTHING}${module} (tests=${tests:-no result file})"$'\n'
-      fi
+      outcome=$(module_outcome "$module" "$GRADLE_OUT_FILE" "$TEST_EXIT")
+      case "$outcome" in
+        PASSED*) ;;
+        FAILED*) TESTS_FAILED="${TESTS_FAILED}${module} (${outcome#FAILED } tests failed; report: ${module}/build/reports/androidTests/connected/debug/index.html)"$'\n' ;;
+        NOT_STARTED) NOT_STARTED="${NOT_STARTED}${module}"$'\n' ;;
+        RAN_NONE*) RAN_NOTHING="${RAN_NOTHING}${module} (tests=${outcome#RAN_NONE })"$'\n' ;;
+      esac
     done < <(git ls-files -- 'src/androidInstrumentedTest/*' '*/src/androidInstrumentedTest/*' |
       sed -E 's#src/androidInstrumentedTest/.*##; s#/$##; s#^$#.#' | sort -u)
-    if [ -n "$RAN_NOTHING" ]; then
+    # A module that was never started, or started and reported nothing, fails the lane even when
+    # Gradle exited 0.
+    if [ -n "$RAN_NOTHING" ] || [ -n "$NOT_STARTED" ]; then
       TEST_EXIT=1
+    fi
+    if [ -n "$TESTS_FAILED" ]; then
+      echo "::error title=Instrumented tests failed (API ${API_LEVEL})::$(gh_escape "Modules whose tests ran and failed:
+${TESTS_FAILED}${NOT_STARTED:+
+Not started, because Gradle stopped at the failure above:
+${NOT_STARTED}}")"
+    elif [ -n "$NOT_STARTED" ]; then
+      echo "::error title=Instrumented tests did not start (API ${API_LEVEL})::$(gh_escape "Gradle stopped before these modules' tests began; no module reported a test failure, so look at Gradle's own failure above:
+${NOT_STARTED}")"
+    fi
+    if [ -n "$RAN_NOTHING" ]; then
       capture_no_tests_ran "$RAN_NOTHING"
       echo "::group::Capture: modules that ran no tests (API ${API_LEVEL}) -> ${NO_TESTS_FILE}"
       cat "$NO_TESTS_FILE"
       echo "::endgroup::"
-      echo "::error title=Instrumented tests did not run (API ${API_LEVEL})::$(gh_escape "These modules have instrumented tests but ran none:
+      echo "::error title=Instrumented tests did not run (API ${API_LEVEL})::$(gh_escape "These modules started their tests and reported none:
 ${RAN_NOTHING}
-If the log has 'AndroidTestRunner failed', the run on the device failed (an install, for example). If not, the test engine failed before the device ran anything and AGP discarded the exception. Failed adb commands (newest last):
-$(failed_adb_commands | tail -20)
+If the log has 'AndroidTestRunner failed', the run on the device failed (an install, for example). If not, the test engine failed before the device ran anything and AGP discarded the exception. adb commands that ended abnormally (newest last):
+$(abnormal_adb_commands | tail -20)
 Full capture: ${NO_TESTS_FILE} (artifact android-test-reports-${API_LEVEL})")"
     fi
   fi
@@ -432,6 +451,16 @@ Full capture: ${NO_TESTS_FILE} (artifact android-test-reports-${API_LEVEL})")"
   else
     ./gradlew :socket-quic-quiche:stopNetworkControlServer || true
   fi
+fi
+
+# The test engine's adb link broke before any test APK was installed: said apart from a module that
+# ran and reported nothing, with the capture the guard took at that moment.
+# shellcheck source=scripts/adb-link-loss.sh
+source "$(dirname "${BASH_SOURCE[0]}")/adb-link-loss.sh"
+if lost_link=$(engine_lost_adb_link emulator-diagnostics/adb-journal.txt); then
+  echo "::error title=Test engine lost its adb link (API ${API_LEVEL})::$(gh_escape "The test engine lost its adb link while collecting device info, before any install. No test ran; its device queries ended with status 255:
+${lost_link}
+Capture taken at that moment (server and emulator process state, device state, adb transport trace): emulator-diagnostics/adb-link-loss-*.txt (artifact android-test-reports-${API_LEVEL})")"
 fi
 
 # Every install the guard recorded, recovered or not.

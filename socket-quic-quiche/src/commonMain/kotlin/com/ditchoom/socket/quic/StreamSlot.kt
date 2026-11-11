@@ -96,8 +96,9 @@ class StreamSlot(
      * caller's next look at [pendingData] cannot be followed by a drain it did not see: once the advert
      * is gone the driver only signals. A drain that took the advert first may still be landing as the
      * reader looks; the driver answers that reader's next `StreamRecv` with `Done` while the queue holds
-     * anything (see `QuicheDriver.execute`), so the queued chunk is read before any byte quiche has
-     * after it.
+     * anything or the end is latched (see `QuicheDriver.execute`), so the queued chunk is read before any
+     * byte quiche has after it, and the end of a stream quiche has already collected is the reader's
+     * verdict rather than a question put to quiche.
      */
     internal suspend fun awaitData(size: Int) {
         advertiseWaitingRead(size)
@@ -168,6 +169,13 @@ class StreamSlot(
             StreamEnd.Fin -> take() ?: ReadResult.End
             is StreamEnd.Reset -> take() ?: ReadResult.Reset
         }
+
+    /**
+     * Whether the driver answers this stream's `StreamRecv` with `Done` instead of asking quiche: bytes
+     * the loop already handed over wait in [pendingData] and come before anything quiche still holds, and
+     * a latched [end] means quiche reported the stream's end and has collected the stream.
+     */
+    internal fun answersStreamRecvWithDone(): Boolean = !pendingData.isEmpty || end != StreamEnd.Open
 
     /** A read returned bytes to its caller: [StreamReadState.HandedOff] back to [StreamReadState.Idle], never over [StreamReadState.Finished]. */
     internal fun returnHandOff() {

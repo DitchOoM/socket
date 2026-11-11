@@ -42,7 +42,7 @@ private fun routeAwarePrimaryInterface(): NetworkInterface? {
     val name = defaultRouteInterfaceName() ?: return null
     return runCatching { NetworkInterface.getByName(name) }
         .getOrNull()
-        ?.takeIf { !it.isLoopback && it.isUp }
+        ?.takeIf { it.isUpNonLoopback() }
 }
 
 /** Up, non-loopback, non-virtual interface with the lowest OS index — the portable fallback. */
@@ -50,11 +50,14 @@ private fun firstUpNonLoopbackLowestIndex(): NetworkInterface? =
     NetworkInterface
         .getNetworkInterfaces()
         ?.asSequence()
-        ?.filter { !it.isLoopback && it.isUp && !it.isVirtual }
+        ?.filter { it.isUpNonLoopback() && !it.isVirtual }
         ?.minByOrNull {
             val i = it.index
             if (i >= 0) i else Int.MAX_VALUE
         }
+
+/** Up and not loopback; an interface that vanished mid-scan is neither. */
+internal fun NetworkInterface.isUpNonLoopback(): Boolean = flagOrGone { isUp } && !flagOrGone { isLoopback }
 
 private fun linkFor(nif: NetworkInterface): NetworkId {
     val idx = nif.index
