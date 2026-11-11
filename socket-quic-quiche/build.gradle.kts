@@ -5633,7 +5633,7 @@ kotlin {
             // Neutral trace model (TraceSink/TraceEvent/TracePath) the quiche recorder projects onto
             // (RFC unified-harness P0). Available transitively via :socket-quic too; declared here
             // because QuicTraceRecorder references these types directly.
-            implementation(project(":socket-testkit"))
+            implementation(project(":socket-trace"))
             // Phase 6 QUIC cutover: the UDP datapath rides :socket-udp's DatagramChannel + UdpSocket
             // (buffer-flow datagram trichotomy) instead of quiche's private UdpChannel. socket-udp
             // covers every quiche target (jvm/android/linux/apple); its datagram API is
@@ -5658,6 +5658,9 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
+                // The test/field-walk harness (fault vocabulary, skip reporting, trace fixtures). Test
+                // scope only: :socket-quic no longer re-exports it to production consumers.
+                implementation(project(":socket-testkit"))
                 implementation(libs.kotlinx.coroutines.test)
                 // Test-scope back-edge (v6 Phase 2b.4): withQuicConnection/withQuicServer/withQuicMux
                 // moved to :socket-quic-default (it owns the public default-engine facade). The quiche
@@ -5746,6 +5749,7 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
                 implementation("androidx.test:runner:1.7.0")
                 implementation("androidx.test.ext:junit:1.3.0")
+                implementation(project(":socket-testkit")) // see commonTest
                 // androidInstrumentedTest does NOT dependsOn commonTest, so the test-scope back-edge to
                 // :socket-quic-default (for withQuic*) must be declared here too. See commonTest note.
                 implementation(project(":socket-quic-default"))
