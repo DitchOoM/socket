@@ -91,6 +91,20 @@ jobs:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
+      # The Gradle dependency cache: the settings plugins (Develocity, foojay), the Android Gradle
+      # Plugin and every library the build resolves, so `./gradlew` does not fetch them from
+      # plugins.gradle.org and Google/Central on each run. Restore-only: native-deps-freshness.yaml's
+      # `cache-warm` writes it on main after `resolveAllDependencies`, build-linux.yaml's `natives`
+      # job writes the same key, and a PR ref reads main's entry. The key and prefix are
+      # build-linux.yaml's, so a build-script edit still lands on the previous entry.
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
       # quic-echo's libquiche.so and JNI shim (`:quicEchoJar` → buildQuicheSharedLinuxX64). Building
       # them from source provisions the linuxX64 BoringSSL bundle, which is a GitHub release download.
       # Restore-only, with the same key and path as the writers (build-linux.yaml `natives` and
@@ -149,7 +163,7 @@ jobs:
       # beside a self-contained libquiche.so (unversioned soname), exactly what the emulator loads
       # (libquiche.so first, then the shim). NDK/cargo-ndk/targets/libclang are set up in the steps above.
       - name: Build Android QUIC native libs (x86_64, via Gradle)
-        run: ./gradlew :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
 
       # Bring up the docker quic-echo harness (same image / port as
       # build-linux + build-apple) before the emulator starts.
@@ -190,7 +204,7 @@ jobs:
       # contract above, which this emulator (and only an emulator) can
       # address through its 10.0.2.2 alias.
       - name: Build quic-echo fat jar (Linux x64)
-        run: ./gradlew :socket-quic-quiche:quicEchoJar --no-configuration-cache
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar --no-configuration-cache
 
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
@@ -448,6 +462,20 @@ jobs:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
+      # The Gradle dependency cache: the settings plugins (Develocity, foojay), the Android Gradle
+      # Plugin and every library the build resolves, so `./gradlew` does not fetch them from
+      # plugins.gradle.org and Google/Central on each run. Restore-only: native-deps-freshness.yaml's
+      # `cache-warm` writes it on main after `resolveAllDependencies`, build-linux.yaml's `natives`
+      # job writes the same key, and a PR ref reads main's entry. The key and prefix are
+      # build-linux.yaml's, so a build-script edit still lands on the previous entry.
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -469,7 +497,7 @@ jobs:
           cargo install cargo-ndk
 
       - name: Build Android QUIC native libs
-        run: ./gradlew :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
 
       - name: Install + verify Android Emulator and system image
         timeout-minutes: 6

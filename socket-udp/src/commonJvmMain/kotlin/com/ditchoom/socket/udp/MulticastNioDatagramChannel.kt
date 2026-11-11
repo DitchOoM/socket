@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.net.SocketException
 import java.net.SocketOption
 import java.net.StandardSocketOptions
 import java.nio.channels.MembershipKey
@@ -106,15 +107,30 @@ internal class MulticastNioDatagramChannel(
             MulticastInterface.Default -> defaultMulticastInterface(group)
         }
 
+    /** An interface that vanished since it was listed (the JDK throws [SocketException]) is neither up nor multicast-capable. */
+    private fun NetworkInterface.isUpAndMulticast(): Boolean =
+        try {
+            isUp && supportsMulticast()
+        } catch (_: SocketException) {
+            false
+        }
+
+    private fun NetworkInterface.isLoopbackOrGone(): Boolean =
+        try {
+            isLoopback
+        } catch (_: SocketException) {
+            false
+        }
+
     private fun defaultMulticastInterface(group: InetAddress?): NetworkInterface {
         val wantV6 = group?.let { it is java.net.Inet6Address } ?: false
         val all = NetworkInterface.getNetworkInterfaces().toList()
 
         fun NetworkInterface.hasFamily(): Boolean = inetAddresses.asSequence().any { (it is java.net.Inet6Address) == wantV6 }
 
-        val candidates = all.filter { runCatching { it.isUp && it.supportsMulticast() }.getOrDefault(false) }
-        return candidates.firstOrNull { !it.isLoopback && it.hasFamily() }
-            ?: candidates.firstOrNull { it.isLoopback }
+        val candidates = all.filter { it.isUpAndMulticast() }
+        return candidates.firstOrNull { !it.isLoopbackOrGone() && it.hasFamily() }
+            ?: candidates.firstOrNull { it.isLoopbackOrGone() }
             ?: candidates.firstOrNull()
             ?: throw MulticastException.NoSuchInterface(MulticastInterface.Default)
     }
