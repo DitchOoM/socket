@@ -2011,6 +2011,14 @@ jobs:
           grep -E '^(MemTotal|MemAvailable|Mlocked|Committed_AS)' /proc/meminfo || true
           echo "nproc: $(nproc)"
 
+      # A perf ring (scheduling tracepoints + 49 Hz call graphs) of the test binary, written out only
+      # when this job fails or hangs. TRACED: this lane (Linux x64 native, the prebuilt kexe).
+      # UNTRACED: integration-linux-arm64, the linuxX64Test run inside checks-tests, the soak and fuzz
+      # lanes, so the recorder is never the only way a Linux native test has run.
+      - uses: ./.github/actions/linux-perf-ring
+        with:
+          mode: start
+
       - name: Run socket-quic-quiche native tests (quiche cinterop)
         run: |
           # pipefail is NOT on by default in Actions' `bash -e {0}` (only an explicit
@@ -2058,6 +2066,14 @@ jobs:
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on linuxX64 (native)"
           fi
+
+      - name: perf ring (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/linux-perf-ring
+        with:
+          mode: collect
+          artifact-name: perf-ring-linux-x64-native
 
       - name: Bring down test harness
         if: always()
