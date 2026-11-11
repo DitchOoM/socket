@@ -10,11 +10,14 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Shared **large-payload / flow-control** integration suite (issue #87 suite 3; unblocked by the #91
@@ -114,6 +117,47 @@ abstract class QuicLargePayloadTestSuite {
             wrapTestBody { transferAndVerify(streamCount = MULTI_STREAMS, perStreamBytes = MULTI_PER_STREAM) }
         }
 
+    // ---- failure-only diagnostics ------------------------------------------------------------------
+
+    /** Where a transfer is: each value is one of the places a stalled run can be parked. */
+    protected enum class TransferPhase { Binding, Connecting, Writing, AwaitingServerVerdict, Verified }
+
+    /**
+     * What a transfer had done when it stopped. Immutable; replaced whole through [MutableStateFlow.update]
+     * (a CAS, no lock) so a reader on the timeout path sees one consistent picture.
+     */
+    private data class Progress(
+        val phase: TransferPhase,
+        val clientBytesWritten: Long,
+        val serverBytesVerified: Long,
+        /** When the last of the above changed: a run that is merely slow keeps moving this, a wedge does not. */
+        val lastChange: TimeSource.Monotonic.ValueTimeMark,
+    )
+
+    private class TransferProgress {
+        private val started = TimeSource.Monotonic.markNow()
+        private val state = MutableStateFlow(Progress(TransferPhase.Binding, 0, 0, started))
+
+        fun enter(phase: TransferPhase) = state.update { it.copy(phase = phase, lastChange = TimeSource.Monotonic.markNow()) }
+
+        fun clientWrote(bytes: Int) =
+            state.update {
+                it.copy(clientBytesWritten = it.clientBytesWritten + bytes, lastChange = TimeSource.Monotonic.markNow())
+            }
+
+        fun serverVerified(bytes: Int) =
+            state.update {
+                it.copy(serverBytesVerified = it.serverBytesVerified + bytes, lastChange = TimeSource.Monotonic.markNow())
+            }
+
+        /** One line naming the parked state. Evaluated only when the run failed. */
+        fun describe(): String {
+            val p = state.value
+            return "phase=${p.phase} clientBytesWritten=${p.clientBytesWritten} serverBytesVerified=${p.serverBytesVerified} " +
+                "sinceLastProgress=${p.lastChange.elapsedNow()} sinceStart=${started.elapsedNow()} testTimeScale=${testTimeScale()}"
+        }
+    }
+
     // ---- orchestration -----------------------------------------------------------------------------
 
     private suspend fun transferAndVerify(
@@ -123,47 +167,58 @@ abstract class QuicLargePayloadTestSuite {
     ) = coroutineScope {
         // Every stream carries the same pattern of the same length, so we just collect [streamCount].
         val results = Channel<Pair<Long, Boolean>>(capacity = streamCount)
+        val progress = TransferProgress()
 
-        withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
-            val serverJob =
-                launch {
-                    connections {
-                        streams().collect { stream ->
-                            launch {
-                                results.send(stream.verifyPattern())
-                                stream.close()
+        withDiffDebug("largePayload streams=$streamCount perStreamBytes=$perStreamBytes path=$writePath", { progress.describe() }) {
+            withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
+                val serverJob =
+                    launch {
+                        connections {
+                            streams().collect { stream ->
+                                launch {
+                                    results.send(stream.verifyPattern(progress))
+                                    stream.close()
+                                }
                             }
                         }
                     }
-                }
 
-            try {
-                withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds) {
-                    (0 until streamCount)
-                        .map {
-                            async {
-                                val stream = openStream()
-                                stream.writeAllPattern(perStreamBytes, writePath)
-                                stream.close() // FIN
-                            }
-                        }.awaitAll()
+                try {
+                    progress.enter(TransferPhase.Connecting)
+                    withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds) {
+                        progress.enter(TransferPhase.Writing)
+                        (0 until streamCount)
+                            .map {
+                                async {
+                                    val stream = openStream()
+                                    stream.writeAllPattern(perStreamBytes, writePath, progress)
+                                    stream.close() // FIN
+                                }
+                            }.awaitAll()
 
-                    repeat(streamCount) {
-                        val (count, ok) = results.receive()
-                        assertEquals(perStreamBytes.toLong(), count, "stream transfer truncated/overran ($count of $perStreamBytes bytes)")
-                        assertTrue(ok, "stream payload corrupted or reordered")
+                        progress.enter(TransferPhase.AwaitingServerVerdict)
+                        repeat(streamCount) {
+                            val (count, ok) = results.receive()
+                            assertEquals(
+                                perStreamBytes.toLong(),
+                                count,
+                                "stream transfer truncated/overran ($count of $perStreamBytes bytes)",
+                            )
+                            assertTrue(ok, "stream payload corrupted or reordered")
+                        }
                     }
+                } finally {
+                    serverJob.cancel()
                 }
-            } finally {
-                serverJob.cancel()
             }
+            progress.enter(TransferPhase.Verified)
         }
     }
 
     // ---- helpers -----------------------------------------------------------------------------------
 
     /** Server side: read to FIN, verifying every byte equals `offset % 251`. Returns (bytesReceived, allMatched). */
-    private suspend fun QuicByteStream.verifyPattern(): Pair<Long, Boolean> {
+    private suspend fun QuicByteStream.verifyPattern(progress: TransferProgress): Pair<Long, Boolean> {
         var offset = 0L
         var ok = true
         while (true) {
@@ -175,6 +230,7 @@ abstract class QuicLargePayloadTestSuite {
                     if (b != ((offset % 251).toByte())) ok = false
                     offset++
                 }
+                progress.serverVerified(bytes.size)
             } else {
                 break // End (FIN) or Reset
             }
@@ -185,6 +241,7 @@ abstract class QuicLargePayloadTestSuite {
     private suspend fun QuicByteStream.writeAllPattern(
         total: Int,
         writePath: WritePath,
+        progress: TransferProgress,
     ) {
         val pattern = ByteArray(total) { (it % 251).toByte() }
         val buf = BufferFactory.deterministic().allocate(total)
@@ -192,7 +249,7 @@ abstract class QuicLargePayloadTestSuite {
         buf.resetForRead()
         try {
             when (writePath) {
-                WritePath.Manual -> writeAll(buf)
+                WritePath.Manual -> writeAll(buf, progress)
                 WritePath.Production -> writeFully(buf, 15.seconds)
             }
         } finally {
@@ -205,10 +262,14 @@ abstract class QuicLargePayloadTestSuite {
      * flow-control window makes `write` park reactively on the stream's writable-signal and resume when
      * the peer's `MAX_STREAM_DATA` reopens it, so each call returns only once it has made progress.
      */
-    private suspend fun QuicByteStream.writeAll(buf: PlatformBuffer) {
+    private suspend fun QuicByteStream.writeAll(
+        buf: PlatformBuffer,
+        progress: TransferProgress,
+    ) {
         while (buf.remaining() > 0) {
             val n = write(buf, 15.seconds).count
             buf.position(buf.position() + n)
+            progress.clientWrote(n)
         }
     }
 

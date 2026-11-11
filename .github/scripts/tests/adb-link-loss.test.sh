@@ -74,6 +74,22 @@ else
   ok "a missing journal is not reported"
 fi
 
+# Verbatim from an API 24 run whose tests ran and finished: `test -d` on the additional_test_output
+# directory ended 255 after the instrumentation had run (the engine's post-run cleanup), twice.
+fixtures="$here/fixtures/api24-abort"
+if out=$(engine_lost_adb_link "$fixtures/adb-journal.txt"); then
+  bad "a 255 on the post-run output-directory probe of a session that installed and ran was reported" "$out"
+else
+  ok "a 255 in a session that installed and ran is not reported, whatever follows it"
+fi
+# A session that ends before any install, after an earlier healthy session: only the later one is lost.
+{ cat "$tmp/survived.txt"; echo "00:05:00.000 start pid=20000 caller=java(4736) adb version"; sed -n 3,12p "$tmp/lost.txt"; } >"$tmp/two.txt"
+if out=$(engine_lost_adb_link "$tmp/two.txt") && grep -q 'getprop ro.build.version.sdk' <<<"$out"; then
+  ok "a later session that lost its link is reported although an earlier one installed"
+else
+  bad "a later session's lost link was hidden by an earlier session's install" "$out"
+fi
+
 # The guard, over a fake adb whose `shell lose` ends 255 as the real one did.
 diag="$tmp/diag"
 cat >"$tmp/adb.real" <<EOF2

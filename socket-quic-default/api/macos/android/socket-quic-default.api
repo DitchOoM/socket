@@ -1,0 +1,41 @@
+public final class com/ditchoom/socket/quic/DefaultQuicEngine_commonJvmKt {
+	public static final fun getDefaultQuicEngine ()Lcom/ditchoom/socket/quic/QuicEngine;
+}
+
+public final class com/ditchoom/socket/quic/QuicSessionTransport : com/ditchoom/socket/transport/SessionTransport {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lcom/ditchoom/socket/quic/QuicConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public synthetic fun close (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun establish (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/QuicTransport : com/ditchoom/socket/transport/MultiplexingTransport, com/ditchoom/socket/transport/Transport {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+	public fun withMux (Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/WithQuicConnectionKt {
+	public static final fun withQuicConnection-45ZY6uE (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/quic/QuicClientBinding;Lkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withQuicConnection-45ZY6uE$default (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/quic/QuicClientBinding;Lkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun withQuicConnection-Zb7fWow (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/quic/QuicClientBinding;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withQuicConnection-Zb7fWow$default (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/quic/QuicClientBinding;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun withQuicMux-u4uj9nY (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withQuicMux-u4uj9nY$default (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/WithQuicServerKt {
+	public static final fun getPeerCertificates ()Lcom/ditchoom/socket/quic/PeerCertificateSupport;
+	public static final fun withQuicServer-TUY-ock (ILjava/lang/String;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun withQuicServer-TUY-ock (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withQuicServer-TUY-ock$default (ILjava/lang/String;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun withQuicServer-TUY-ock$default (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun withQuicServer-gwCluXo (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun withQuicServer-gwCluXo (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withQuicServer-gwCluXo$default (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun withQuicServer-gwCluXo$default (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+

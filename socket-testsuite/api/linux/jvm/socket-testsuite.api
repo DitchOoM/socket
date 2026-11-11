@@ -1,0 +1,561 @@
+public final class com/ditchoom/socket/quic/EchoOwnershipLedger {
+	public fun <init> ()V
+	public final fun assertNoLeaks (Ljava/lang/String;)V
+	public final fun getOutstandingCount ()I
+	public final fun getReleasedCount ()I
+	public final fun getTakenCount ()I
+	public final fun release (Lcom/ditchoom/socket/quic/EchoOwnershipLedger$Receipt;)V
+	public final fun took (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/quic/EchoOwnershipLedger$Receipt;
+}
+
+public final class com/ditchoom/socket/quic/EchoOwnershipLedger$Receipt {
+}
+
+public abstract interface class com/ditchoom/socket/quic/ImpairAction {
+}
+
+public final class com/ditchoom/socket/quic/ImpairAction$Drop : com/ditchoom/socket/quic/ImpairAction {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/ImpairAction$Drop;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/ImpairAction$Forward : com/ditchoom/socket/quic/ImpairAction {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/ImpairAction$Forward;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/ImpairAction$ForwardAfter : com/ditchoom/socket/quic/ImpairAction {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/quic/ImpairAction$ForwardAfter;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/ImpairAction$ForwardAfter;JILjava/lang/Object;)Lcom/ditchoom/socket/quic/ImpairAction$ForwardAfter;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDelayMs ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/ImpairAction$ForwardTwice : com/ditchoom/socket/quic/ImpairAction {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/ImpairAction$ForwardTwice;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/ImpairAction$HoldUntilNext : com/ditchoom/socket/quic/ImpairAction {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/ImpairAction$HoldUntilNext;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/ImpairDirection : java/lang/Enum {
+	public static final field ClientToServer Lcom/ditchoom/socket/quic/ImpairDirection;
+	public static final field ServerToClient Lcom/ditchoom/socket/quic/ImpairDirection;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/ImpairDirection;
+	public static fun values ()[Lcom/ditchoom/socket/quic/ImpairDirection;
+}
+
+public abstract interface class com/ditchoom/socket/quic/ImpairingProxy {
+	public abstract fun arm ()V
+	public abstract fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getDelayedCount ()I
+	public abstract fun getDroppedCount ()I
+	public abstract fun getDuplicatedCount ()I
+	public abstract fun getProxyPort ()I
+	public abstract fun getReorderedCount ()I
+}
+
+public abstract interface class com/ditchoom/socket/quic/ImpairmentPolicy {
+	public abstract fun actionFor (Lcom/ditchoom/socket/quic/ImpairDirection;I)Lcom/ditchoom/socket/quic/ImpairAction;
+}
+
+public final class com/ditchoom/socket/quic/MissingNativeSkipKt {
+	public static final fun recordMissingNativeLib (Lkotlin/reflect/KClass;Ljava/lang/UnsatisfiedLinkError;)V
+	public static final fun skipOnMissingNativeLib (Lkotlin/reflect/KClass;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/PlatformActualsKt {
+	public static final fun armStallDump-VtjQ1oo (JLjava/lang/String;)Lcom/ditchoom/socket/quic/StallDump;
+	public static final fun isAppleKNative ()Z
+	public static final fun isKotlinNative ()Z
+	public static final fun quicHarnessAvailability ()Lcom/ditchoom/socket/quic/QuicHarnessAvailability;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicActiveMigrationTestSuite {
+	public fun <init> ()V
+	public final fun aMigrationAcrossAnInFlightReadLosesNoBytes ()V
+	public final fun migrateReportsACapabilityNotAnAbsence ()V
+	public final fun streamBytesRemainAnInOrderPrefixAcrossAMigration ()V
+	public final fun streamSurvivesActiveMigrationToAFreshLocalPort ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	public final fun theConnectionCanKeepMigratingPastTheConnectionIdLimit ()V
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicCertificateHashPinningTestSuite {
+	public fun <init> ()V
+	public final fun acceptsGeneratedPeerCertificate ()V
+	public final fun acceptsMatchingLeafHash ()V
+	protected fun enforcesW3cConstraints ()Z
+	public abstract fun fixtureLeafHash (Ljava/lang/String;)Lcom/ditchoom/socket/quic/CertificateHash;
+	public abstract fun fixtureTlsConfig (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	public final fun rejectsExpiredGeneratedPeerCertificate ()V
+	public final fun rejectsExpiredLeaf ()V
+	public final fun rejectsNonP256KeyLeaf ()V
+	public final fun rejectsOverlyLongValidityLeaf ()V
+	public final fun rejectsWrongLeafHash ()V
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicConcurrencySoakTestSuite {
+	public fun <init> ()V
+	public final fun manyConcurrentStreamsHighConcurrencyRoundTrip ()V
+	public final fun manyConcurrentStreamsOnOneConnectionRoundTrip ()V
+	public final fun manyConnectionsConcurrentlyRoundTrip ()V
+	public final fun manyConnectionsHighConcurrencyRoundTrip ()V
+	public final fun sustainedEchoLoopHasNoPerOperationLeak ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicDatagramTestSuite {
+	public fun <init> ()V
+	public final fun datagramRoundTrip ()V
+	public final fun datagramTooLargeThrows ()V
+	public final fun datagramsDisabledByDefault ()V
+	public final fun sendRejectsABufferWithoutNativeMemoryAsTheCapabilitySays ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicHarnessAvailability {
+}
+
+public final class com/ditchoom/socket/quic/QuicHarnessAvailability$Available : com/ditchoom/socket/quic/QuicHarnessAvailability {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicHarnessAvailability$Available;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicHarnessAvailability$Unavailable : com/ditchoom/socket/quic/QuicHarnessAvailability {
+	public fun <init> (Lcom/ditchoom/socket/testkit/skip/SkipReason;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testkit/skip/SkipReason;
+	public final fun copy (Lcom/ditchoom/socket/testkit/skip/SkipReason;)Lcom/ditchoom/socket/quic/QuicHarnessAvailability$Unavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicHarnessAvailability$Unavailable;Lcom/ditchoom/socket/testkit/skip/SkipReason;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicHarnessAvailability$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/socket/testkit/skip/SkipReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicIdleTimeoutTestSuite {
+	public fun <init> ()V
+	public final fun aHandshakeStalledPastTheCallersBoundFailsTypedNotAsTheCallersCancellation ()V
+	public final fun aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation ()V
+	public final fun activityKeepsConnectionAlivePastIdleTimeout ()V
+	public final fun idleTimeoutFailsAPendingReadWithTheTypedClose ()V
+	public final fun keepAliveSurvivesManyIdleTimeoutWindows ()V
+	public final fun oneSidedStreamSilenceStarvesTheDefaultReadPolicy ()V
+	public final fun persistentStreamsSurviveOneSidedSilenceBeyondTheDefaultReadDeadline ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicImpairmentTestSuite {
+	public static final field Companion Lcom/ditchoom/socket/quic/QuicImpairmentTestSuite$Companion;
+	public fun <init> ()V
+	public abstract fun createImpairingProxy (ILcom/ditchoom/socket/quic/ImpairmentPolicy;)Lcom/ditchoom/socket/quic/ImpairingProxy;
+	public final fun streamStallsUnderTotalBlackhole ()V
+	public final fun streamSurvivesBurstLossThenRecovery ()V
+	public final fun streamSurvivesDeterministicLoss ()V
+	public final fun streamSurvivesDuplication ()V
+	public final fun streamSurvivesLatencyAndJitter ()V
+	public final fun streamSurvivesReordering ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/QuicImpairmentTestSuite$Companion {
+}
+
+public abstract class com/ditchoom/socket/quic/QuicLargePayloadTestSuite {
+	public fun <init> ()V
+	public final fun largePayloadTransfersIntactOnOneStream ()V
+	public final fun largePayloadTransfersIntactThroughProductionWriteFully ()V
+	public final fun multipleInterleavedStreamsTransferIntact ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+protected final class com/ditchoom/socket/quic/QuicLargePayloadTestSuite$WritePath : java/lang/Enum {
+	public static final field Manual Lcom/ditchoom/socket/quic/QuicLargePayloadTestSuite$WritePath;
+	public static final field Production Lcom/ditchoom/socket/quic/QuicLargePayloadTestSuite$WritePath;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicLargePayloadTestSuite$WritePath;
+	public static fun values ()[Lcom/ditchoom/socket/quic/QuicLargePayloadTestSuite$WritePath;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicMalformedPacketTestSuite {
+	public static final field Companion Lcom/ditchoom/socket/quic/QuicMalformedPacketTestSuite$Companion;
+	public fun <init> ()V
+	public final fun liveConnectionSurvivesMalformedDatagrams ()V
+	public abstract fun sendRawDatagram (I[BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun serverSurvivesMalformedDatagramsThenServesLegitClient ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/QuicMalformedPacketTestSuite$Companion {
+}
+
+public abstract class com/ditchoom/socket/quic/QuicPassiveMigrationTestSuite {
+	public fun <init> ()V
+	public abstract fun createRebindingProxy (I)Lcom/ditchoom/socket/quic/RebindingProxy;
+	public final fun streamSurvivesPassiveSourceRebind ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicServerLifecycleTestSuite {
+	public fun <init> ()V
+	public final fun closeWhileConnectionsBlockingDoesNotDeadlock ()V
+	protected final fun getTestQuicOptions ()Lcom/ditchoom/socket/quic/QuicOptions;
+	public final fun multipleBindCloseCyclesCompletePromptly ()V
+	public final fun serverCloseReturnsWithinTwoSeconds ()V
+	public final fun streamsFlowCompletesWhenConnectionCloses ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicServerTestSuite {
+	public fun <init> ()V
+	public final fun aWildcardServerAnswersFromTheAddressEachClientDialled ()V
+	public final fun alpnDemux_twoProtocolsShareOneListener ()V
+	protected fun assertConnectionCloseErrorObservedByPeer (Lcom/ditchoom/socket/quic/QuicCloseReason;)V
+	protected fun assertResetObservedByPeer (Ljava/lang/String;)V
+	public final fun clientResetStreamIsObservedByServer ()V
+	public fun connectionCloseWithErrorIsObservedByPeer ()V
+	public final fun echoSingleStream ()V
+	public final fun getTestQuicOptions ()Lcom/ditchoom/socket/quic/QuicOptions;
+	public final fun halfCloseAllowsReadAfterSendFin ()V
+	public final fun halfCloseReplyIsDeliveredAfterPeerConnectionClose ()V
+	protected fun hostInterfaceAddresses ()Ljava/util/List;
+	public abstract fun localhostCertPem ()Ljava/lang/String;
+	public abstract fun localhostTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	public final fun multipleConnections ()V
+	public final fun peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable ()V
+	public final fun pinnedCorrectCaAnchorHandshakeAndEchoSucceed ()V
+	public final fun pinnedWrongCaAnchorRejectsPeer ()V
+	public final fun rapidBindConnectCloseCyclesAreClean ()V
+	public final fun serverAcceptsConnection ()V
+	public final fun serverBindsAndReportsPort ()V
+	public final fun serverCloseIsClean ()V
+	public final fun sharedPort_aClientCanRideAPortItDoesNotOwn ()V
+	public final fun sharedPort_quicAndANonQuicProtocolCoexist ()V
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	public abstract fun unrelatedCaPem ()Ljava/lang/String;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun writeRejectsABufferWithoutNativeMemoryAsTheCapabilitySays ()V
+}
+
+public abstract interface class com/ditchoom/socket/quic/RebindingProxy {
+	public abstract fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getProxyPort ()I
+	public abstract fun rebind ()V
+}
+
+public abstract class com/ditchoom/socket/quic/ServerCertVerifierTestSuite {
+	public fun <init> ()V
+	public final fun aChainThePlatformRefusesNeverReachesTheVerifier ()V
+	public final fun aRejectionFailsTheConnectBeforeTheBlockRuns ()V
+	public final fun theVerifierSeesTheWholeChainLeafFirst ()V
+	public abstract fun twoCertificateChainPem ()Ljava/lang/String;
+	public abstract fun twoCertificateChainTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StallDump {
+	public abstract fun disarm ()V
+}
+
+public final class com/ditchoom/socket/quic/TestHelpersKt {
+	public static final fun awaitUntil-rnQQ1Ag (JLjava/lang/String;Lkotlin/jvm/functions/Function0;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun runQuicTest-VtjQ1oo (JLkotlin/jvm/functions/Function2;)V
+	public static synthetic fun runQuicTest-VtjQ1oo$default (JLkotlin/jvm/functions/Function2;ILjava/lang/Object;)V
+	public static final fun testTimeScale ()D
+}
+
+public final class com/ditchoom/socket/quic/TrackingBufferFactory : com/ditchoom/buffer/BufferFactory {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun allocate (ILcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun assertLiveCount (I)V
+	public final fun assertNoLeaks ()V
+	public fun decorate (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun getLiveCount ()I
+	public fun wrap ([BLcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/socket/testsuite/controller/HarnessController {
+	public static final field INSTANCE Lcom/ditchoom/socket/testsuite/controller/HarnessController;
+	public final fun serve (Ljava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testsuite/controller/HarnessControllerKt {
+	public static final fun main ()V
+	public static synthetic fun main ([Ljava/lang/String;)V
+}
+
+public final class com/ditchoom/socket/testsuite/harness/HarnessEndpoint {
+	public fun <init> (Ljava/lang/String;I)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun copy (Ljava/lang/String;I)Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;Ljava/lang/String;IILjava/lang/Object;)Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/HarnessManifest {
+	public static final field Companion Lcom/ditchoom/socket/testsuite/harness/HarnessManifest$Companion;
+	public final fun getScenarios ()Ljava/util/Map;
+	public final fun getToxiproxy ()Lcom/ditchoom/socket/testsuite/harness/ToxiproxyPorts;
+	public final fun getUdpToxi ()Lcom/ditchoom/socket/testsuite/harness/UdpToxiPorts;
+	public final fun getVersion ()I
+	public final fun scenario (Ljava/lang/String;)Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun scenarioOrNull (Ljava/lang/String;)Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/HarnessManifest$Companion {
+}
+
+public final class com/ditchoom/socket/testsuite/harness/HarnessUnavailable : java/lang/IllegalStateException {
+	public fun <init> (Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;Ljava/lang/String;)V
+	public final fun getDetail ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason : java/lang/Enum {
+	public static final field ScenarioNotInManifest Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;
+	public static final field SidecarRejectedRequest Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;
+	public static fun values ()[Lcom/ditchoom/socket/testsuite/harness/HarnessUnavailable$Reason;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/LegStats {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testsuite/harness/LegStats;IIILjava/lang/Object;)Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDelivered ()I
+	public final fun getDropped ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/NetworkHarnessKt {
+	public static final field DEFAULT_CONTROLLER_HOST Ljava/lang/String;
+	public static final field DEFAULT_CONTROLLER_PORT I
+	public static final fun withNetworkHarness (Ljava/lang/String;ILkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withNetworkHarness$default (Ljava/lang/String;ILkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/NetworkHarnessScope {
+	public final fun blackhole (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun echo ()Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun getControllerHost ()Ljava/lang/String;
+	public final fun getManifest ()Lcom/ditchoom/socket/testsuite/harness/HarnessManifest;
+	public final fun http ()Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun impaired-PNRv63U (JLkotlin/time/Duration;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun impaired-PNRv63U$default (Lcom/ditchoom/socket/testsuite/harness/NetworkHarnessScope;JLkotlin/time/Duration;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun impairedQuic (Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun impairedQuic$default (Lcom/ditchoom/socket/testsuite/harness/NetworkHarnessScope;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun impairedUdp (Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun impairedUdp$default (Lcom/ditchoom/socket/testsuite/harness/NetworkHarnessScope;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun peerReset (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun quicEcho ()Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun quicRelayStats (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun rst ()Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun tls (Lcom/ditchoom/socket/testsuite/harness/TlsScenario;)Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+	public final fun udpEcho ()Lcom/ditchoom/socket/testsuite/harness/HarnessEndpoint;
+}
+
+public abstract class com/ditchoom/socket/testsuite/harness/NetworkHarnessTestSuite {
+	public fun <init> ()V
+	public final fun blackholeAccessorConnectTimesOut ()V
+	public final fun impairedLatencyRoundTripMeasurablySlower ()V
+	public final fun manifestResolvesAndEchoRoundTrips ()V
+	public final fun quicEchoAccessorStreamRoundTrips ()V
+	public final fun rstAccessorSurfacesSocketClosedException ()V
+	public final fun skipsCleanlyWhenControllerUnreachable ()V
+	public final fun tlsAccessorRejectsExpiredCertAndAcceptsValidWithInsecure ()V
+}
+
+public final class com/ditchoom/socket/testsuite/harness/RelayDirection : java/lang/Enum {
+	public static final field ClientToServer Lcom/ditchoom/socket/testsuite/harness/RelayDirection;
+	public static final field ServerToClient Lcom/ditchoom/socket/testsuite/harness/RelayDirection;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWire ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testsuite/harness/RelayDirection;
+	public static fun values ()[Lcom/ditchoom/socket/testsuite/harness/RelayDirection;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/RelayStats {
+	public fun <init> (Lcom/ditchoom/socket/testsuite/harness/LegStats;Lcom/ditchoom/socket/testsuite/harness/LegStats;)V
+	public final fun component1 ()Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public final fun component2 ()Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public final fun copy (Lcom/ditchoom/socket/testsuite/harness/LegStats;Lcom/ditchoom/socket/testsuite/harness/LegStats;)Lcom/ditchoom/socket/testsuite/harness/RelayStats;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testsuite/harness/RelayStats;Lcom/ditchoom/socket/testsuite/harness/LegStats;Lcom/ditchoom/socket/testsuite/harness/LegStats;ILjava/lang/Object;)Lcom/ditchoom/socket/testsuite/harness/RelayStats;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getClientToServer ()Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public final fun getServerToClient ()Lcom/ditchoom/socket/testsuite/harness/LegStats;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/TlsScenario : java/lang/Enum {
+	public static final field EXPIRED Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static final field SELF_SIGNED Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static final field TLS13_ONLY Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static final field UNTRUSTED Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static final field VALID Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static final field WRONG_HOST Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getManifestKey ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+	public static fun values ()[Lcom/ditchoom/socket/testsuite/harness/TlsScenario;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/ToxiproxyClient {
+	public fun <init> (Ljava/lang/String;I)V
+	public final fun addLatencyToxic (Ljava/lang/String;JJLjava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun addLatencyToxic$default (Lcom/ditchoom/socket/testsuite/harness/ToxiproxyClient;Ljava/lang/String;JJLjava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun addResetPeerToxic (Ljava/lang/String;JLjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun addResetPeerToxic$default (Lcom/ditchoom/socket/testsuite/harness/ToxiproxyClient;Ljava/lang/String;JLjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun addSlicerToxic (Ljava/lang/String;IJLjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun addSlicerToxic$default (Lcom/ditchoom/socket/testsuite/harness/ToxiproxyClient;Ljava/lang/String;IJLjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun clearToxics (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun disableProxy (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun enableProxy (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun isAvailable (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun upsertProxy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/ToxiproxyPorts {
+	public fun <init> (Ljava/lang/String;IIII)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun component4 ()I
+	public final fun component5 ()I
+	public final fun copy (Ljava/lang/String;IIII)Lcom/ditchoom/socket/testsuite/harness/ToxiproxyPorts;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testsuite/harness/ToxiproxyPorts;Ljava/lang/String;IIIIILjava/lang/Object;)Lcom/ditchoom/socket/testsuite/harness/ToxiproxyPorts;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getApi ()I
+	public final fun getEcho ()I
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getHttp ()I
+	public final fun getTls ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/UdpToxiClient {
+	public fun <init> (Ljava/lang/String;I)V
+	public final fun clearSchedules (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun isAvailable (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun relayStats (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setSchedule (Ljava/lang/String;Lcom/ditchoom/socket/testsuite/harness/RelayDirection;Lcom/ditchoom/socket/testkit/fault/FaultSchedule;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun upsertRelay (Ljava/lang/String;ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testsuite/harness/UdpToxiPorts {
+	public fun <init> (Ljava/lang/String;II)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (Ljava/lang/String;II)Lcom/ditchoom/socket/testsuite/harness/UdpToxiPorts;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/testsuite/harness/UdpToxiPorts;Ljava/lang/String;IIILjava/lang/Object;)Lcom/ditchoom/socket/testsuite/harness/UdpToxiPorts;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getApi ()I
+	public final fun getData ()I
+	public final fun getHost ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/testsuite/udptoxi/UdpToxiServer {
+	public static final field INSTANCE Lcom/ditchoom/socket/testsuite/udptoxi/UdpToxiServer;
+	public final fun serve (Ljava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/testsuite/udptoxi/UdpToxiServerKt {
+	public static final fun main ()V
+	public static synthetic fun main ([Ljava/lang/String;)V
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportDiagnostics {
+	public fun <init> ()V
+	public final fun getClientEventCount ()I
+	public final fun getClientSink ()Lcom/ditchoom/socket/testkit/trace/TraceSink;
+	public final fun getServerBinding ()Lcom/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding;
+	public final fun getServerDropCount ()I
+	public final fun getServerEventCount ()I
+	public final fun getServerRingStartsWithDatagramIn ()Z
+	public final fun getSink ()Lcom/ditchoom/socket/testkit/trace/TraceSink;
+	public final fun mark (Ljava/lang/String;)V
+	public final fun postMortem (Ljava/lang/String;)V
+	public final fun report (Ljava/lang/Throwable;)Ljava/lang/String;
+	public final fun serverBound (I)V
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding {
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$Bound : com/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$Bound;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$Bound;IILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$Bound;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$NotBound : com/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding {
+	public static final field INSTANCE Lcom/ditchoom/socket/webtransport/WebTransportDiagnostics$ServerBinding$NotBound;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class com/ditchoom/socket/webtransport/WebTransportTestSuite {
+	public fun <init> ()V
+	public final fun connect_peerResetsStream_surfacesNeutralExceptionWithCode ()V
+	public final fun connect_roundTripsBidiStream ()V
+	public final fun connect_twoSessions_areDedicatedConnections_notTransparentlyPooled ()V
+	protected final fun getClientTraceSink ()Lcom/ditchoom/socket/testkit/trace/TraceSink;
+	public final fun multiplexed_close_isIdempotentAndTearsDown ()V
+	public final fun multiplexed_twoSessionsOverOneConnection_eachRoundTrip ()V
+	protected abstract fun openMultiplexed (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected abstract fun openSingleSession (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected fun osSocketsOnPort (ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun testTlsConfig ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+	protected fun wrapTestBody (Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+

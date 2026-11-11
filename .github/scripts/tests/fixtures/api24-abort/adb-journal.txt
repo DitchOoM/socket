@@ -1,0 +1,82 @@
+04:17:07.109 start pid=11432 caller=java(4728) adb version
+04:17:07.137 end   pid=11432 rc=0 28ms
+04:17:07.159 start pid=11451 caller=java(4728) adb start-server
+04:17:07.175 end   pid=11451 rc=0 18ms
+04:17:08.778 start pid=11497 caller=java(4728) adb -s emulator-5554 emu avd id
+04:17:08.803 end   pid=11497 rc=0 27ms
+04:17:11.698 start pid=11678 caller=java(11514) adb -s emulator-5554 shell getprop ro.build.version.release
+04:17:11.774 end   pid=11678 rc=0 76ms
+04:17:11.949 start pid=11712 caller=java(11514) adb -s emulator-5554 shell getprop
+04:17:12.021 end   pid=11712 rc=0 73ms
+04:17:12.111 start pid=11739 caller=java(11514) adb -s emulator-5554 shell cat /proc/meminfo
+04:17:12.148 end   pid=11739 rc=0 39ms
+04:17:12.224 start pid=11763 caller=java(11514) adb -s emulator-5554 shell cat /proc/cpuinfo
+04:17:12.282 end   pid=11763 rc=0 58ms
+04:17:12.456 start pid=11793 caller=java(11514) adb -s emulator-5554 shell getprop ro.build.version.sdk
+04:17:12.532 end   pid=11793 rc=0 78ms
+04:17:12.647 start pid=11828 caller=java(11514) adb -s emulator-5554 shell content query --uri content://media/external/file --projection _data --where "_data LIKE '%/Android'"
+04:17:13.150 end   pid=11828 rc=0 505ms
+04:17:13.286 start pid=11867 caller=java(11514) adb -s emulator-5554 shell date +%m-%d\ %H:%M:%S
+04:17:13.346 end   pid=11867 rc=0 60ms
+04:17:13.450 start pid=11905 caller=java(11514) adb -s emulator-5554 shell am get-current-user
+04:17:13.466 start pid=11910 caller=java(11514) adb -s emulator-5554 logcat -v threadtime -b main -b crash -T 11-11 04:17:13.000
+04:17:14.309 end   pid=11905 rc=0 860ms
+04:17:14.394 start pid=12126 (install guard) adb -s emulator-5554 install -t -g --user 0 /home/runner/work/socket/socket/build/outputs/apk/androidTest/debug/socket-debug-androidTest.apk
+04:17:28.715 end   pid=12126 (install guard) rc=0
+04:17:28.883 start pid=13384 caller=java(11514) adb -s emulator-5554 shell content query --uri content://media/external/file --projection _data --where "_data LIKE '%/Android'"
+04:17:29.674 end   pid=13384 rc=0 786ms
+04:17:29.791 start pid=13457 caller=java(11514) adb -s emulator-5554 shell pm list packages androidx.test.services
+04:17:30.472 end   pid=13457 rc=0 681ms
+04:17:30.630 start pid=13514 caller=java(11514) adb -s emulator-5554 shell am instrument -r -w -e netCtrlPort 35985 -e netCtrlHost 127.0.0.1 -e deviceKind emulator com.ditchoom.socket.test/androidx.test.runner.AndroidJUnitRunner
+04:17:33.515 end   pid=13514 rc=0 2886ms
+04:17:33.599 start pid=13651 caller=java(11514) adb -s emulator-5554 shell am get-current-user
+04:17:34.384 end   pid=13651 rc=0 788ms
+04:17:34.488 start pid=13717 caller=java(11514) adb -s emulator-5554 shell content query --uri content://media/external/file --projection _data --where "_data LIKE '%/Android'"
+04:17:35.359 end   pid=13717 rc=0 872ms
+04:17:35.471 start pid=13776 caller=java(11514) adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.test/additional_test_output
+04:17:35.542 end   pid=13776 rc=1 52ms FAILED adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.test/additional_test_output | stderr: 
+04:17:35.658 start pid=13805 caller=java(11514) adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket/additional_test_output
+04:17:35.743 end   pid=13805 rc=255 68ms FAILED adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket/additional_test_output | stderr: 
+04:17:36.100 start pid=13872 caller=java(11514) adb -s emulator-5554 uninstall com.ditchoom.socket.test
+04:17:36.439 end   pid=13872 rc=0 339ms
+04:17:36.524 end   pid=11910 rc=143 23044ms FAILED adb -s emulator-5554 logcat -v threadtime -b main -b crash -T 11-11 04:17:13.000 | stderr: 
+04:19:15.462 start pid=18241 caller=java(4728) adb version
+04:19:15.473 end   pid=18241 rc=0 11ms
+04:19:15.479 start pid=18260 caller=java(4728) adb start-server
+04:19:15.488 end   pid=18260 rc=0 10ms
+04:19:16.663 start pid=18283 caller=java(4728) adb -s emulator-5554 emu avd id
+04:19:16.673 end   pid=18283 rc=0 10ms
+04:19:17.354 end   pid=18360 rc=0 11ms
+04:19:17.403 end   pid=18380 rc=0 10ms
+04:19:17.437 end   pid=18400 rc=0 9ms
+04:19:17.465 end   pid=18420 rc=0 9ms
+04:19:17.514 end   pid=18440 rc=0 10ms
+04:19:17.648 end   pid=18460 rc=0 115ms
+04:19:17.686 end   pid=18480 rc=0 11ms
+04:19:17.706 start pid=18508 caller=java(18314) adb -s emulator-5554 logcat -v threadtime -b main -b crash -T 11-11 04:19:17.000
+04:19:17.708 start pid=18513 caller=java(18314) adb -s emulator-5554 shell am get-current-user
+04:19:17.826 end   pid=18513 rc=0 118ms
+04:19:17.842 start pid=18524 (install guard) adb -s emulator-5554 install -t -g --user 0 /home/runner/work/socket/socket/socket-quic-quiche/build/outputs/apk/androidTest/debug/socket-quic-quiche-debug-androidTest.apk
+04:19:21.865 end   pid=18524 (install guard) rc=0
+04:19:22.004 end   pid=18602 rc=0 116ms
+04:19:22.028 start pid=18622 caller=java(18314) adb -s emulator-5554 shell pm list packages androidx.test.services
+04:19:22.141 end   pid=18622 rc=0 114ms
+04:19:22.163 start pid=18642 caller=java(18314) adb -s emulator-5554 shell am instrument -r -w -e netCtrlPort 35985 -e netCtrlHost 127.0.0.1 -e deviceKind emulator com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
+04:20:55.044 start pid=19828 caller=java(10707) adb -s emulator-5554 shell su 0 id
+04:20:55.108 end   pid=19828 rc=0 64ms
+04:20:55.241 start pid=19851 caller=java(10707) adb -s emulator-5554 shell su 0 settings put global airplane_mode_on 1
+04:20:55.351 end   pid=19851 rc=0 109ms
+04:20:55.369 start pid=19869 caller=java(10707) adb -s emulator-5554 shell su 0 am broadcast -a android.intent.action.AIRPLANE_MODE
+04:20:55.570 end   pid=19869 rc=0 201ms
+04:21:35.029 end   pid=18642 rc=0 132866ms
+04:21:35.051 start pid=21394 caller=java(18314) adb -s emulator-5554 shell am get-current-user
+04:21:35.161 end   pid=21394 rc=0 110ms
+04:21:35.182 start pid=21414 caller=java(18314) adb -s emulator-5554 shell content query --uri content://media/external/file --projection _data --where "_data LIKE '%/Android'"
+04:21:35.293 end   pid=21414 rc=0 112ms
+04:21:35.312 start pid=21434 caller=java(18314) adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.quic.quiche.test/additional_test_output
+04:21:35.324 end   pid=21434 rc=1 9ms FAILED adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.quic.quiche.test/additional_test_output | stderr: 
+04:21:35.341 start pid=21457 caller=java(18314) adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.quic.quiche/additional_test_output
+04:21:35.351 end   pid=21457 rc=255 9ms FAILED adb -s emulator-5554 shell test -d /sdcard/Android/media/com.ditchoom.socket.quic.quiche/additional_test_output | stderr: 
+04:21:35.375 start pid=21498 caller=java(18314) adb -s emulator-5554 uninstall com.ditchoom.socket.quic.quiche.test
+04:21:35.425 end   pid=21498 rc=0 50ms
+04:21:35.441 end   pid=18508 rc=143 137733ms FAILED adb -s emulator-5554 logcat -v threadtime -b main -b crash -T 11-11 04:19:17.000 | stderr: 
