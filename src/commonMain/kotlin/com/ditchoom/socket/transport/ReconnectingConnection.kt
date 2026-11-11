@@ -149,14 +149,13 @@ class ReconnectingConnection<T>(
      */
     private val connectionHandoff = Mutex()
 
-    /** Moves to [next], publishes its state, and returns what was there. */
-    private suspend fun settle(next: Slot<T>): Slot<T> =
-        connectionHandoff.withLock {
-            val previous = slot
-            slot = next
-            _state.value = next.state
-            previous
-        }
+    /** Moves to [next], publishes its state, and returns what was there. The caller holds [connectionHandoff]. */
+    private fun swap(next: Slot<T>): Slot<T> {
+        val previous = slot
+        slot = next
+        _state.value = next.state
+        return previous
+    }
 
     /** Adopts [conn] as [Slot.Held]. Returns false if [close] got there first; [conn] is then the caller's to close. */
     private suspend fun hold(conn: Connection<T>): Boolean =
@@ -164,26 +163,63 @@ class ReconnectingConnection<T>(
             if (closed) {
                 false
             } else {
-                slot = Slot.Held(conn)
-                _state.value = slot.state
+                swap(Slot.Held(conn))
                 true
             }
         }
 
-    /** Moves to [Slot.Connecting] unless [close] already ended this connection. */
+    /** Moves to [Slot.Connecting] unless [close] already ended this connection. A held connection is never replaced. */
     private suspend fun beginConnecting() {
         connectionHandoff.withLock {
             if (!closed) {
-                slot = Slot.Connecting
-                _state.value = slot.state
+                when (slot) {
+                    is Slot.Held -> Unit
+                    Slot.Idle, Slot.Connecting, is Slot.Down -> swap(Slot.Connecting)
+                }
             }
         }
     }
 
-    /** Moves to [Slot.Down] and closes whatever was held. */
+    /**
+     * The reconnect loop's way out of [Slot.Held]: moves to [Slot.Down] and closes what was held.
+     * Does nothing once [close] has run, because [close] owns the slot from then on.
+     */
     private suspend fun release(cause: ConnectionState.Disconnected) {
-        when (val previous = settle(Slot.Down(cause))) {
+        closeQuietly(connectionHandoff.withLock { if (closed) Slot.Idle else swap(Slot.Down(cause)) })
+    }
+
+    /** As [release], but only if [conn] is still the connection held, so a stale caller cannot drop a newer one. */
+    private suspend fun release(
+        conn: Connection<T>,
+        cause: ConnectionState.Disconnected,
+    ) {
+        closeQuietly(
+            connectionHandoff.withLock {
+                val held = slot
+                if (!closed && held is Slot.Held && held.connection === conn) swap(Slot.Down(cause)) else Slot.Idle
+            },
+        )
+    }
+
+    /** [close]'s way out of [Slot.Held]; terminal, so the loop's transitions are ignored afterwards. */
+    private suspend fun finish() {
+        when (val previous = connectionHandoff.withLock { swap(Slot.Down(ConnectionState.Disconnected())) }) {
             is Slot.Held -> previous.connection.close()
+            Slot.Idle, Slot.Connecting, is Slot.Down -> Unit
+        }
+    }
+
+    /** Closes [previous] if it was held. A failing close must not end the loop or mask the error that led here. */
+    private suspend fun closeQuietly(previous: Slot<T>) {
+        when (previous) {
+            is Slot.Held ->
+                try {
+                    previous.connection.close()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // The connection is already unusable; the caller's own outcome stands.
+                }
             Slot.Idle, Slot.Connecting, is Slot.Down -> Unit
         }
     }
@@ -290,11 +326,9 @@ class ReconnectingConnection<T>(
                                 // A liveness probe fired by a network-path change judged the connection
                                 // dead and tore it down. The path just changed, so reconnect now rather
                                 // than waiting out a backoff.
-                                settle(
-                                    Slot.Down(
-                                        ConnectionState.Disconnected(
-                                            SocketIOException("connection liveness lost after network change"),
-                                        ),
+                                release(
+                                    ConnectionState.Disconnected(
+                                        SocketIOException("connection liveness lost after network change"),
                                     ),
                                 )
                                 retryDelay = Duration.ZERO
@@ -313,7 +347,7 @@ class ReconnectingConnection<T>(
                                 // Disconnected(). Retrying here is how a closed connection reopens itself.
                                 return@flow
                             }
-                            settle(Slot.Down(ConnectionState.Disconnected(e)))
+                            release(ConnectionState.Disconnected(e))
                             if (livenessLost) {
                                 // Connection was torn down by a liveness probe after a network change;
                                 // its receive() surfaced the teardown as an error. Reconnect now.
@@ -376,7 +410,7 @@ class ReconnectingConnection<T>(
         teardown.runOnce {
             // `closed` is already true here (runOnce completes the latch before invoking this), so a
             // loop that takes the lock after this sees it and closes its own connection instead.
-            release(ConnectionState.Disconnected())
+            finish()
         }
 
     /**
@@ -425,7 +459,7 @@ class ReconnectingConnection<T>(
             monitor.pathChanges().collect {
                 if (probe.probe() == Liveness.Result.Dead) {
                     livenessLost = true
-                    runCatching { conn.close() }
+                    release(conn, ConnectionState.Disconnected(SocketIOException("connection liveness lost after network change")))
                 }
             }
         }
