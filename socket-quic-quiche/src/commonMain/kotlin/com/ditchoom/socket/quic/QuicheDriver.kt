@@ -677,7 +677,16 @@ class QuicheDriver(
      * channel and the thrown channel agree. The bound is the caller's — it fires at exactly [timeout],
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
-    suspend fun awaitEstablished(timeout: Duration): QuicResumptionOutcome {
+    suspend fun awaitEstablished(timeout: Duration) {
+        awaitEstablishedOutcome(timeout)
+    }
+
+    /**
+     * [awaitEstablished], returning the resumption outcome the handshake settled with: the value read at
+     * the moment it completed, which a caller that learns of the completion after the connection has closed
+     * again still needs. A separate function so the published signature of [awaitEstablished] stays as it was.
+     */
+    internal suspend fun awaitEstablishedOutcome(timeout: Duration): QuicResumptionOutcome {
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
         //

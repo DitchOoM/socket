@@ -404,7 +404,7 @@ internal class AppleQuicConnection(
         driver.start(scope)
     }
 
-    suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablished(timeout)
+    suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablishedOutcome(timeout)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
 
