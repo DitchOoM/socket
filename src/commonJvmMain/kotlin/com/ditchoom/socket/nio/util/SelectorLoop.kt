@@ -126,6 +126,12 @@ internal class SelectorLoop private constructor(
             fail(waiter, SocketClosedException.General("Socket closed while waiting for it to be ready", closed))
         } catch (closed: CancelledKeyException) {
             fail(waiter, SocketClosedException.General("Socket closed while waiting for it to be ready", closed))
+        } catch (closed: ClosedSelectorException) {
+            // The command is already off the queue, so the end-of-loop sweep cannot see this waiter.
+            fail(waiter, SocketClosedException.General("Socket closed while waiting for it to be ready", closed))
+        } catch (misuse: RuntimeException) {
+            // E.g. a channel left in blocking mode: the caller's error, and not the loop's to die of.
+            if (waiter.continuation.isActive) waiter.continuation.resumeWithException(misuse)
         }
     }
 
