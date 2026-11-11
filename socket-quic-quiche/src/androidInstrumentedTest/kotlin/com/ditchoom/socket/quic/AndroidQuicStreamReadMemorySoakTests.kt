@@ -171,6 +171,11 @@ class AndroidQuicStreamReadMemorySoakTests {
          * Asking a driver for its snapshot is itself a command, and every command ends with the loop
          * waking its readers and flushing its sends. A round that was waiting on a wakeup the loop owed
          * therefore finishes right after the snapshot; it fails anyway, because it was stuck.
+         *
+         * A loop that does not take the command cannot answer it. That happened on API 35 on 2026-11-08: the
+         * server's loop gave no answer for 2 s, and its echo left only after the client's snapshot command had
+         * been dispatched. So each driver's flight recorder ([DriverFlight]), which is read without the loop,
+         * is printed before and after the commands, together with the coroutine scheduler's queue state.
          */
         suspend fun <T> round(block: suspend () -> T): T {
             val mark = TimeSource.Monotonic.markNow()
@@ -268,7 +273,11 @@ class AndroidQuicStreamReadMemorySoakTests {
         Log.i(TRACE_TAG, "STALL-SNAPSHOT $label, $since into the round")
         clientTraffic.print("the client's", since)
         serverTraffic.print("the server's", since)
-        for ((side, seen) in listOf("the server's" to serverDriver.get(), "the client's" to clientDriver.get())) {
+        val drivers = listOf("the server's" to serverDriver.get(), "the client's" to clientDriver.get())
+        // Before any command is sent, so the snapshot's own command cannot change what the loops look like.
+        printFlightRecordings(drivers, "before the snapshot commands")
+        Log.i(TRACE_TAG, "Dispatchers.Default before the snapshot commands: ${defaultSchedulerState()}")
+        for ((side, seen) in drivers) {
             val answer =
                 when (seen) {
                     DriverSeen.NotYet -> "no driver: the connection never reached this side's block"
@@ -283,7 +292,53 @@ class AndroidQuicStreamReadMemorySoakTests {
                 }
             Log.i(TRACE_TAG, "$side driver, answered ${roundStarted.elapsedNow()} into the round: $answer")
         }
+        // A loop that did not answer is parked with the snapshot command queued behind it, or is not parked.
+        printFlightRecordings(drivers, "after the snapshot commands")
+        Log.i(TRACE_TAG, "Dispatchers.Default after the snapshot commands: ${defaultSchedulerState()}")
     }
+
+    /**
+     * Each driver's [DriverFlight] recording, read without its loop: a loop that has stopped taking
+     * commands cannot answer [QuicheDriver.stallSnapshot], but its recording still says whether it is
+     * parked with commands queued (woken, never ran), inside a send, or idle, and which signalled
+     * readers never resumed. One logcat line per entry, because logcat truncates long lines.
+     */
+    private fun printFlightRecordings(
+        drivers: List<Pair<String, DriverSeen>>,
+        moment: String,
+    ) {
+        for ((side, seen) in drivers) {
+            when (seen) {
+                DriverSeen.NotYet -> Log.i(TRACE_TAG, "$side flight recorder $moment: no driver yet")
+                is DriverSeen.Seen ->
+                    when (val recording = seen.driver.flightRecording()) {
+                        FlightRecording.Off -> Log.i(TRACE_TAG, "$side flight recorder $moment: off (no trace capture)")
+                        is FlightRecording.Recorded ->
+                            recording.render(tail = FLIGHT_TAIL).lines().forEach { Log.i(TRACE_TAG, "$side $moment: $it") }
+                    }
+            }
+        }
+    }
+
+    /**
+     * The shared coroutine scheduler's own account of itself: per-worker states and local-queue sizes,
+     * the global queue sizes, and how many CPU permits are held. A task waiting in a queue while every
+     * worker is parked shows here as a non-zero queue next to zero running workers. Read through
+     * kotlinx.coroutines internals, so a version that renames them reports that instead of failing.
+     */
+    private fun defaultSchedulerState(): String =
+        try {
+            val owner = Class.forName("kotlinx.coroutines.scheduling.DefaultScheduler")
+            val instance = owner.getField("INSTANCE").get(null)
+            val field =
+                generateSequence<Class<*>>(owner) { it.superclass }
+                    .firstNotNullOfOrNull { type -> type.declaredFields.firstOrNull { it.name == "coroutineScheduler" } }
+                    ?: return "unreadable: no coroutineScheduler field"
+            field.isAccessible = true
+            field.get(instance).toString()
+        } catch (t: Throwable) {
+            "unreadable: $t"
+        }
 
     private fun QuicOptions.tracedInto(traffic: RecentTraffic) = copy(trace = QuicTraceCapture(traffic))
 
@@ -343,6 +398,9 @@ class AndroidQuicStreamReadMemorySoakTests {
         val STALL_SNAPSHOT_AFTER: Duration = 16.seconds
 
         val SNAPSHOT_ANSWER_BOUND: Duration = 2.seconds
+
+        /** How many of each driver's last recorded steps the stall snapshot prints. */
+        const val FLIGHT_TAIL = 80
 
         /** One daemon thread for every pending snapshot, so none depends on a dispatcher. */
         val StallSnapshotTimer =

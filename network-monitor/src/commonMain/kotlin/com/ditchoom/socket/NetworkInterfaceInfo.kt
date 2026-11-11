@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.withContext
 import kotlin.jvm.JvmInline
 
 /**
@@ -35,14 +36,30 @@ data class NetworkInterfaceInfo(
 )
 
 /**
- * Enumerate the host's network interfaces and their assigned IP addresses — a synchronous,
- * point-in-time snapshot. Contrast the reactive [NetworkMonitor.state] (identity via
- * [NetworkState.networkId]), which tracks only the single *primary* link over time; this returns
- * *every* interface at once.
+ * The host's network interfaces and their assigned IP addresses — a point-in-time snapshot. Contrast
+ * the reactive [NetworkMonitor.state] (identity via [NetworkState.networkId]), which tracks only the
+ * single *primary* link over time; this returns *every* interface at once.
  *
  * Intended for ICE host-candidate gathering and network diagnostics. Includes down and loopback
  * interfaces (filter with [NetworkInterfaceInfo.isUp] / [NetworkInterfaceInfo.isLoopback] as the use
  * case needs). Returns an empty list on platforms that cannot enumerate interfaces — the browser
  * (JS-in-a-page and Wasm) has no interface list by design — and on any lookup failure.
+ *
+ * Safe to call from any thread, including the Android main thread or a desktop UI thread: the scan
+ * runs on an IO dispatcher, never on the caller's thread.
  */
+suspend fun listNetworkInterfaces(): List<NetworkInterfaceInfo> = withContext(blockingWork) { platformNetworkInterfaces() }
+
+/** The interface scan [listNetworkInterfaces] runs, on the calling thread. */
+internal expect fun platformNetworkInterfaces(): List<NetworkInterfaceInfo>
+
+/**
+ * Enumerate the host's network interfaces on the calling thread. See [listNetworkInterfaces], which this
+ * is the blocking predecessor of.
+ */
+@Deprecated(
+    "Blocks the calling thread while it reads the interface table. Call the suspend " +
+        "listNetworkInterfaces(), which does the read on an IO dispatcher.",
+    ReplaceWith("listNetworkInterfaces()", "com.ditchoom.socket.listNetworkInterfaces"),
+)
 expect fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo>

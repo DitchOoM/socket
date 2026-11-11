@@ -89,6 +89,14 @@ runs:
           17
           21
 
+    # Yarn for the Kotlin/JS + Wasm npm installs, from the runner image (or the npm registry), never
+    # from GitHub releases. Exports KOTLIN_JS_YARN, which build.gradle.kts reads to turn the Kotlin
+    # plugin's own yarn download off. That download took two merge runs down on 2026-11-08 when
+    # github.com answered it with 504 for over 90 minutes. See the script's header.
+    - name: Provision yarn for Kotlin/JS (no GitHub download)
+      shell: bash
+      run: '"$GITHUB_WORKSPACE/.github/scripts/provision-kotlin-js-yarn.sh"'
+
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with five parallel consumers a cache miss would have
     # all five racing to upload the same key — four of them losing, all five paying the upload. The

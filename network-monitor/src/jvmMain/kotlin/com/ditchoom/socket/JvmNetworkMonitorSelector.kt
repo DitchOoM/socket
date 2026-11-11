@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * is no event-driven network-change API, so we fall back to interface polling.
  *
  * Public because the owning platform module (`com.ditchoom:socket`) delegates its
- * `NetworkMonitor.default()` JVM actual here across the module boundary.
+ * JVM platform-monitor actual (behind `NetworkMonitor.open()`) here across the module boundary.
  */
 fun defaultJvmNetworkMonitor(): NetworkMonitor {
     warnIfReactiveTierWasStripped()
@@ -113,7 +113,7 @@ internal val STRIPPED_TIER_WARNING =
     """
     |$BANNER
     |This JDK is $REACTIVE_TIER_JDK or newer, but META-INF/versions/$REACTIVE_TIER_JDK is not in the
-    |artifact, so NetworkMonitor.default() has fallen back to a polling monitor instead of the
+    |artifact, so NetworkMonitor.open() has fallen back to a polling monitor instead of the
     |event-driven routing-socket one (rtnetlink on Linux, PF_ROUTE on macOS).
     |
     |Effect: network changes are seen late, and a change that resolves inside the poll window is

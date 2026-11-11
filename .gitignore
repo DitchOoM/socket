@@ -62,3 +62,6 @@ socket-quic-quiche/src/androidInstrumentedTest/resources/certs/pinned*
 
 # Python bytecode (netns harness helper)
 __pycache__/
+
+# The app-wide profile :benchmark-android-app generates; only its split into the libraries is committed.
+benchmarks/android-app/src/release/generated/

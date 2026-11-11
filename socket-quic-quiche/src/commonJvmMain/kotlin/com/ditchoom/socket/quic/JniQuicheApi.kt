@@ -1,7 +1,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import dalvik.annotation.optimization.FastNative
 import kotlin.time.Duration
@@ -193,35 +194,23 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): StreamRecvResult {
-        // Per-call 8-byte native scratch for quiche's out_error_code, same reasoning as
-        // connStreamSend's scratch: JniQuicheApi is a shared singleton called from every connection's
-        // driver thread, so one reused scratch would race.
-        val scratch = BufferFactory.deterministic().allocate(8)
-        return try {
-            val addr = scratch.nativeMemoryAccess!!.nativeAddress.toLong()
-            val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen, addr)
-            // JNI packs result: lower 63 bits = bytes read, bit 63 = FIN flag.
-            // Negative values are quiche error codes (small negative, so lower 63 bits are huge).
-            val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
-            if (lower63 <= bufLen.toLong()) {
-                val bytesRead = lower63.toInt()
-                val fin = raw and (1L shl 63) != 0L
-                StreamRecvResult.Data(bytesRead, fin)
-            } else {
-                when (raw) {
-                    QUICHE_ERR_DONE -> StreamRecvResult.Done
-                    QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> {
-                        // The C shim wrote the 8 bytes straight to native memory (it only has the raw
-                        // address, not the buffer object); read them back big-endian by absolute index.
-                        var code = 0L
-                        for (i in 0 until 8) code = (code shl 8) or (scratch[i].toLong() and 0xFF)
-                        StreamRecvResult.Reset(QuicAppErrorCode(code))
-                    }
-                    else -> StreamRecvResult.Error(raw.toInt())
-                }
-            }
-        } finally {
-            scratch.freeNativeMemory()
+        // quiche's out_error_code lands in this thread's scratch; see [errorCodeScratch].
+        val scratch = errorCodeScratch.get()
+        val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        // JNI packs result: lower 63 bits = bytes read, bit 63 = FIN flag.
+        // Negative values are quiche error codes (small negative, so lower 63 bits are huge).
+        val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
+        if (lower63 <= bufLen.toLong()) {
+            val bytesRead = lower63.toInt()
+            val fin = raw and (1L shl 63) != 0L
+            return StreamRecvResult.Data(bytesRead, fin)
+        }
+        return when (raw) {
+            QUICHE_ERR_DONE -> StreamRecvResult.Done
+            // The C shim wrote the 8 bytes straight to native memory (it only has the raw address, not the
+            // buffer object); read them back big-endian by absolute index.
+            QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvResult.Reset(QuicAppErrorCode(scratch.readErrorCode()))
+            else -> StreamRecvResult.Error(raw.toInt())
         }
     }
 
@@ -232,31 +221,53 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         fin: Boolean,
     ): StreamSendResult {
-        // Hand the C shim an 8-byte native scratch to receive quiche's out_error_code — a buffer address
-        // (FastNative-safe primitive), not a Java array. Per-call rather than reused: JniQuicheApi is a
-        // shared singleton called from every connection's driver thread, so one scratch would race; the
-        // FFM backend likewise allocates a confined Arena per send. quiche fills the code big-endian only
-        // on STREAM_STOPPED / STREAM_RESET (it leaves 0 otherwise).
-        val scratch = BufferFactory.deterministic().allocate(8)
-        return try {
-            val addr = scratch.nativeMemoryAccess!!.nativeAddress.toLong()
-            val result = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin, addr)
-            val code =
-                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                    // The C shim wrote the 8 bytes straight to native memory; it only has the raw address,
-                    // not the buffer object, so it can't (and shouldn't) touch the JVM-side read/write
-                    // cursor. Read them back big-endian by absolute index — no position bookkeeping needed.
-                    var v = 0L
-                    for (i in 0 until 8) v = (v shl 8) or (scratch[i].toLong() and 0xFF)
-                    QuicAppErrorCode(v)
-                } else {
-                    null
-                }
-            StreamSendResult(result, code)
-        } finally {
-            scratch.freeNativeMemory()
-        }
+        // quiche's out_error_code lands in this thread's scratch; see [errorCodeScratch]. quiche fills the
+        // code big-endian only on STREAM_STOPPED / STREAM_RESET (it leaves it untouched otherwise).
+        val scratch = errorCodeScratch.get()
+        val result = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        val code =
+            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                // The C shim wrote the 8 bytes straight to native memory; it only has the raw address, not
+                // the buffer object, so it can't (and shouldn't) touch the JVM-side read/write cursor.
+                QuicAppErrorCode(scratch.readErrorCode())
+            } else {
+                null
+            }
+        return StreamSendResult(result, code)
     }
+
+    /** The 8 bytes the C shim wrote big-endian, read by absolute index: no position bookkeeping. */
+    private fun PlatformBuffer.readErrorCode(): Long {
+        var v = 0L
+        for (i in 0 until 8) v = (v shl 8) or (this[i].toLong() and 0xFF)
+        return v
+    }
+
+    /**
+     * The 8-byte native out-parameter [connStreamRecv] and [connStreamSend] hand the C shim for quiche's
+     * `out_error_code`: a buffer address (a FastNative-safe primitive), not a Java array.
+     *
+     * One per thread, allocated once. JniQuicheApi is a singleton every connection's driver loop calls,
+     * so a single shared scratch would race; but a call and its read-back run on one thread with nothing
+     * in between that can suspend, so a thread's own scratch cannot be overwritten by another call
+     * before it is read. The FFM backend keeps its stream-iterator out-parameter the same way.
+     *
+     * It used to be allocated per call from `BufferFactory.deterministic()`, which on buffer's JDK 21+
+     * tier is an `Arena.ofShared()` per call, and closing a shared arena makes the JVM handshake every
+     * thread. That roughly doubled a JNI round trip on JDK 21 (p50 255 µs against 121 µs on buffer's
+     * base tier) and put its p99 above a millisecond. [BufferFactory.Default] is GC-owned native memory
+     * on every JVM and Android tier; the thread local's strong reference keeps it mapped for the life of
+     * the thread, so no fence is needed around the native call.
+     *
+     * An anonymous subclass rather than `ThreadLocal.withInitial`, which needs Android API 26 (minSdk is 24).
+     */
+    private val errorCodeScratch: ThreadLocal<PlatformBuffer> =
+        object : ThreadLocal<PlatformBuffer>() {
+            override fun initialValue(): PlatformBuffer =
+                BufferFactory.Default.allocate(8).also {
+                    checkNotNull(it.nativeMemoryAccess) { "BufferFactory.Default gave a buffer without native memory" }
+                }
+        }
 
     override fun connStreamShutdown(
         conn: QuicheConn,
@@ -342,6 +353,8 @@ object JniQuicheApi : QuicheApi {
     }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = nConnIsEstablished(conn.handle)
+
+    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = nConnIsHandshakeConfirmed(conn.handle)
 
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
 
@@ -1037,6 +1050,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnEarlyDataReason(conn: Long): Int
 
     @JvmStatic private external fun nConnStreamDataUnacknowledged(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnIsHandshakeConfirmed(conn: Long): Boolean
 
     @JvmStatic private external fun nConnTimeoutAsNanos(conn: Long): Long
 

@@ -7,9 +7,9 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -22,7 +22,9 @@ import kotlin.time.Duration.Companion.seconds
  *
  * **Skip-on-unreachable, never flaky-fail.** Public endpoints / UDP-443 egress aren't guaranteed
  * in CI, and JS has no QUIC yet — so any *connection/request* failure is caught and logged as a
- * SKIP, not a failure. A successful GET logs `public H3 OK <host> status=<n>` (grep-able audit
+ * SKIP, not a failure, naming the phase it stopped in (dns, handshake, request, response body,
+ * close; see [PublicEndpointAttempt]). An attempt that is still running [PublicEndpointAttempt.CANCEL_GRACE]
+ * after its budget cancelled it is not the endpoint's doing, and fails the test with that phase. A successful GET logs `public H3 OK <host> status=<n>` (grep-able audit
  * marker). The `:status` assertion runs **outside** the skip-catch: a connection that succeeds
  * but yields a nonsense status is a real regression and fails the test. If every endpoint skips,
  * a single loud line flags that no real H3 validation happened.
@@ -38,45 +40,47 @@ class Http3PublicEndpointInteropTests {
 
     @Test
     fun getsFromPublicHttp3Endpoints_orSkips() =
-        runTest(timeout = 60.seconds) {
+        // Longer than every endpoint's budget plus its cancellation grace, so this test's own verdict
+        // (which phase stalled, and whether it ignored cancellation) always lands before runTest's.
+        runTest(timeout = (ENDPOINT_BUDGET + PublicEndpointAttempt.CANCEL_GRACE) * endpoints.size + 10.seconds) {
             withContext(Dispatchers.Default) {
                 var validated = 0
                 for ((host, port) in endpoints) {
-                    // Connection + request failures (no egress, endpoint down, JS-unimplemented)
-                    // skip; a returned status is asserted below, outside the catch.
-                    val status: Int? =
-                        try {
-                            // The connect timeout bounds only the handshake; a server that stalls the
-                            // response would hold the read until the idle timeout, and two of those
-                            // outlast the test's own minute. Each endpoint gets a whole-exchange bound.
-                            withTimeout(ENDPOINT_BUDGET) {
-                                withHttp3Connection(host, port, connectionOptions = connectionOptions, timeout = 8.seconds) {
-                                    val response = request(Http3Request(method = "GET", authority = host, path = "/"))
-                                    try {
-                                        // Confirm the body is readable (Huffman-coded headers were decoded
-                                        // to even parse :status; the body proves the DATA path too).
-                                        response.readFullBody().freeIfNeeded()
-                                        response.status
-                                    } finally {
-                                        response.close()
-                                    }
+                    // Connection + request failures (no egress, endpoint down, JS-unimplemented) skip,
+                    // naming the phase; a returned status is asserted below. An attempt that does not
+                    // unwind once cancelled fails: no wait in this library may ignore cancellation.
+                    val outcome =
+                        PublicEndpointAttempt.run("$host:$port", ENDPOINT_BUDGET) {
+                            resolve(host)
+                            enter("handshake")
+                            withHttp3Connection(host, port, connectionOptions = connectionOptions, timeout = 8.seconds) {
+                                enter("request")
+                                val response = request(Http3Request(method = "GET", authority = host, path = "/"))
+                                try {
+                                    // Confirm the body is readable (Huffman-coded headers were decoded
+                                    // to even parse :status; the body proves the DATA path too).
+                                    enter("response body (status ${response.status})")
+                                    response.readFullBody().freeIfNeeded()
+                                    response.status
+                                } finally {
+                                    enter("close")
+                                    response.close()
                                 }
                             }
-                        } catch (t: Throwable) {
-                            println(
-                                "[Http3PublicEndpointInteropTests] public H3 SKIP $host:$port — " +
-                                    "${t::class.simpleName}: ${t.message}",
-                            )
-                            null
                         }
-
-                    if (status != null) {
-                        assertTrue(
-                            status in 100..599,
-                            "$host: response :status should be a valid HTTP status code, got $status",
-                        )
-                        validated++
-                        println("[Http3PublicEndpointInteropTests] public H3 OK $host:$port status=$status")
+                    when (outcome) {
+                        is PublicEndpointAttempt.Outcome.Done -> {
+                            val status = outcome.value
+                            assertTrue(
+                                status in 100..599,
+                                "$host: response :status should be a valid HTTP status code, got $status",
+                            )
+                            validated++
+                            println("[Http3PublicEndpointInteropTests] public H3 OK $host:$port status=$status (${outcome.report})")
+                        }
+                        is PublicEndpointAttempt.Outcome.Unreachable ->
+                            println("[Http3PublicEndpointInteropTests] public H3 SKIP ${outcome.report}")
+                        is PublicEndpointAttempt.Outcome.IgnoredCancellation -> fail(outcome.report)
                     }
                 }
                 if (validated == 0) {

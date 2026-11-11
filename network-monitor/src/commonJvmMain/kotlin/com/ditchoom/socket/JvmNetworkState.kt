@@ -35,7 +35,7 @@ fun resolveJvmNetworkState(): NetworkState =
             NetworkInterface
                 .getNetworkInterfaces()
                 ?.toList()
-                ?.any { !it.isLoopback && it.isUp } == true
+                ?.any { it.isUpNonLoopback() } == true
         // Probes and identity lookup are skipped when no link is up — classifyRouteProbes decides
         // Offline before looking at either, so the placeholders below are never read.
         classifyRouteProbes(

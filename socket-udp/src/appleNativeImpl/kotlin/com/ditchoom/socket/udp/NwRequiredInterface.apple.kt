@@ -17,10 +17,17 @@ actual suspend fun UdpSocket.connect(
     bufferFactory: BufferFactory,
     requiredInterface: NwRequiredInterface,
 ): ConnectedDatagramChannel =
-    connectNw(
-        remoteHost,
-        remotePort,
-        receiveBufferSize,
-        bufferFactory,
-        nw_udp_create_requiring(remoteHost, remotePort.toString(), requiredInterface.nwInterfaceType),
-    )
+    connectRequiring(remoteHost, remotePort, receiveBufferSize, bufferFactory, requiredInterface, NwConnectTrace())
+
+/** The required-interface connect with the caller's [trace], so a test can read the timeline of a connect that succeeded slowly. */
+internal suspend fun UdpSocket.connectRequiring(
+    remoteHost: String,
+    remotePort: Int,
+    receiveBufferSize: Int,
+    bufferFactory: BufferFactory,
+    requiredInterface: NwRequiredInterface,
+    trace: NwConnectTrace,
+): ConnectedDatagramChannel =
+    connectNw(remoteHost, remotePort, receiveBufferSize, bufferFactory, trace) {
+        nw_udp_create_requiring(remoteHost, remotePort.toString(), requiredInterface.nwInterfaceType)
+    }

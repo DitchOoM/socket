@@ -655,6 +655,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # Puts the Kotlin/JS + Wasm Node.js distribution into the `gradle-linux-` entry the next steps
+      # save. The Kotlin plugin resolves it as a Gradle artifact (https://nodejs.org/dist/v<ver>/...)
+      # on every run that builds a JS/Wasm task graph, and a Gradle cache that already holds it answers that with no
+      # network at all (checked with every outbound connection refused). This job builds no JS, so
+      # without this step the entry every Linux job restores never contains Node, and each of them
+      # fetches it from nodejs.org live: the same single point of failure GitHub's yarn download
+      # turned out to be on 2026-11-08 (yarn itself is handled by
+      # .github/scripts/provision-kotlin-js-yarn.sh in linux-quiche-env). Same guard as the save, so
+      # it runs only when there is an entry to write. continue-on-error: a nodejs.org outage here
+      # must cost the cache a warm Node, not the merge its natives.
+      - name: Resolve the Kotlin/JS + Wasm Node.js distribution into the Gradle cache (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: ./gradlew kotlinNodeJsSetup kotlinWasmNodeJsSetup --no-configuration-cache
+
       # ── The write half of the restore-only Gradle caches at the top of this job ──────────────
       # Only in main's ref scope. merged.yaml calls this workflow on `pull_request_target: closed`,
       # where github.ref is refs/heads/main, so main is rewritten on every merge and every PR
@@ -953,7 +968,12 @@ jobs:
           WD=$!
           # :lincheckTest is a SEPARATE task from :jvmTest — Lincheck fails open under another
           # JVM agent, so it runs on a clean JVM and jvmTest excludes it. `check` does not
-          # depend on it, so omitting it here means the model checks never run at all.
+          # depend on it, so omitting it here means the model checks never run at all. The same
+          # goes for :socket-quic-quiche:lincheckTest, which needs no quiche natives (it checks
+          # plain Kotlin state), so it runs here rather than in the quiche-jvm job, and for
+          # :socket-udp:lincheckTest (the event loop's lifecycle).
+          # :socket-testsuite:mainThreadSafetyTest is separate for the same reason: it runs under the
+          # BlockHound agent (one fresh JVM per test class), and `check` does not depend on it either.
           #
           # Every task here is project-qualified, so a module absent from this list has NO
           # test task run on this runner at all (the Apple lanes use unqualified task names and
@@ -968,15 +988,15 @@ jobs:
             :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:wasmJsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
             :network-monitor:netnsJvmProbeClasspath \
             :socket-quic:jvmTest :socket-quic:testDebugUnitTest :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest :socket-quic:linuxX64Test \
-            :socket-quic-quiche:jvmProcessResources \
+            :socket-quic-quiche:jvmProcessResources :socket-quic-quiche:lincheckTest \
             :socket-quic-default:jvmTest \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
             :socket-testkit:jvmTest :socket-testkit:testDebugUnitTest :socket-testkit:jsNodeTest :socket-testkit:wasmJsNodeTest :socket-testkit:linuxX64Test :socket-testkit:ktlintCheck \
-            :socket-testsuite:jvmTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
+            :socket-testsuite:jvmTest :socket-testsuite:mainThreadSafetyTest :socket-testsuite:testDebugUnitTest :socket-testsuite:linuxX64Test :socket-testsuite:ktlintCheck \
             :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \
             :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
             :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
-            :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
+            :socket-udp:jvmTest :socket-udp:lincheckTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
             -PquicEchoAllArches=true \
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
@@ -1011,7 +1031,7 @@ jobs:
       # via NetnsJvmProbe. Rootless via `unshare -rnm`; :network-monitor:linuxX64Test above linked the
       # .kexe and :network-monitor:netnsJvmProbeClasspath dumped the JVM classpath + JDK21 launcher the
       # harness reads. The binary is :network-monitor's, not the root project's: issue #269 moved
-      # LinuxNetworkMonitor and enumerateNetworkInterfaces() there together.
+      # LinuxNetworkMonitor and listNetworkInterfaces() there together.
       # (Both netns steps therefore MUST stay in this job — they read a build output of the gradle
       # call above, and nothing uploads that .kexe.)
       - name: NetworkMonitor route resolution — netns integration (Linux)

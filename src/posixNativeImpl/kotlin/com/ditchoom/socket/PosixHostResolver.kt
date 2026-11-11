@@ -17,7 +17,7 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.IO
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
 import platform.posix.AF_UNSPEC
@@ -33,11 +33,14 @@ import platform.posix.memset
 import platform.posix.sockaddr
 import platform.posix.socklen_t
 
-/** The POSIX resolver: `getaddrinfo`, every record, off the caller's dispatcher. A link-local scope is not carried. */
-internal object PosixHostResolver : HostResolver {
-    override suspend fun resolve(host: String): Resolution = withContext(Dispatchers.Default) { lookup(host) }
+/**
+ * The POSIX resolver: `getaddrinfo`, every record, on a blocking-IO thread the caller can cancel its wait
+ * for (see [BlockingHostResolver]). A link-local scope is not carried.
+ */
+internal val PosixHostResolver: HostResolver = BlockingHostResolver(Dispatchers.IO, PosixLookup::lookup)
 
-    private fun lookup(host: String): Resolution =
+private object PosixLookup {
+    fun lookup(host: String): Resolution =
         memScoped {
             val hints = alloc<addrinfo>()
             memset(hints.ptr, 0, sizeOf<addrinfo>().convert())

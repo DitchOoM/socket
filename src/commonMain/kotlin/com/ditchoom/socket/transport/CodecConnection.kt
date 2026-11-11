@@ -22,7 +22,6 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
@@ -137,7 +136,7 @@ class CodecConnection<T>(
     ) : this(
         stream = stream,
         codec = codec,
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = CoroutineScope(SupervisorJob() + codecWriterDispatcher),
         outboundCapacity = DEFAULT_OUTBOUND_CAPACITY,
         overflowPolicy = OverflowPolicy.Suspend,
         config = config,
@@ -483,7 +482,8 @@ class CodecConnection<T>(
         // Adapter rule: propagate, don't clobber. Call the leaf's no-arg read() so its injected
         // readPolicy governs the deadline. A WebTransport stream's UntilClosed survives; an HTTP/3
         // request stream's Bounded survives.
-        when (val result = stream.read()) {
+        when (val result = readOrEndOnOwnClose()) {
+            null -> false
             is ReadResult.Data -> {
                 _lastDataReceived.value = TimeSource.Monotonic.markNow()
                 streamProcessor.append(result.buffer)
@@ -492,6 +492,19 @@ class CodecConnection<T>(
             is ReadResult.End -> false
             is ReadResult.Reset ->
                 throw SocketClosedException.ConnectionReset("Stream reset by peer")
+        }
+
+    /**
+     * The next read, or `null` when this connection's own [close] cut it short. A transport reports a
+     * read its owner closed underneath as [SocketClosedException.General], not as the peer's EOF; here
+     * the owner is this connection, so its [receive] ends quietly, as it did when that close read as
+     * `End`. Any other failure, and a close nobody here asked for, still fails the flow.
+     */
+    private suspend fun readOrEndOnOwnClose(): ReadResult? =
+        try {
+            stream.read()
+        } catch (e: SocketClosedException.General) {
+            if (closed) null else throw e
         }
 
     /**

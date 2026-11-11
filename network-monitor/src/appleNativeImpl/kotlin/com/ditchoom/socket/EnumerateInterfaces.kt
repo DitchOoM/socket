@@ -6,7 +6,7 @@ import com.ditchoom.networkmonitor.nw.nm_enumerate_interfaces
 import com.ditchoom.socket.transport.NetworkKind
 
 /**
- * Apple actual for [enumerateNetworkInterfaces].
+ * Apple actual for [platformNetworkInterfaces].
  *
  * The `getifaddrs` scan itself lives in the C helper `nm_enumerate_interfaces` (see
  * `nm_network_helpers.h`) because `getifaddrs` / `struct ifaddrs` are **not** exposed by `platform.posix` on
@@ -17,7 +17,7 @@ import com.ditchoom.socket.transport.NetworkKind
  * `getifaddrs` scan cannot classify link type (only the primary-path `AppleNetworkMonitor` gets a
  * semantic kind, from `NWPathMonitor`).
  */
-actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
+internal actual fun platformNetworkInterfaces(): List<NetworkInterfaceInfo> {
     val byName = LinkedHashMap<String, InterfaceAccumulator>()
 
     nm_enumerate_interfaces { name, index, isUp, isLoopback, address ->
@@ -33,7 +33,7 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
     return byName.values.map { it.toInfo() }
 }
 
-/** Mutable per-interface record built up across the C `getifaddrs` callback (see [enumerateNetworkInterfaces]). */
+/** Mutable per-interface record built up across the C `getifaddrs` callback (see [platformNetworkInterfaces]). */
 private class InterfaceAccumulator(
     private val name: String,
     private val index: InterfaceIndex,
@@ -52,3 +52,10 @@ private class InterfaceAccumulator(
             isLoopback = isLoopback,
         )
 }
+
+@Deprecated(
+    "Blocks the calling thread while it reads the interface table. Call the suspend " +
+        "listNetworkInterfaces(), which does the read on an IO dispatcher.",
+    ReplaceWith("listNetworkInterfaces()", "com.ditchoom.socket.listNetworkInterfaces"),
+)
+actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> = platformNetworkInterfaces()

@@ -33,7 +33,63 @@ internal class QuichePairByHand private constructor(
     class Datagram(
         val bytes: ByteArray,
         val clientEndpoint: Int,
-    )
+    ) {
+        /**
+         * The packet types coalesced in this datagram, in order, read from the unprotected long headers
+         * (RFC 9000 §17.2): `Initial`, `0-RTT`, `Handshake`, `Retry`, then `1-RTT` for a short header,
+         * which always ends a datagram. Zero bytes after the last packet are padding, not a packet.
+         */
+        val packetTypes: List<String>
+            get() = packets.map { it.first }
+
+        /** The bytes of the first coalesced packet of [type] (one of [packetTypes]), header included. */
+        fun packet(type: String): ByteArray = packets.first { it.first == type }.second.let { bytes.copyOfRange(it.first, it.last + 1) }
+
+        /** Each coalesced packet's type and the bytes it spans, as [packetTypes] reads them. */
+        private val packets: List<Pair<String, IntRange>>
+            get() =
+                buildList {
+                    var at = 0
+                    while (at < bytes.size) {
+                        val start = at
+                        val first = bytes[at].toInt() and 0xFF
+                        if (first and 0x80 == 0) {
+                            // A short header has the fixed bit set; zeros are padding after the last packet.
+                            if (first and 0x40 != 0) add("1-RTT" to (start until bytes.size))
+                            return@buildList
+                        }
+                        val type = (first shr 4) and 0x03
+                        if (type == RETRY) {
+                            add(LONG_HEADER_TYPES[type] to (start until bytes.size))
+                            return@buildList
+                        }
+                        at += 5 // flags, version
+                        at += 1 + (bytes[at].toInt() and 0xFF) // DCID
+                        at += 1 + (bytes[at].toInt() and 0xFF) // SCID
+                        if (type == INITIAL) {
+                            val (tokenLength, width) = varint(at)
+                            at += width + tokenLength.toInt()
+                        }
+                        val (length, width) = varint(at)
+                        at += width + length.toInt()
+                        add(LONG_HEADER_TYPES[type] to (start until at))
+                    }
+                }
+
+        private fun varint(at: Int): Pair<Long, Int> {
+            val first = bytes[at].toInt() and 0xFF
+            val width = 1 shl (first shr 6)
+            var value = (first and 0x3F).toLong()
+            for (i in 1 until width) value = (value shl 8) or (bytes[at + i].toLong() and 0xFF)
+            return value to width
+        }
+
+        private companion object {
+            val LONG_HEADER_TYPES = listOf("Initial", "0-RTT", "Handshake", "Retry")
+            const val INITIAL = 0
+            const val RETRY = 3
+        }
+    }
 
     private val api = env.api
     private val bufferFactory = BufferFactory.network()
@@ -135,6 +191,21 @@ internal class QuichePairByHand private constructor(
         now = until
     }
 
+    /** How long until [conn]'s next timer falls due, or null when none is armed. */
+    fun nextTimer(conn: QuicheConn): Duration? = at { api.connTimeout(conn) }
+
+    /** Whether [conn]'s handshake has completed. */
+    fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
+
+    /** Whether [conn]'s handshake is confirmed (RFC 9001 §4.1.2). */
+    fun confirmed(conn: QuicheConn): Boolean = at { api.connIsHandshakeConfirmed(conn) }
+
+    /** [conn] closes the connection with [error]; its CONNECTION_CLOSE is in its next [sends]. */
+    fun closeWith(
+        conn: QuicheConn,
+        error: QuicError,
+    ): Int = at { api.connClose(conn, error) }
+
     private val sendEnds = mutableMapOf<QuicheConn, Int>()
 
     /**
@@ -202,6 +273,24 @@ internal class QuichePairByHand private constructor(
             if (toServer.isEmpty() && toClient.isEmpty()) return
         }
         error("the pair was still exchanging datagrams after $MAX_SETTLE_ROUNDS rounds")
+    }
+
+    /**
+     * Run the handshake, losing nothing and with [oneWay] on every leg (so quiche has a round trip to
+     * time its PTOs by), until the client completes it. The client's Finished is then waiting in its
+     * next [sends], for the scenario to deliver or lose.
+     */
+    fun handshakeUpToTheClientsFinished(oneWay: Duration = DEFAULT_PATH_LATENCY) {
+        repeat(MAX_SETTLE_ROUNDS) {
+            if (established(client)) return
+            val toServer = sends(client)
+            elapse(oneWay)
+            deliver(toServer, server)
+            val toClient = sends(server)
+            elapse(oneWay)
+            deliver(toClient, client)
+        }
+        error("the client had not completed its handshake after $MAX_SETTLE_ROUNDS rounds")
     }
 
     /** Issue [conn]'s peer every spare connection ID it may hold. */

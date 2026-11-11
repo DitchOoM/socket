@@ -1322,6 +1322,11 @@ bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn);
 // source patch in socket-quic-quiche/build.gradle.kts (patchQuichePeerCertChainFfi).
 void quiche_conn_peer_cert_chain_at(const quiche_conn *conn, size_t index, const uint8_t **out, size_t *out_len);
 
+// socket-handshake-confirmed: whether the handshake is confirmed (RFC 9001 §4.1.2) — for a client, once
+// HANDSHAKE_DONE arrives, one round trip after quiche_conn_is_established turns true. Added by the
+// marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakeConfirmedFfi).
+bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif

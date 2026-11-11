@@ -9,12 +9,12 @@ import platform.linux.ifaddrs
 import platform.posix.*
 
 /**
- * Linux actual for [enumerateNetworkInterfaces], from `getifaddrs`. Each interface's addresses are the
+ * Linux actual for [platformNetworkInterfaces], from `getifaddrs`. Each interface's addresses are the
  * numeric literals of its `AF_INET`/`AF_INET6` records (via `getnameinfo`+`NI_NUMERICHOST`), its index
  * from `if_nametoindex`, and its [kind][NetworkInterfaceInfo.kind] from the same `/sys/class/net`
  * classification the primary-link derivation uses ([LinuxNetworkMonitor.classifyLinkKind]).
  */
-actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> =
+internal actual fun platformNetworkInterfaces(): List<NetworkInterfaceInfo> =
     memScoped {
         val head = allocPointerTo<ifaddrs>()
         if (getifaddrs(head.ptr) != 0) return emptyList()
@@ -55,7 +55,7 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> =
         }
     }
 
-/** Mutable per-interface record built up across a `getifaddrs` scan (see [enumerateNetworkInterfaces]). */
+/** Mutable per-interface record built up across a `getifaddrs` scan (see [platformNetworkInterfaces]). */
 private class InterfaceAccumulator(
     private val name: String,
     private val flags: Int,
@@ -75,3 +75,10 @@ private class InterfaceAccumulator(
 
 /** `NI_MAXHOST` from `<netdb.h>` — a frozen glibc constant (large enough for any numeric address+zone). */
 private const val NI_MAXHOST = 1025
+
+@Deprecated(
+    "Blocks the calling thread while it reads the interface table. Call the suspend " +
+        "listNetworkInterfaces(), which does the read on an IO dispatcher.",
+    ReplaceWith("listNetworkInterfaces()", "com.ditchoom.socket.listNetworkInterfaces"),
+)
+actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> = platformNetworkInterfaces()

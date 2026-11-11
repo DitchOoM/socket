@@ -40,13 +40,15 @@ class NodeServerSocket(
                     clientSocket.on("close") { _ ->
                         connections.remove(clientSocket)
                         clientSocket.removeAllListeners()
-                        nodeSocket.incomingMessageChannel.close()
+                        // No error came first, so the peer closed gracefully.
+                        nodeSocket.endIncoming(SocketClosedException.EndOfStream())
                         nodeSocket.isClosed = true
                     }
-                    clientSocket.on("error") { _ ->
+                    clientSocket.on("error") { e ->
                         connections.remove(clientSocket)
                         clientSocket.removeAllListeners()
-                        nodeSocket.incomingMessageChannel.close()
+                        nodeSocket.hadTransmissionError = true
+                        nodeSocket.endIncoming(wrapNodeError(e, null))
                         nodeSocket.isClosed = true
                     }
                     trySend(nodeSocket).getOrThrow()

@@ -279,6 +279,32 @@ fun downloadQuicheSource(
     // ever arrives on such a retransmission still ends the stream. Idempotent, fails loudly on drift OR
     // on an upstream fix. See the KDoc.
     patchQuicheDuplicateDataFinIsKept(sourceDir)
+    // Arm the Application Data PTO only once the handshake is CONFIRMED (RFC 9002 §6.2.1), not once it is
+    // complete, so a client whose Finished is lost re-sends it at every PTO instead of every other one.
+    // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuichePtoWaitsForConfirmation(sourceDir)
+    // Make every PTO probe in the Initial and Handshake spaces carry the oldest unacknowledged CRYPTO
+    // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
+    // datagram. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakeProbesCarryCrypto(sourceDir)
+    // A server re-sends a lost handshake flight, both spaces at once, when the client's repeated
+    // ClientHello shows it was lost and on every PTO before confirmation, instead of one space per PTO.
+    // Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheLostFlightIsResentWhole(sourceDir)
+    // A server's PTO probe carries HANDSHAKE_DONE while the client has not acknowledged it, rather than a
+    // bare PING. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakeDoneRidesEveryProbe(sourceDir)
+    // A server buffers 1-RTT packets that arrive before its handshake completes and processes them once it
+    // does, as it already did 0-RTT ones. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheEarlyOneRttIsBuffered(sourceDir)
+    // Export whether the handshake is CONFIRMED (RFC 9001 §4.1.2), which the C API lacks: a client must not
+    // migrate before it (RFC 9000 §9), and is complete one round trip earlier. Idempotent, fails loudly on
+    // drift OR on an upstream export. See the KDoc.
+    patchQuicheHandshakeConfirmedFfi(sourceDir)
+    // Read a datagram on past a coalesced long-header packet quiche cannot process (RFC 9000 §12.2), so a
+    // 1-RTT CONNECTION_CLOSE behind a Handshake packet whose keys are gone is not dropped with it.
+    // Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -567,6 +593,48 @@ fun patchQuichePeerCertChainFfi(sourceDir: File) {
 }
 
 /**
+ * Export `quiche_conn_is_handshake_confirmed`: whether the handshake is confirmed (RFC 9001 §4.1.2). A
+ * server confirms when it completes; a client only when HANDSHAKE_DONE arrives, one round trip after it
+ * completes. `quiche_conn_is_established` answers completion, and RFC 9000 §9 forbids initiating a
+ * migration until confirmation, so the driver needs this fact and quiche's C API has no way to read it.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the fact itself throws, telling you to delete this patch.
+ */
+fun patchQuicheHandshakeConfirmedFfi(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-handshake-confirmed"
+    if (text.contains(marker)) return
+    if (text.contains("handshake_confirmed")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already reads handshake_confirmed — upstream exported it. DELETE " +
+                "patchQuicheHandshakeConfirmedFfi and its call site, and check the upstream signature against " +
+                "libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "pub extern \"C\" fn quiche_conn_is_established(conn: &Connection) -> bool {"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `$anchor` not found exactly once in quiche/src/ffi.rs — a quiche bump moved the " +
+                "handshake-state FFI. Re-fit patchQuicheHandshakeConfirmedFfi next to it.",
+        )
+    }
+    val export =
+        """
+        |
+        |// $marker: whether the handshake is confirmed (RFC 9001 §4.1.2), not merely complete.
+        |#[no_mangle]
+        |pub extern "C" fn quiche_conn_is_handshake_confirmed(conn: &Connection) -> bool {
+        |    conn.handshake_confirmed
+        |}
+        """.trimMargin()
+    ffiRs.appendText("\n" + export + "\n")
+    logger.lifecycle("Patched quiche source: quiche_conn_is_handshake_confirmed FFI export")
+}
+
+/**
  * Export `quiche_conn_stream_data_unacknowledged`: whether any stream on the connection still has data,
  * or a FIN, that this endpoint wrote and the peer has not acknowledged. A send side the peer stopped, or
  * this endpoint shut down, owes nothing.
@@ -787,6 +855,588 @@ fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
             "                        if fin {\n                            stream.send.socket_fin_lost();\n                        }\n",
     )
     logger.lifecycle("Patched quiche source: a stream's FIN stays queued until sent and owed until acknowledged")
+}
+
+/**
+ * Arm the PTO for the Application Data space only once the handshake is **confirmed**, as RFC 9002
+ * §6.2.1 requires ("An endpoint MUST NOT set its PTO timer for the Application Data packet number space
+ * until the handshake is confirmed"), not once it is complete.
+ *
+ * **Why.** quiche's recovery reads `HandshakeStatus::completed` for that gate (and for when to clamp a
+ * peer's ack delay, where `RttStats::update_rtt` even names the parameter `handshake_confirmed`), but
+ * `Connection::handshake_status` fills it from `is_established()`. A client is established the moment it
+ * sends its Finished and confirmed only when HANDSHAKE_DONE arrives, so in between — exactly when its
+ * Finished may be lost — a client with a request in flight split its PTOs between the Finished and 1-RTT
+ * data the server cannot read yet: Finished, request, Finished, request, each interval double the last.
+ * The quic-interop-runner's `handshakeloss` against quic-go: the lost Finished went out again 1, 5 and
+ * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Reproduced by
+ * `MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`.
+ *
+ * A server confirms when it completes, so only a client's timing changes. Nothing is stranded meanwhile:
+ * with no Handshake data in flight the server's own PTO re-sends HANDSHAKE_DONE, and its arrival
+ * re-arms the timer (dropping the Handshake space recomputes it).
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
+    val marker = "socket-pto-waits-for-confirmation"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor = "            completed: self.is_established(),\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `completed: self.is_established(),` not found exactly once in quiche's lib.rs — a quiche " +
+                "bump moved it, or upstream now gates the Application Data PTO on confirmation. If so, DELETE " +
+                "patchQuichePtoWaitsForConfirmation and KEEP " +
+                "MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
+                "re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            "            // $marker: RFC 9002 §6.2.1 gates the Application Data PTO on confirmation.\n" +
+                "            completed: self.handshake_confirmed,\n",
+        ),
+    )
+    logger.lifecycle("Patched quiche source: the Application Data PTO waits for handshake confirmation")
+}
+
+/**
+ * Make every PTO probe sent in the Initial or Handshake space carry the oldest CRYPTO bytes the peer has
+ * not acknowledged, rather than a bare PING once the first probe has taken them.
+ *
+ * **Why.** From its second PTO quiche sends two probes (RFC 9002 §6.2.4), but it re-queues the lost
+ * CRYPTO range once: the first probe carries it and the second, finding nothing left to send, is a
+ * PING. Lose the first and the PING arrives alone, and a handshake flight is only as resilient as one
+ * datagram per PTO. Two interop failures came from exactly that (quic-interop-runner `handshakeloss` /
+ * `handshakecorruption`):
+ *  - msquic answered a PING-only Initial from one connection id and the ClientHello, when it came, from
+ *    another. Our client had switched to the first (RFC 9000 §7.2) and closed with
+ *    TRANSPORT_PARAMETER_ERROR on the server's `initial_source_connection_id`; or, its acknowledgement
+ *    lost, the runner counted two handshakes for one connection.
+ *  - A lost Finished likewise reached quic-go once per PTO, too rarely to beat its 10 s handshake limit.
+ * RFC 9002 §6.2.4 has a probe carry unacknowledged data when there is any, and lets both probes carry
+ * the same data. Reproduced by `MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello` and
+ * `bothProbesOfAPtoCarryALostFinished`.
+ *
+ * The edit: just before `send_single` builds its CRYPTO frame, a probe (`loss_probes(epoch) > 0`) in a
+ * handshake space whose crypto stream has nothing queued marks the oldest unacknowledged bytes, at most
+ * what the packet has room for, for retransmission. With nothing unacknowledged it is a PING as before.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
+    val marker = "socket-handshake-probes-carry-crypto"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor = "        // Create CRYPTO frame.\n        if crypto_ctx.crypto_stream.is_flushable() &&\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the CRYPTO frame block of send_single was not found exactly once in quiche's lib.rs — a " +
+                "quiche bump moved it. Re-fit patchQuicheHandshakeProbesCarryCrypto (or delete it if quiche's " +
+                "PTO probes now all carry unacknowledged CRYPTO data) and re-verify with " +
+                "MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |        // $marker: a PTO probe in a handshake space re-sends the oldest
+            |        // unacknowledged CRYPTO bytes instead of a bare PING (RFC 9002 §6.2.4).
+            |        if epoch != packet::Epoch::Application &&
+            |            path.recovery.loss_probes(epoch) > 0 &&
+            |            !crypto_ctx.crypto_stream.is_flushable() &&
+            |            left > frame::MAX_CRYPTO_OVERHEAD &&
+            |            !is_closing
+            |        {
+            |            let send = &mut crypto_ctx.crypto_stream.send;
+            |            let unacked = send.off_back().saturating_sub(send.ack_off());
+            |            if unacked > 0 {
+            |                let room = (left - frame::MAX_CRYPTO_OVERHEAD) as u64;
+            |                let ack_off = send.ack_off();
+            |                send.retransmit(ack_off, cmp::min(unacked, room) as usize);
+            |            }
+            |        }
+            |
+            |
+            """.trimMargin() + anchor,
+        ),
+    )
+    logger.lifecycle("Patched quiche source: every handshake PTO probe carries unacknowledged CRYPTO data")
+}
+
+/**
+ * Re-send a lost handshake flight whole — the oldest unacknowledged CRYPTO bytes of the Initial **and**
+ * the Handshake space, coalesced — at the two moments it is known or suspected lost:
+ *  1. **A server receives an Initial packet that brings no new CRYPTO data** (a repeated ClientHello, or
+ *     a client's PING probe) while its own Initial CRYPTO data is unacknowledged. RFC 9002 §6.2.3: the
+ *     client evidently did not get the server's Initial packets, and the server MAY re-send its
+ *     unacknowledged CRYPTO data before the PTO, a limited number of times per connection. quiche
+ *     answered with a bare ACK. Capped at `SOCKET_MAX_FLIGHT_RESENDS` per connection, so a peer that
+ *     answers every undecryptable packet with an Initial cannot drive an endless exchange (the
+ *     anti-amplification limit bounds each answer as well).
+ *  2. **A server's PTO before the handshake is confirmed.** RFC 9002 §6.2.4: besides the space whose
+ *     timer expired, a sender SHOULD send ack-eliciting packets in the other spaces with data in flight,
+ *     coalescing them. quiche probed one space per PTO, so a server whose ServerHello and Handshake
+ *     packets were lost re-sent the ServerHello on one PTO and the Handshake packets on the next — each
+ *     useless to the client without the other. Server only: a client never holds unacknowledged CRYPTO
+ *     data in both spaces (it discards its Initial keys when it first sends a Handshake packet), and the
+ *     crypto streams are connection-wide, so marking them on a client PTO would make a long-header
+ *     packet due on whatever path sends next — a migration probe path has no source connection id for
+ *     one, and quiche refuses the send (`InvalidState`).
+ *
+ * **Why.** The quic-interop-runner `handshakeloss` / `handshakecorruption` with our server against
+ * quic-go (runs 42324644154, 42326957428, 42329439382, 42331807229): the ServerHello was lost, quic-go
+ * re-sent its ClientHello at 106 ms and PING probes at 0.3, 0.7, 1.3, 2 and 4 s, each answered by an ACK
+ * alone; the server's first PTO (1 s) re-sent only the ServerHello, lost again, and its second (2 s) only
+ * the Handshake packets, which arrived and could not be decrypted. quic-go abandons a handshake at 10 s.
+ * Reproduced by `MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
+ * `aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
+ *
+ * Each space re-sends at most `SOCKET_FLIGHT_RESEND_CHUNK` bytes from its oldest unacknowledged offset —
+ * one packet's worth, the bytes the peer is missing first — so a large certificate chain does not turn a
+ * hint into a burst; the rest follows as the peer acknowledges. The retransmissions are ordinary data:
+ * congestion control and the anti-amplification limit still apply.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
+    val marker = "socket-lost-flight-resent-whole"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    var text = libRs.readText()
+    if (text.contains(marker)) return
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
+                    "Re-fit patchQuicheLostFlightIsResentWhole (or delete it if quiche now re-sends its " +
+                    "unacknowledged handshake CRYPTO data on a repeated ClientHello and coalesces every handshake " +
+                    "space into its PTO probes) and re-verify with " +
+                    "MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
+                    "aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        "\n    handshake_confirmed: bool,\n",
+        "\n    handshake_confirmed: bool,\n\n" +
+            "    // $marker: early re-sends of the handshake flight on a repeated ClientHello.\n" +
+            "    socket_flight_resends: u8,\n",
+    )
+    edit(
+        "\n            handshake_confirmed: false,\n",
+        "\n            handshake_confirmed: false,\n\n            socket_flight_resends: 0,\n",
+    )
+    edit(
+        "        // Process packet payload.\n        while payload.cap() > 0 {\n",
+        "        // $marker: where the peer's CRYPTO data in this space stood before this packet.\n" +
+            "        let socket_crypto_rx_before = self.socket_crypto_rx(epoch);\n\n" +
+            "        // Process packet payload.\n        while payload.cap() > 0 {\n",
+    )
+    edit(
+        "                frame_processing_err = Some(e);\n                break;\n            }\n        }\n\n",
+        """
+        |                frame_processing_err = Some(e);
+        |                break;
+        |            }
+        |        }
+        |
+        |        // $marker: an ack-eliciting Initial that brings no new CRYPTO data
+        |        // while ours is unacknowledged: the client lacks our Initial (RFC 9002 §6.2.3).
+        |        if frame_processing_err.is_none() &&
+        |            self.is_server &&
+        |            epoch == packet::Epoch::Initial &&
+        |            ack_elicited &&
+        |            self.socket_flight_resends < Self::SOCKET_MAX_FLIGHT_RESENDS &&
+        |            self.socket_crypto_rx(epoch) == socket_crypto_rx_before &&
+        |            self.socket_crypto_unacked(packet::Epoch::Initial) > 0
+        |        {
+        |            self.socket_flight_resends += 1;
+        |            self.socket_resend_flight();
+        |        }
+        |
+        |
+        """.trimMargin(),
+    )
+    edit(
+        "        // Notify timeout events to the application.\n        self.paths.notify_failed_validations();\n",
+        """
+        |        // $marker: a server's PTO before confirmation re-sends every handshake
+        |        // space's unacknowledged CRYPTO data, coalesced, not only its own (RFC 9002 §6.2.4).
+        |        if self.is_server &&
+        |            !self.handshake_confirmed &&
+        |            self.paths.iter().any(|(_, p)| {
+        |                p.recovery.loss_probes(packet::Epoch::Initial) > 0 ||
+        |                    p.recovery.loss_probes(packet::Epoch::Handshake) > 0
+        |            })
+        |        {
+        |            self.socket_resend_flight();
+        |        }
+        |
+        |        // Notify timeout events to the application.
+        |        self.paths.notify_failed_validations();
+        |
+        """.trimMargin(),
+    )
+    edit(
+        "    /// Selects the packet type for the next outgoing packet.\n",
+        """
+        |    // $marker: early re-sends per connection; a peer answering every packet it
+        |    // cannot decrypt with an Initial must not drive an endless exchange (RFC 9002 §6.2.3).
+        |    const SOCKET_MAX_FLIGHT_RESENDS: u8 = 8;
+        |
+        |    // $marker: at most one packet's worth per space, oldest bytes first.
+        |    const SOCKET_FLIGHT_RESEND_CHUNK: u64 = 1200;
+        |
+        |    // $marker: how far the peer's CRYPTO data in `epoch` has been read, and its end.
+        |    fn socket_crypto_rx(&self, epoch: packet::Epoch) -> (u64, u64) {
+        |        let recv = &self.crypto_ctx[epoch].crypto_stream.recv;
+        |        (recv.off_front(), recv.max_off())
+        |    }
+        |
+        |    // $marker: our CRYPTO bytes in `epoch` the peer has not acknowledged.
+        |    fn socket_crypto_unacked(&self, epoch: packet::Epoch) -> u64 {
+        |        let ctx = &self.crypto_ctx[epoch];
+        |        if !ctx.has_keys() {
+        |            return 0;
+        |        }
+        |        let send = &ctx.crypto_stream.send;
+        |        send.off_back().saturating_sub(send.ack_off())
+        |    }
+        |
+        |    // $marker: queue the oldest unacknowledged CRYPTO bytes of the Initial and
+        |    // Handshake spaces to be sent again, so the next datagram coalesces both.
+        |    fn socket_resend_flight(&mut self) {
+        |        for epoch in [packet::Epoch::Initial, packet::Epoch::Handshake] {
+        |            let unacked = self.socket_crypto_unacked(epoch);
+        |            if unacked == 0 {
+        |                continue;
+        |            }
+        |            let send = &mut self.crypto_ctx[epoch].crypto_stream.send;
+        |            let ack_off = send.ack_off();
+        |            let len = cmp::min(unacked, Self::SOCKET_FLIGHT_RESEND_CHUNK);
+        |            send.retransmit(ack_off, len as usize);
+        |        }
+        |    }
+        |
+        |    /// Selects the packet type for the next outgoing packet.
+        |
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
+    logger.lifecycle("Patched quiche source: a lost handshake flight is re-sent whole, early on a repeated ClientHello")
+}
+
+/**
+ * Make every PTO probe a server sends in the Application Data space carry HANDSHAKE_DONE until the client
+ * has acknowledged it, instead of a bare PING.
+ *
+ * **Why.** quiche re-sends HANDSHAKE_DONE only once the packet carrying it is declared lost, which takes
+ * an acknowledgement of a later packet. Its PTO probes re-queue the frames of unacknowledged packets
+ * that carried CRYPTO or STREAM data only, so a probe after a lost HANDSHAKE_DONE was a PING. A client
+ * that never gets HANDSHAKE_DONE never confirms the handshake, so it never arms its Application Data PTO
+ * (RFC 9002 §6.2.1) and never re-sends a lost request. quic-interop-runner `handshakeloss` with our server
+ * against quic-go (run 42345499750): HANDSHAKE_DONE and the server's next packet were lost, quic-go's
+ * request had arrived before the handshake completed and been dropped, the server probed with PINGs at
+ * 1, 3, 7 and 15 s, and quic-go's three acknowledgements of them were lost as well. quic-go re-sent only
+ * its Finished, which the confirmed server could no longer read, and the connection idled out at 30 s.
+ * RFC 9002 §6.2.4 has a probe carry new or previously sent data when there is any. Reproduced by
+ * `MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
+    val marker = "socket-handshake-done-rides-every-probe"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |            if self.handshake_completed &&
+        |                !self.handshake_done_sent &&
+        |                self.is_server
+        |            {
+        |                let frame = frame::Frame::HandshakeDone;
+        |
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the HANDSHAKE_DONE block of send_single was not found exactly once in quiche's lib.rs — a " +
+                "quiche bump moved it. Re-fit patchQuicheHandshakeDoneRidesEveryProbe (or delete it if quiche's " +
+                "PTO probes now carry an unacknowledged HANDSHAKE_DONE) and re-verify with " +
+                "MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |            // $marker: a PTO probe re-sends HANDSHAKE_DONE until it is acknowledged.
+            |            if self.handshake_completed &&
+            |                (!self.handshake_done_sent ||
+            |                    (!self.handshake_done_acked &&
+            |                        path.recovery.loss_probes(epoch) > 0)) &&
+            |                self.is_server
+            |            {
+            |                let frame = frame::Frame::HandshakeDone;
+            |
+            """.trimMargin(),
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a server's PTO probe carries an unacknowledged HANDSHAKE_DONE")
+}
+
+/**
+ * Make a server buffer the 1-RTT packets that arrive before its handshake completes, and process them once
+ * it does, rather than dropping them.
+ *
+ * **Why.** A client may send 1-RTT data as soon as it has sent its Finished, often in the same datagram.
+ * A server cannot read it before its handshake completes (RFC 9001 §5.7: it MUST NOT process 1-RTT packets
+ * before then, and MAY buffer them), and quiche dropped it, buffering only 0-RTT packets. When the Finished
+ * was lost, the client's request was lost with it from the client's point of view: it came back only on
+ * the client's next PTO after the handshake was confirmed, by then backed off by every PTO the lossy
+ * handshake had cost. quic-interop-runner `handshakecorruption` with our server against quinn (runs
+ * 42326957428 before this change, 42363016612): the request reached the server at 5 s and was dropped,
+ * the handshake completed at 17.6 s, quinn's next PTO fell at 30 s, and its 30 s idle timeout fired
+ * first. Against quic-go (run 42345499750) the same dropped request left the client waiting on a PTO it
+ * never armed. Reproduced by `MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
+ *
+ * The edit: the existing 0-RTT buffer (`undecryptable_pkts`, `MAX_UNDECRYPTABLE_PACKETS` entries) also takes
+ * a server's short-header packets while it is not established; at completion only the 0-RTT entries are
+ * cleared; and the existing replay at the end of `recv` replays each buffered packet once it can be read —
+ * a 0-RTT one once the 0-RTT key is in, a 1-RTT one once the handshake is complete — keeping the rest.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
+    val marker = "socket-early-one-rtt-is-buffered"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    var text = libRs.readText()
+    if (text.contains(marker)) return
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
+                    "Re-fit patchQuicheEarlyOneRttIsBuffered (or delete it if quiche now buffers 1-RTT packets " +
+                    "that arrive before its handshake completes) and re-verify with " +
+                    "MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        """
+        |                if hdr.ty == Type::ZeroRTT &&
+        |                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
+        |                    !self.is_established()
+        |                {
+        """.trimMargin(),
+        """
+        |                // $marker: a server's 1-RTT packets too (RFC 9001 §5.7).
+        |                if (hdr.ty == Type::ZeroRTT ||
+        |                    (hdr.ty == Type::Short && self.is_server)) &&
+        |                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
+        |                    !self.is_established()
+        |                {
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |            // Once the handshake is completed there's no point in processing
+        |            // 0-RTT packets anymore, so clear the buffer now.
+        |            self.undecryptable_pkts.clear();
+        |
+        """.trimMargin(),
+        """
+        |            // Once the handshake is completed there's no point in processing
+        |            // 0-RTT packets anymore, so clear the buffer now.
+        |            // $marker: keep the 1-RTT ones (short header) for the replay in recv().
+        |            self.undecryptable_pkts
+        |                .retain(|(pkt, _)| pkt.first().is_some_and(|b| b & 0x80 == 0));
+        |
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |        if self.crypto_ctx[packet::Epoch::Application]
+        |            .crypto_0rtt_open
+        |            .is_some()
+        |        {
+        |            while let Some((mut pkt, info)) = self.undecryptable_pkts.pop_front()
+        |            {
+        |                if let Err(e) = self.recv(&mut pkt, info) {
+        |                    self.undecryptable_pkts.clear();
+        |
+        |                    return Err(e);
+        |                }
+        |            }
+        |        }
+        |        Ok(())
+        """.trimMargin(),
+        """
+        |        // $marker: replay each buffered packet once it can be read — a 0-RTT one
+        |        // once the 0-RTT key is in, a 1-RTT one once the handshake is complete —
+        |        // and keep the rest. The nested recv() replays nothing it cannot read, so
+        |        // this cannot recurse without end.
+        |        let pending: Vec<_> = self.undecryptable_pkts.drain(..).collect();
+        |        for (mut pkt, info) in pending {
+        |            let ready = if pkt.first().is_some_and(|b| b & 0x80 == 0) {
+        |                self.handshake_completed
+        |            } else {
+        |                self.crypto_ctx[packet::Epoch::Application]
+        |                    .crypto_0rtt_open
+        |                    .is_some()
+        |            };
+        |            if !ready {
+        |                self.undecryptable_pkts.push_back((pkt, info));
+        |                continue;
+        |            }
+        |            if let Err(e) = self.recv(&mut pkt, info) {
+        |                self.undecryptable_pkts.clear();
+        |
+        |                return Err(e);
+        |            }
+        |        }
+        |        Ok(())
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
+    logger.lifecycle("Patched quiche source: a server buffers 1-RTT packets that arrive before its handshake completes")
+}
+
+/**
+ * Keep reading a datagram past a coalesced long-header packet quiche cannot process, instead of dropping
+ * the rest of the datagram with it.
+ *
+ * **Why.** RFC 9000 §12.2: a receiver that fails to process one coalesced packet (keys unavailable or
+ * discarded, AEAD failure, a duplicate) still processes the packets after it, and §17.2's Length field
+ * says where the next one starts. quiche's `Connection::recv` answered every `Error::Done` from
+ * `recv_single` by consuming everything `left` in the datagram. Observed in the quic-interop-runner with
+ * quinn as the client: quinn, not yet sure the handshake was confirmed, sent its CONNECTION_CLOSE
+ * coalesced as Handshake + 1-RTT (RFC 9000 §10.2.3). Our server had confirmed and discarded its
+ * Handshake keys, so the Handshake packet was undecryptable, the 1-RTT packet behind it was dropped too,
+ * and the server never saw the close: it retransmitted until its idle timeout. Reproduced by
+ * `MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
+ * `aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
+ *
+ * The edit: in `recv`'s `Err(Error::Done)` arm, re-read the unprotected long header of the packet that
+ * failed (header protection covers neither the type bits nor the Length) and, for an Initial, 0-RTT or
+ * Handshake packet of the connection's version whose Length ends before the datagram does, consume just
+ * that packet and go on to the next. Everything else is upstream's behaviour unchanged: a short header
+ * has no Length and runs to the end of the datagram, Retry and Version Negotiation packets have none
+ * either, and the last packet of a datagram still gets the stateless-reset check. An error other than
+ * `Done` still closes the connection.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline): the anchor is the whole upstream
+ * arm, so a quiche bump that changes it throws.
+ */
+fun patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir: File) {
+    val marker = "socket-coalesced-after-undecryptable"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |                Err(Error::Done) => {
+        |                    // If the packet can't be processed or decrypted, check if
+        |                    // it's a stateless reset.
+        |                    if self.is_stateless_reset(&buf[len - left..len]) {
+        |                        trace!("{} packet is a stateless reset", self.trace_id);
+        |
+        |                        self.mark_closed();
+        |                    }
+        |
+        |                    left
+        |                },
+        |
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the `Err(Error::Done)` arm of Connection::recv was not found exactly once in quiche's " +
+                "lib.rs — a quiche bump changed it. If upstream now skips an unprocessable coalesced packet by " +
+                "its Length (RFC 9000 §12.2), DELETE patchQuicheCoalescedPacketsAfterAnUndecryptableOne and KEEP " +
+                "MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
+                "re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |                Err(Error::Done) => {
+            |                    // $marker: RFC 9000 §12.2 has a receiver go on to
+            |                    // the packets coalesced after one it cannot process. A
+            |                    // long header's Length (not header-protected) says where
+            |                    // the next starts; a short header runs to the end.
+            |                    let dcid_len = self.source_id().len();
+            |                    let version = self.version;
+            |                    let skip = {
+            |                        let mut b =
+            |                            octets::OctetsMut::with_slice(&mut buf[len - left..len]);
+            |                        match Header::from_bytes(&mut b, dcid_len) {
+            |                            Ok(hdr)
+            |                                if hdr.ty != Type::Short &&
+            |                                    hdr.ty != Type::Retry &&
+            |                                    hdr.ty != Type::VersionNegotiation &&
+            |                                    hdr.version == version =>
+            |                                b.get_varint()
+            |                                    .ok()
+            |                                    .and_then(|l| usize::try_from(l).ok())
+            |                                    .and_then(|l| b.off().checked_add(l)),
+            |                            _ => None,
+            |                        }
+            |                    };
+            |
+            |                    match skip.filter(|&n| n > 0 && n < left) {
+            |                        Some(n) => {
+            |                            trace!(
+            |                                "{} skipped unprocessable coalesced packet len={}",
+            |                                self.trace_id,
+            |                                n
+            |                            );
+            |
+            |                            n
+            |                        },
+            |
+            |                        None => {
+            |                            // If the packet can't be processed or decrypted, check if
+            |                            // it's a stateless reset.
+            |                            if self.is_stateless_reset(&buf[len - left..len]) {
+            |                                trace!("{} packet is a stateless reset", self.trace_id);
+            |
+            |                                self.mark_closed();
+            |                            }
+            |
+            |                            left
+            |                        },
+            |                    }
+            |                },
+            |
+            """.trimMargin(),
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a datagram is read past a coalesced packet that cannot be processed")
 }
 
 /**
@@ -5029,15 +5679,11 @@ kotlin {
         }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
-            dependencies {
-                // SHA-256 for W3C serverCertificateHashes leaf-cert pinning (sha256Into actual). Pure-JCA
-                // on JVM/Android — no native lib. Scoped to JVM/Android ONLY (not commonMain): on Linux,
-                // buffer-crypto would link a SECOND static BoringSSL alongside quiche's → duplicate
-                // SHA256_* symbols → SIGSEGV. Linux uses the already-linked BoringSSL via cinterop instead
-                // (see Sha256.linux.kt). Even with no call, a commonMain dep would pull buffer-crypto's
-                // libcrypto.a onto the Linux link line, so the scoping is load-bearing, not cosmetic.
-                implementation(libs.buffer.crypto)
-            }
+            // No buffer-crypto here, ever: the SHA-256 behind W3C serverCertificateHashes (sha256Into actual)
+            // is JCA MessageDigest directly. buffer-crypto-android declares minSdk 28, above this module's 24,
+            // so depending on it failed manifest merging for every app with minSdk 24-27. It must also never
+            // reach the Linux link: it bundles a SECOND static BoringSSL alongside quiche's → duplicate
+            // SHA256_* symbols → SIGSEGV (Linux uses the already-linked BoringSSL; see Sha256.linux.kt).
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
@@ -5199,10 +5845,17 @@ android {
     (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {
         manifest.srcFile("src/androidMain/AndroidManifest.xml")
         jniLibs.srcDirs("src/androidMain/jniLibs")
+        // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+        baselineProfiles.srcDir("src/androidMain/baselineProfiles")
     }
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
+        // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's
+        // default file) R8 renames the class and every QUIC call fails with UnsatisfiedLinkError —
+        // measured by :benchmark-android with -PbenchDefaultProguardFile=false.
+        consumerProguardFiles("consumer-rules.pro")
     }
     namespace = "com.ditchoom.socket.quic.quiche"
 

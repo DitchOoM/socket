@@ -12,7 +12,7 @@ package com.ditchoom.socket
  * ```
  *
  * This is deliberately loud, unlike the missing-`Context` case (which degrades to
- * [PollingNetworkMonitor], see the Android `NetworkMonitor.default()`). Without the permission the
+ * [PollingNetworkMonitor], see the Android `NetworkMonitor.open()`). Without the permission the
  * callback is registered-but-never-invoked: [NetworkMonitor.state] would sit at
  * [NetworkState.Unknown] forever while [NetworkMonitor.capability] advertised
  * [MonitorMechanism.PlatformSignalled] and [ReachResolution.RouteAndInternet] — a monitor claiming push

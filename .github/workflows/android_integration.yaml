@@ -44,6 +44,16 @@ jobs:
     # snapshot on shutdown, and a 1-second grace is not enough to flush one.
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      # This lane builds Android, the JVM quic-echo jar and the host's libquiche.so. It never
+      # compiles a Linux Kotlin/Native target, but with those targets declared every Gradle call
+      # here still configured them. Configuring them provisions the linuxX64 + linuxArm64 BoringSSL
+      # bundles (GitHub release downloads) while the task graph is built, and the commonMain
+      # metadata chain then built liburing (a GitHub archive download) and fetched the K/N
+      # toolchain. On 2026-11-08 GitHub answered those downloads with 504 for hours, and every leg
+      # of this matrix failed before it compiled anything. The job env also reaches the Gradle
+      # calls in scripts/android-emulator-tests.sh. quic-bench.yaml and the quiche-jvm legs of
+      # build-linux.yaml use the same switch.
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
     strategy:
       # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -69,6 +79,44 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org,
+      # which redirects to GitHub. Restore-only: build-linux.yaml's `natives` job and
+      # native-deps-freshness.yaml's `cache-warm` write this key on main, and every job that uses
+      # .github/actions/linux-quiche-env restores it the same way. The key is the hash of
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # The Gradle dependency cache: the settings plugins (Develocity, foojay), the Android Gradle
+      # Plugin and every library the build resolves, so `./gradlew` does not fetch them from
+      # plugins.gradle.org and Google/Central on each run. Restore-only: native-deps-freshness.yaml's
+      # `cache-warm` writes it on main after `resolveAllDependencies`, build-linux.yaml's `natives`
+      # job writes the same key, and a PR ref reads main's entry. The key and prefix are
+      # build-linux.yaml's, so a build-script edit still lands on the previous entry.
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      # quic-echo's libquiche.so and JNI shim (`:quicEchoJar` → buildQuicheSharedLinuxX64). Building
+      # them from source provisions the linuxX64 BoringSSL bundle, which is a GitHub release download.
+      # Restore-only, with the same key and path as the writers (build-linux.yaml `natives` and
+      # native-deps-freshness.yaml `cache-warm`), so keep the three in step. buildQuicheSharedLinuxX64
+      # skips only when the restored `.built-<quiche>-…-<build-script digest>` marker matches this
+      # tree; otherwise it rebuilds. A miss builds from source, as before.
+      - name: Restore quiche Linux x64 natives (quic-echo)
+        uses: actions/cache/restore@v6
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -115,7 +163,7 @@ jobs:
       # beside a self-contained libquiche.so (unversioned soname), exactly what the emulator loads
       # (libquiche.so first, then the shim). NDK/cargo-ndk/targets/libclang are set up in the steps above.
       - name: Build Android QUIC native libs (x86_64, via Gradle)
-        run: ./gradlew :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
 
       # Bring up the docker quic-echo harness (same image / port as
       # build-linux + build-apple) before the emulator starts.
@@ -156,7 +204,7 @@ jobs:
       # contract above, which this emulator (and only an emulator) can
       # address through its 10.0.2.2 alias.
       - name: Build quic-echo fat jar (Linux x64)
-        run: ./gradlew :socket-quic-quiche:quicEchoJar --no-configuration-cache
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar --no-configuration-cache
 
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
@@ -224,8 +272,16 @@ jobs:
         # job, and a hung test consumes all of it — then the job is CANCELLED, which is not
         # `failure()`, so every upload is skipped and the hang leaves nothing to read (#417). That
         # is not hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
-        # artifacts at all. Measured 5.2-6.6 min across 10 recent green job-runs; 12 is ~2x that.
-        timeout-minutes: 12
+        # artifacts at all.
+        #
+        # This timeout is now the backstop. The script's own watchdog (WATCHDOG in
+        # scripts/android-emulator-tests.sh) declares a hang first, when an APK install has run for
+        # 5 min or the script has run for 11 min. It then captures the device, host and test engine,
+        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 15 leaves room for
+        # that plus the emulator boot before the script. Green runs of this step took 5.6-8.3 min
+        # (48 job-runs on AGP 9.5.1, all four API levels); a stalled install that the adb install
+        # guard recovers adds about 2 min.
+        timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
@@ -262,54 +318,45 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # Mirror the audit step from build-apple.yaml + build-linux.yaml:
-      # count `harness OK` vs `harness SKIP` markers from
-      # QuicHarnessIntegrationTests' withHarness() across the
-      # connectedAndroidTest report XMLs. Surfaces a regression that
-      # silently breaks the Android QUIC client as a CI warning instead
-      # of letting it pass via the skip-on-failure catch.
+      # Did the emulator really exercise the docker quic-echo harness?
+      #
+      # This step used to copy the Linux/Apple audit and count the `harness OK` / `harness SKIP:`
+      # lines QuicHarnessIntegrationTests prints. That suite is in commonTest, which
+      # androidInstrumentedTest deliberately does not dependsOn, so it is never in the test APK and
+      # the step printed `QuicHarnessIntegrationTests on Android: OK=0, SKIP=0` on every run: a line
+      # that looks like a suite that ran nothing, from a step that validated nothing (and could not
+      # fail: it was continue-on-error). On this lane the harness is reached by the instrumented
+      # classes that resolve HarnessEndpoints.quicEcho; the script finds them in the source and reads
+      # their outcomes from the result XML, quoting each skip's reason from its per-test logcat.
+      # It FAILS when a harness class is missing from the results or none of its tests passed. When
+      # it fails, the upload below carries the XML and per-test logcat it read, plus the quic-echo
+      # container's own log and state.
       - name: Audit QUIC harness coverage on Android
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -I .github/scripts/audit-android-quic-harness.py \
+            --report-root socket-quic-quiche/build/outputs/androidTest-results \
+            --source-dir socket-quic-quiche/src/androidInstrumentedTest \
+            --api-level ${{ matrix.api-level }}
+
+      # The quic-echo side of a harness failure: whether the container was up, and what it logged
+      # (handshakes it saw, or nothing at all). Only the device side was recorded before, so "the
+      # emulator could not reach it" and "it was not running" looked the same.
+      - name: Capture quic-echo harness state on failure
+        if: ${{ failure() || cancelled() }}
         continue-on-error: true
         run: |
-          REPORT_ROOT=socket-quic-quiche/build/outputs/androidTest-results
-          if [ ! -d "$REPORT_ROOT" ]; then
-            echo "no android instrumented-test results — audit skipped"
-            exit 0
-          fi
-          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          # Distinct skip reasons (dedup + count). Bound to [^<&] so the match
-          # stops at the next XML entity/tag in the androidTest result reports.
-          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
-            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
-          echo "QuicHarnessIntegrationTests on Android: OK=$OK, SKIP=$SKIP"
-          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+          mkdir -p emulator-diagnostics
           {
-            echo "## QUIC harness — Android (emulator)"
-            echo ""
-            echo "| OK | SKIP |"
-            echo "|---|---|"
-            echo "| $OK | $SKIP |"
-            if [ -n "$SKIP_REASONS" ]; then
-              echo ""
-              echo "<details><summary>Skip reasons (Android)</summary>"
-              echo ""
-              echo '```'
-              echo "$SKIP_REASONS"
-              echo '```'
-              echo "</details>"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
-            echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
-          elif [ "$OK" = "0" ]; then
-            # OK=0 AND SKIP=0 means the audit matched NOTHING — the suite never ran on the emulator
-            # (QuicHarnessIntegrationTests lives in commonTest, which connectedAndroidTest does not
-            # execute) or the marker text moved. Either way this step validated nothing, so it has to
-            # say so instead of printing "OK=0, SKIP=0" and passing like a clean result.
-            echo "::warning::No harness OK/SKIP markers on Android — QuicHarnessIntegrationTests never ran on the emulator, so this audit validated nothing"
-          fi
+            echo "--- docker compose ps ---"
+            (cd test-harness && docker compose ps -a) 2>&1 || true
+            echo "--- docker compose logs quic-echo (last 500 lines) ---"
+            (cd test-harness && docker compose logs --no-color --tail 500 quic-echo) 2>&1 || true
+            echo "--- host UDP sockets on 14433 ---"
+            ss -uanp 2>/dev/null | grep -E ':14433\b' || echo "(none)"
+          } > emulator-diagnostics/quic-echo-api${{ matrix.api-level }}.txt
 
       # The instrumented-test record itself. Without this a failure left ONLY the Gradle console
       # stack (run 31027926910): no per-test HTML/XML report, and no logcat — where the Android
@@ -335,6 +382,21 @@ jobs:
 
       # A shutdown wedge after green tests leaves the job green (it is a host-side fault, reported
       # as a ::warning::), so the failure upload above never carries its capture; this one does.
+      # A test-APK install that stalled and was recovered by the adb install guard
+      # (scripts/adb-install-guard.sh) leaves the job green, so the failure upload above never
+      # carries its capture; this one does, so every stall adds evidence.
+      - name: Upload stalled-install capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/install-stall-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-stall-${{ matrix.api-level }}
+          path: |
+            emulator-diagnostics/install-stall-*.txt
+            emulator-diagnostics/logcat-api*.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload emulator shutdown-wedge capture
         if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
         continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
@@ -370,3 +432,113 @@ jobs:
           sleep 2
           pkill -SIGKILL -f crashpad_handler || true
           adb emu kill || true
+
+  # Jetpack Microbenchmarks (benchmarks/android-micro) in a release-like build: the test APK minified by
+  # R8 full mode, once with AGP's default rules, once with only the libraries' consumer rules (proving
+  # socket-quic-quiche's consumer-rules.pro keeps the by-name JNI binding working on its own), and once
+  # unminified for comparison. Every benchmark completes a QUIC round trip through quiche before it
+  # times anything, so an R8 build that broke JNI fails this job. The numbers are an emulator's:
+  # printed to the job summary as regression signals, never compared against a threshold.
+  android-benchmark:
+    name: "Android microbenchmarks (R8, emulator)"
+    runs-on: ubuntu-latest
+    needs: version
+    timeout-minutes: 40
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # The Gradle dependency cache: the settings plugins (Develocity, foojay), the Android Gradle
+      # Plugin and every library the build resolves, so `./gradlew` does not fetch them from
+      # plugins.gradle.org and Google/Central on each run. Restore-only: native-deps-freshness.yaml's
+      # `cache-warm` writes it on main after `resolveAllDependencies`, build-linux.yaml's `natives`
+      # job writes the same key, and a PR ref reads main's entry. The key and prefix are
+      # build-linux.yaml's, so a build-script edit still lands on the previous entry.
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # libclang for boring-sys' bindgen (the Android quiche build); see the android-emulator job.
+      - name: Install libclang
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android benchmark lane: libclang for boring-sys bindgen"
+          packages: libclang-dev
+
+      - name: Install Rust + cargo-ndk
+        uses: dtolnay/rust-toolchain@stable
+      # All three ABIs: mergeJniLibFolders depends on every buildAndroidJni* task (see android-emulator).
+      - run: |
+          rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk
+
+      - name: Build Android QUIC native libs
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
+
+      - name: Install + verify Android Emulator and system image
+        timeout-minutes: 6
+        run: bash scripts/android-sdk-emulator.sh install 34
+
+      # One emulator step, no snapshot: unlike android-emulator this job boots once.
+      - name: Run the benchmarks
+        timeout-minutes: 25
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          disk-size: 4096M
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify 34
+          # ONE line: the action runs each line of `script:` in its own shell (see android-emulator).
+          script: bash scripts/android-benchmark.sh 34
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-benchmark
+          path: |
+            bench-android/**
+            benchmarks/android-micro/build/outputs/**
+            benchmarks/android-micro/build/reports/androidTests/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload emulator shutdown-wedge capture
+        if: ${{ !cancelled() && hashFiles('emulator-diagnostics/emulator-shutdown-wedge-*.txt') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the capture's ::warning::
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-shutdown-wedge-benchmark-34
+          path: emulator-diagnostics/emulator-shutdown-wedge-*.txt
+          if-no-files-found: error
+          retention-days: 7

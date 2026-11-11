@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.toHexString
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -30,64 +31,69 @@ class PeerCertificateGenerationTests {
         }
 
     @Test
-    fun defaultCertificateMeetsTheW3cConstraintsNow() {
-        val before = Clock.System.now()
-        engine().generate().use { certificate ->
-            val der = certificate.der()
-            val fields = assertNotNull(parsePinnedLeafFieldsDer(der), "DER walk could not parse ${der.toHexString()}")
-            assertEquals(certificate.notBefore, fields.notBefore)
-            assertEquals(certificate.notAfter, fields.notAfter)
-            assertTrue(fields.isEcP256, "key is ${fields.keyDescription}")
-            assertEquals(14.days, fields.notAfter - fields.notBefore)
-            assertNull(checkServerCertificatePinConstraints(fields, Clock.System.now()), "constraints rejected ${der.toHexString()}")
-            // Backdated by the skew allowance, to the second.
-            val backdate = before - certificate.notBefore
-            assertTrue(
-                backdate >= PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE && backdate < PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE + 1.minutes,
-                "backdate=$backdate",
-            )
-        }
-    }
-
-    @Test
-    fun explicitWindowIsEncodedToTheSecond() {
-        val start = Instant.parse("2031-02-03T04:05:06.789Z")
-        val validity = (PeerCertificateValidity.of(90.minutes) as PeerCertificateValidity.Result.Valid).validity
-        engine().generate(validity, start).use { certificate ->
-            val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
-            assertEquals(Instant.parse("2031-02-03T04:05:06Z"), fields.notBefore)
-            assertEquals(Instant.parse("2031-02-03T05:35:06Z"), fields.notAfter)
-            assertEquals(certificate.notAfter, fields.notAfter)
-            assertEquals(Instant.parse("2031-02-03T05:05:06Z"), certificate.renewAt(30.minutes))
-        }
-    }
-
-    @Test
-    fun windowAfter2049UsesGeneralizedTime() {
-        engine().generate(PeerCertificateValidity.Maximum, Instant.parse("2049-12-25T00:00:00Z")).use { certificate ->
-            val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
-            assertEquals(Instant.parse("2049-12-25T00:00:00Z"), fields.notBefore)
-            assertEquals(Instant.parse("2050-01-08T00:00:00Z"), fields.notAfter)
-        }
-    }
-
-    @Test
-    fun everyCertificateHasAFreshKey() {
-        engine().generate().use { first ->
-            engine().generate().use { second ->
-                assertNotEquals(first.hash, second.hash)
-                assertNotEquals(first.der().toHexString(), second.der().toHexString())
+    fun defaultCertificateMeetsTheW3cConstraintsNow() =
+        runTest {
+            val before = Clock.System.now()
+            engine().mint().use { certificate ->
+                val der = certificate.der()
+                val fields = assertNotNull(parsePinnedLeafFieldsDer(der), "DER walk could not parse ${der.toHexString()}")
+                assertEquals(certificate.notBefore, fields.notBefore)
+                assertEquals(certificate.notAfter, fields.notAfter)
+                assertTrue(fields.isEcP256, "key is ${fields.keyDescription}")
+                assertEquals(14.days, fields.notAfter - fields.notBefore)
+                assertNull(checkServerCertificatePinConstraints(fields, Clock.System.now()), "constraints rejected ${der.toHexString()}")
+                // Backdated by the skew allowance, to the second.
+                val backdate = before - certificate.notBefore
+                assertTrue(
+                    backdate >= PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE && backdate < PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE + 1.minutes,
+                    "backdate=$backdate",
+                )
             }
         }
-    }
 
     @Test
-    fun expiredWindowIsRejectedByThePolicy() {
-        engine().generate(notBefore = Clock.System.now() - 20.days).use { certificate ->
-            val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
-            val failure = checkServerCertificatePinConstraints(fields, Clock.System.now())
-            assertTrue(failure is com.ditchoom.socket.CertificateHashPinningFailure.NotTemporallyValid, "got $failure")
-            assertTrue(certificate.renewAt(1.hours) < Clock.System.now())
+    fun explicitWindowIsEncodedToTheSecond() =
+        runTest {
+            val start = Instant.parse("2031-02-03T04:05:06.789Z")
+            val validity = (PeerCertificateValidity.of(90.minutes) as PeerCertificateValidity.Result.Valid).validity
+            engine().mint(validity, start).use { certificate ->
+                val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
+                assertEquals(Instant.parse("2031-02-03T04:05:06Z"), fields.notBefore)
+                assertEquals(Instant.parse("2031-02-03T05:35:06Z"), fields.notAfter)
+                assertEquals(certificate.notAfter, fields.notAfter)
+                assertEquals(Instant.parse("2031-02-03T05:05:06Z"), certificate.renewAt(30.minutes))
+            }
         }
-    }
+
+    @Test
+    fun windowAfter2049UsesGeneralizedTime() =
+        runTest {
+            engine().mint(PeerCertificateValidity.Maximum, Instant.parse("2049-12-25T00:00:00Z")).use { certificate ->
+                val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
+                assertEquals(Instant.parse("2049-12-25T00:00:00Z"), fields.notBefore)
+                assertEquals(Instant.parse("2050-01-08T00:00:00Z"), fields.notAfter)
+            }
+        }
+
+    @Test
+    fun everyCertificateHasAFreshKey() =
+        runTest {
+            engine().mint().use { first ->
+                engine().mint().use { second ->
+                    assertNotEquals(first.hash, second.hash)
+                    assertNotEquals(first.der().toHexString(), second.der().toHexString())
+                }
+            }
+        }
+
+    @Test
+    fun expiredWindowIsRejectedByThePolicy() =
+        runTest {
+            engine().mint(notBefore = Clock.System.now() - 20.days).use { certificate ->
+                val fields = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()))
+                val failure = checkServerCertificatePinConstraints(fields, Clock.System.now())
+                assertTrue(failure is com.ditchoom.socket.CertificateHashPinningFailure.NotTemporallyValid, "got $failure")
+                assertTrue(certificate.renewAt(1.hours) < Clock.System.now())
+            }
+        }
 }

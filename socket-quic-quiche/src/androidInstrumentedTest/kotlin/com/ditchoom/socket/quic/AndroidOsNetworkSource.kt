@@ -6,7 +6,7 @@ import android.os.Build
 import android.telephony.ServiceState
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
-import com.ditchoom.socket.enumerateNetworkInterfaces
+import com.ditchoom.socket.listNetworkInterfaces
 import com.ditchoom.socket.testkit.osnet.CellularBearer
 import com.ditchoom.socket.testkit.osnet.CellularData
 import com.ditchoom.socket.testkit.osnet.CellularRegistration
@@ -17,6 +17,7 @@ import com.ditchoom.socket.testkit.osnet.OsNetworkReading
 import com.ditchoom.socket.testkit.osnet.OsNetworkSource
 import com.ditchoom.socket.testkit.osnet.SimState
 import com.ditchoom.socket.testkit.osnet.osLinksFrom
+import kotlinx.coroutines.runBlocking
 
 /**
  * What Android will say about this device's network beyond the ladder — the radio, and the links
@@ -108,7 +109,7 @@ class AndroidOsNetworkSource(
                     Radio.Absent -> CellularStatus.NotReported
                     is Radio.Present -> readCellular(radio.manager)
                 },
-            links = runCatching { osLinksFrom(enumerateNetworkInterfaces()) }.getOrElse { emptyList() },
+            links = runCatching { osLinksFrom(runBlocking { listNetworkInterfaces() }) }.getOrElse { emptyList() },
         )
 
     private fun readCellular(manager: TelephonyManager): CellularStatus =

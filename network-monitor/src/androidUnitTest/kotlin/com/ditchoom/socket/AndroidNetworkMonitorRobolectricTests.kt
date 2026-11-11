@@ -620,7 +620,7 @@ class AndroidNetworkMonitorRobolectricTests {
         // The entire reason this accessor exists. A consumer deciding at configuration time whether it
         // can honour a reactive policy (../webrtc's IceRestartPolicy.OnNetworkChange) must be able to
         // ask without building a monitor: androidOrNull()/default() would register a
-        // ConnectivityManager callback just to be read, and processDefault() would additionally cache a
+        // ConnectivityManager callback just to be read, and shared() would additionally cache a
         // PollingNetworkMonitor — and its 5s coroutine — for the life of the process in the negative
         // case. Answering must cost nothing either way.
         NetworkMonitorInitializer().create(context)

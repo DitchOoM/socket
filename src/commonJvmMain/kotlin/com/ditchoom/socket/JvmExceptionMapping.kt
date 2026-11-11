@@ -83,7 +83,9 @@ internal fun wrapJvmException(
             when {
                 msg.contains("broken pipe") ->
                     SocketClosedException.BrokenPipe("Broken pipe", ex)
-                msg.contains("connection reset") ->
+                // Windows words WSAECONNRESET (10054) as "An existing connection was forcibly closed by
+                // the remote host" — without this arm its "closed" fell to General below.
+                msg.contains("connection reset") || msg.contains("forcibly closed by the remote host") ->
                     SocketClosedException.ConnectionReset("Connection reset", ex)
                 msg.contains("closed") ->
                     SocketClosedException.General(ex.message ?: "Socket closed", ex)

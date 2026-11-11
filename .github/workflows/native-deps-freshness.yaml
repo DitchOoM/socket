@@ -400,6 +400,15 @@ jobs:
         continue-on-error: true
         run: ./gradlew resolveAllDependencies --no-configuration-cache
 
+      # The Kotlin/JS + Wasm Node.js distribution is a Gradle artifact too (nodejs.org/dist), but no
+      # configuration resolveAllDependencies walks holds it: the Kotlin plugin resolves it in a
+      # detached configuration while it builds the task graph. Without this, the `gradle-linux-` entry
+      # carries no Node and every JS/Wasm job fetches it from nodejs.org live. Same step as
+      # build-linux.yaml's `natives` job, which writes this key when a merge rotates it first.
+      - name: Warm the Kotlin/JS + Wasm Node.js distribution
+        continue-on-error: true
+        run: ./gradlew kotlinNodeJsSetup kotlinWasmNodeJsSetup --no-configuration-cache
+
       # validate-artifacts.yaml resolves .ci/validate-resolution, a separate build whose plugin
       # classpath (Kotlin's plugin alone) settles on older jars than the main build's, where other
       # plugins win conflict resolution: kotlinx-coroutines-core-jvm 1.8.0 and

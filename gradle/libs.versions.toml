@@ -1,6 +1,6 @@
 
 [versions]
-kotlin = "2.4.0"
+kotlin = "2.4.21"
 # liburing version for Linux io_uring async I/O - built automatically by Gradle
 liburing = "2.15"
 liburingSha256 = "8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb636120a"
@@ -25,7 +25,7 @@ quicheBoringCrate = "4.22.0"
 # BoringSSL refs at K/N final link.
 # The old socket-owned pin was boringssl = "f1c75347..." (removed — mis-pinned vs quiche's ABI).
 # Windows/Android/Apple/fuzz still build a self-contained libquiche via `boringssl-boring-crate`.
-androidGradlePlugin = "9.2.1"
+androidGradlePlugin = "9.5.1"
 ktlint = "14.2.0"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
@@ -135,8 +135,8 @@ kotlinWrappers = "2026.6.0"
 # stress test never reaches, so no iteration count would have found it. Now increment-if-nonzero (CAS),
 # which never makes a rejected reference visible; cost unchanged (the atomic RMW is the expense, and a
 # retry loop measured the same as fetch-and-add). Drop-in, no source changes here.
-buffer = "6.30.8"
-ksp = "2.3.9"
+buffer = "6.30.9"
+ksp = "2.3.13"
 # 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
 # no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
 # rather than drifting (it was `checkReleaseAarMetadata` that caught the mismatch in #384).

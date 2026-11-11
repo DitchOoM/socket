@@ -39,5 +39,24 @@ class ReadBufferSource(
      * The buffer is write-ready. Whoever takes ownership of it must return it to the pool via
      * [PlatformBuffer.freeNativeMemory] when finished (the codec stream does this on consume).
      */
-    fun acquire(minSize: Int): PlatformBuffer = pool.acquire(minSize) as PlatformBuffer
+    fun acquire(minSize: Int): PlatformBuffer = pool.acquire(poolFriendlySize(minSize)) as PlatformBuffer
+
+    internal companion object {
+        private const val MAX_POWER_OF_TWO = 1 shl 30
+
+        /**
+         * Rounds [minSize] up to a power of two. The pool buckets by power of two, but when it allocates a
+         * request above 1 MiB it rounds to a 1 MiB multiple (2.5 MB becomes 3 MB). That 3 MB buffer files
+         * under a smaller bucket than the 2.5 MB request searches, so it is never found again and every
+         * read allocates. A power-of-two request allocates exactly that size and is found on the next
+         * acquire. The JVM read path asks for the socket's `SO_RCVBUF`, which Linux autotunes to arbitrary
+         * values above 1 MiB under sustained load.
+         */
+        internal fun poolFriendlySize(minSize: Int): Int =
+            when {
+                minSize <= 1 -> 1
+                minSize > MAX_POWER_OF_TWO -> minSize // no larger Int power of two; never hand back less than asked
+                else -> 1 shl (Int.SIZE_BITS - (minSize - 1).countLeadingZeroBits())
+            }
+    }
 }

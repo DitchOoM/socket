@@ -45,7 +45,7 @@ class WrapNodeErrorTests {
     fun connectionRefused_producesSocketConnectionRefused() =
         runTestNoTimeSkipping {
             if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
-            val port = 59200 + kotlin.random.Random.nextInt(799)
+            val port = REFUSED_PORT
             val ex =
                 try {
                     val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))

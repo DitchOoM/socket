@@ -60,21 +60,42 @@ class PeerCertificateValidity private constructor(
 }
 
 /**
- * How far [PeerCertificateSupport.Available.generate] backdates `notBefore` by default, so a peer whose clock
+ * How far [PeerCertificateSupport.Available.mint] backdates `notBefore` by default, so a peer whose clock
  * runs ahead of the browser's still presents a currently valid certificate.
  */
 val PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE: Duration = 1.hours
 
 /** Whether this [QuicEngine] can mint a [PeerCertificate]; read it from [QuicEngine.peerCertificates]. */
 sealed interface PeerCertificateSupport {
-    /** The engine supplies the crypto; [generate] mints certificates. */
+    /** The engine supplies the crypto; [mint] mints certificates. */
     class Available(
         private val backend: PeerCertificateBackend,
     ) : PeerCertificateSupport {
         /**
-         * Generate a fresh self-signed ECDSA P-256 X.509 v3 certificate valid from [notBefore] (truncated
-         * to whole seconds) for [validity]. Throws [PeerCertificateException].
+         * Mint a fresh self-signed ECDSA P-256 X.509 v3 certificate valid from [notBefore] (truncated to
+         * whole seconds) for [validity]. Throws [PeerCertificateException].
+         *
+         * Safe to call from any thread, including the Android main thread or a desktop UI thread: key
+         * generation reads the OS entropy source, and that work runs on an IO dispatcher, never on the
+         * caller's thread. A certificate that finishes just as the caller is cancelled is closed (its key
+         * wiped), not leaked.
          */
+        suspend fun mint(
+            validity: PeerCertificateValidity = PeerCertificateValidity.Maximum,
+            notBefore: Instant = Clock.System.now() - PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE,
+        ): PeerCertificate {
+            val start = Instant.fromEpochSeconds(notBefore.epochSeconds)
+            return buildOffTheCallersThread(onAbandoned = { it.close() }) { generatePeerCertificate(backend, validity, start) }
+        }
+
+        /**
+         * Generate a certificate on the calling thread. See [mint], which this is the blocking predecessor of.
+         */
+        @Deprecated(
+            "Blocks the calling thread while key generation reads the OS entropy source. Call the suspend " +
+                "mint(validity, notBefore), which generates on an IO dispatcher.",
+            ReplaceWith("mint(validity, notBefore)"),
+        )
         fun generate(
             validity: PeerCertificateValidity = PeerCertificateValidity.Maximum,
             notBefore: Instant = Clock.System.now() - PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE,
@@ -88,7 +109,7 @@ sealed interface PeerCertificateSupport {
 /**
  * A self-signed certificate meeting the W3C WebTransport `serverCertificateHashes` constraints — X.509 v3,
  * ECDSA P-256, validity at most 14 days — together with its private key, for a QUIC server that browsers
- * reach by hash instead of by CA. Minted by [PeerCertificateSupport.Available.generate]; served by
+ * reach by hash instead of by CA. Minted by [PeerCertificateSupport.Available.mint]; served by
  * [QuicEngine.bind] (and the `withQuicServer` / `withHttp3Server` overloads that take one).
  *
  * Hand [hash] to the browser (`serverCertificateHashes: [{ algorithm: "sha-256", value }]`) through your

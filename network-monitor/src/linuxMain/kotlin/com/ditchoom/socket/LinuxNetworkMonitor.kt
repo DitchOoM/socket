@@ -428,7 +428,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
         /**
          * Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]).
          *
-         * Shared with [enumerateNetworkInterfaces] — which lives in this module for exactly that reason
+         * Shared with [listNetworkInterfaces] — which lives in this module for exactly that reason
          * — so an ICE host candidate and the primary link agree on what kind of network they are on.
          * Takes the interface *name* because that is the sysfs key: the index path
          * ([classifyOif]) resolves a name via `if_indextoname` before it can get here.

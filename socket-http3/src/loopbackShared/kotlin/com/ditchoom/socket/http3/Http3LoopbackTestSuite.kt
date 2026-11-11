@@ -1694,10 +1694,15 @@ abstract class Http3LoopbackTestSuite {
                         val session = connectWebTransport(authority = "localhost", path = "/wt")
                         diagnostics.mark("session ${session.sessionId} up; draining")
                         session.drain()
-                        assertFalse(session.isClosed, "draining our own session must not close it")
-                        // Let the server observe our drain and close back; we don't close first.
+                        // Not `assertFalse(session.isClosed)` here: the server may observe the drain and
+                        // close back before drain() returns (API 36, 2026-11-07). Whoever closed is in the
+                        // close info: a drain that closed our own session would not carry the server's.
                         diagnostics.mark("drained; awaiting the server's close")
-                        withTimeout(5.seconds.scaled) { session.awaitClosed() }
+                        assertEquals(
+                            WebTransportCloseInfo(0, "server done"),
+                            withTimeout(5.seconds.scaled) { session.awaitClosed() },
+                            "draining our own session must not close it; only the server's close may",
+                        )
                         diagnostics.mark("session closed by the server")
                     }
                     assertTrue(

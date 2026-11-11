@@ -91,7 +91,7 @@ sealed interface MigrationPolicy {
  */
 sealed interface NetworkMonitorSource {
     /**
-     * [NetworkMonitor.processDefault], resolved **once per connection, at connect**. One process-shared
+     * [NetworkMonitor.shared], resolved **once per connection, at connect**. One process-shared
      * monitor serves every connection; it is created lazily, so it costs at most a single background
      * socket/thread for the whole process.
      *

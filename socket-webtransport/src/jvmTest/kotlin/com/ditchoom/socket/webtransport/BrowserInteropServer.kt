@@ -92,7 +92,7 @@ class BrowserInteropServer {
                     val certificates =
                         peerCertificates as? PeerCertificateSupport.Available
                             ?: error("peerCertificates=$peerCertificates: this JVM cannot mint a WebTransport peer certificate")
-                    certificates.generate().use { certificate ->
+                    certificates.mint().use { certificate ->
                         println("WT_CERT generated notBefore=${certificate.notBefore} notAfter=${certificate.notAfter}")
                         withHttp3Server(
                             port = 0,

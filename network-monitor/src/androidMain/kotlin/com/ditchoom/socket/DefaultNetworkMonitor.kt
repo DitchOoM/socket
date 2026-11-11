@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 /**
- * Android actual for [NetworkMonitor.Companion.default].
+ * Android actual for [platformNetworkMonitor].
  *
  * The reactive [AndroidNetworkMonitor] needs an [android.content.Context] for `ConnectivityManager`,
  * which a zero-arg factory cannot conjure. `:network-monitor` supplies one anyway:
@@ -19,9 +19,16 @@ package com.ditchoom.socket
  * gating on reactivity (`../webrtc`'s `IceRestartPolicy.OnNetworkChange`) can branch on at configuration
  * time.
  *
- * This does not throw. [processDefault] is read by QUIC auto-migration on every connection open, so a
+ * This does not throw. [NetworkMonitor.Companion.shared] is read by QUIC auto-migration on every connection open, so a
  * missing `Context` must degrade a best-effort optimization, not fail the connection. The genuinely
  * dead case — `ACCESS_NETWORK_STATE` stripped, so the callback would never fire — does throw, as
  * [NetworkMonitorPermissionException] from [AndroidNetworkMonitor]'s constructor.
  */
-actual fun NetworkMonitor.Companion.default(): NetworkMonitor = androidOrNull() ?: PollingNetworkMonitor()
+internal actual fun platformNetworkMonitor(): NetworkMonitor = NetworkMonitor.androidOrNull() ?: PollingNetworkMonitor()
+
+@Deprecated(
+    "Blocks the calling thread while it starts the platform monitor (a routing socket, a native library " +
+        "load). Call the suspend NetworkMonitor.open(), which builds it on an IO dispatcher.",
+    ReplaceWith("NetworkMonitor.open()", "com.ditchoom.socket.open"),
+)
+actual fun NetworkMonitor.Companion.default(): NetworkMonitor = platformNetworkMonitor()

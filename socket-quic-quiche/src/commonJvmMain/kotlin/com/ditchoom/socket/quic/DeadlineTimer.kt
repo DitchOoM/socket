@@ -15,8 +15,13 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 /**
- * The thread every deadline a QUIC connection or server arms on the JVM fires on: one daemon thread,
- * started by [start] before a connection or server exists and never stopped.
+ * The thread the deadlines of a QUIC connection's or server's application-facing side fire on: its
+ * scope ([applicationScopeDispatcher]) and the server's handlers ([serverReceiveDispatcher]). One daemon
+ * thread, started by [start] before a connection or server exists and never stopped.
+ *
+ * The transport's own deadlines (each driver's wake, the handshake bound, a server's receive loop) fire
+ * on the event loop the connection runs on ([quicLoopGroup]), not here. A test that passes a
+ * [DeadlineTimer]-timed dispatcher as its driver context ([over]) still runs its drivers on it.
  *
  * kotlinx.coroutines' own timer for a dispatcher without one (`Dispatchers.Default`, `Dispatchers.IO`)
  * is `DefaultExecutor`, whose thread exits after a second with nothing scheduled and is started again
@@ -133,26 +138,45 @@ private class TimedDispatcher(
 }
 
 /**
- * Starts the timer the deadlines armed in this context fire on, when it is a [DeadlineTimer]. A
- * dispatcher a caller supplied instead (a test's virtual-time scheduler) keeps its own timer.
+ * Makes sure the deadlines armed for a connection or server built on [this] driver context can fire,
+ * before anything is opened, so a process out of threads refuses the connect or bind with a typed
+ * [DeadlineTimerUnavailableException] instead of opening something whose timers never fire:
  *
- * @throws DeadlineTimerUnavailableException when the timer thread cannot be started.
+ * - The production placement ([productionDriverContext]): a loop of the QUIC loop group can run (one
+ *   is started and left to linger, so the driver's own placement finds a running loop), and
+ *   [DeadlineTimer.Shared], which times the connection's application-facing scope, is started.
+ * - A [DeadlineTimer]-timed dispatcher (a test's): its timer thread is started.
+ * - Anything else (a test's virtual-time scheduler) keeps its own timer.
+ *
+ * @throws DeadlineTimerUnavailableException when a thread cannot be started.
  */
-internal fun CoroutineContext.startDeadlineTimer() {
+internal fun CoroutineContext.startTimers() {
+    if (this[LoopPlacement] != null) {
+        placeDriver(this).release()
+        DeadlineTimer.Shared.start()
+        return
+    }
     when (val interceptor = this[ContinuationInterceptor]) {
         is TimedDispatcher -> interceptor.timer.start()
         else -> Unit
     }
 }
 
-/** [this] dispatcher, with its timers on the same [DeadlineTimer] as [driverContext]'s, when it has one. */
-internal fun CoroutineDispatcher.withTimerOf(driverContext: CoroutineContext): CoroutineDispatcher =
-    when (val interceptor = driverContext[ContinuationInterceptor]) {
-        is TimedDispatcher -> interceptor.timer.over(this)
-        else -> this
+/**
+ * The dispatcher a connection's or server's application-facing scope runs on: `Dispatchers.IO`, never a
+ * loop, because what runs there is (or waits on) the application's code. Its timers fire on
+ * [DeadlineTimer.Shared] in production, on the test's [DeadlineTimer] when [driverContext] is timed by
+ * one, and on kotlinx's own otherwise.
+ */
+internal fun applicationScopeDispatcher(driverContext: CoroutineContext): CoroutineDispatcher =
+    when {
+        driverContext[LoopPlacement] != null -> DeadlineTimer.Shared.over(Dispatchers.IO)
+        else ->
+            when (val interceptor = driverContext[ContinuationInterceptor]) {
+                is TimedDispatcher -> interceptor.timer.over(Dispatchers.IO)
+                else -> Dispatchers.IO
+            }
     }
-
-internal actual val productionDriverContext: CoroutineContext = DeadlineTimer.Shared.over(Dispatchers.Default)
 
 /** What [DeadlineTimer.schedule] returns for a wait it does not schedule. */
 private object NothingScheduled : DisposableHandle {

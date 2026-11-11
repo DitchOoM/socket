@@ -145,6 +145,10 @@ kotlin {
                 implementation(project(":socket-testkit"))
             }
         }
+        // The 0-RTT tests bind the server's UDP socket themselves, to drop the client's Handshake packets.
+        jvmTest.dependencies {
+            implementation(project(":socket-udp"))
+        }
         // Android instrumented (on-device) HTTP/3 loopback conformance — the 27-test parity gap vs
         // JVM/Linux/Apple. Android runs the same quiche backing as the JVM; the quiche JNI `.so` merges
         // into the test APK transitively from :socket-quic-quiche's androidMain/jniLibs (via
@@ -298,6 +302,13 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().con
         dependsOn("kspCommonMainKotlinMetadata")
     }
 }
+
+// The per-target KSP tasks (kspKotlinJvm, kspDebugKotlinAndroid, kspKotlinMacosArm64, ...) also read that commonMain
+// srcDir. Since KSP 2.3.13 they are no longer KotlinCompilationTasks, so the block above misses them and Gradle 9.9 fails
+// the build on the implicit dependency. Order them after the common metadata run explicitly.
+tasks
+    .matching { it.name.startsWith("ksp") && it.name.contains("Kotlin") && it.name != "kspCommonMainKotlinMetadata" }
+    .configureEach { dependsOn("kspCommonMainKotlinMetadata") }
 
 // The ktlint commonMain tasks read the KSP-generated srcDir (even though they filter it out of the
 // lint pass), so Gradle reports an implicit-dependency validation error without this. Declare it

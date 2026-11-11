@@ -32,8 +32,10 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import platform.Network.nw_connection_t
 import platform.posix.AF_INET
 import platform.posix.IPPROTO_UDP
@@ -47,6 +49,7 @@ import platform.posix.socket
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Apple (K/N) [ConnectedDatagramChannel] over an `nw_connection_t` in UDP mode — the lift of the
@@ -119,7 +122,7 @@ internal class NwUdpDatagramChannel(
                 done.await()
             } catch (e: CancellationException) {
                 nw_udp_cancel(conn)
-                withContext(NonCancellable) { done.await() }
+                awaitCallbackAfterCancel(done)
                 payload.freeNativeMemory()
                 throw e
             }
@@ -140,6 +143,24 @@ internal class NwUdpDatagramChannel(
                 hopLimit = HopLimit.Unknown,
             ),
         )
+    }
+
+    /**
+     * Waits for the receive callback NW owes after [nw_udp_cancel]. The wait cannot be abandoned (the
+     * payload is freed after it), so a callback that is late is reported once and the wait
+     * goes on. Only a stalled cancel prints.
+     */
+    private suspend fun awaitCallbackAfterCancel(done: CompletableDeferred<Int>) {
+        withContext(NonCancellable) {
+            try {
+                withTimeout(CALLBACK_GRACE) { done.await() }
+            } catch (_: TimeoutCancellationException) {
+                println(
+                    "[nw-udp] receive callback still pending ${CALLBACK_GRACE} after nw_udp_cancel, peer=$peer closed=${closedFlag.value}",
+                )
+                done.await()
+            }
+        }
     }
 
     override suspend fun send(
@@ -189,6 +210,8 @@ internal class NwUdpDatagramChannel(
 
     companion object {
         private const val MAX_UDP_PAYLOAD = 65507
+
+        private val CALLBACK_GRACE = 5.seconds
 
         /** `nw_error_domain_posix` — the NW error domain whose `code` is a plain POSIX errno. */
         private const val NW_ERROR_DOMAIN_POSIX = 1

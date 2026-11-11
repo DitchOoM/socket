@@ -29,10 +29,10 @@ import kotlin.concurrent.Volatile
  * Scope: this answers *"what network am I on, and how far does it reach"* ([state]), and *"which link
  * carries this local address"* ([linkAddresses]), so a socket's bound address can be tied to the link
  * [state] names. It is not an interface enumerator for choosing addresses to bind or advertise; that is
- * [enumerateNetworkInterfaces] (`../webrtc`'s ICE owns its own).
+ * [listNetworkInterfaces] (`../webrtc`'s ICE owns its own).
  *
- * The platform's best default is `NetworkMonitor.default()`, and the process-shared instance is
- * `NetworkMonitor.processDefault()` — both `expect`/extension functions provided by the owning
+ * The platform's best default is `NetworkMonitor.open()`, and the process-shared instance is
+ * `NetworkMonitor.shared()` — both `expect`/extension functions provided by the owning
  * platform module (`com.ditchoom:socket`), because a functional native monitor needs the same
  * platform interop (`LinuxSockets` / `NWHelpers` cinterop) as `:socket`'s sockets. This module holds
  * the portable contract plus the JVM/Android/JS monitors; the native (Linux/Apple) monitors live in
@@ -185,7 +185,7 @@ interface NetworkMonitor {
 
         /**
          * Process-wide override installed via [installProcessDefault]; null → use the platform default.
-         * Written once at startup and read from any thread resolving `processDefault()`; [Volatile] is
+         * Written once at startup and read from any thread resolving `shared()`; [Volatile] is
          * the memory-visibility guarantee, and no atomicity is needed because installing is a single
          * reference store.
          */
@@ -194,12 +194,12 @@ interface NetworkMonitor {
 
         /**
          * Install a process-wide [NetworkMonitor] that every subsystem resolving
-         * `NetworkMonitor.processDefault()` (e.g. QUIC auto-migration) will use. Call once at startup.
+         * `NetworkMonitor.shared()` (e.g. QUIC auto-migration) will use. Call once at startup.
          *
          * This is the injection seam for overriding the platform default — a test double, or a monitor
          * built from a `Context` an Android app chose itself
          * (`NetworkMonitor.installAndroidContext(applicationContext)` routes here). No platform
-         * *requires* it: `NetworkMonitor.default()` is functional everywhere, including Android, where
+         * *requires* it: `NetworkMonitor.open()` is functional everywhere, including Android, where
          * `NetworkMonitorInitializer` supplies the `Context` `ConnectivityManager` needs via
          * androidx.startup before app code runs.
          *
@@ -229,8 +229,8 @@ interface NetworkMonitor {
 
         /**
          * The [installProcessDefault] override, or `null` if none was installed. Read by
-         * `NetworkMonitor.processDefault()` (an extension in the owning platform module, `:socket`),
-         * which falls back to the shared platform `NetworkMonitor.default()` when this is `null`.
+         * `NetworkMonitor.shared()` (an extension in the owning platform module, `:socket`),
+         * which falls back to the shared platform `NetworkMonitor.open()` when this is `null`.
          */
         fun installedProcessDefaultOrNull(): NetworkMonitor? = installed
     }

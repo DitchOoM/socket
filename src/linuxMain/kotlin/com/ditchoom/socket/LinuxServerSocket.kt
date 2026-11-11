@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -21,10 +23,14 @@ import kotlin.coroutines.coroutineContext
  * for immediate cancellation instead of timeout polling.
  */
 @OptIn(ExperimentalForeignApi::class)
-class LinuxServerSocket(
-    private val config: TransportConfig = TransportConfig(),
+class LinuxServerSocket internal constructor(
+    private val config: TransportConfig,
+    /** Where an accept that leaves the closed listener empty releases it; see [SocketDescriptor]. */
+    releaseContext: CoroutineContext,
 ) : ServerSocket {
-    private val descriptor = SocketDescriptor()
+    constructor(config: TransportConfig = TransportConfig()) : this(config, Dispatchers.Default)
+
+    private val descriptor = SocketDescriptor(releaseContext = releaseContext)
     private var boundPort: Int = -1
 
     // Atomic flag for thread-safe listening state checks across coroutines

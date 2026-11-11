@@ -6,10 +6,10 @@ import com.ditchoom.socket.nwhelpers.nw_helper_set_state_handler
 import com.ditchoom.socket.nwhelpers.nw_helper_start
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSNumber
 import platform.Network.nw_connection_t
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import kotlin.concurrent.AtomicInt
 
 /**
  * Client socket implementation using Apple's Network.framework.
@@ -65,6 +65,8 @@ class NWClientSocketWrapper(
         val tlsConfig = config.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
+        val trace = NwStateTrace("NW TCP connect to $endpoint:$port (tls=$useTls)")
+        trace.mark("create begun")
         val conn =
             nw_helper_create_tcp_connection(
                 host = endpoint,
@@ -76,40 +78,51 @@ class NWClientSocketWrapper(
                 // null (unset) keeps the platform default (Nagle on).
                 no_delay = NSNumber(bool = config.io.tcpNoDelay == true),
             ) ?: throw SocketIOException("Failed to create NW connection")
+        trace.mark("created")
 
         try {
-            suspendCancellableCoroutine<Unit> { continuation ->
-                var resumed = false
-
-                nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
-                    if (resumed) return@nw_helper_set_state_handler
-
-                    when (state) {
-                        3 -> { // ready
-                            resumed = true
-                            continuation.resume(Unit)
-                        }
-                        1, 4 -> { // waiting or failed
-                            resumed = true
-                            continuation.resumeWithException(
-                                mapSocketException(errorDomain, errorDesc, hostname = hostname),
-                            )
-                        }
-                        5 -> { // cancelled
-                            resumed = true
-                            continuation.resumeWithException(
-                                SocketIOException(errorDesc ?: "Connection cancelled"),
-                            )
-                        }
-                    }
+            // Network.framework's own connection timeout (set in create_tcp_parameters) covers the TCP
+            // handshake only. A TLS handshake has no bound there: a peer that accepts TCP and then says
+            // nothing holds the connection in `preparing` for as long as the peer stays silent. So the
+            // whole establishment, TCP and TLS together, is bounded here — the same bound the JVM and
+            // Linux connects put on their TLS handshake.
+            withTimeoutOrNull(config.connectTimeout) { awaitReady(conn, hostname, trace) }
+                ?: run {
+                    trace.mark("connect timeout (${config.connectTimeout}) elapsed")
+                    throw SocketTimeoutException(TimeoutContext.Connect(config.connectTimeout, hostname, port), hostname, port)
                 }
-
-                nw_helper_start(conn)
-            }
         } catch (e: Throwable) {
             nw_helper_force_cancel(conn)
+            // A failed connect carries its NW timeline; a cancellation is the caller's, not ours to annotate.
+            if (e !is kotlinx.coroutines.CancellationException) e.addSuppressed(NwStateTimeline(trace.render()))
             throw e
         }
         return conn
+    }
+
+    /** Suspends until [conn] is ready; a waiting, failed or cancelled connection resumes with its error. */
+    private suspend fun awaitReady(
+        conn: nw_connection_t,
+        hostname: String,
+        trace: NwStateTrace,
+    ) = suspendCancellableCoroutine<Unit> { continuation ->
+        // NW calls the handler on a concurrent queue, so two state changes (a TLS `waiting`, then the
+        // `cancelled` our own cleanup causes) can run at once: claim the single resume atomically.
+        val resumed = AtomicInt(0)
+
+        nw_helper_set_state_handler(conn) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+            trace.connectionState("client", state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
+            val outcome: Result<Unit>? =
+                when (state) {
+                    3 -> Result.success(Unit) // ready
+                    1, 4 -> Result.failure(mapSocketException(errorDomain, errorDesc, hostname = hostname)) // waiting or failed
+                    5 -> Result.failure(SocketIOException(errorDesc ?: "Connection cancelled")) // cancelled
+                    else -> null
+                }
+            if (outcome != null && resumed.compareAndSet(0, 1)) continuation.resumeWith(outcome)
+        }
+
+        nw_helper_start(conn)
+        trace.mark("started")
     }
 }

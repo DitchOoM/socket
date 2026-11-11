@@ -1,3 +1,5 @@
+@file:OptIn(InternalDatagramLoopApi::class)
+
 package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.BaseJvmBuffer
@@ -18,17 +20,19 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.SocketOption
 import java.nio.ByteBuffer
 import java.nio.channels.ClosedChannelException
-import java.nio.channels.ClosedSelectorException
-import java.nio.channels.SelectionKey
-import java.nio.channels.Selector
+import java.util.concurrent.CopyOnWriteArraySet
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -114,7 +118,7 @@ internal suspend fun writeAbsorbingBackpressure(
 }
 
 /**
- * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] + [Selector] — the real-socket
+ * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] — the real-socket
  * lift of the quiche `NioUdpChannel`, cleaned to the public datagram shape (RFC §7):
  *
  * - **per-packet source exposed** — `NioUdpChannel.receive` returned only a length and threw the sender
@@ -132,10 +136,19 @@ internal suspend fun writeAbsorbingBackpressure(
  * core holds only the mode-agnostic machinery — receive loop, control-plane appliers, lifecycle — and
  * deliberately implements neither send refinement.
  *
- * Cancellation-correct: the channel is non-blocking and only [Selector.select] blocks, inside
- * [runInterruptible]. Cancelling a parked [receive] interrupts the select — it does NOT close the socket
- * (a blocking `receive()` would `ClosedByInterruptException` it). Not thread-safe; confine [receive] and
- * `send` each to one coroutine, per the buffer-flow contract.
+ * Cancellation-correct: the channel is non-blocking, and a receive or a full send waits for readiness
+ * in one of two places, both cancellable without closing the socket (a blocking `receive()` would
+ * `ClosedByInterruptException` it):
+ *
+ * - On a [DatagramEventLoop] (the coroutine is dispatched by one), in that loop's own selector, which
+ *   multiplexes every channel the loop serves. No thread is parked for this channel, and readiness
+ *   resumes the waiter on the thread that observed it.
+ * - Anywhere else, in the selector of the [DatagramEventLoop] this channel is homed on ([udpLoopGroup]):
+ *   the wait hops to that loop's thread and back. A `Selector` is only ever selected by the platform
+ *   thread of the loop that owns it: never on `Dispatchers.IO` (64 parked receives exhaust it) and never
+ *   on a virtual thread (a virtual thread in `select()` holds its carrier).
+ *
+ * Not thread-safe; confine [receive] and `send` each to one coroutine, per the buffer-flow contract.
  */
 @ExperimentalDatagramApi
 internal abstract class NioDatagramChannelCore(
@@ -143,24 +156,11 @@ internal abstract class NioDatagramChannelCore(
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.Default,
 ) : DatagramChannel {
-    private val selector: Selector = Selector.open().also { channel.register(it, SelectionKey.OP_READ) }
+    /** The loop this channel waits on when the caller is not on a loop; chosen on first use. */
+    private val home: DatagramEventLoop by lazy { udpLoopGroup.next() }
 
-    /**
-     * Second selector, registered `OP_WRITE`, used only by [awaitWritable].
-     *
-     * It cannot be the read [selector]: that one is parked in `select()` inside a [receive], and a
-     * `Selector` serializes selection operations — a send-side `select()` on it would queue behind a
-     * receive that only returns when a *datagram arrives*, converting backpressure into a deadlock.
-     * A separate selector is registered with the same channel (a `SelectableChannel` may be
-     * registered with several) so the two directions park independently.
-     *
-     * Opened **lazily**, on the first refused write, so a channel whose send buffer never fills — the
-     * normal case, and the reason the original loop chose a sleep — still pays exactly one selector,
-     * as before. Written on the send coroutine (sends are single-coroutine-confined per the
-     * buffer-flow contract) and read by [close] on any thread, hence [Volatile].
-     */
-    @Volatile
-    private var writeSelector: Selector? = null
+    /** The loops this channel has waited on, each told by [close] to wake whatever still waits there. */
+    private val loops = CopyOnWriteArraySet<DatagramEventLoop>()
 
     @Volatile
     private var closed = false
@@ -221,7 +221,13 @@ internal abstract class NioDatagramChannelCore(
         }
     }
 
-    override suspend fun receive(): DatagramReadResult {
+    /** Off the Android main thread, where even a non-blocking `recvfrom` is a violation: see [offTheAndroidMainThread]. */
+    override suspend fun receive(): DatagramReadResult =
+        offTheAndroidMainThread(onAbandoned = { (it as? DatagramReadResult.Received)?.datagram?.payload?.freeIfNeeded() }) {
+            receiveInPlace()
+        }
+
+    private suspend fun receiveInPlace(): DatagramReadResult {
         while (true) {
             if (closed) return DatagramReadResult.Closed()
             var payload: PlatformBuffer? = null
@@ -234,21 +240,25 @@ internal abstract class NioDatagramChannelCore(
             // driver's retry rate.
             var handedOff = false
             try {
-                // select() is the only blocking call; runInterruptible makes a cancelled receive
-                // interrupt the select (which returns) without closing the underlying socket.
-                runInterruptible(Dispatchers.IO) { selector.select() }
-                selector.selectedKeys().clear()
-                if (closed) return DatagramReadResult.Closed()
-
+                // The read below may not suspend at all, so it is not the cancellation point the wait
+                // always was: check here, as entering the wait did.
+                currentCoroutineContext().ensureActive()
                 val buffer = bufferFactory.allocate(receiveBufferSize)
                 payload = buffer
                 val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
                 byteBuffer.clear()
+                // The channel is non-blocking, so read first: a datagram already queued (the common case
+                // under load) costs one syscall and no wait. Only an empty socket waits for readiness.
                 // Both modes receive via channel.receive(): on a connected socket the reported sender IS
                 // the connected peer (value-equal via InternedJvmSocketAddress).
-                val sender =
-                    channel.receive(byteBuffer) as InetSocketAddress?
-                        ?: continue // spurious wakeup — `finally` frees the staging buffer
+                val sender = channel.receive(byteBuffer) as InetSocketAddress?
+                if (sender == null) {
+                    // Give the staging buffer back while waiting: a wait can last the connection's life.
+                    payload = null
+                    buffer.freeNativeMemory()
+                    awaitReadable()
+                    continue // re-check closed, then read what woke us
+                }
                 val length = byteBuffer.position()
                 // Expose exactly the received datagram as the readable window [0, length).
                 buffer.position(0)
@@ -263,23 +273,37 @@ internal abstract class NioDatagramChannelCore(
                         hopLimit = HopLimit.Unknown,
                     ),
                 )
-            } catch (_: ClosedSelectorException) {
-                // close() sets `closed`, wakes the selector and then closes it, so a receive parked in
-                // select() — or between select() returning and reading selectedKeys() — races that
-                // close and sees the selector already gone. The contract is that a receive on a closed
-                // channel *yields* Closed, so this must not escape as an exception: a caller draining
-                // in a loop would take a spurious failure purely from shutdown ordering.
-                return DatagramReadResult.Closed()
             } catch (_: ClosedChannelException) {
-                // Same shutdown race, one layer down: close() closes the channel after the selector, so
-                // an in-flight receive() can find the channel gone. (ClosedByInterruptException is a
-                // subtype, but a cancelled receive unwinds through runInterruptible before reaching
-                // here, so cancellation still propagates as cancellation rather than as Closed.)
+                // close() races a receive: the channel (or its key on the loop) can be gone by the time
+                // the receive reads or registers. The contract is that a receive on a closed channel
+                // *yields* Closed, so this must not escape as an exception: a caller draining in a loop
+                // would take a spurious failure purely from shutdown ordering.
                 return DatagramReadResult.Closed()
             } finally {
                 if (!handedOff) payload?.freeNativeMemory()
             }
         }
+    }
+
+    /**
+     * Waits until the channel may be readable: in the loop's selector when this coroutine runs on a
+     * [DatagramEventLoop], else in the selector of this channel's [home] loop. Returns when the channel
+     * is closed too; the caller re-checks [closed].
+     */
+    private suspend fun awaitReadable() {
+        val loop = currentCoroutineContext()[ContinuationInterceptor] as? DatagramEventLoop
+        if (loop != null && loop.isLoopThread()) {
+            // Registered BEFORE the closed check, and close() sets `closed` before it reads the set:
+            // either this wait sees the close, or the close sees this loop and wakes the wait.
+            loops.add(loop)
+            if (closed) return
+            loop.awaitReadable(channel)
+            return
+        }
+        val home = home
+        loops.add(home)
+        if (closed) return
+        withContext(home) { home.awaitReadable(channel) }
     }
 
     /** Shared send staging: closed-sink guard, control plane, and the zero-copy view to transmit. */
@@ -332,7 +356,9 @@ internal abstract class NioDatagramChannelCore(
         if (length > maxWritableSize) {
             throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         }
-        writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize)
+        // Off the Android main thread, where even a non-blocking `sendto` is a violation; anywhere else
+        // (the QUIC datapath included) this sends in place.
+        offTheAndroidMainThread { writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize) }
     }
 
     /**
@@ -341,36 +367,27 @@ internal abstract class NioDatagramChannelCore(
      * The reactive half of the send path: a full output buffer is a readiness condition the
      * platform already reports, so it is awaited rather than polled — one wakeup when the buffer
      * drains, instead of a backoff ladder of timer wakeups that both wastes them and adds latency to
-     * the retry. [writeSelector] is opened here on first use and lives with the channel; it is
-     * registered `OP_WRITE`, so `select` returns as soon as there is room.
-     *
-     * Blocking is confined to [Selector.select] inside [runInterruptible], exactly like [receive], so
-     * cancelling a parked send interrupts the select instead of closing the socket. The timeout is
-     * floored at one millisecond because `select(0)` means *block forever*, which is the one outcome
-     * a bounded send must never have.
+     * the retry. The wait is `OP_WRITE` interest in a loop's selector (the caller's loop, else this
+     * channel's [home] loop), so it returns as soon as there is room, and cancelling it leaves the
+     * socket open. [timeout] is a timer on that wait, never a `select(0)`, which would mean forever.
      */
     internal suspend fun awaitWritable(timeout: Duration): WriteReadiness {
         if (closed) return WriteReadiness.Closed
-        val writeSelector =
-            this.writeSelector ?: try {
-                Selector.open().also {
-                    channel.register(it, SelectionKey.OP_WRITE)
-                    this.writeSelector = it
-                }
-            } catch (_: ClosedChannelException) {
-                return WriteReadiness.Closed
-            }
+        val current = currentCoroutineContext()[ContinuationInterceptor] as? DatagramEventLoop
+        val loop = if (current != null && current.isLoopThread()) current else home
+        // Registered BEFORE the closed check; close() sets `closed` before it reads the set.
+        loops.add(loop)
+        if (closed) return WriteReadiness.Closed
         return try {
-            val ready = runInterruptible(Dispatchers.IO) { writeSelector.select(timeout.inWholeMilliseconds.coerceAtLeast(1)) }
-            writeSelector.selectedKeys().clear()
+            val ready =
+                withTimeoutOrNull(timeout) {
+                    if (loop === current) loop.awaitWritable(channel) else withContext(loop) { loop.awaitWritable(channel) }
+                }
             when {
                 closed -> WriteReadiness.Closed
-                ready > 0 -> WriteReadiness.Writable
+                ready != null -> WriteReadiness.Writable
                 else -> WriteReadiness.TimedOut
             }
-        } catch (_: ClosedSelectorException) {
-            // close() raced this wait — same shutdown ordering the receive path documents.
-            WriteReadiness.Closed
         } catch (_: ClosedChannelException) {
             WriteReadiness.Closed
         }
@@ -378,18 +395,9 @@ internal abstract class NioDatagramChannelCore(
 
     override fun close() {
         closed = true
-        runCatching {
-            selector.wakeup()
-            selector.close()
-        }
-        // Wake a send parked on write readiness before the channel goes: it observes `closed` and
-        // unwinds as a typed send failure rather than waiting out its budget on a dead socket.
-        writeSelector?.let { w ->
-            runCatching {
-                w.wakeup()
-                w.close()
-            }
-        }
+        // Every loop this channel waited on wakes its waiters before the key is cancelled: a cancelled
+        // key is never selected, so a waiter the loop was not told about would wait forever.
+        for (loop in loops) loop.channelClosing(channel)
         runCatching { channel.close() }
     }
 }

@@ -83,7 +83,7 @@ class AppleNetworkMonitor : NetworkMonitor {
         ) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
             val onThePath = pathInterfaces.toList()
             pathInterfaces.clear()
-            _linkAddresses.value = appleLinkAddresses(onThePath, usesTypes, enumerateNetworkInterfaces())
+            _linkAddresses.value = appleLinkAddresses(onThePath, usesTypes, platformNetworkInterfaces())
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             val state = appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
             // One call publishes and counts, so the observation is stamped with the state it folded to —

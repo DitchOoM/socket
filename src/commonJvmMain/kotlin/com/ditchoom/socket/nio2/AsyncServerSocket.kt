@@ -7,6 +7,7 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio2.util.aAccept
 import com.ditchoom.socket.nio2.util.aBind
 import com.ditchoom.socket.nio2.util.openAsyncServerSocketChannel
+import com.ditchoom.socket.offTheAndroidMainThread
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.net.InetSocketAddress
@@ -39,14 +40,14 @@ class AsyncServerSocket(
                 null
             }
 
-        val serverLocal = openAsyncServerSocketChannel()
-        val server = serverLocal.aBind(socketAddress, backlog)
+        // Off the Android main thread, like every socket call here: see offTheAndroidMainThread.
+        val server = offTheAndroidMainThread(onAbandoned = { it.close() }) { openAsyncServerSocketChannel().aBind(socketAddress, backlog) }
         this@AsyncServerSocket.server = server
         return flow {
             while (isListening()) {
                 val client =
                     try {
-                        server.aAccept()
+                        offTheAndroidMainThread(onAbandoned = { it.close() }) { server.aAccept() }
                     } catch (e: ClosedChannelException) {
                         // Supertype on purpose, covering both shutdown orderings: a close that
                         // lands *during* a pending accept surfaces as AsynchronousCloseException

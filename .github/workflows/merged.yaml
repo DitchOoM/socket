@@ -359,8 +359,22 @@ jobs:
           packages: >-
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org, which
+      # redirects to GitHub (504 for hours on 2026-11-08). Restore-only, like everything here: the
+      # nightly `cache-warm` and build-linux.yaml's `natives` (main only) write it on main. Keyed on
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # -PlinuxTargets=false: both jars are JVM bytecode plus their runtime jars. With the Linux K/N
+      # targets declared, configuring the build provisions the linuxX64 + linuxArm64 BoringSSL bundles
+      # (GitHub release downloads), and the jars' metadata chain builds liburing (a GitHub archive
+      # download). Same switch and reasoning as review.yaml's consumer-smoke controllerJar step.
       - name: Build harness controller + udp-toxi jars
-        run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar --no-configuration-cache
+        run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar -PlinuxTargets=false --no-configuration-cache
 
       # qemu gives buildx the arm64 emulation it needs for the linux/arm64 halves.
       - name: Set up QEMU
@@ -410,9 +424,10 @@ jobs:
     needs: [check-release, version, build-linux, publish]
     if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
     runs-on: ubuntu-latest
-    # No checkout, and no RELEASE_PAT. Every step below drives `gh` entirely through
-    # `--repo="$GITHUB_REPOSITORY"` (or an explicit `repos/{owner}/{repo}/…` API path), so there is
-    # no working tree to need and no local git context to resolve — GITHUB_REPOSITORY and
+    # No RELEASE_PAT, and the only checkout is a sparse one of .github/scripts at github.sha (main's
+    # commit, never a PR head) to run the notes script; nothing is ever pushed from it. Every step
+    # below drives `gh` entirely through `--repo="$GITHUB_REPOSITORY"` (or an explicit
+    # `repos/{owner}/{repo}/…` API path), so no local git context is resolved — GITHUB_REPOSITORY and
     # GITHUB_TOKEN are enough.
     #
     # This is the fix for the bug that lost the tags for v3.1.0, v3.1.1 and v4.3.2. The old
@@ -427,6 +442,34 @@ jobs:
     # is introduced. No PAT is needed, by anyone, ever again — which also retires the
     # silent-degradation mode where an unconfigured RELEASE_PAT looked fine until release day.
     steps:
+      - uses: actions/checkout@v7
+        if: needs.publish.result == 'success'
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # The notes list every PR merged since the previous published release, grouped by type, with
+      # each PR's `## Release note` section under its title. They used to carry only the title of the
+      # PR whose merge triggered the run ("Manual release" for a dispatched one), so a release that
+      # shipped ten PRs named one of them, or none. See .github/scripts/release-notes.py.
+      - name: Write release notes
+        if: needs.publish.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          version="${{ needs.version.outputs.version }}"
+          # The artifacts are already on Maven Central by now, so a notes failure must never cost the
+          # tag (that half-done state is what the steps below exist to prevent). Fall back to the
+          # Central link and say so; the notes can be edited onto the release afterwards.
+          if ! python3 -I .github/scripts/release-notes.py --version "$version" --sha "$RELEASE_SHA" > "$RUNNER_TEMP/notes.md"; then
+            echo "::warning::release-notes.py failed; the release gets only the Maven Central link. Regenerate with: python3 .github/scripts/release-notes.py --version $version --sha $RELEASE_SHA"
+            echo "**Maven Central:** [com.ditchoom:socket:${version}](https://central.sonatype.com/artifact/com.ditchoom/socket/${version})" > "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
       # A draft release creates no tag until it is published, so this path never hit the tag-push
       # rejection below. `--target` is passed anyway so that when it IS published the tag lands on
       # the commit this run built, not on whatever main's head happens to be that day.
@@ -434,8 +477,6 @@ jobs:
         if: needs.check-release.outputs.flow == 'draft' && needs.publish.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
-          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           version="${{ needs.version.outputs.version }}"
@@ -448,8 +489,6 @@ jobs:
               --target="$RELEASE_SHA" \
               --title="v${version}" \
               --notes="$(cat <<EOF
-          ## [${PR_TITLE}](${PR_URL})
-
           **Status:** Awaiting validation in [Maven Central Staging](${staging_url})
           **Deployment ID:** \`${deployment_id}\`
 
@@ -460,6 +499,10 @@ jobs:
           ### To cancel:
           1. Run the 'Complete or Cancel Release' workflow with action 'cancel' and version '${version}'
           2. This will drop the deployment and delete this draft release
+
+          ---
+
+          $(cat "$RUNNER_TEMP/notes.md")
           EOF
           )"
 
@@ -493,8 +536,6 @@ jobs:
         if: needs.check-release.outputs.flow == 'release' && needs.publish.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
-          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           set -uo pipefail
@@ -593,16 +634,10 @@ jobs:
 
           # Creates the tag via the API as a side effect of creating the release (normal path), or
           # attaches the release to the tag that is already there (recovery path).
-          maven_url="https://central.sonatype.com/artifact/com.ditchoom/socket/${version}"
           # ${a[@]+"${a[@]}"} — expanding an EMPTY array under `set -u` is fatal on bash < 4.4.
           # ubuntu-latest ships 5.2, but the guard costs nothing and survives a runner/shell change.
           gh release create "$tag" \
               --repo="$GITHUB_REPOSITORY" \
               ${target_args[@]+"${target_args[@]}"} \
               --title="${tag}" \
-              --notes="$(cat <<EOF
-          ## [${PR_TITLE}](${PR_URL})
-
-          **Maven Central:** [com.ditchoom:socket:${version}](${maven_url})
-          EOF
-          )"
+              --notes-file="$RUNNER_TEMP/notes.md"
