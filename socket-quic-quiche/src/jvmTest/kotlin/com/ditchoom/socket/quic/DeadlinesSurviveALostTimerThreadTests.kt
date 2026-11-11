@@ -190,8 +190,15 @@ class DeadlinesSurviveALostTimerThreadTests {
     @Test
     fun aDelayInTheProductionDriverContextFiresWhileTheSharedTimerThreadIsLost() =
         SharedTimerLost().use {
-            failIfWedged(WATCHDOG, "a delay in the production driver context", productionDriverContext) {
-                delay(SHORT)
+            // Where a driver started from the production context runs: a loop of the QUIC loop group,
+            // whose timers fire on the loop's own thread.
+            val placed = placeDriver(productionDriverContext)
+            try {
+                failIfWedged(WATCHDOG, "a delay in the production driver context", placed.context) {
+                    delay(SHORT)
+                }
+            } finally {
+                placed.release()
             }
         }
 

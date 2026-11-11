@@ -14,7 +14,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -65,9 +64,14 @@ suspend fun QuicScope.echoConnection(quicOptions: QuicOptions) {
     val streamJob =
         launch {
             try {
-                // acceptStream has a timeout so a datagram-only / health-check
-                // connection doesn't keep this job parked forever.
-                val stream = withTimeout(3.seconds) { acceptStream() }
+                // No deadline of its own: the client's first stream frame can arrive late. Under
+                // loss, its first copy dropped and the retransmission waiting out a PTO inflated by
+                // a lossy handshake's RTT sample, it reached this server 4.5 s after the handshake
+                // (QuicImpairedHarnessTests.aStreamSurvivesLossOnBothLegs). The former 3 s accept
+                // window had given up by then, so the stream was never echoed and the client idled
+                // out. A datagram-only or health-check connection does not park this job forever:
+                // it is cancelled below once the peer goes away.
+                val stream = acceptStream()
                 try {
                     // The stream lives as long as the connection: only the peer's FIN/RESET or the
                     // connection's own end closes it. The read deadline is the connection's idle

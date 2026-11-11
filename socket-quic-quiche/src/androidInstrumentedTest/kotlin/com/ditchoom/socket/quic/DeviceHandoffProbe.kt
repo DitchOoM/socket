@@ -25,13 +25,13 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.installAndroidApplicationContext
-import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.TrafficSecretsLog
+import com.ditchoom.socket.shared
 import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.echo.EchoFailure
 import com.ditchoom.socket.testkit.echo.EchoLivenessTotals
@@ -325,7 +325,7 @@ class DeviceHandoffProbe {
         // process is not an app; without it the process default would be the POLLING monitor and the
         // OS ladder would be recorded on a 5 s cadence instead of on the platform's own callbacks.
         NetworkMonitor.installAndroidApplicationContext(ctx)
-        val monitor = NetworkMonitor.processDefault()
+        val monitor = runBlocking { NetworkMonitor.shared() }
         val osSource = AndroidOsNetworkSource(ctx)
         // The device's network changes and movement, which every lane's echo pace reads.
         val signals = DeviceSignals()

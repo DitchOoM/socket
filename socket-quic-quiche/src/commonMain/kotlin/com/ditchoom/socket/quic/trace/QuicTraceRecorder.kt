@@ -95,6 +95,15 @@ class QuicTraceRecorder(
     /** Offset from the recorder's single clock origin — a Duration, matching [TraceEvent.at]. */
     private fun now(): Duration = origin.elapsedNow()
 
+    /**
+     * Waits (suspending, bounded) until what was recorded so far has reached the application's sink,
+     * when that sink is delivered off the transport's threads ([OffLoopTraceSink]); returns at once
+     * otherwise.
+     */
+    suspend fun flush() {
+        (sink as? OffLoopTraceSink)?.flush()
+    }
+
     /** Emit one pre-stamped [event] to the sink. The sink owns serialization ([TraceEvent.toString]). */
     fun record(event: TraceEvent) {
         sink.emit(event)
@@ -425,6 +434,7 @@ internal class SendStalledException(
 ) : RuntimeException("send did not answer within $after")
 
 /** Exhaustive by construction: a new [MigrationResult] leaf is a compile error here. */
+@Suppress("DEPRECATION") // HandshakeNotConfirmed: never returned, still a leaf.
 private fun MigrationResult.toTraceOutcome(): TraceMigrationOutcome =
     when (this) {
         is MigrationResult.Succeeded -> TraceMigrationOutcome.Succeeded

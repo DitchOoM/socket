@@ -82,11 +82,17 @@ static const int32_t SocketErrorTypeTls   = 3;
 // State handler callback.
 // Connection state (nw_connection_state_t): 0=invalid, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
 // error_domain: 0=none, 1=posix, 2=dns, 3=tls
+// nw_entry_ns: nw_helper_now_ns() read as NW entered the C block, before anything else ran, so a
+// diagnostic can tell how long NW took to report a state from how long the report took to reach Kotlin.
 typedef void (^nw_helper_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
-    NSString * _Nullable error_desc);
+    NSString * _Nullable error_desc,
+    uint64_t nw_entry_ns);
+
+// A monotonic clock in nanoseconds (CLOCK_UPTIME_RAW), the one nw_entry_ns is read from.
+uint64_t nw_helper_now_ns(void);
 
 void nw_helper_set_state_handler(
     nw_connection_t _Nonnull conn,
@@ -146,9 +152,15 @@ typedef void (^nw_helper_listener_state_handler_t)(
     int32_t state,
     int32_t error_domain,
     int32_t error_code,
-    NSString * _Nullable error_desc);
+    NSString * _Nullable error_desc,
+    uint64_t nw_entry_ns);
 
 nw_listener_t _Nullable nw_helper_create_listener(int32_t port, int32_t backlog);
+
+// A port for a dual-stack listener whose IPv4 half is free too: [port], or for 0 one drawn from the
+// IPv6 table. Probes with throwaway sockets it closes again. Returns the port, or -errno when its
+// IPv4 half (or, for 0, any IPv6 port) cannot be had. See NWServerWrapper.portOwnedForIpv4.
+int32_t nw_helper_listen_port_probe(int32_t port);
 
 void nw_helper_listener_set_new_connection_handler(
     nw_listener_t _Nonnull listener,
@@ -205,7 +217,7 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 // The NWPathMonitor bridge (nw_helper_create_path_monitor + set_update_handler/start/cancel) and the
 // getifaddrs scan (nw_helper_enumerate_interfaces), with their block typedefs, now live in
 // network-monitor/src/nativeInterop/cinterop/nm_network_helpers.h alongside their only callers —
-// AppleNetworkMonitor and enumerateNetworkInterfaces(), which moved to :network-monitor together so
+// AppleNetworkMonitor and listNetworkInterfaces(), which moved to :network-monitor together so
 // they can share LinuxNetworkMonitor.classifyLinkKind without it becoming public API.
 //
 // Two cinterops on one classpath must not both declare the same helper, so they are declared THERE and

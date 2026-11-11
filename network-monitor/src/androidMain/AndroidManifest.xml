@@ -11,7 +11,7 @@
       the consuming app gets a reactive NetworkMonitor without remembering to call
       NetworkMonitor.installAndroidContext(applicationContext) in Application.onCreate(). The initializer
       only captures the application Context — no ConnectivityManager callback is registered until
-      something actually reads NetworkMonitor.processDefault().
+      something actually reads NetworkMonitor.shared().
 
       tools:node="merge" folds this <meta-data> into the provider androidx.startup's own manifest already
       declares, rather than redeclaring it. An app opts out with

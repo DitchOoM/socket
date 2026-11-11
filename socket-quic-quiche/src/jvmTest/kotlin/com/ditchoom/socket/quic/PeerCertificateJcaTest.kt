@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import java.io.File
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -40,89 +41,91 @@ class PeerCertificateJcaTest {
     private val engine = QuicheEngine.peerCertificates as PeerCertificateSupport.Available
 
     @Test
-    fun javaSecurityParsesVerifiesAndAgreesAcrossManyCertificates() {
-        repeat(CERTIFICATES) { index ->
-            engine.generate().use { certificate ->
-                val bytes = certificate.der().bytes()
-                val x509 = CertificateFactory.getInstance("X.509").generateCertificate(bytes.inputStream()) as X509Certificate
-                val context = "certificate $index: ${bytes.toHex()}"
-                assertEquals(3, x509.version, context)
-                assertEquals("SHA256withECDSA", x509.sigAlgName, context)
-                x509.verify(x509.publicKey) // throws on a bad self-signature
-                assertEquals(secp256r1Order(), (x509.publicKey as ECPublicKey).params.order, context)
-                assertEquals(listOf("1.3.6.1.5.5.7.3.1"), x509.extendedKeyUsage, context)
-                assertEquals(certificate.notBefore, Instant.fromEpochMilliseconds(x509.notBefore.time), context)
-                assertEquals(certificate.notAfter, Instant.fromEpochMilliseconds(x509.notAfter.time), context)
-                assertTrue(x509.serialNumber.signum() > 0, context)
+    fun javaSecurityParsesVerifiesAndAgreesAcrossManyCertificates() =
+        runTest {
+            repeat(CERTIFICATES) { index ->
+                engine.mint().use { certificate ->
+                    val bytes = certificate.der().bytes()
+                    val x509 = CertificateFactory.getInstance("X.509").generateCertificate(bytes.inputStream()) as X509Certificate
+                    val context = "certificate $index: ${bytes.toHex()}"
+                    assertEquals(3, x509.version, context)
+                    assertEquals("SHA256withECDSA", x509.sigAlgName, context)
+                    x509.verify(x509.publicKey) // throws on a bad self-signature
+                    assertEquals(secp256r1Order(), (x509.publicKey as ECPublicKey).params.order, context)
+                    assertEquals(listOf("1.3.6.1.5.5.7.3.1"), x509.extendedKeyUsage, context)
+                    assertEquals(certificate.notBefore, Instant.fromEpochMilliseconds(x509.notBefore.time), context)
+                    assertEquals(certificate.notAfter, Instant.fromEpochMilliseconds(x509.notAfter.time), context)
+                    assertTrue(x509.serialNumber.signum() > 0, context)
 
-                val walked = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()), context)
-                assertEquals(certificate.notBefore, walked.notBefore, context)
-                assertEquals(certificate.notAfter, walked.notAfter, context)
-                assertTrue(walked.isEcP256, context)
+                    val walked = assertNotNull(parsePinnedLeafFieldsDer(certificate.der()), context)
+                    assertEquals(certificate.notBefore, walked.notBefore, context)
+                    assertEquals(certificate.notAfter, walked.notAfter, context)
+                    assertTrue(walked.isEcP256, context)
 
-                val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-                assertEquals(
-                    digest.toHex(),
-                    certificate.hash.value
-                        .bytes()
-                        .toHex(),
-                    context,
-                )
+                    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+                    assertEquals(
+                        digest.toHex(),
+                        certificate.hash.value
+                            .bytes()
+                            .toHex(),
+                        context,
+                    )
+                }
             }
         }
-    }
 
     @Test
-    fun pemKeyFileIsThePrivateHalfOfTheCertificateAndIsDeletedAfterTheBind() {
-        engine.generate().use { certificate ->
-            val x509 =
-                CertificateFactory
-                    .getInstance(
-                        "X.509",
-                    ).generateCertificate(certificate.der().bytes().inputStream()) as X509Certificate
-            val seen = mutableListOf<File>()
-            val inspecting =
-                FilesOnlyEngine { tls ->
-                    val key = File(tls.privKeyPath)
-                    val cert = File(tls.certChainPath)
-                    seen += listOf(key, cert)
-                    for (file in seen) {
-                        assertOwnerOnly(file)
+    fun pemKeyFileIsThePrivateHalfOfTheCertificateAndIsDeletedAfterTheBind() =
+        runTest {
+            engine.mint().use { certificate ->
+                val x509 =
+                    CertificateFactory
+                        .getInstance(
+                            "X.509",
+                        ).generateCertificate(certificate.der().bytes().inputStream()) as X509Certificate
+                val seen = mutableListOf<File>()
+                val inspecting =
+                    FilesOnlyEngine { tls ->
+                        val key = File(tls.privKeyPath)
+                        val cert = File(tls.certChainPath)
+                        seen += listOf(key, cert)
+                        for (file in seen) {
+                            assertOwnerOnly(file)
+                        }
+                        val pemCert =
+                            cert.inputStream().use {
+                                CertificateFactory
+                                    .getInstance(
+                                        "X.509",
+                                    ).generateCertificate(it)
+                            } as X509Certificate
+                        assertEquals(x509, pemCert)
+                        val pkcs8 =
+                            Base64.getMimeDecoder().decode(
+                                key
+                                    .readText()
+                                    .lines()
+                                    .filterNot { it.startsWith("-----") }
+                                    .joinToString(""),
+                            )
+                        val privateKey = KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(pkcs8))
+                        // A signature by the file's key verifies under the certificate's public key.
+                        val message = "peer".toByteArray()
+                        val signer = Signature.getInstance("SHA256withECDSA").apply { initSign(privateKey) }
+                        signer.update(message)
+                        val verifier = Signature.getInstance("SHA256withECDSA").apply { initVerify(x509.publicKey) }
+                        verifier.update(message)
+                        assertTrue(verifier.verify(signer.sign()), "PEM key does not match the certificate")
                     }
-                    val pemCert =
-                        cert.inputStream().use {
-                            CertificateFactory
-                                .getInstance(
-                                    "X.509",
-                                ).generateCertificate(it)
-                        } as X509Certificate
-                    assertEquals(x509, pemCert)
-                    val pkcs8 =
-                        Base64.getMimeDecoder().decode(
-                            key
-                                .readText()
-                                .lines()
-                                .filterNot { it.startsWith("-----") }
-                                .joinToString(""),
-                        )
-                    val privateKey = KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(pkcs8))
-                    // A signature by the file's key verifies under the certificate's public key.
-                    val message = "peer".toByteArray()
-                    val signer = Signature.getInstance("SHA256withECDSA").apply { initSign(privateKey) }
-                    signer.update(message)
-                    val verifier = Signature.getInstance("SHA256withECDSA").apply { initVerify(x509.publicKey) }
-                    verifier.update(message)
-                    assertTrue(verifier.verify(signer.sign()), "PEM key does not match the certificate")
+                runBlocking {
+                    assertFailsWith<BindInspected> {
+                        inspecting.bind(QuicPortBinding.Own(0, null), certificate, QuicOptions(alpnProtocols = listOf("test")), 1.seconds)
+                    }
                 }
-            runBlocking {
-                assertFailsWith<BindInspected> {
-                    inspecting.bind(QuicPortBinding.Own(0, null), certificate, QuicOptions(alpnProtocols = listOf("test")), 1.seconds)
-                }
+                assertEquals(2, seen.size, "the engine was never handed the PEM files")
+                for (file in seen) assertFalse(file.exists(), "${file.path} survived the bind")
             }
-            assertEquals(2, seen.size, "the engine was never handed the PEM files")
-            for (file in seen) assertFalse(file.exists(), "${file.path} survived the bind")
         }
-    }
 
     /** Runs [inspect] on the files [QuicEngine.bind] is handed, then aborts the bind. */
     private class FilesOnlyEngine(

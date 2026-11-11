@@ -24,7 +24,7 @@
 #
 # USAGE: ./run-netns-tests.sh [path/to/test.kexe]
 #   default binary: network-monitor/build/bin/linuxX64/debugTest/test.kexe
-#     (issue #269 moved LinuxNetworkMonitor AND enumerateNetworkInterfaces into
+#     (issue #269 moved LinuxNetworkMonitor AND listNetworkInterfaces into
 #      :network-monitor, so this is that module's binary, not the root project's)
 #   build it with: ./gradlew :network-monitor:linkDebugTestLinuxX64
 #   JVM leg (optional): ./gradlew :network-monitor:netnsJvmProbeClasspath first, or

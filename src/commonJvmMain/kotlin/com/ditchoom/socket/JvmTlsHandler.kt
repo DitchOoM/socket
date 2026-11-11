@@ -6,12 +6,14 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.security.NoSuchAlgorithmException
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
@@ -43,6 +45,25 @@ internal class JvmTlsHandler(
     val closeTimeout = 1.seconds
 
     suspend fun handshake(timeout: Duration) {
+        // On Dispatchers.IO, never the caller's thread (which may be a UI thread): the first
+        // SSLContext.init in a process reads the platform trust store from disk (default trust
+        // managers), the entropy source is read to seed the engine's SecureRandom, and beginHandshake
+        // builds the ClientHello (random, session id, key share).
+        engine =
+            withContext(Dispatchers.IO) {
+                newClientEngine().also { it.beginHandshake() }
+            }
+        try {
+            doHandshake(timeout)
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
+        }
+    }
+
+    /** A client-mode [SSLEngine] for [hostname], with SNI and hostname verification set from [config]. */
+    private fun newClientEngine(): SSLEngine {
         val context =
             try {
                 SSLContext.getInstance("TLSv1.3")
@@ -57,8 +78,8 @@ internal class JvmTlsHandler(
                 null
             }
 
-        context.init(null, trustManagers, null)
-        engine = context.createSSLEngine(hostname, port)
+        context.init(null, trustManagers, seededRandom())
+        val engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
 
         // SNI + hostname verification must be configured through a single
@@ -78,21 +99,60 @@ internal class JvmTlsHandler(
             }
             engine.sslParameters = sslParams
         }
-
-        engine.beginHandshake()
-        try {
-            doHandshake(timeout)
-        } catch (e: javax.net.ssl.SSLHandshakeException) {
-            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
-        } catch (e: javax.net.ssl.SSLException) {
-            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
-        }
+        return engine
     }
 
+    /**
+     * The engine's randomness, seeded here (on Dispatchers.IO) and never reading the entropy source
+     * again. The engine draws from it on the caller's thread too: a TLS 1.3 NewSessionTicket the
+     * server sends after the handshake is consumed in [unwrap] and draws a session id, and a TLS 1.2
+     * CBC record sealed in [wrap] draws its IV. With `context.init(…, null)` the engine would use the
+     * platform default, which on Linux and macOS is NativePRNG: it re-reads /dev/urandom whenever its
+     * small buffer is spent or more than 100 ms old, so those draws were file reads on the caller's
+     * thread. The JDK's DRBG (NIST SP 800-90A Hash_DRBG) reads its seed once, when it is first used,
+     * and is then pure computation. Android has no "DRBG"; its default (Conscrypt, BoringSSL's
+     * RAND_bytes) does no file I/O, so it is used there as is.
+     */
+    private fun seededRandom(): SecureRandom {
+        val random =
+            try {
+                SecureRandom.getInstance("DRBG")
+            } catch (e: NoSuchAlgorithmException) {
+                SecureRandom()
+            }
+        // The first draw instantiates (seeds) a DRBG; make it here, on Dispatchers.IO.
+        random.nextLong()
+        return random
+    }
+
+    /**
+     * Encrypts every remaining byte of [plainText] and sends the resulting TLS records, returning the
+     * PLAINTEXT bytes consumed — the count the `ByteSink.write` contract reports, since callers resume
+     * from the cursor advance. The ciphertext each record adds is drained to the wire by [sendRecord]
+     * and never surfaces in the count. A record that produces no ciphertext means the engine cannot
+     * make progress, so the write returns the partial count for the caller to resume or report.
+     */
     suspend fun wrap(
         plainText: BaseJvmBuffer,
         timeout: Duration,
-    ): Int {
+    ): BytesWritten {
+        var plaintextConsumed = 0
+        while (plainText.hasRemaining()) {
+            val record = sendRecord(plainText, timeout)
+            plaintextConsumed += record.plaintextConsumed.count
+            if (record.ciphertextSent.count == 0) break
+        }
+        return BytesWritten(plaintextConsumed)
+    }
+
+    /**
+     * Seals at most one TLS record from [plainText] (none for a handshake message) and writes all of
+     * its ciphertext through [rawWrite].
+     */
+    private suspend fun sendRecord(
+        plainText: BaseJvmBuffer,
+        timeout: Duration,
+    ): SentRecord {
         val encrypted = allocateBuffer(engine.session.packetBufferSize)
         try {
             val result =
@@ -103,26 +163,23 @@ internal class JvmTlsHandler(
                 } catch (e: javax.net.ssl.SSLException) {
                     throw SSLProtocolException(e.message ?: "TLS wrap error", e)
                 }
-            when (result.status!!) {
+            when (checkNotNull(result.status)) {
                 SSLEngineResult.Status.BUFFER_UNDERFLOW ->
                     throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
                 SSLEngineResult.Status.BUFFER_OVERFLOW ->
                     throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
                 SSLEngineResult.Status.CLOSED,
                 SSLEngineResult.Status.OK,
-                -> {
-                    encrypted.resetForRead()
-                    var writtenBytes = 0
-                    while (encrypted.hasRemaining()) {
-                        val bytesWrote = rawWrite(encrypted, timeout)
-                        if (bytesWrote < 0) {
-                            return -1
-                        }
-                        writtenBytes += bytesWrote
-                    }
-                    return writtenBytes
-                }
+                -> Unit
             }
+            encrypted.resetForRead()
+            while (encrypted.hasRemaining()) {
+                rawWrite(encrypted, timeout)
+            }
+            return SentRecord(
+                plaintextConsumed = BytesWritten(result.bytesConsumed()),
+                ciphertextSent = BytesWritten(result.bytesProduced()),
+            )
         } finally {
             encrypted.freeIfNeeded()
         }
@@ -191,7 +248,7 @@ internal class JvmTlsHandler(
         val emptyBuffer = EMPTY_BUFFER.unwrapFully() as BaseJvmBuffer
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
-                SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
+                SSLEngineResult.HandshakeStatus.NEED_WRAP -> sendRecord(emptyBuffer, timeout)
                 SSLEngineResult.HandshakeStatus.NEED_TASK ->
                     withContext(Dispatchers.IO) { engine.delegatedTask.run() }
                 else -> { // UNWRAP + UNWRAP AGAIN
@@ -229,6 +286,12 @@ internal class JvmTlsHandler(
             }
         }
     }
+
+    /** One TLS record: the caller's bytes it sealed, and the encrypted bytes it put on the wire. */
+    private class SentRecord(
+        val plaintextConsumed: BytesWritten,
+        val ciphertextSent: BytesWritten,
+    )
 
     private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size).unwrapFully() as BaseJvmBuffer
 

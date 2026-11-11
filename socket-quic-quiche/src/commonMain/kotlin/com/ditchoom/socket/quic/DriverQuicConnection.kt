@@ -42,6 +42,25 @@ internal class DriverQuicConnection(
     override val identity: QuicConnectionIdentity
         get() = driver.identity
 
+    /**
+     * The handler of a connection that accepted 0-RTT runs before the handshake completes, when the
+     * protocol is already settled but [state] is not yet Established; [QuicheDriver.earlyData] carries it.
+     */
+    override val negotiatedAlpn: String
+        get() =
+            when (val early = driver.earlyData.value) {
+                is EarlyDataAcceptance.Accepted -> early.negotiatedAlpn
+                EarlyDataAcceptance.None -> super.negotiatedAlpn
+            }
+
+    /** Readable before the handshake completes for the reason [negotiatedAlpn] is. */
+    override val resumption: QuicResumptionOutcome
+        get() =
+            when (val early = driver.earlyData.value) {
+                is EarlyDataAcceptance.Accepted -> early.resumption
+                EarlyDataAcceptance.None -> super.resumption
+            }
+
     /** Same driver, same binding, same answer as the client-side connections. */
     override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
 

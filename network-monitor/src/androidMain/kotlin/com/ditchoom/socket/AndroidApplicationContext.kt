@@ -18,7 +18,7 @@ private val applicationContext = AtomicReference<Context?>(null)
 
 /**
  * Records the application [Context] that [NetworkMonitor.Companion.androidOrNull] (and therefore
- * `NetworkMonitor.default()`) will use, **without** constructing a monitor or registering any
+ * `NetworkMonitor.open()`) will use, **without** constructing a monitor or registering any
  * `ConnectivityManager` callback.
  *
  * [NetworkMonitorInitializer] calls this at process start via androidx.startup, so an app normally
@@ -35,11 +35,11 @@ fun NetworkMonitor.Companion.installAndroidApplicationContext(context: Context) 
  * A reactive [AndroidNetworkMonitor] if an application [Context] is known, else `null`.
  *
  * Public because the owning platform module (`com.ditchoom:socket`) delegates its Android
- * `NetworkMonitor.default()` actual here across the module boundary — the same delegation
+ * platform-monitor actual (behind `NetworkMonitor.open()`) here across the module boundary — the same delegation
  * [defaultJvmNetworkMonitor] uses on the JVM.
  *
  * Each call constructs a **new** monitor that registers its own `ConnectivityManager.NetworkCallback`;
- * the caller owns it and must [NetworkMonitor.close] it. `NetworkMonitor.processDefault()` already
+ * the caller owns it and must [NetworkMonitor.close] it. `NetworkMonitor.shared()` already
  * calls this at most once per process, so prefer that over calling this repeatedly.
  */
 fun NetworkMonitor.Companion.androidOrNull(): NetworkMonitor? = applicationContext.get()?.let(::AndroidNetworkMonitor)
@@ -49,9 +49,9 @@ fun NetworkMonitor.Companion.androidOrNull(): NetworkMonitor? = applicationConte
  * reactive monitor — **without constructing anything**.
  *
  * This is the configuration-time question: *"if I ask for a monitor here, will it be pushed or polled?"*
- * Every other way to answer it has a side effect. [androidOrNull] and `NetworkMonitor.default()` build
+ * Every other way to answer it has a side effect. [androidOrNull] and `NetworkMonitor.open()` build
  * a monitor that registers a `ConnectivityManager.NetworkCallback`, so a caller probing for reactivity
- * has to register and immediately unregister one. `NetworkMonitor.processDefault()` is worse in the
+ * has to register and immediately unregister one. `NetworkMonitor.shared()` is worse in the
  * negative case: it caches whatever it built for the life of the process, so probing an Android app
  * with no captured `Context` leaves a [PollingNetworkMonitor] and its 5-second coroutine running
  * forever, in a caller that then falls back to its own polling anyway.
@@ -72,7 +72,7 @@ fun NetworkMonitor.Companion.hasAndroidApplicationContext(): Boolean = applicati
  * **Test-only**, and the Android half of [NetworkMonitor.Companion.resetProcessDefaultForTesting] —
  * see there for why a one-way process-global is untestable without it. Needed to exercise the
  * degraded path: [hasAndroidApplicationContext] returning false, [androidOrNull] returning null, and
- * the Android `NetworkMonitor.default()` falling back to [PollingNetworkMonitor].
+ * the Android `NetworkMonitor.open()` falling back to [PollingNetworkMonitor].
  */
 fun NetworkMonitor.Companion.resetAndroidContextForTesting() {
     applicationContext.set(null)

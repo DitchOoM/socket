@@ -37,7 +37,8 @@ private val NeverIssuedTicket: StateFlow<QuicSessionTicketState> = MutableStateF
  * - Streams not explicitly [closed][QuicByteStream.close] are force-closed when the scope ends.
  *
  * There is no `close()` method — the block boundary IS the lifecycle.
- * There is no connection state to check — if you're in the block, it's established.
+ * There is no connection state to check — if you're in the block, it's established, or (a server that
+ * accepted 0-RTT) its handshake is far enough along to serve: see [QuicStreamOrigin].
  */
 interface QuicScope : CoroutineScope {
     /**

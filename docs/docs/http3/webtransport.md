@@ -65,7 +65,7 @@ A browser can reach a server with no DNS name and no CA-issued certificate throu
 
 ```kotlin
 when (val certificates = peerCertificates) {
-    is PeerCertificateSupport.Available -> certificates.generate().use { certificate ->
+    is PeerCertificateSupport.Available -> certificates.mint().use { certificate ->
         signalling.publish(certificate.hash) // browser: { algorithm: "sha-256", value: <hash bytes> }
         withHttp3Server(
             certificate = certificate,

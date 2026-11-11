@@ -26,6 +26,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
 import platform.Network.nw_connection_t
+import platform.posix.ECONNABORTED
+import platform.posix.ECONNRESET
+import platform.posix.EPIPE
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -127,22 +130,29 @@ open class NWSocketWrapper(
      */
     private fun startReceive(conn: nw_connection_t): CompletableDeferred<ReadBuffer> {
         val deferred = CompletableDeferred<ReadBuffer>()
-        nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
+        nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, errorCode, errorDesc ->
             when {
                 data != null && data.length.toInt() > 0 -> {
-                    // Zero-copy: wrap NSData directly using NSDataBuffer
+                    // Zero-copy: wrap NSData directly using NSDataBuffer. NW can hand over the last
+                    // bytes together with the error that ended the connection (a RST behind data); the
+                    // bytes come first, and the next receive reports the error again on its own.
                     val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
                     buffer.position(data.length.toInt())
                     buffer.resetForRead()
                     deferred.complete(buffer)
                 }
+                // This side's close ended the receive: NW completes a pending receive on cancel with
+                // no data and no error, or with ECANCELED on force-cancel. Neither is the peer's EOF.
+                closedLocally -> deferred.completeExceptionally(SocketClosedException.General("Socket closed during read"))
+                // The error before `is_complete`: NW reports a peer's RST as is_complete together with
+                // ECONNRESET, and reading `is_complete` first turned the reset into a clean EOF.
+                errorDomain != 0 -> {
+                    closeInternal()
+                    deferred.completeExceptionally(mapSocketException(errorDomain, errorDesc, errorCode = errorCode))
+                }
                 isComplete?.boolValue == true -> {
                     closeInternal()
                     deferred.completeExceptionally(SocketClosedException.EndOfStream())
-                }
-                errorDomain != 0 -> {
-                    closeInternal()
-                    deferred.completeExceptionally(mapSocketException(errorDomain, errorDesc))
                 }
                 else -> {
                     deferred.complete(EMPTY_BUFFER)
@@ -236,9 +246,17 @@ open class NWSocketWrapper(
             errorDomain: Int,
             errorString: String?,
             hostname: String? = null,
+            errorCode: Int = 0,
         ): SocketException {
             val message = errorString ?: "Socket error"
             val msgLower = message.lowercase()
+            // The errno decides when NW gave one; the message text is the fallback below.
+            if (errorDomain == SocketErrorTypePosix) {
+                when (errorCode) {
+                    ECONNRESET, ECONNABORTED -> return SocketClosedException.ConnectionReset(message)
+                    EPIPE -> return SocketClosedException.BrokenPipe(message)
+                }
+            }
             return when (errorDomain) {
                 SocketErrorTypeDns -> SocketUnknownHostException(hostname, message)
                 SocketErrorTypeTls -> {

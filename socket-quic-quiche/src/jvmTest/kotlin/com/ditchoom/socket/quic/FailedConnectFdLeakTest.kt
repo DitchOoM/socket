@@ -71,12 +71,16 @@ class FailedConnectFdLeakTest {
                     )
                 val transport = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
-                repeat(WARMUP_ATTEMPTS) { attemptConnect(options, transport) }
-
-                val before = meter.openHandles()
-                var failures = 0
-                repeat(ATTEMPTS) { if (!attemptConnect(options, transport)) failures++ }
-                val after = meter.openHandles()
+                // Every loop's selector is open across the baseline: see [holdingEveryQuicLoop]. (Failed on
+                // the Linux JNI lane by 3 handles, one loop's epoll set started mid-measurement.)
+                val (before, after, failures) =
+                    holdingEveryQuicLoop {
+                        repeat(WARMUP_ATTEMPTS) { attemptConnect(options, transport) }
+                        val before = meter.openHandles()
+                        var failures = 0
+                        repeat(ATTEMPTS) { if (!attemptConnect(options, transport)) failures++ }
+                        Triple(before, meter.openHandles(), failures)
+                    }
 
                 assertEquals(
                     ATTEMPTS,

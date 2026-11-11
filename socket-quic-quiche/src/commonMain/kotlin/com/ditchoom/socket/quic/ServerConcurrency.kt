@@ -46,11 +46,13 @@ internal expect class LiveDriverLedger() {
 }
 
 /**
- * The dispatcher the shared [SharedQuicheServer] runs its receive loop, packet reader, and
- * accepted-connection handlers on: `Dispatchers.IO` on the JVM (blocking-friendly for the NIO
- * datagram channel and user handler code) with its timers on the library's `DeadlineTimer`,
- * `Dispatchers.Default` on Kotlin/Native (which has no dedicated IO dispatcher). One value, resolved per
- * platform behind this seam so the server stays common.
+ * The dispatcher the shared [SharedQuicheServer] runs accepted-connection handlers on — the
+ * application's code, so never a transport loop: `Dispatchers.IO` on the JVM with its timers on the
+ * library's `DeadlineTimer`, `Dispatchers.Default` on Kotlin/Native (which has no dedicated IO
+ * dispatcher). Also where the receive loop runs when the server is not placed on a loop (Kotlin/Native,
+ * and tests that pass their own driver context); in production on JVM/Android the receive loop runs on
+ * an event loop of its own ([placeDriver]). One value, resolved per platform behind this seam so the
+ * server stays common.
  */
 internal expect val serverReceiveDispatcher: CoroutineDispatcher
 

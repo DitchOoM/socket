@@ -1,21 +1,30 @@
-@file:OptIn(ExperimentalDatagramApi::class, kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, kotlinx.cinterop.ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 
 package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import platform.Network.nw_interface_type_cellular
 import platform.Network.nw_interface_type_wifi
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.native.OsFamily
+import kotlin.native.Platform
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
+import kotlin.test.assertIsNot
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -33,30 +42,126 @@ class AppleRequiredInterfaceConnectTests {
         assertEquals(nw_interface_type_cellular.toInt(), NwRequiredInterface.Cellular.nwInterfaceType)
     }
 
+    /**
+     * NW never fails a connection whose required interface is missing: it reports `waiting` on an
+     * unsatisfied path and then stays silent (measured on an iPhone 17 simulator: no further state
+     * change in 10 s, until the caller cancels). So a connect that waited through `waiting` ends only
+     * at the caller's timeout, and a typed [UdpConnectError.Unreachable] can only come from the
+     * connect reading that first report.
+     *
+     * That is what this asserts, not a wall-clock bound. The 2 s bound it used to carry measured how
+     * long NW took to deliver its first report, which is this process's first `nw_connection_t`: 1–5 ms
+     * locally, also with the host's CPUs oversubscribed fivefold, but 6.4 s and 7.4 s on two CI runs
+     * whose simulator lane was compiling other modules beside the test. The connect cannot settle
+     * before NW reports, and no regression of ours shows up as a slow `Unreachable`.
+     */
     @Test
-    fun aConnectRequiringAnAbsentInterfaceFailsUnreachableAtOnce() =
+    fun aConnectRequiringAnAbsentInterfaceFailsUnreachableWithoutWaitingForTheCallersTimeout() =
         runBlocking {
-            val start = TimeSource.Monotonic.markNow()
-            val outcome = runCatching { withTimeout(10.seconds) { connect(DOC_PEER, 9, NwRequiredInterface.Cellular) } }
+            // The connect's own timeline: if NW is slow to report again, this run says where the time went.
+            val trace = NwConnectTrace()
+            val started = TimeSource.Monotonic.markNow()
+            val outcome =
+                runCatching {
+                    withTimeout(CALLERS_TIMEOUT) {
+                        UdpSocket.connectRequiring(DOC_PEER, 9, 1500, factory, NwRequiredInterface.Cellular, trace)
+                    }
+                }
+            val took = started.elapsedNow()
             outcome.getOrNull()?.let {
                 it.close()
                 println("SKIPPED-VACUOUS: this host has a cellular interface, so a cellular requirement is satisfiable here")
                 return@runBlocking
             }
-            val error = assertIs<UdpConnectException>(outcome.exceptionOrNull()).error
-            assertIs<UdpConnectError.Unreachable>(error)
-            val elapsed = start.elapsedNow()
-            assertTrue(elapsed < 2.seconds, "an unsatisfiable requirement must fail at once, took $elapsed")
+            println("NW-FIRST-REPORT: cellular-required connect took $took; ${trace.firstReportSummary()}")
+            if (took > SLOW_REPORT) println("NW-SLOW-CONNECT: the connect took $took\n${trace.render()}")
+            val failure = outcome.exceptionOrNull()
+            assertIsNot<TimeoutCancellationException>(
+                failure,
+                "the connect waited through NW's `waiting` until the caller's timeout\n${trace.render()}",
+            )
+            val error = assertIs<UdpConnectException>(failure, trace.render()).error
+            assertIs<UdpConnectError.Unreachable>(error, trace.render())
         }
 
+    /** A failed connect carries its NW timeline, so the failure alone says which state NW reported and when. */
     @Test
-    fun aConnectRequiringWifiCarriesDatagramsOverWifi() =
+    fun aFailedConnectCarriesItsNwTimeline() =
         runBlocking {
-            val wifiAddress = wifiAddressOrNull() ?: return@runBlocking
+            val failure =
+                runCatching { withTimeout(CALLERS_TIMEOUT) { connect(DOC_PEER, 9, NwRequiredInterface.Cellular) } }
+                    .onSuccess {
+                        it.close()
+                        println("SKIPPED-VACUOUS: this host has a cellular interface, so a cellular requirement is satisfiable here")
+                        return@runBlocking
+                    }.exceptionOrNull()
+            val timeline = assertIs<UdpConnectException>(failure).suppressedExceptions.filterIsInstance<NwConnectTimeline>().single()
+            val text = assertNotNull(timeline.message)
+            assertContains(text, "create begun")
+            assertContains(text, "started")
+            assertContains(text, "state=waiting path=unsatisfied")
+            assertContains(text, "NW reported at +")
+        }
+
+    /**
+     * A Wi-Fi-confined connect is ready on the Wi-Fi interface, sends from that interface's address, and
+     * its datagrams go out. The peer is TEST-NET-1, so the datagram is dropped past the first router:
+     * there is no peer on this host that a Wi-Fi-confined connection can reach on every Apple platform
+     * (see [aWifiConfinedConnectToThisHostsOwnAddressRoundTripsOnMacosOnly]).
+     */
+    @Test
+    fun aConnectRequiringWifiSendsFromTheWifiAddress() =
+        runBlocking {
+            val client = wifiConnectionOrNull() ?: return@runBlocking
+            try {
+                val local = assertNotNull(client.localAddress.orNull(), "a ready Wi-Fi connection reported no local address")
+                assertFalse(local.isLoopback(), "a Wi-Fi-confined connection sends from ${local.host}, a loopback address")
+                client.send(factory.allocate(4).also { it.writeInt(PAYLOAD) }.also { it.resetForRead() })
+            } finally {
+                client.close()
+            }
+        }
+
+    /**
+     * Traffic to this host's own address never leaves it, and Network.framework does not agree with
+     * itself on whether such a path is Wi-Fi. A Wi-Fi-required UDP connection to the address the Wi-Fi
+     * interface sends from, measured on one Mac on Wi-Fi:
+     *
+     *  - macOS 26: path satisfied on `en0` (the route to the own address is scoped to `en0`), `ready`,
+     *    and datagrams arrive.
+     *  - iOS 26.5 simulator on that same Mac: path `unsatisfied`, its only interface `lo0` (type
+     *    loopback), state `waiting` — so the connect fails [UdpConnectError.Unreachable] at once.
+     *
+     * This test used to send to the own address on every platform and assert delivery, so it failed with
+     * "no route to the peer" on every iOS simulator run whose host was on Wi-Fi. The product was right:
+     * NW said there is no Wi-Fi path to that peer, and the connect reported exactly that. Each platform's
+     * answer is pinned here, so a change in either shows up as a failure that names it.
+     */
+    @Test
+    fun aWifiConfinedConnectToThisHostsOwnAddressRoundTripsOnMacosOnly() =
+        runBlocking {
+            val probe = wifiConnectionOrNull() ?: return@runBlocking
+            val wifiAddress =
+                try {
+                    assertNotNull(probe.localAddress.orNull(), "a ready Wi-Fi connection reported no local address").host
+                } finally {
+                    probe.close()
+                }
             val server = UdpSocket.bind(null, 0, bufferFactory = factory)
             try {
-                // The host's own Wi-Fi address: loopback is never a Wi-Fi interface, so NW would refuse it.
-                val client = withTimeout(10.seconds) { connect(wifiAddress, server.localAddress.port, NwRequiredInterface.Wifi) }
+                val outcome =
+                    runCatching { withTimeout(10.seconds) { connect(wifiAddress, server.localAddress.port, NwRequiredInterface.Wifi) } }
+                if (Platform.osFamily != OsFamily.MACOSX) {
+                    outcome.getOrNull()?.close()
+                    val error =
+                        assertIs<UdpConnectException>(
+                            outcome.exceptionOrNull(),
+                            "${Platform.osFamily}: expected NW to see only lo0",
+                        ).error
+                    assertIs<UdpConnectError.Unreachable>(error)
+                    return@runBlocking
+                }
+                val client = outcome.getOrThrow()
                 try {
                     client.send(factory.allocate(4).also { it.writeInt(PAYLOAD) }.also { it.resetForRead() })
                     val received =
@@ -75,19 +180,24 @@ class AppleRequiredInterfaceConnectTests {
             }
         }
 
-    /** The address this host's Wi-Fi interface sends from, or `null` (said out loud) when it has none. */
-    private suspend fun wifiAddressOrNull(): String? {
-        val probe =
-            runCatching { withTimeout(10.seconds) { connect(DOC_PEER, 9, NwRequiredInterface.Wifi) } }.getOrElse {
-                println("SKIPPED-VACUOUS: this host has no Wi-Fi interface with a route ($it)")
-                return null
+    /** A ready Wi-Fi-confined connection to TEST-NET-1, or `null` (said out loud) when this host has no Wi-Fi route. */
+    private suspend fun wifiConnectionOrNull(): ConnectedDatagramChannel? {
+        val trace = NwConnectTrace()
+        val started = TimeSource.Monotonic.markNow()
+        val outcome =
+            runCatching {
+                withTimeout(10.seconds) {
+                    UdpSocket.connectRequiring(DOC_PEER, 9, 1500, factory, NwRequiredInterface.Wifi, trace)
+                }
             }
-        try {
-            return probe.localAddress.orNull()?.host ?: error("a ready Wi-Fi connection reported no local address")
-        } finally {
-            probe.close()
+        println("NW-FIRST-REPORT: Wi-Fi-required connect took ${started.elapsedNow()}; ${trace.firstReportSummary()}")
+        return outcome.getOrElse {
+            println("SKIPPED-VACUOUS: this host has no Wi-Fi interface with a route ($it)")
+            null
         }
     }
+
+    private fun SocketAddress.isLoopback(): Boolean = host == "::1" || host.startsWith("127.")
 
     private suspend fun connect(
         host: String,
@@ -96,7 +206,16 @@ class AppleRequiredInterfaceConnectTests {
     ) = UdpSocket.connect(host, port, null, 0, 1500, factory, requirement)
 
     private companion object {
-        /** RFC 5737 TEST-NET-1: a connected UDP socket sends nothing, so it is never contacted. */
+        /** Long enough that only NW's own report, never the caller's timeout, ends a correct connect. */
+        val CALLERS_TIMEOUT = 20.seconds
+
+        /** Far above the 1–5 ms NW takes locally and far below the 6.4–7.4 s two CI runs saw. */
+        val SLOW_REPORT = 1.seconds
+
+        /**
+         * RFC 5737 TEST-NET-1: never routed, so the one datagram [aConnectRequiringWifiSendsFromTheWifiAddress]
+         * sends there is dropped; every other connect here sends nothing.
+         */
         const val DOC_PEER = "192.0.2.1"
         const val PAYLOAD = 0x50494E44
     }

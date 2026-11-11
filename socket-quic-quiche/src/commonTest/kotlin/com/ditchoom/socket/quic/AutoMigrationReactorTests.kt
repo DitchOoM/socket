@@ -541,7 +541,7 @@ class AutoMigrationReactorTests {
     fun suppliedMonitorIsUsedWithoutProcessDefault() {
         val supplied = SimNetworkMonitor.on(wifi)
         assertEquals(supplied, (options(supplied).networkMonitor as NetworkMonitorSource.Supplied).monitor)
-        assertEquals(supplied, resolveNetworkMonitor(NetworkMonitorSource.Supplied(supplied)))
+        runTest { assertEquals(supplied, resolveNetworkMonitor(NetworkMonitorSource.Supplied(supplied))) }
         runReactor(supplied) { conn ->
             supplied.setNetworkId(cellular)
             assertEquals(1, conn.migrateCount)
@@ -569,6 +569,7 @@ class AutoMigrationReactorTests {
      * that the retry actually reaches it.
      */
     @Test
+    @Suppress("DEPRECATION") // HandshakeNotConfirmed: never returned, still a leaf.
     fun everyRetryableLeafIsRetriedWithNoFurtherNetworkEvent() {
         val retryable: List<MigrationResult.Unmoved.Failed> =
             listOf(
@@ -1569,9 +1570,10 @@ class AutoMigrationReactorTests {
      * whole process" rather than one per connection.
      */
     @Test
-    fun processDefaultResolvesToTheOneSharedMonitor() {
-        val first = resolveNetworkMonitor(NetworkMonitorSource.ProcessDefault)
-        val second = resolveNetworkMonitor(NetworkMonitorSource.ProcessDefault)
-        assertTrue(first === second, "the process default must be shared, not minted per connection")
-    }
+    fun sharedResolvesToTheOneSharedMonitor() =
+        runTest {
+            val first = resolveNetworkMonitor(NetworkMonitorSource.ProcessDefault)
+            val second = resolveNetworkMonitor(NetworkMonitorSource.ProcessDefault)
+            assertTrue(first === second, "the process default must be shared, not minted per connection")
+        }
 }

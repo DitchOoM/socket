@@ -9,6 +9,8 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.UdpBindError
 import com.ditchoom.socket.udp.UdpBindException
 import com.ditchoom.socket.udp.UdpSocket
+import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.CoroutineContext
 
 /**
  * The JVM's answer to a wildcard socket that cannot pin its replies: one socket per local address on
@@ -24,21 +26,29 @@ import com.ditchoom.socket.udp.UdpSocket
  * with one address.
  *
  * The composite puts a coroutine hand-off on the server's receive path — one rendezvous per datagram,
- * because N sockets have to be multiplexed and the channel interface offers no shared selector.
+ * because N sockets have to be multiplexed and the channel interface offers no shared selector. The
+ * members' readers run in [readerContext]: the server's event loop in production, so they wait in its
+ * selector and the hand-off stays on one thread.
  */
-internal val SocketPerLocalAddress =
+internal fun socketPerLocalAddress(
+    readerContext: CoroutineContext,
+    enumerate: () -> List<String> = ::enumerateLocalUnicastAddresses,
+): UnpinnedWildcard =
     UnpinnedWildcard { wildcard, binding, recvBufPool ->
         val ipv4Only = wildcard.localAddress.family == AddressFamily.IPv4
-        val addresses = enumerateLocalUnicastAddresses().distinct().filter { !ipv4Only || ':' !in it }
+        val addresses = enumerate().distinct().filter { !ipv4Only || ':' !in it }
         if (addresses.isEmpty()) return@UnpinnedWildcard ServerChannel(wildcard, ReplySourcePinning.PlatformChooses)
         wildcard.close()
         when (val bind = bindEachAddress(addresses, binding.port) { host, port -> bindServerMember(host, port, recvBufPool) }) {
             is SharedPortBind.Bound ->
-                ServerChannel(PerLocalAddressServerChannel.of(bind.members), ReplySourcePinning.SocketPerAddress)
+                ServerChannel(PerLocalAddressServerChannel.of(bind.members, readerContext), ReplySourcePinning.SocketPerAddress)
             is SharedPortBind.NoAddressAvailable ->
                 ServerChannel(binding.bindServerSocket(recvBufPool), ReplySourcePinning.PlatformChooses)
         }
     }
+
+/** [socketPerLocalAddress] with its readers on `Dispatchers.IO`, for a channel no server loop serves. */
+internal val SocketPerLocalAddress: UnpinnedWildcard = socketPerLocalAddress(Dispatchers.IO)
 
 /**
  * One member of the composite: a socket on one local address, staging each datagram at the QUIC

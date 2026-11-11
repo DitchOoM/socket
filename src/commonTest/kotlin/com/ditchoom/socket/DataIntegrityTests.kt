@@ -30,9 +30,10 @@ class DataIntegrityTests {
             val binaryData = ByteArray(256) { it.toByte() }
             var receivedData: ByteArray? = null
 
+            val accepts = AcceptLog()
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.serveEach { client ->
+                    serverFlow.serveEach(accepts) { client ->
                         val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
@@ -41,15 +42,18 @@ class DataIntegrityTests {
 
             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             client.open(server.port(), hostname = "127.0.0.1")
+            accepts.client(client)
 
             val sendBuffer = BufferFactory.Default.allocate(binaryData.size)
             sendBuffer.writeBytes(binaryData)
             sendBuffer.resetForRead()
             client.write(sendBuffer, 5.seconds)
+            accepts.note("client wrote ${binaryData.size} bytes")
             client.close()
+            accepts.note("client closed")
 
             dataReceived.lockWithTimeout()
-            assertContentEquals(binaryData, receivedData, "Binary data should be transferred intact")
+            assertContentEquals(binaryData, receivedData, "Binary data should be transferred intact\n${accepts.describe()}")
 
             server.close()
             serverJob.cancel()
@@ -83,10 +87,11 @@ class DataIntegrityTests {
         val testData = ByteArray(size) { random.nextInt().toByte() }
         var receivedSize = 0
         var checksumMatch = false
+        val accepts = AcceptLog()
 
         val serverJob =
             kotlinx.coroutines.CoroutineScope(Dispatchers.Default).launch {
-                serverFlow.serveEach { client ->
+                serverFlow.serveEach(accepts) { client ->
                     val receivedBytes = mutableListOf<Byte>()
 
                     // Read until we have all the data
@@ -97,6 +102,7 @@ class DataIntegrityTests {
                             receivedBytes.addAll(chunk.toList())
                         } catch (e: SocketException) {
                             // Connection closed or other error
+                            accepts.note("server read ended after ${receivedBytes.size} bytes: ${e::class.simpleName}")
                             break
                         }
                     }
@@ -113,6 +119,7 @@ class DataIntegrityTests {
 
         val client = ClientSocket.allocate(TransportConfig(connectTimeout = 10.seconds))
         client.open(server.port(), hostname = "127.0.0.1")
+        accepts.client(client)
 
         // Send data in chunks
         var offset = 0
@@ -131,11 +138,13 @@ class DataIntegrityTests {
             }
             offset += remaining
         }
+        accepts.note("client wrote $size bytes")
         client.close()
+        accepts.note("client closed")
 
         transferComplete.lockWithTimeout()
-        assertEquals(size, receivedSize, "Should receive all $size bytes")
-        assertTrue(checksumMatch, "Data checksum should match for $size byte transfer")
+        assertEquals(size, receivedSize, "Should receive all $size bytes\n${accepts.describe()}")
+        assertTrue(checksumMatch, "Data checksum should match for $size byte transfer\n${accepts.describe()}")
 
         server.close()
         serverJob.cancel()
@@ -205,9 +214,10 @@ class DataIntegrityTests {
             }
             val expectedString = expectedData.toString()
 
+            val accepts = AcceptLog()
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.serveEach { client ->
+                    serverFlow.serveEach(accepts) { client ->
                         val sb = StringBuilder()
                         // Read until we have all the data or connection closes
                         // TCP may coalesce multiple writes into single reads
@@ -217,6 +227,7 @@ class DataIntegrityTests {
                                 sb.append(chunk)
                             } catch (e: SocketClosedException) {
                                 // Connection closed, we have all the data
+                                accepts.note("server read ended after ${sb.length} chars: ${e::class.simpleName}")
                                 break
                             }
                         }
@@ -227,16 +238,19 @@ class DataIntegrityTests {
 
             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             client.open(server.port(), hostname = "127.0.0.1")
+            accepts.client(client)
 
             // Send many small messages
             repeat(messageCount) { i ->
                 val msg = "msg$i;"
                 client.writeString(msg)
             }
+            accepts.note("client wrote $messageCount messages")
             client.close()
+            accepts.note("client closed")
 
             dataReceived.lockWithTimeout()
-            assertEquals(expectedString, receivedData, "All small messages should be received in order")
+            assertEquals(expectedString, receivedData, "All small messages should be received in order\n${accepts.describe()}")
 
             server.close()
             serverJob.cancel()
@@ -302,9 +316,10 @@ class DataIntegrityTests {
             val dataWithNulls = byteArrayOf(0x48, 0x00, 0x65, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F, 0x00) // "H\0e\0l\0l\0o\0"
             var receivedData: ByteArray? = null
 
+            val accepts = AcceptLog()
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.serveEach { client ->
+                    serverFlow.serveEach(accepts) { client ->
                         val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
@@ -313,15 +328,18 @@ class DataIntegrityTests {
 
             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             client.open(server.port(), hostname = "127.0.0.1")
+            accepts.client(client)
 
             val sendBuffer = BufferFactory.Default.allocate(dataWithNulls.size)
             sendBuffer.writeBytes(dataWithNulls)
             sendBuffer.resetForRead()
             client.write(sendBuffer, 5.seconds)
+            accepts.note("client wrote ${dataWithNulls.size} bytes")
             client.close()
+            accepts.note("client closed")
 
             dataReceived.lockWithTimeout()
-            assertContentEquals(dataWithNulls, receivedData, "Data with null bytes should be transferred intact")
+            assertContentEquals(dataWithNulls, receivedData, "Data with null bytes should be transferred intact\n${accepts.describe()}")
 
             server.close()
             serverJob.cancel()

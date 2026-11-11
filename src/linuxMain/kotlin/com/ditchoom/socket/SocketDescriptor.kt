@@ -10,6 +10,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
@@ -37,6 +38,11 @@ import kotlin.time.Duration
 internal class SocketDescriptor(
     /** What must happen while the descriptor is still open and nobody else is using it, such as a TLS close_notify. */
     private val teardown: () -> Unit = {},
+    /**
+     * Where [withOpen] runs a release its caller made. Tests substitute a dispatcher they step by hand, to choose
+     * whether the release finishes before or after its caller suspends.
+     */
+    private val releaseContext: CoroutineContext = Dispatchers.Default,
 ) {
     private val descriptor = AtomicInt(NO_DESCRIPTOR)
 
@@ -85,7 +91,7 @@ internal class SocketDescriptor(
      */
     private suspend fun releaseOffThisThread() {
         try {
-            withContext(NonCancellable + Dispatchers.Default) { release() }
+            withContext(NonCancellable + releaseContext) { release() }
         } catch (_: CancellationException) {
         }
     }

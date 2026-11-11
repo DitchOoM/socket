@@ -11,6 +11,7 @@ import com.ditchoom.socket.transport.TypedMuxView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlin.coroutines.ContinuationInterceptor
 
 /**
  * Adapts a raw [QuicScope] to a typed [StreamMux] using a [Codec] — a [TypedMuxView] over
@@ -89,7 +90,10 @@ class QuicStreamMux<T> private constructor(
         connection = connection,
         codec = codec,
         options = options,
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        // The connection's own dispatcher (Dispatchers.IO on JVM/Android), not Dispatchers.Default:
+        // a writer is woken by the transport's I/O threads, and kotlinx.coroutines 1.11.0 can lose that
+        // wakeup for a Dispatchers.Default coroutine (kotlinx.coroutines #4491).
+        scope = CoroutineScope(SupervisorJob() + (connection.coroutineContext[ContinuationInterceptor] ?: Dispatchers.Default)),
         outboundCapacity = CodecConnection.DEFAULT_OUTBOUND_CAPACITY,
         overflowPolicy = OverflowPolicy.Suspend,
         decodeContext = decodeContext,

@@ -547,22 +547,22 @@ fun NetworkMonitor.Companion.android(context: Context): NetworkMonitor = Android
 
 /**
  * Eagerly install a `ConnectivityManager`-backed [NetworkMonitor] as the process default, so QUIC
- * auto-migration (and any other [NetworkMonitor.processDefault] consumer) uses it.
+ * auto-migration (and any other [NetworkMonitor.shared] consumer) uses it.
  *
  * ```kotlin
  * NetworkMonitor.installAndroidContext(applicationContext)
  * ```
  *
  * **Normally unnecessary.** [NetworkMonitorInitializer] hands this module the application `Context` via
- * androidx.startup before any app code runs, so the zero-arg `NetworkMonitor.default()` already returns
- * a reactive monitor and `processDefault()` builds one lazily on first use. Call this only to override
+ * androidx.startup before any app code runs, so the zero-arg `NetworkMonitor.open()` already returns
+ * a reactive monitor and `shared()` builds one lazily on first use. Call this only to override
  * that with a monitor built from a specific [Context], or when the initializer was removed from the
  * merged manifest.
  *
  * Unlike App Startup's capture-only path, this constructs the monitor **immediately** — it registers a
  * `ConnectivityManager.NetworkCallback` at the moment of the call — and the installed instance is
  * caller-owned: nothing here closes it. Uses [Context.getApplicationContext] to avoid leaking an
- * Activity, and also records that context for [androidOrNull] so a later `default()` stays reactive.
+ * Activity, and also records that context for [androidOrNull] so a later `open()` stays reactive.
  */
 fun NetworkMonitor.Companion.installAndroidContext(context: Context) {
     val application = context.applicationContext

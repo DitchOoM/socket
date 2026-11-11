@@ -49,6 +49,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
+import com.ditchoom.socket.quic.quiche.quiche_conn_is_handshake_confirmed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_in_early_data
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_resumed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
@@ -695,6 +696,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = quiche_conn_is_established(conn.handle.toCPointer()!!)
+
+    override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = quiche_conn_is_handshake_confirmed(conn.handle.toCPointer()!!)
 
     override fun connIsClosed(conn: QuicheConn): Boolean = quiche_conn_is_closed(conn.handle.toCPointer()!!)
 

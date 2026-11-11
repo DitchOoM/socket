@@ -137,6 +137,12 @@ tasks.withType<Test> {
 
 android {
     compileSdk = 37
+    // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+    (this as com.android.build.api.dsl.LibraryExtension)
+        .sourceSets
+        .getByName("main")
+        .baselineProfiles
+        .srcDir("src/androidMain/baselineProfiles")
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -68,7 +68,7 @@ public enum class AddressScope {
 /**
  * One link the OS has up, and the numeric addresses assigned to it.
  *
- * Built from [com.ditchoom.socket.enumerateNetworkInterfaces] rather than from the monitor's
+ * Built from [com.ditchoom.socket.listNetworkInterfaces] rather than from the monitor's
  * [NetworkId][com.ditchoom.socket.transport.NetworkId], because a `NetworkId.Link.handle` is **not**
  * an interface index on every platform (it is a `Network.networkHandle` on Android), so there is no
  * portable way to ask "which of these is the default link". Recording them all answers the question

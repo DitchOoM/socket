@@ -68,6 +68,16 @@ jobs:
             gradle-macos-kn-
             gradle-macos-
 
+      # The Gradle distribution, so `./gradlew` does not download it from services.gradle.org (which
+      # redirects to GitHub, and returned 504 for hours on 2026-11-08). Zero new bytes, restore-only:
+      # `cache-warm-apple` and build-apple.yaml's `natives` (main only) write it. Keyed on
+      # gradle-wrapper.properties, so a Gradle version bump misses and downloads, as before.
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
       # The dispatch input, else the released tag, else this commit's CI version.
       - name: Determine version
         env:

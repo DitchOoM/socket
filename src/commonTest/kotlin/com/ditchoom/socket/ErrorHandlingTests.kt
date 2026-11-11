@@ -33,13 +33,12 @@ class ErrorHandlingTests {
     @Test
     fun connectionRefused() =
         runTestNoTimeSkipping {
-            // Try to connect to a port that's not listening
-            // Use a random high port that's unlikely to be in use
-            val port = 59000 + (kotlin.random.Random.nextInt(999))
+            // A port nothing listens on and no test listener can be handed: see REFUSED_PORT.
+            val port = REFUSED_PORT
             try {
                 val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
                 socket.open(port = port, hostname = "127.0.0.1")
-                // If we get here, the port happened to be open - close and skip
+                // Nothing listens on REFUSED_PORT; a host where something does gets a vacuous pass
                 socket.close()
             } catch (e: SocketException) {
                 // Expected - connection refused or similar error (covers all socket errors)
@@ -283,7 +282,14 @@ class ErrorHandlingTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.serveEach { client ->
-                        receivedData = client.readString(deadline = 1.seconds)
+                        // Not a timing test: a deadline a loaded runner can miss made this flaky (it timed out
+                        // once locally under load, and the handler's failure was swallowed by serveEach).
+                        receivedData =
+                            try {
+                                client.readString(deadline = 10.seconds)
+                            } catch (e: Exception) {
+                                "server read failed: $e"
+                            }
                         dataReceived.unlock()
                     }
                 }

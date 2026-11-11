@@ -259,8 +259,9 @@ class ResourceCleanupTests {
                 }
 
             // Connect once
+            // Not a timing test: a 1 s read deadline failed once locally on a loaded host.
             ClientSocket.connect(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds)) { socket ->
-                socket.readString(deadline = 1.seconds)
+                socket.readString(deadline = 10.seconds)
             }
 
             firstClientHandled.awaitOrFail("the server to finish with its one client, after which it cancels its own collect")

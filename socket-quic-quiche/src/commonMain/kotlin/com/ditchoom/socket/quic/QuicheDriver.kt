@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
@@ -31,6 +32,7 @@ import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -40,6 +42,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -259,6 +263,30 @@ class QuicheDriver(
      */
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED, onUndeliveredElement = ::failCommand)
 
+    /**
+     * The loop's and the readers' last steps, readable without the loop: see [DriverFlight]. Built only
+     * when trace capture is on, the existing opt-in for diagnosing a connection.
+     */
+    internal val flight: DriverFlight =
+        when (capture) {
+            TraceCapture.Off -> DriverFlight.Off
+            is TraceCapture.On -> DriverFlight.Ring()
+        }
+
+    /**
+     * What [flight] holds now, with the loop's verdict, read on the calling thread. A stalled test asks
+     * this first, because a loop that stopped taking commands cannot answer [stallSnapshot].
+     */
+    internal fun flightRecording(): FlightRecording =
+        when (val ring = flight) {
+            DriverFlight.Off -> FlightRecording.Off
+            is DriverFlight.Ring -> {
+                val queued = !commands.isEmpty
+                val entries = ring.entries()
+                FlightRecording.Recorded(role, loopVerdictOf(entries, queued), unresumedSignalledReaders(entries), entries)
+            }
+        }
+
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     val state: StateFlow<QuicConnectionState> = _state
 
@@ -287,7 +315,7 @@ class QuicheDriver(
      * stops waiting on it.
      */
     internal fun readSideFinished(slot: StreamSlot) {
-        slot.readState.store(StreamReadState.Finished)
+        slot.finishReads()
         reconsiderUnread(slot)
     }
 
@@ -296,7 +324,7 @@ class QuicheDriver(
      * [StreamReadState.Idle] — never over a [StreamReadState.Finished] the application latched meanwhile.
      */
     internal fun readReturned(slot: StreamSlot) {
-        slot.readState.compareAndSet(StreamReadState.HandedOff, StreamReadState.Idle)
+        slot.returnHandOff()
         reconsiderUnread(slot)
     }
 
@@ -335,6 +363,44 @@ class QuicheDriver(
     @Volatile
     internal var earlyStreamData: EarlyStreamData = EarlyStreamData.None
         private set
+
+    private val earlyDataLatch = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
+
+    /** Whether this server connection accepted the client's 0-RTT, latched by [updateState]. */
+    internal val earlyData: StateFlow<EarlyDataAcceptance> = earlyDataLatch
+
+    /** How the handshake ended — completed once, at Established or at a close that came first. */
+    private val handshakeSettled = CompletableDeferred<HandshakeSettled>()
+
+    /**
+     * Suspend until the handshake is confirmed; throw this connection's [QuicCloseException] if it closes
+     * first. A server's handshake is confirmed when it completes (RFC 9001 §4.1.2), so this is the wait a
+     * [QuicStreamOrigin.Early] stream's reads make.
+     */
+    internal suspend fun awaitHandshakeConfirmed() {
+        when (handshakeSettled.await()) {
+            HandshakeSettled.Confirmed -> Unit
+            HandshakeSettled.Failed -> throw connectionClosed()
+        }
+    }
+
+    /**
+     * Whether a server's handler starts for this connection, decided: as soon as the client's 0-RTT is
+     * accepted or the handshake completes, never once the connection closed before either.
+     *
+     * [state] is a conflating StateFlow, so a collector that is dispatched late can see Handshaking
+     * jump to Closed when the peer completes the handshake and closes in the same breath — the shape of
+     * a client whose block returns immediately — with the Established in between never observed. Closed
+     * alone does not say whether the handshake finished first, so a close is checked against
+     * [handshakeSettled], which is completed Confirmed at the Established edge and never revoked: a
+     * Closed observed here happens-after that completion.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
+        val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
+    }
 
     /**
      * A close reason this driver decided on itself and that quiche cannot carry back to it.
@@ -571,7 +637,7 @@ class QuicheDriver(
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
         val settled =
-            withContext(driverContext) {
+            withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
                     state.first { it !is QuicConnectionState.Handshaking }
                 }
@@ -606,7 +672,10 @@ class QuicheDriver(
         try {
             val closed = CompletableDeferred<Unit>()
             commands.send(QuicheCmd.Close(reason, closed))
-            closed.await()
+            reportingStall(
+                "the driver to answer Close in $coroutineName",
+                { "closed.isCompleted=${closed.isCompleted} driver.isActive=${driverJob?.isActive}" },
+            ) { closed.await() }
         } catch (_: ClosedSendChannelException) {
             // Settled on its own in the same instant — its own reason stands.
         }
@@ -1089,11 +1158,17 @@ class QuicheDriver(
     private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
     /**
-     * Three states, exhaustive: nothing in flight; the platform is opening the socket beside the
-     * loop; the socket is probed and the peer's answer is being timed (RFC 9000 §8.2.4).
+     * Four states, exhaustive: nothing in flight; a migration waiting for the handshake to confirm;
+     * the platform is opening the socket beside the loop; the socket is probed and the peer's answer
+     * is being timed (RFC 9000 §8.2.4).
      */
     private sealed interface MigrationLane {
         data object Idle : MigrationLane
+
+        /** [cmd] arrived before the handshake confirmed (RFC 9000 §9) and starts once it has. */
+        class AwaitingConfirmation(
+            val cmd: QuicheCmd.Migrate,
+        ) : MigrationLane
 
         /** [job] is opening the socket beside the loop and will post [PathOpened] when it settles. */
         class Opening(
@@ -1112,7 +1187,7 @@ class QuicheDriver(
     /** The migration being validated, if that is where the lane stands — a projection, never state. */
     private fun validating(): PendingMigration? =
         when (val l = lane) {
-            MigrationLane.Idle, is MigrationLane.Opening -> null
+            MigrationLane.Idle, is MigrationLane.AwaitingConfirmation, is MigrationLane.Opening -> null
             is MigrationLane.Validating -> l.pending
         }
 
@@ -1236,6 +1311,28 @@ class QuicheDriver(
     val networkAtClose: NetworkAtClose get() = networkObservation.atClose
 
     private var driverScope: CoroutineScope? = null
+
+    /**
+     * Where this driver's coroutines run, decided once by [start] from [driverContext]: in production on
+     * JVM/Android, one event loop of the QUIC loop group, held until the driver's loop ends (see
+     * [placeDriver]). Elsewhere, [driverContext] as given.
+     */
+    @Volatile
+    private var placement: DriverPlacement? = null
+
+    /**
+     * A client's view of the peer's certificate chain (leaf first), copied out of quiche as the driver
+     * tears down, so it outlives `conn`. A server may close the moment its handshake completes; the client
+     * then still has to check the certificate it was shown (`serverCertificateHashes`, the chain
+     * verifiers) and report that verdict, typed, not a closed command channel or "no certificate". Empty
+     * for a server, before teardown, and for a connection that never received a certificate. Written once
+     * on the loop in [cleanup], before any read is refused; read from any thread.
+     */
+    @Volatile
+    private var retainedPeerCertificates: List<PlatformBuffer> = emptyList()
+
+    /** The context every coroutine of this driver is launched in, and [awaitEstablished] arms its bound in. */
+    private val loopContext: CoroutineContext get() = placement?.context ?: driverContext
 
     // Native scratch for the uint64 seq-out of new_scid/probe/migrate. Allocated for every
     // connection — even non-migrating ones issue spare CIDs so a future peer migration works.
@@ -1368,6 +1465,14 @@ class QuicheDriver(
             override val priority = 3
         }
     }
+
+    private fun Wake.kind(): WakeKind =
+        when (this) {
+            is Wake.ProbeAbandon -> WakeKind.ProbeAbandon
+            is Wake.KeepAlive -> WakeKind.KeepAlive
+            is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
+            is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
+        }
 
     /** Whether any deadline is pending at all — never a duration standing in for "none". */
     private sealed interface NextWake {
@@ -1701,21 +1806,28 @@ class QuicheDriver(
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
+        val placed = placeDriver(driverContext)
+        placement = placed
         // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
         // collectors live on the same context as the driver loop, so under a virtual-time test
         // dispatcher they interleave deterministically; they end when the caller's scope does.
         capture.record { r ->
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/state")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/state")) {
                 state.collect { s ->
                     r.connectionState(s)
                     if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
-            scope.launch(driverContext + CoroutineName("$coroutineName/trace/path")) {
+            scope.launch(loopContext + CoroutineName("$coroutineName/trace/path")) {
                 pathState.collect { r.pathState(it) }
             }
         }
-        driverJob = scope.launch(driverContext + CoroutineName(coroutineName)) { run() }
+        driverJob =
+            scope.launch(loopContext + CoroutineName(coroutineName)) { run() }.also { job ->
+                // On completion rather than in run()'s finally: a driver whose scope is cancelled before
+                // run() starts never enters it, and its hold must end all the same.
+                job.invokeOnCompletion { placed.release() }
+            }
 
         if (ingress is DatagramIngress.DriverReaderLoop) {
             startReaderLoop(primary)
@@ -1724,7 +1836,7 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(driverContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(loopContext + CoroutineName("$coroutineName/reader/${entry.key}")) { udpReaderLoop(entry) }
     }
 
     /** What quiche is writing this connection's qlog into. Read and written on the driver loop only. */
@@ -1928,6 +2040,7 @@ class QuicheDriver(
                         NextWake.NoTimer -> null
                         is NextWake.Armed -> armed.wake.remaining
                     }
+                flight.record(FlightEvent.LoopParked, wait?.inWholeMilliseconds ?: -1L)
                 val cmd =
                     if (wait == null) {
                         // No timer pending — block until next command (or channel close)
@@ -1946,6 +2059,22 @@ class QuicheDriver(
                 if (!currentCoroutineContext().isActive) {
                     cmd?.let(::failCommand)
                     break
+                }
+                when (cmd) {
+                    null ->
+                        when (armed) {
+                            NextWake.NoTimer -> Unit
+                            is NextWake.Armed ->
+                                flight.record(
+                                    FlightEvent.WokeByTimer,
+                                    armed.wake
+                                        .kind()
+                                        .ordinal
+                                        .toLong(),
+                                )
+                        }
+                    // Behind the branch: the class reference is not built when the recorder is off.
+                    else -> (flight as? DriverFlight.Ring)?.record(FlightEvent.WokeByCommand, 0L, cmd::class)
                 }
                 when {
                     cmd != null -> {
@@ -2022,9 +2151,17 @@ class QuicheDriver(
                     entry.readerJob?.cancel()
                 }
                 for (entry in paths.values.toList()) {
-                    entry.readerJob?.join()
+                    entry.readerJob?.let { reader ->
+                        reportingStall(
+                            "reader ${entry.key} to exit in $coroutineName",
+                            { "reader.isActive=${reader.isActive} reader.isCompleted=${reader.isCompleted}" },
+                        ) { reader.join() }
+                    }
                 }
                 cleanup()
+                // The trace reaches the application's sink off this loop; let what this connection
+                // recorded arrive before its end is reported (bounded, and a suspension, not a block).
+                capture.record { it.flush() }
             }
         }
     }
@@ -2141,11 +2278,21 @@ class QuicheDriver(
             }
 
             is QuicheCmd.StreamRecv -> {
+                val slot = streams[cmd.streamId]
                 // endBorrow AFTER the call, always: quiche writes into this memory, and on a managed
                 // runtime nothing else is keeping it mapped by the time the driver loop gets here.
                 val result =
                     try {
-                        api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
+                        // Bytes this loop already handed the stream (to a read parked in awaitData that has
+                        // since moved on) come before anything quiche still holds: answer Done so the read
+                        // takes them from the queue, rather than reading past them out of order. The same
+                        // answer once the end is latched: every latch follows quiche reporting the stream's
+                        // end, so quiche holds nothing more and has collected the stream.
+                        if (slot != null && slot.answersStreamRecvWithDone()) {
+                            StreamRecvResult.Done
+                        } else {
+                            api.connStreamRecv(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen)
+                        }
                     } finally {
                         cmd.buf.endBorrow()
                     }
@@ -2154,7 +2301,7 @@ class QuicheDriver(
                 // cannot count them as read. Marked before the hand-off, on the loop that decides it.
                 when (result) {
                     is StreamRecvResult.Data, is StreamRecvResult.Reset ->
-                        streams[cmd.streamId]?.readState?.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+                        slot?.readState?.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
                     StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> Unit
                 }
                 cmd.result.complete(result)
@@ -2299,11 +2446,27 @@ class QuicheDriver(
         flushOutgoing()
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
+        resumeMigrationAwaitingConfirmation()
         discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
         updateState()
+    }
+
+    /**
+     * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
+     * the turn whose packet carried HANDSHAKE_DONE. Costs one lane check when nothing waits.
+     */
+    private fun resumeMigrationAwaitingConfirmation() {
+        val waiting =
+            when (val l = lane) {
+                is MigrationLane.AwaitingConfirmation -> l.cmd
+                MigrationLane.Idle, is MigrationLane.Opening, is MigrationLane.Validating -> return
+            }
+        if (api.connIsClosed(conn) || !api.connIsHandshakeConfirmed(conn)) return
+        lane = MigrationLane.Idle
+        handleMigrate(waiting)
     }
 
     /**
@@ -2444,7 +2607,9 @@ class QuicheDriver(
                 }
                 val existing = streams[streamId.id]
                 if (existing != null) {
+                    handToWaitingRead(existing)
                     existing.dataSignal.trySend(Unit)
+                    flight.record(FlightEvent.StreamSignalled, streamId.id)
                 } else {
                     val slot = StreamSlot(streamId)
                     streams[streamId.id] = slot
@@ -2457,8 +2622,9 @@ class QuicheDriver(
                             readPolicy = streamReadPolicy,
                             writePolicy = streamWritePolicy,
                         )
-                    incomingStreams.trySend(QuicByteStream(streamId, byteStream))
+                    incomingStreams.trySend(QuicByteStream(streamId, byteStream, originOfPeerStream()))
                     slot.dataSignal.trySend(Unit)
+                    flight.record(FlightEvent.StreamSignalled, streamId.id)
                 }
             }
         } finally {
@@ -2466,7 +2632,76 @@ class QuicheDriver(
         }
     }
 
+    /**
+     * When a read is parked on [slot]'s data signal, read what quiche has for it now and queue it on the
+     * slot, so the signal that follows wakes the read with its bytes already in hand. Without this the
+     * woken read had to send a `StreamRecv` back through this loop and wait for the answer: two more
+     * thread hand-offs on the critical path of every read that waited for the network.
+     *
+     * One chunk per park, of the size the read asked for ([StreamSlot.takeWaitingRead]): exactly what the
+     * read's own `StreamRecv` would have taken, so flow control credits the peer no sooner than before.
+     * The queue keeps order with the read's later `StreamRecv`s (see [StreamSlot.awaitData]), and the
+     * chunk is handed over and its FIN latched the way the teardown drain does ([StreamSlot.deliverDrained]).
+     */
+    private fun handToWaitingRead(slot: StreamSlot) {
+        val size = slot.takeWaitingRead()
+        if (size <= 0) return
+        val buffer = streamReadPool.allocate(size)
+        when (val result = api.connStreamRecv(conn, slot.id, addr(buffer), size)) {
+            is StreamRecvResult.Data -> {
+                if (result.bytesRead > 0) {
+                    buffer.position(result.bytesRead)
+                    buffer.resetForRead()
+                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                } else {
+                    buffer.freeNativeMemory()
+                    if (result.fin) slot.latchFin()
+                }
+            }
+            is StreamRecvResult.Reset -> {
+                buffer.freeNativeMemory()
+                slot.latchReset(result.applicationErrorCode)
+            }
+            // Nothing to hand over after all, or a failure the read's own StreamRecv will meet and report.
+            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> buffer.freeNativeMemory()
+        }
+    }
+
+    /**
+     * A stream the peer opens on a server whose handshake is still in progress arrived in 0-RTT: the
+     * client's 1-RTT packets cannot be read before the server's handshake completes.
+     */
+    @OptIn(QuicEngineSpi::class)
+    private fun originOfPeerStream(): QuicStreamOrigin =
+        when (role) {
+            QuicRole.Client -> QuicStreamOrigin.Confirmed
+            QuicRole.Server ->
+                when (_state.value) {
+                    QuicConnectionState.Handshaking -> QuicStreamOrigin.Early(::awaitHandshakeConfirmed)
+                    QuicConnectionState.Idle, is QuicConnectionState.Established, QuicConnectionState.Draining,
+                    is QuicConnectionState.Closed,
+                    -> QuicStreamOrigin.Confirmed
+                }
+        }
+
+    /**
+     * Latch [earlyData] the first time quiche reports this server connection in early data: the TLS stack
+     * accepted the client's 0-RTT, so the protocol and resumption the handshake settled on are known now,
+     * before it completes.
+     */
+    private fun latchEarlyDataAcceptance() {
+        if (role !is QuicRole.Server) return
+        if (_state.value !is QuicConnectionState.Handshaking || earlyDataLatch.value is EarlyDataAcceptance.Accepted) return
+        if (api.connIsClosed(conn) || !api.connIsInEarlyData(conn)) return
+        earlyDataLatch.value =
+            EarlyDataAcceptance.Accepted(
+                readNegotiatedAlpn(),
+                QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
+            )
+    }
+
     private fun updateState() {
+        latchEarlyDataAcceptance()
         // quiche marks the handshake complete before it validates the peer's transport parameters, so a
         // handshake that ends in TRANSPORT_PARAMETER_ERROR reads as established AND closed in the same
         // wake, with none of the peer's limits applied (its stream limit is still 0). That connection
@@ -2478,6 +2713,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
+            handshakeSettled.complete(HandshakeSettled.Confirmed)
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
@@ -2583,6 +2819,7 @@ class QuicheDriver(
         settleUnreadAtClose()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())
+        handshakeSettled.complete(HandshakeSettled.Failed)
     }
 
     /**
@@ -2593,11 +2830,17 @@ class QuicheDriver(
      * but the close itself.
      */
     private fun settleUnreadAtClose() {
+        // A handshake that never completed owes the application nothing: every byte it received arrived
+        // as 0-RTT, which a connection that is never confirmed may have been replayed into.
         val unread =
-            streams.values
-                .filter { it.holdsUnread() }
-                .map { it.id }
-                .toSet()
+            when (_state.value) {
+                QuicConnectionState.Idle, QuicConnectionState.Handshaking -> emptySet()
+                is QuicConnectionState.Established, QuicConnectionState.Draining, is QuicConnectionState.Closed ->
+                    streams.values
+                        .filter { it.holdsUnread() }
+                        .map { it.id }
+                        .toSet()
+            }
         _unreadAtClose.value = if (unread.isEmpty()) QuicUnreadAtClose.AllRead else QuicUnreadAtClose.Unread(unread)
         streams.values.forEach(::reconsiderUnread)
     }
@@ -2643,33 +2886,31 @@ class QuicheDriver(
             // (with the peer's code) so a post-teardown read reports the abort, not a clean End;
             // Done and everything else deliver nothing further.
             if (result !is StreamRecvResult.Data) {
-                if (result is StreamRecvResult.Reset && slot.end == StreamEnd.Open) {
-                    slot.end = StreamEnd.Reset(result.applicationErrorCode)
-                }
+                if (result is StreamRecvResult.Reset) slot.latchReset(result.applicationErrorCode)
                 buffer.freeNativeMemory()
                 return
             }
-            if (result.bytesRead > 0) {
-                buffer.position(result.bytesRead)
-                buffer.resetForRead()
-                // UNLIMITED and never closed before this point, so the send cannot fail; on the
-                // impossible branch release the buffer rather than leaking it.
-                if (slot.pendingData.trySend(buffer).isFailure) {
+            val chunk =
+                if (result.bytesRead > 0) {
+                    buffer.position(result.bytesRead)
+                    buffer.resetForRead()
+                    buffer
+                } else {
                     buffer.freeNativeMemory()
-                    return
+                    null
                 }
-            } else {
-                buffer.freeNativeMemory()
-            }
             // Carry the FIN the same way the read path does, so the read that follows the drained
             // chunks returns End instead of parking on a dataSignal nothing will ever tickle again.
-            // Published *after* the chunk is queued: a reader that sees the flag must also see the
-            // data, otherwise the End verdict would race ahead of the bytes it is supposed to follow.
-            // Guarded so a drain can never downgrade an already-latched terminal state.
-            if (result.fin) {
-                if (slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+            // deliverDrained queues the chunk BEFORE it latches the FIN: a reader that sees the flag
+            // must also see the data, otherwise the End verdict would race ahead of the bytes it is
+            // supposed to follow. It never downgrades an already-latched terminal state.
+            // UNLIMITED and never closed before this point, so the send cannot fail; on the
+            // impossible branch release the buffer rather than leaking it.
+            if (!slot.deliverDrained(chunk, result.fin)) {
+                buffer.freeNativeMemory()
                 return
             }
+            if (result.fin) return
             // 0 bytes without a FIN: quiche has nothing more to hand over.
             if (result.bytesRead <= 0) return
         }
@@ -2885,6 +3126,7 @@ class QuicheDriver(
                     // every queued stream command. The connection then cannot die, so nothing
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
+                    flight.record(FlightEvent.SendBegin, written.toLong())
                     clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
@@ -2892,6 +3134,14 @@ class QuicheDriver(
                 } catch (untyped: Exception) {
                     SendOutcome.Failed(DatagramSendError.Transport(untyped))
                 }
+            flight.record(
+                FlightEvent.SendEnd,
+                when (outcome) {
+                    is SendOutcome.Sent -> 0L
+                    is SendOutcome.Failed -> 1L
+                    is SendOutcome.Stalled -> 2L
+                },
+            )
             when (outcome) {
                 is SendOutcome.Sent -> Unit // keep draining quiche's send queue
                 is SendOutcome.Failed -> {
@@ -2949,7 +3199,7 @@ class QuicheDriver(
         val scope = checkNotNull(driverScope) { "a send stalled before start()" }
         val key = entry.key
         val channel = entry.channel
-        return scope.launch(driverContext) {
+        return scope.launch(loopContext) {
             try {
                 channel.send(lent, len, target)
             } catch (ce: CancellationException) {
@@ -3072,24 +3322,6 @@ class QuicheDriver(
                 }
                 is MigrationCapability.Supported -> migration
             }
-        // What the peer's transport parameters (RFC 9000 §18.2) say about moving to a new local address.
-        // Exhaustive over three states, with no boolean and no null: "the peer forbids it" and "we have
-        // not read the peer's parameters yet" are facts of different kinds — one permanent, one a timing
-        // state that resolves on its own — and a nullable Boolean made them share a token.
-        when (api.connPeerMigrationPermission(conn)) {
-            // Probing would burn a spare DCID only to fail validation.
-            PeerMigrationPermission.Forbidden -> {
-                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
-                return
-            }
-            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
-            // Retryable, so `Failed` — the very next attempt, once the handshake completes, can succeed.
-            PeerMigrationPermission.NotYetNegotiated -> {
-                cmd.result.complete(MigrationResult.Unmoved.Failed.HandshakeNotConfirmed)
-                return
-            }
-            PeerMigrationPermission.Permitted -> Unit
-        }
         val factory =
             when (val via = cmd.via) {
                 PathVia.DefaultRoute -> wiring.channelFactory
@@ -3108,10 +3340,25 @@ class QuicheDriver(
         }
         when (lane) {
             MigrationLane.Idle -> Unit
-            is MigrationLane.Opening, is MigrationLane.Validating -> {
+            is MigrationLane.AwaitingConfirmation, is MigrationLane.Opening, is MigrationLane.Validating -> {
                 cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
                 return
             }
+        }
+        when (api.connMigrationReadiness(conn)) {
+            // Probing would burn a spare DCID only to fail validation.
+            MigrationReadiness.PeerForbids -> {
+                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
+                return
+            }
+            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
+            // Confirmation is one round trip away, so the move waits for it instead of failing:
+            // [resumeMigrationAwaitingConfirmation] runs this again on the turn that confirms.
+            MigrationReadiness.AwaitingConfirmation -> {
+                lane = MigrationLane.AwaitingConfirmation(cmd)
+                return
+            }
+            MigrationReadiness.Ready -> Unit
         }
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
@@ -3142,7 +3389,7 @@ class QuicheDriver(
         // produced by then is treated exactly like a probe the peer has not answered by then.
         val budget = pathValidationBudget()
         val job =
-            scope.launch(driverContext) {
+            scope.launch(loopContext) {
                 val outcome =
                     try {
                         when (val opened = clock.withBound(budget) { factory.openPath(requestedHost, requestedPort) }) {
@@ -3171,7 +3418,7 @@ class QuicheDriver(
         val expected =
             when (val l = lane) {
                 is MigrationLane.Opening -> l.cmd === cmd
-                MigrationLane.Idle, is MigrationLane.Validating -> false
+                MigrationLane.Idle, is MigrationLane.AwaitingConfirmation, is MigrationLane.Validating -> false
             }
         if (!expected) {
             releaseIfOpened(opened.outcome)
@@ -3678,9 +3925,13 @@ class QuicheDriver(
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         latchIdentity()
+        // Before anything fails a PeerCert read and before conn is freed: see [retainedPeerCertificates].
+        retainedPeerCertificates = retainPeerCertificates()
         measureDrainingPeriod()
         wireIdScratch.freeNativeMemory()
         commands.close()
+        // A driver torn down mid-handshake never confirms it: release whatever waits for that.
+        handshakeSettled.complete(HandshakeSettled.Failed)
 
         while (true) {
             val cmd = commands.tryReceive().getOrNull() ?: break
@@ -3699,6 +3950,7 @@ class QuicheDriver(
         // whatever the platform produced after this point.
         when (val l = lane) {
             MigrationLane.Idle -> Unit
+            is MigrationLane.AwaitingConfirmation -> l.cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
             is MigrationLane.Opening -> {
                 l.job.cancel()
                 l.cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
@@ -3793,6 +4045,8 @@ class QuicheDriver(
             is QuicheCmd.DgramSend -> cmd.result.complete(-1)
             // Connection gone before the cert could be read — report "no certificate" (0); the verifier
             // turns that into a handshake failure, which is the right outcome for a torn-down connection.
+            // Connection gone: "nothing read here"; readPeerCertDerThroughDriver then answers from the chain
+            // retained at teardown, without touching the borrowed memory this command carries.
             is QuicheCmd.PeerCert -> cmd.result.complete(0)
             // Connection gone — no quiche handles to read; an all-null snapshot is the typed "no stats".
             is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
@@ -3906,13 +4160,7 @@ class QuicheDriver(
                     NextWake.NoTimer -> LoopWake.Untimed
                     is NextWake.Armed ->
                         LoopWake.Timed(
-                            kind =
-                                when (wait.wake) {
-                                    is Wake.ProbeAbandon -> WakeKind.ProbeAbandon
-                                    is Wake.KeepAlive -> WakeKind.KeepAlive
-                                    is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
-                                    is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
-                                },
+                            kind = wait.wake.kind(),
                             wait = wait.wake.remaining,
                             armedAgo = loopWaitArmedAt.elapsedNow(),
                         )
@@ -4033,10 +4281,83 @@ class QuicheDriver(
 
     suspend fun destroy() {
         commands.close()
-        driverJob?.join()
+        driverJob?.let { driver ->
+            reportingStall(
+                "the driver loop to exit in $coroutineName",
+                { "driver.isActive=${driver.isActive} driver.isCompleted=${driver.isCompleted}" },
+            ) { driver.join() }
+        }
+    }
+
+    /** Copies the peer's chain out of quiche (loop only, `conn` still alive). Bounded; empty on any failure. */
+    private fun retainPeerCertificates(): List<PlatformBuffer> {
+        if (role != QuicRole.Client) return emptyList()
+        val chain = ArrayList<PlatformBuffer>()
+        try {
+            for (index in 0 until MAX_RETAINED_PEER_CERTS) {
+                var capacity = RETAINED_PEER_CERT_INITIAL_CAPACITY
+                var copied: PlatformBuffer? = null
+                while (copied == null) {
+                    val scratch = bufferFactory.allocate(capacity)
+                    try {
+                        val len = api.connPeerCertChainAt(conn, index, scratch.nativeMemoryAccess!!.nativeAddress.toLong(), capacity)
+                        when {
+                            len <= 0 -> return chain
+                            len > capacity && len <= MAX_RETAINED_PEER_CERT_SIZE && capacity < len -> capacity = len
+                            len > capacity -> return chain
+                            else -> {
+                                scratch.position(0)
+                                scratch.setLimit(len)
+                                copied =
+                                    BufferFactory.managed().allocate(len).also {
+                                        it.write(scratch)
+                                        it.resetForRead()
+                                    }
+                            }
+                        }
+                    } finally {
+                        scratch.freeNativeMemory()
+                    }
+                }
+                chain += copied
+            }
+        } catch (_: Throwable) {
+            // A backend without the chain export: the leaf alone, then, or nothing.
+        }
+        return chain
+    }
+
+    /**
+     * Answers a peer-certificate read from [retainedPeerCertificates], once the connection is gone, with
+     * quiche's snprintf-style result: the DER length, copied into [der] at 0 only when it fits within
+     * [capacity]; 0 past the end of the chain or when nothing was retained.
+     */
+    internal fun copyRetainedPeerCert(
+        position: PeerCertPosition,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int {
+        val index =
+            when (position) {
+                PeerCertPosition.Leaf -> 0
+                is PeerCertPosition.InChain -> position.index
+            }
+        val retained = retainedPeerCertificates.getOrNull(index) ?: return 0
+        val view = retained.slice()
+        val len = view.remaining()
+        if (len <= capacity) {
+            der.position(0)
+            der.write(view)
+            der.position(0)
+        }
+        return len
     }
 
     companion object {
+        private const val MAX_RETAINED_PEER_CERTS = 16
+        private const val RETAINED_PEER_CERT_INITIAL_CAPACITY = 4096
+        private const val MAX_RETAINED_PEER_CERT_SIZE = 64 * 1024
+
         const val MAX_DATAGRAM_SIZE = 1350
 
         /**
@@ -4262,10 +4583,7 @@ class DriverStreamAdapter(
     private fun pendingData(): ReadResult.Data? {
         // HandedOff before the take, so the chunk is never out of the queue without the stream still
         // claiming it; a take that found nothing gives back only the hand-off it made itself.
-        val marked = slot.readState.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
-        val chunk = slot.pendingData.tryReceive().getOrNull()
-        if (chunk == null && marked) driver.readReturned(slot)
-        return chunk?.let { ReadResult.Data(it) }
+        return slot.takeQueued(handBack = { driver.readReturned(slot) })?.let { ReadResult.Data(it) }
     }
 
     /**
@@ -4332,7 +4650,7 @@ class DriverStreamAdapter(
         // stream on delivery, so nothing re-answers it — dropping it here would leave the next read
         // parked until its own deadline and the peer's abort lost for good.
         if (answered is StreamRecvResult.Reset) {
-            if (slot.end == StreamEnd.Open) slot.end = StreamEnd.Reset(answered.applicationErrorCode)
+            slot.latchReset(answered.applicationErrorCode)
             return false
         }
         // Done / Error deliver nothing: quiche advanced no offset, so there is nothing to salvage.
@@ -4351,7 +4669,7 @@ class DriverStreamAdapter(
                 driver.capture.record { it.streamLoss(slot.id.id, result.bytesRead, StreamLossCause.SalvageUnclaimed) }
             }
         }
-        if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+        if (result.fin) slot.latchFin()
         return queued
     }
 
@@ -4397,10 +4715,20 @@ class DriverStreamAdapter(
                 throw e
             }
         when (result) {
-            is ReadResult.Data -> driver.readReturned(slot)
+            is ReadResult.Data -> {
+                driver.flight.record(FlightEvent.ReadReturned, slot.id.id)
+                driver.readReturned(slot)
+            }
             ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
         }
         return result
+    }
+
+    /** Park on the stream's data wake, recording the park and its return for [QuicheDriver.flight]. */
+    private suspend fun awaitDataSignal(size: Int) {
+        driver.flight.record(FlightEvent.ReaderParked, slot.id.id)
+        slot.awaitData(size)
+        driver.flight.record(FlightEvent.ReaderResumed, slot.id.id)
     }
 
     private suspend fun readNext(
@@ -4455,6 +4783,14 @@ class DriverStreamAdapter(
         // pendingData(), but remembering what it took. Every destructive take inside withTimeout goes
         // through this; the one before the try is outside the deadline and does not need it.
         fun takePending(): ReadResult.Data? = pendingData()?.also { pendingTaken = it }
+
+        // Park until the driver signals, then take what it handed over while we waited (the chunk, or a
+        // verdict it latched), in the same queue-then-verdict order as the Done answer. Null: nothing was
+        // handed over, so ask quiche again.
+        suspend fun awaitDataThenQueued(): ReadResult? {
+            awaitDataSignal(bufferSize)
+            return slot.queuedOrLatchedVerdict { takePending() }
+        }
         try {
             val result =
                 withTimeout(timeout) {
@@ -4464,13 +4800,12 @@ class DriverStreamAdapter(
                     // instead of issuing a StreamRecv that returns Done and parking on dataSignal forever.
                     // A teardown drain that queued the last chunk *and* latched slot.end lands here too:
                     // the queued bytes come first, the terminal verdict only once they are gone.
-                    when (slot.end) {
-                        StreamEnd.Open -> {}
-                        StreamEnd.Fin -> return@withTimeout takePending() ?: ReadResult.End
-                        // The peer's abort outlives the read that observed it: quiche collects the stream
-                        // once the reset is delivered, so the slot's latched verdict — not a fresh
-                        // stream_recv — is the only truthful answer a later read can give.
-                        is StreamEnd.Reset -> return@withTimeout takePending() ?: ReadResult.Reset
+                    // The peer's abort outlives the read that observed it the same way: quiche collects the
+                    // stream once the reset is delivered, so the slot's latched verdict — not a fresh
+                    // stream_recv — is the only truthful answer a later read can give. Skipped while the
+                    // stream is open: the entry check above has just looked at the queue.
+                    if (slot.end != StreamEnd.Open) {
+                        slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
                     }
                     while (true) {
                         val deferred = CompletableDeferred<StreamRecvResult>()
@@ -4491,7 +4826,7 @@ class DriverStreamAdapter(
                                 // Record the FIN whether or not this chunk also carried data — a coalesced
                                 // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
                                 // Guarded so this can never downgrade an already-latched terminal state.
-                                if (result.fin && slot.end == StreamEnd.Open) slot.end = StreamEnd.Fin
+                                if (result.fin) slot.latchFin()
                                 if (result.bytesRead > 0) {
                                     buffer.position(result.bytesRead)
                                     buffer.resetForRead()
@@ -4509,21 +4844,18 @@ class DriverStreamAdapter(
                                 // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
                                 // unenforced assumption): wait for the data signal like a Done and retry.
                                 takePending()?.let { return@withTimeout it }
-                                slot.dataSignal.receive()
+                                awaitDataThenQueued()?.let { return@withTimeout it }
                                 continue
                             }
                             is StreamRecvResult.Done -> {
-                                // The teardown drain may have emptied quiche into the slot between our
-                                // enqueue and now — take that before any terminal verdict.
-                                takePending()?.let { return@withTimeout it }
-                                // Defensive: if the FIN (or Reset) was consumed earlier (coalesced with
-                                // data), no signal is coming — end now rather than park forever.
-                                when (slot.end) {
-                                    StreamEnd.Open -> {}
-                                    StreamEnd.Fin -> return@withTimeout ReadResult.End
-                                    is StreamEnd.Reset -> return@withTimeout ReadResult.Reset
-                                }
-                                slot.dataSignal.receive()
+                                // The teardown drain may have emptied quiche into the slot since quiche
+                                // answered Done — on the driver loop, concurrently with this line — so the
+                                // queue comes before any terminal verdict, and the verdict is read before
+                                // the queue (see queuedOrLatchedVerdict: the other order reports End over
+                                // the stream's last chunk). If the FIN (or Reset) was consumed earlier
+                                // (coalesced with data), no signal is coming — end now rather than park.
+                                slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
+                                awaitDataThenQueued()?.let { return@withTimeout it }
                                 continue
                             }
                             is StreamRecvResult.Error -> {
@@ -4555,9 +4887,7 @@ class DriverStreamAdapter(
                                 // nothing re-delivers this — and report Reset, never End: an abnormal,
                                 // code-carrying abort is not the peer finishing politely. Bytes the
                                 // transport already accepted still outrank the verdict.
-                                if (slot.end == StreamEnd.Open) {
-                                    slot.end = StreamEnd.Reset(result.applicationErrorCode)
-                                }
+                                slot.latchReset(result.applicationErrorCode)
                                 return@withTimeout takePending() ?: ReadResult.Reset
                             }
                             is StreamRecvResult.ConnectionGone -> {
@@ -4646,6 +4976,30 @@ class DriverStreamAdapter(
         streamId: QuicStreamId,
         buffer: ReadBuffer,
         timeout: Duration,
+    ): Int = send(streamId, buffer, timeout, fin = false)
+
+    /**
+     * Every write offers quiche the FIN with it, which quiche applies only to a write it accepts whole: the
+     * last bytes and the FIN leave in one STREAM frame.
+     */
+    override suspend fun streamWriteAndFinish(
+        streamId: QuicStreamId,
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ) {
+        if (buffer.remaining() == 0) return streamClose(streamId)
+        while (buffer.remaining() > 0) {
+            val before = buffer.position()
+            val written = send(streamId, buffer, timeout, fin = true)
+            buffer.position(before + written)
+        }
+    }
+
+    private suspend fun send(
+        streamId: QuicStreamId,
+        buffer: ReadBuffer,
+        timeout: Duration,
+        fin: Boolean,
     ): Int {
         val remaining = buffer.remaining()
         // Empty input: nothing to send (quiche would report 0). Return before touching the buffer's
@@ -4679,7 +5033,7 @@ class DriverStreamAdapter(
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
                     // buffered-yet-cancelled state that could skip the finally's join.
-                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, false, deferred)).getOrThrow()
+                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, fin, deferred)).getOrThrow()
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
                     inFlight = deferred
                     val sent = deferred.await()

@@ -57,7 +57,7 @@ val capture = QuicTraceCapture(
     // Optional: also fold connectivity into the SAME trace — the monitor's capability once
     // (NET_CAP), then every NetworkState emission (NET): the airplane-mode toggle /
     // Wi-Fi↔cellular handoff, not just QUIC traffic. Client-only.
-    networkMonitor = NetworkMonitor.default(),
+    networkMonitor = NetworkMonitor.open(),
 )
 
 withQuicConnection(

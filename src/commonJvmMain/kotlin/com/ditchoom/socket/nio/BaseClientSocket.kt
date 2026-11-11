@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.data.freeIfData
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
@@ -14,6 +15,7 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
+import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellationException
@@ -24,6 +26,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -78,7 +82,8 @@ abstract class BaseClientSocket(
 
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
-    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+    override suspend fun read(deadline: Duration): ReadResult =
+        offTheAndroidMainThread(onAbandoned = { it.freeIfData() }) { translateRead { readRaw(deadline) } }
 
     private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (!isOpen) throw SocketClosedException.General("Socket is closed.")
@@ -86,7 +91,7 @@ abstract class BaseClientSocket(
         // The blocking channel can't honor a deadline in-line without being torn down, so route it
         // through the orphaned-read single-flight (RFC §3.2) — enforced *and* non-destructive.
         if (blocking) return blockingReadRaw(deadline)
-        val buffer = readBufferSource.acquire(effectiveReadBufferSize(socket.socket().receiveBufferSize))
+        val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBufferSize()))
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()
@@ -97,6 +102,19 @@ abstract class BaseClientSocket(
             throw e
         }
     }
+
+    /**
+     * SO_RCVBUF, for sizing a read's buffer. A close() landing between readRaw's isOpen check and here
+     * makes the query throw "Socket is closed"; mapped like every other platform IOException, that is
+     * this side's close ([SocketClosedException.General]), not a raw java.net exception the caller
+     * cannot type.
+     */
+    private fun receiveBufferSize(): Int =
+        try {
+            socket.socket().receiveBufferSize
+        } catch (e: IOException) {
+            throw wrapJvmException(e)
+        }
 
     /**
      * The blocking-path read (RFC §3.2 orphaned-read single-flight). Enforces [deadline] by racing
@@ -129,6 +147,14 @@ abstract class BaseClientSocket(
                     // abandon only the wait. The next read() re-awaits this same background read.
                     throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
+                    // close() cancels the background read's scope; the waiter itself was not cancelled.
+                    // Passing that CancellationException on would end the caller's coroutine silently,
+                    // as if *it* had been cancelled — report this side's close instead. The buffer stays
+                    // with the cancelled read, which the channel's close ends.
+                    if (inFlight.deferred.isCancelled && currentCoroutineContext().isActive) {
+                        inFlightBlockingRead = null
+                        throw SocketClosedException.General("Socket closed during read", e)
+                    }
                     // The waiter was cancelled from outside; the background read still owns the buffer,
                     // so leave it orphaned for the next read() and let the cancellation propagate.
                     throw e
@@ -154,7 +180,7 @@ abstract class BaseClientSocket(
      * the read must genuinely block so it survives a caller timeout (RFC §3.2).
      */
     private fun startBlockingRead(): InFlightBlockingRead {
-        val buffer = readBufferSource.acquire(effectiveReadBufferSize(socket.socket().receiveBufferSize))
+        val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBufferSize()))
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         val deferred =
             blockingReadScope.async {
@@ -173,7 +199,7 @@ abstract class BaseClientSocket(
     ): Int {
         val bytesRead =
             try {
-                readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
+                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, selector, timeout) } }
             } catch (e: IOException) {
                 // Route every platform IOException (ClosedChannelException, Connection reset,
                 // etc.) through the single mapper. Already-wrapped SocketException is passed
@@ -189,11 +215,12 @@ abstract class BaseClientSocket(
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten {
-        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return BytesWritten(it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline)) }
-        return BytesWritten(rawSocketWrite(buffer, deadline))
-    }
+    ): BytesWritten =
+        offTheAndroidMainThread {
+            if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+            tlsHandler?.let { return@offTheAndroidMainThread it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline) }
+            BytesWritten(rawSocketWrite(buffer, deadline))
+        }
 
     internal override suspend fun rawSocketWrite(
         buffer: ReadBuffer,
@@ -277,6 +304,6 @@ abstract class BaseClientSocket(
             blockingReadScope.cancel()
             blockingWriteScope.cancel()
         }
-        super.close()
+        offTheAndroidMainThread { super.close() }
     }
 }

@@ -3,14 +3,14 @@ package com.ditchoom.socket
 import com.ditchoom.socket.transport.NetworkKind
 
 /**
- * JS actual for [enumerateNetworkInterfaces].
+ * JS actual for [platformNetworkInterfaces].
  *
  * - **Node.js**: `os.networkInterfaces()` — one [NetworkInterfaceInfo] per interface name, aggregating
  *   its address records. Node exposes no OS interface index, so [NetworkInterfaceInfo.index] is 0, and
  *   the kind is [NetworkKind.Other] (no link-kind API); loopback is derived from the `internal` flag.
  * - **Browser**: no interface list exists in a page — returns an empty list.
  */
-actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
+internal actual fun platformNetworkInterfaces(): List<NetworkInterfaceInfo> {
     if (!isNodeJsRuntime) return emptyList()
     return try {
         val interfaces = js("require('os').networkInterfaces()")
@@ -39,3 +39,10 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
         emptyList()
     }
 }
+
+@Deprecated(
+    "Blocks the calling thread while it reads the interface table. Call the suspend " +
+        "listNetworkInterfaces(), which does the read on an IO dispatcher.",
+    ReplaceWith("listNetworkInterfaces()", "com.ditchoom.socket.listNetworkInterfaces"),
+)
+actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> = platformNetworkInterfaces()

@@ -7,7 +7,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.NetworkMonitor
-import com.ditchoom.socket.processDefault
+import com.ditchoom.socket.shared
 import com.ditchoom.socket.quic.InternalQuicApi
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationResult
@@ -361,7 +361,7 @@ object IosHandoffProbe {
         // address families — recorded once for the whole run under `lane=run`, because it is one fact
         // about the phone rather than one per lane (see [OsNetWatch]). Every lane's live connection
         // trace gets a copy, so an offline replay of any one connection carries the network it was on.
-        val monitor = NetworkMonitor.processDefault()
+        val monitor = NetworkMonitor.shared()
         val osSource = IosOsNetworkSource()
         val osNet = OsNetWatch(osSource, ::now, log::emit, TraceSink { event -> lanes.forEach { it.trace.value.emit(event) } }, signals)
         osSource.register { osNet.sample(monitor.state.value) }

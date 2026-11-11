@@ -266,6 +266,20 @@ abstract class WebTransportTestSuite {
                             // "0 events" and reading exactly like "the client sent nothing". That is the
                             // reading the client trace was added to rule out, so it is asserted on the
                             // one path known to have sent packets.
+                            //
+                            // Trace sinks are called off the transport's threads, after the event is
+                            // recorded, so the record can trail the round trip by a delivery. Wait (bounded)
+                            // for what the assertions below need, rather than read the instant it returns.
+                            withTimeoutOrNull(TRACE_DELIVERY_BOUND) {
+                                while (!(
+                                        diagnostics.clientEventCount > 0 &&
+                                            diagnostics.serverEventCount > 0 &&
+                                            diagnostics.serverRingStartsWithDatagramIn
+                                    )
+                                ) {
+                                    delay(10)
+                                }
+                            }
                             assertTrue(
                                 diagnostics.clientEventCount > 0,
                                 "client QUIC trace is empty after a completed round trip: the capture is not " +
@@ -516,6 +530,9 @@ private fun textBuffer(s: String): PlatformBuffer =
         resetForRead()
     }
 
+/** How long a wiring assertion waits for trace events to be delivered to their sinks (off the transport's threads). */
+private val TRACE_DELIVERY_BOUND = 5.seconds
+
 /**
  * Wall-clock-timed runner on a real dispatcher (no virtual time), mirroring the QUIC suites' runQuicTest.
  *
@@ -534,6 +551,7 @@ private fun textBuffer(s: String): PlatformBuffer =
  * `CancellationException`, and rethrowing one here lets the surrounding machinery treat a real failure
  * as an ordinary cancellation. The original stays as the cause.
  */
+
 private fun WebTransportTestSuite.runWebTransportTest(
     timeout: Duration = 30.seconds,
     block: suspend CoroutineScope.() -> Unit,

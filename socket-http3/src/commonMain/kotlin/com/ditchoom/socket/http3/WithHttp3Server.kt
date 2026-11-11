@@ -31,6 +31,8 @@ class Http3Server internal constructor(
  * the server torn down when [block] returns (normally or exceptionally).
  *
  * [qpackCapacity] > 0 enables dynamic QPACK (RFC 9204) in both directions; 0 (default) is static-only.
+ * With [QuicOptions.enableEarlyData], a request that arrived as 0-RTT runs at once when [replaySafety]
+ * says replaying it is harmless, and after the handshake is confirmed otherwise.
  * [quicOptions] defaults to the `h3` ALPN — keep `"h3"` in [QuicOptions.alpnProtocols] for HTTP/3.
  *
  * @throws com.ditchoom.socket.SocketException if the bind fails.
@@ -46,12 +48,42 @@ suspend fun <R> withHttp3Server(
     timeout: Duration = 15.seconds,
     webTransport: WebTransportOptions? = null,
     onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    replaySafety: Http3ReplaySafety = Http3ReplaySafety.SafeMethods,
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R =
     withQuicServer(port, host, tlsConfig, quicOptions.forHttp3(), timeout) {
-        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest, block)
+        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, replaySafety, onRequest, block)
     }
+
+@Deprecated("Binary compatibility: the overload without replaySafety.", level = DeprecationLevel.HIDDEN)
+suspend fun <R> withHttp3Server(
+    port: Int = 0,
+    tlsConfig: QuicTlsConfig,
+    host: String? = null,
+    quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
+    connectionOptions: TransportConfig = TransportConfig(),
+    qpackCapacity: Long = 0,
+    timeout: Duration = 15.seconds,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+    block: suspend Http3Server.() -> R,
+): R =
+    withHttp3Server(
+        port,
+        tlsConfig,
+        host,
+        quicOptions,
+        connectionOptions,
+        qpackCapacity,
+        timeout,
+        webTransport,
+        onWebTransport,
+        Http3ReplaySafety.SafeMethods,
+        onRequest,
+        block,
+    )
 
 /**
  * [withHttp3Server] presenting a generated [certificate] — the WebTransport peer role: browsers reach this
@@ -59,7 +91,7 @@ suspend fun <R> withHttp3Server(
  *
  * ```kotlin
  * when (val certificates = peerCertificates) {
- *     is PeerCertificateSupport.Available -> certificates.generate().use { certificate ->
+ *     is PeerCertificateSupport.Available -> certificates.mint().use { certificate ->
  *         signalling.publish(certificate.hash)
  *         withHttp3Server(
  *             certificate = certificate,
@@ -82,18 +114,49 @@ suspend fun <R> withHttp3Server(
     timeout: Duration = 15.seconds,
     webTransport: WebTransportOptions? = null,
     onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    replaySafety: Http3ReplaySafety = Http3ReplaySafety.SafeMethods,
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R =
     withQuicServer(port, host, certificate, quicOptions.forHttp3(), timeout) {
-        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest, block)
+        runHttp3Server(connectionOptions, qpackCapacity, webTransport, onWebTransport, replaySafety, onRequest, block)
     }
+
+@Deprecated("Binary compatibility: the overload without replaySafety.", level = DeprecationLevel.HIDDEN)
+suspend fun <R> withHttp3Server(
+    port: Int = 0,
+    certificate: PeerCertificate,
+    host: String? = null,
+    quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
+    connectionOptions: TransportConfig = TransportConfig(),
+    qpackCapacity: Long = 0,
+    timeout: Duration = 15.seconds,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+    block: suspend Http3Server.() -> R,
+): R =
+    withHttp3Server(
+        port,
+        certificate,
+        host,
+        quicOptions,
+        connectionOptions,
+        qpackCapacity,
+        timeout,
+        webTransport,
+        onWebTransport,
+        Http3ReplaySafety.SafeMethods,
+        onRequest,
+        block,
+    )
 
 private suspend fun <R> QuicServer.runHttp3Server(
     connectionOptions: TransportConfig,
     qpackCapacity: Long,
     webTransport: WebTransportOptions?,
     onWebTransport: (suspend WebTransportServerExchange.() -> Unit)?,
+    replaySafety: Http3ReplaySafety,
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R {
@@ -102,7 +165,7 @@ private suspend fun <R> QuicServer.runHttp3Server(
         val acceptJob =
             launch {
                 connections {
-                    serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest)
+                    serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, replaySafety, onRequest)
                 }
             }
         try {
@@ -145,5 +208,15 @@ suspend fun QuicScope.serveHttp3(
     qpackCapacity: Long = 0,
     webTransport: WebTransportOptions? = null,
     onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    replaySafety: Http3ReplaySafety = Http3ReplaySafety.SafeMethods,
     onRequest: suspend Http3ServerExchange.() -> Unit,
-) = Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest, webTransport, onWebTransport).serve()
+) = Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest, webTransport, onWebTransport, replaySafety).serve()
+
+@Deprecated("Binary compatibility: the overload without replaySafety.", level = DeprecationLevel.HIDDEN)
+suspend fun QuicScope.serveHttp3(
+    connectionOptions: TransportConfig = TransportConfig(),
+    qpackCapacity: Long = 0,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+) = serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, Http3ReplaySafety.SafeMethods, onRequest)

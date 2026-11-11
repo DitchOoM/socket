@@ -399,7 +399,7 @@ kotlin {
         // The JDK 21 FFM reactive network monitor (multi-release JAR under META-INF/versions/21) moved
         // to the com.ditchoom:network-monitor module along with the rest of the NetworkMonitor
         // implementation — including, since issue #269, the native Linux (netlink) and Apple
-        // (NWPathMonitor) monitors and `NetworkMonitor.default()`. :socket keeps no monitor of its own.
+        // (NWPathMonitor) monitors and `NetworkMonitor.open()`. :socket keeps no monitor of its own.
     }
     js {
         browser {
@@ -437,6 +437,13 @@ kotlin {
                     // nonDrainingPeerIsReliable()=false, but exclude it for parity with the read suite).
                     "harness.WriteTimeoutContractTests",
                     "NodeWriteBackpressureTests",
+                    // Spins up a TCP server and a raw Node `net` peer.
+                    "ReadEndsTruthfullyTests",
+                    // Spins up a TCP server and dials it from a stranger and a client.
+                    "AcceptLogTests",
+                    // These two bind TCP listeners / dial TCP; the range check beside them runs everywhere.
+                    "RefusedPortTests.noEphemeralListenerIsHandedTheRefusedPort",
+                    "RefusedPortTests.aConnectToTheRefusedPortFailsFast",
                 ).forEach { filter.excludeTestsMatching("com.ditchoom.socket.$it") }
             }
         }
@@ -496,10 +503,10 @@ kotlin {
             // Network-awareness (NetworkMonitor / NetworkId) extracted to its own published module so
             // ../webrtc and other consumers can use it standalone. Since issue #269 that module owns
             // EVERY monitor — including the native Linux netlink and Apple NWPathMonitor ones, each with
-            // its own cinterop — plus `NetworkMonitor.default()`, because expect/actual cannot span a
+            // its own cinterop — plus `NetworkMonitor.open()`, because expect/actual cannot span a
             // module boundary. api, not implementation: all of it is part of :socket's public surface
-            // (TransportConfig.networkId, ReconnectingConnection, NetworkMonitor.default()/
-            // processDefault(), InterfaceIndex), re-exported from the same packages as before.
+            // (TransportConfig.networkId, ReconnectingConnection, NetworkMonitor.open()/
+            // shared(), InterfaceIndex), re-exported from the same packages as before.
             api(project(":network-monitor"))
             implementation(libs.buffer)
             api(libs.buffer.flow)
@@ -548,8 +555,11 @@ kotlin {
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
+        // Tests for the resolvers that block a thread (JVM, Linux, Apple), shared by those test source sets.
+        val blockingResolverTestDir = file("src/blockingResolverTest/kotlin")
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
+            kotlin.srcDir(blockingResolverTestDir)
         }
         jvmTest.get().dependsOn(commonJvmTest)
         jvmTest.dependencies {
@@ -585,6 +595,7 @@ kotlin {
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
                 findByName(sourceSetName)?.kotlin?.srcDir(posixNativeImplDir)
             }
+            findByName("appleTest")?.kotlin?.srcDir(blockingResolverTestDir)
         }
 
         // Linux implementation uses standard KMP hierarchy:
@@ -600,13 +611,22 @@ kotlin {
                     api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }
             }
-            named("linuxTest") { kotlin.srcDir(generateIoUringTest) }
+            named("linuxTest") {
+                kotlin.srcDir(generateIoUringTest)
+                kotlin.srcDir(blockingResolverTestDir)
+            }
         }
     }
 }
 
 android {
     compileSdk = 37
+    // The baseline profile this module's AAR ships (generated and split by benchmarks/android-app).
+    (this as com.android.build.api.dsl.LibraryExtension)
+        .sourceSets
+        .getByName("main")
+        .baselineProfiles
+        .srcDir("src/androidMain/baselineProfiles")
     // AGP 9 + legacy-DSL opt-out: the `sourceSets[...]` Kotlin accessor casts to the
     // removed old API. Reach the source set via the new DSL interface instead.
     (this as com.android.build.api.dsl.LibraryExtension)
@@ -620,6 +640,9 @@ android {
         // monitor cannot usefully support API 21/22: RFC_NETWORK_REACHABILITY §8.1.
         minSdk = 23
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Shipped in the AAR as proguard.txt. Every module of this library depends on :socket, so this
+        // is where a rule for the shared com.ditchoom:buffer dependency lives; see the file.
+        consumerProguardFiles("consumer-rules.pro")
     }
     namespace = "$group.${rootProject.name}"
 
@@ -748,6 +771,61 @@ afterEvaluate {
         filter {
             excludeTestsMatching("*Lincheck*")
             isFailOnNoMatchingTests = false
+        }
+    }
+}
+
+// :socket-udp gets the same isolated task, for the event loop's lifecycle (LoopLifecycle): plain Kotlin
+// state, no sockets.
+project(":socket-udp") {
+    tasks.register<Test>("lincheckTest") {
+        description = "Model checks concurrent code with Lincheck (runs on a JVM with no other agents)"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm")
+    }
+    afterEvaluate {
+        dependencies.add("jvmTestImplementation", libs.lincheck)
+        val jvmTestTask = tasks.named<Test>("jvmTest").get()
+        tasks.named<Test>("lincheckTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = jvmTestTask.classpath
+            filter { includeTestsMatching("*Lincheck*") }
+        }
+        tasks.named<Test>("jvmTest") {
+            filter {
+                excludeTestsMatching("*Lincheck*")
+                isFailOnNoMatchingTests = false
+            }
+        }
+    }
+}
+
+// :socket-quic-quiche gets the same isolated task, configured from here rather than in its own build
+// script: socket-quic-quiche/build.gradle.kts is hashed into the quiche native cache keys
+// (quiche-*-v8, quiche-cargo-target-v3, quiche-apple-v3), so one test-dependency line there would make
+// every CI lane rebuild quiche from source once. The task takes jvmTest's compiled classes and runtime
+// classpath as they stand BEFORE that module's own afterEvaluate stages the quiche natives onto it, and
+// none of jvmTest's native-build dependencies: what it checks is plain Kotlin state (StreamSlot), so it
+// needs no JNI library and no cargo build.
+project(":socket-quic-quiche") {
+    tasks.register<Test>("lincheckTest") {
+        description = "Model checks concurrent code with Lincheck (runs on a JVM with no other agents)"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm")
+    }
+    afterEvaluate {
+        dependencies.add("jvmTestImplementation", libs.lincheck)
+        val jvmTestTask = tasks.named<Test>("jvmTest").get()
+        tasks.named<Test>("lincheckTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = jvmTestTask.classpath
+            filter { includeTestsMatching("*Lincheck*") }
+        }
+        tasks.named<Test>("jvmTest") {
+            filter {
+                excludeTestsMatching("*Lincheck*")
+                isFailOnNoMatchingTests = false
+            }
         }
     }
 }
@@ -931,6 +1009,45 @@ allprojects {
             showCauses = true
             showStackTraces = true
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
+}
+
+// ─── KSP: one analysis at a time per build ───────────────────────────────────
+//
+// KSP2 runs inside the Gradle daemon, and every KSP task in a build runs on the SAME Analysis API
+// classloader: the KSP plugin's IsolatedClassLoaderCache is keyed by the symbol-processing-aa
+// classpath, which is one set of jars for every module. Overlapping KSP tasks therefore share the
+// IntelliJ application environment that classloader holds, and when one of them finishes and
+// disposes its session, a sibling still mid-analysis can lose its resolution: every reference
+// unresolved, the Kotlin stdlib and the JDK included (`listOf`, `Test`, `assertEquals`,
+// `DatagramChannel`), and ProtocolMessageProcessor reports "Cannot resolve
+// com.ditchoom.buffer.codec.Payload — buffer-codec must be on the classpath". buffer-codec IS on that
+// classpath (an `api` dependency of :socket-quic-quiche's main source set); nothing resolved at all.
+//
+// Seen as ~14,000 such errors from :socket-quic-quiche:kspDebugUnitTestKotlinAndroid in the K/N ktlint
+// lane (runs 42303021364, 42345536285, 42387874081). In all three its first error lands 3-5 s after
+// its sibling kspDebugAndroidTestKotlinAndroid finishes. Those two and kspTestKotlinJvm all run the
+// codec processor over the shared commonJvmTest protocol and become ready at the same moment, so they
+// start together; the unit-test one analyses the most sources and is the one still running. ktlintCheck
+// executes them at all because the ktlint tasks consume each source set's srcDirs, KSP's output dir
+// among them. Not specific to Android or to ktlint: locally, re-running the three tasks together failed
+// kspTestKotlinJvm the same way (rarely: once in ~55 builds).
+//
+// So KSP tasks take a single-slot build service and never overlap. Each is seconds long, and every
+// other kind of task keeps running in parallel around them. Matched by class name: the KSP plugin is
+// not on the root build script's classpath.
+abstract class KspAnalysisSlot : BuildService<BuildServiceParameters.None>
+
+val kspAnalysisSlot =
+    gradle.sharedServices.registerIfAbsent("kspAnalysisSlot", KspAnalysisSlot::class) {
+        maxParallelUsages.set(1)
+    }
+
+allprojects {
+    tasks.configureEach {
+        if (javaClass.name.startsWith("com.google.devtools.ksp.gradle.KspAATask")) {
+            usesService(kspAnalysisSlot)
         }
     }
 }
@@ -1308,4 +1425,35 @@ tasks.register("resolveAllDependencies") {
     description = "Warms the whole dependency graph so the CI cache writer saves something consumers can use (#427)."
     group = "build setup"
     dependsOn(allprojects.map { "${it.path}:resolveProjectDependencies" })
+}
+
+// ── Kotlin/JS + Kotlin/Wasm yarn: never fetched from GitHub in CI ─────────────────────────────────
+//
+// By default the Kotlin plugin resolves yarn as an Ivy artifact from
+// https://github.com/yarnpkg/yarn/releases/download/v<ver>/yarn-v<ver>.tar.gz while it builds the task
+// graph, on every run that reaches :kotlinYarnSetup or :kotlinWasmYarnSetup. On 2026-11-08 GitHub
+// answered that URL with 504 Gateway Time-out for long enough to fail two release runs outright.
+// No mirror can stand in for it: the plugin hardcodes the `v[revision]/[artifact](-v[revision]).[ext]`
+// pattern and unpacks the archive as-is, expecting a top-level `yarn-v<ver>/` directory, while the npm
+// registry's copy (`yarn/-/yarn-<ver>.tgz`) unpacks into `package/`.
+//
+// So CI hands the build a yarn that is already on the machine instead:
+// .github/scripts/provision-kotlin-js-yarn.sh exports KOTLIN_JS_YARN (the runner image's yarn when it is
+// this exact version, otherwise one installed from the npm registry — the host `yarn install` needs
+// for every package anyway), and with it set both specs skip the download. Unset (any local build)
+// the plugin downloads yarn as before; the only difference is that the version now comes from
+// `kotlinJsYarnVersion` in gradle.properties, which CI provisions too, instead of the plugin's default.
+val kotlinJsYarnVersion = providers.gradleProperty("kotlinJsYarnVersion")
+val preinstalledYarn = providers.environmentVariable("KOTLIN_JS_YARN")
+
+fun org.jetbrains.kotlin.gradle.targets.web.yarn.BaseYarnRootEnvSpec.useProjectYarn() {
+    version.set(kotlinJsYarnVersion)
+    download.set(preinstalledYarn.map { false }.orElse(true))
+    command.set(preinstalledYarn.orElse("yarn"))
+}
+plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootEnvSpec>().useProjectYarn()
+}
+plugins.withType<org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnRootEnvSpec>().useProjectYarn()
 }

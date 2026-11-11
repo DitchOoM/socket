@@ -3,8 +3,9 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.channels.Channel
-import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 
 /**
@@ -41,16 +42,30 @@ class StreamSlot(
      * [StreamEnd.Fin] means the next `read()` returns [com.ditchoom.buffer.flow.ReadResult.End].
      * [StreamEnd.Reset] carries the peer's RESET_STREAM application error code to that same next
      * `read()`.
+     *
+     * Latched only through [latchFin] / [latchReset]: the driver loop and the reading coroutine both
+     * latch it, from different threads, and the first verdict wins.
      */
-    @Volatile
-    var end: StreamEnd = StreamEnd.Open
+    val end: StreamEnd get() = latchedEnd.load()
+
+    private val latchedEnd = AtomicReference<StreamEnd>(StreamEnd.Open)
 
     /**
-     * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
-     * cases where quiche moved the receive offset but the `read()` that asked for the bytes is gone:
-     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown, and
+     * Latch [StreamEnd.Fin], unless a verdict is already latched. A compare-and-set, not a
+     * check-then-write: two threads latch this, and a read-then-write lets the second writer overwrite
+     * the first verdict (a Reset replaced by a Fin) after both saw [StreamEnd.Open].
+     */
+    internal fun latchFin(): Boolean = latchedEnd.compareAndSet(StreamEnd.Open, StreamEnd.Fin)
+
+    /** Latch the peer's RESET_STREAM with its [code], unless a verdict is already latched. See [latchFin]. */
+    internal fun latchReset(code: QuicAppErrorCode): Boolean = latchedEnd.compareAndSet(StreamEnd.Open, StreamEnd.Reset(code))
+
+    /**
+     * Stream bytes quiche had already delivered to us that no reader has taken yet. Three producers:
+     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown,
      * [DriverStreamAdapter.salvageCancelledRecv] when a read's timeout or cancellation unwound it before
-     * the driver answered its still-queued `StreamRecv`.
+     * the driver answered its still-queued `StreamRecv`, and the driver handing a read parked in
+     * [awaitData] the bytes it was waiting for (see [takeWaitingRead]).
      *
      * The connection dying does not un-receive them (RFC 9000 §10.2: a CONNECTION_CLOSE ends the
      * connection; the stream data the transport already accepted and acknowledged is still the
@@ -67,8 +82,110 @@ class StreamSlot(
      */
     val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
 
+    /**
+     * The size of the read parked on [dataSignal], or 0 when no read is parked there. Set by the reader
+     * just before it parks ([awaitData]) and taken by the driver loop ([takeWaitingRead]) when quiche
+     * reports the stream readable, so the driver can hand the bytes over itself instead of only waking
+     * the reader to come and ask for them (one round trip through the loop fewer per read that waited).
+     */
+    private val waitingRead = AtomicInt(0)
+
+    /**
+     * Park the reader until the driver signals [dataSignal], advertising a read of [size] bytes for the
+     * driver to fill ([takeWaitingRead]) meanwhile. The advert is withdrawn BEFORE this returns, so the
+     * caller's next look at [pendingData] cannot be followed by a drain it did not see: once the advert
+     * is gone the driver only signals. A drain that took the advert first may still be landing as the
+     * reader looks; the driver answers that reader's next `StreamRecv` with `Done` while the queue holds
+     * anything or the end is latched (see `QuicheDriver.execute`), so the queued chunk is read before any
+     * byte quiche has after it, and the end of a stream quiche has already collected is the reader's
+     * verdict rather than a question put to quiche.
+     */
+    internal suspend fun awaitData(size: Int) {
+        advertiseWaitingRead(size)
+        try {
+            dataSignal.receive()
+        } finally {
+            withdrawWaitingRead()
+        }
+    }
+
+    /** [awaitData]'s advert, apart from its wait: the hand-off model checks these two around the driver. */
+    internal fun advertiseWaitingRead(size: Int) = waitingRead.store(size)
+
+    internal fun withdrawWaitingRead() = waitingRead.store(0)
+
+    /**
+     * Driver loop only: the size of the read parked on [dataSignal], claiming it so at most one chunk is
+     * drained per park; 0 when no read is parked.
+     */
+    internal fun takeWaitingRead(): Int = waitingRead.exchange(0)
+
     /** Where the application's reads of this stream stand. See [StreamReadState]; advanced by CAS only. */
     val readState = AtomicReference<StreamReadState>(StreamReadState.Idle)
+
+    /**
+     * The driver hands over [chunk] (bytes quiche already accepted, or null for none) and then, when
+     * [fin] is set, latches [StreamEnd.Fin]. In that order: a reader that sees the FIN must also see
+     * the chunk it follows — see [queuedOrLatchedVerdict] for the reader's half of the ordering.
+     *
+     * @return false when the queue is closed and [chunk] was not taken; the caller still owns it, and
+     *   no FIN is latched.
+     */
+    internal fun deliverDrained(
+        chunk: ReadBuffer?,
+        fin: Boolean,
+    ): Boolean {
+        if (chunk != null && pendingData.trySend(chunk).isFailure) return false
+        if (fin) latchFin()
+        return true
+    }
+
+    /**
+     * A read takes the oldest chunk in [pendingData], or null when there is none. The stream is marked
+     * [StreamReadState.HandedOff] *before* the take, so a chunk is never out of the queue while the
+     * stream claims nothing — [holdsUnread] would read false over bytes a read is holding. When the
+     * queue was empty, [handBack] gives back the hand-off this call made itself (and only that one).
+     */
+    internal inline fun takeQueued(handBack: () -> Unit): ReadBuffer? {
+        val marked = readState.compareAndSet(StreamReadState.Idle, StreamReadState.HandedOff)
+        val chunk = pendingData.tryReceive().getOrNull()
+        if (chunk == null && marked) handBack()
+        return chunk
+    }
+
+    /**
+     * What a read returns when quiche has nothing more for it right now: the next queued chunk
+     * (through [take]), else the latched verdict, else null — the read waits for more.
+     *
+     * [end] is read BEFORE the queue. [deliverDrained] queues before it latches, so a FIN seen here
+     * means every chunk it follows is already visible to [take]. The other order has a window: the
+     * queue looks empty, the driver's teardown drain queues the stream's last chunk and latches its
+     * FIN, and the read reports End over bytes the stream is still holding — the #318 data loss, by a
+     * race instead of a missing drain.
+     */
+    internal inline fun queuedOrLatchedVerdict(take: () -> ReadResult.Data?): ReadResult? =
+        when (end) {
+            StreamEnd.Open -> take()
+            StreamEnd.Fin -> take() ?: ReadResult.End
+            is StreamEnd.Reset -> take() ?: ReadResult.Reset
+        }
+
+    /**
+     * Whether the driver answers this stream's `StreamRecv` with `Done` instead of asking quiche: bytes
+     * the loop already handed over wait in [pendingData] and come before anything quiche still holds, and
+     * a latched [end] means quiche reported the stream's end and has collected the stream.
+     */
+    internal fun answersStreamRecvWithDone(): Boolean = !pendingData.isEmpty || end != StreamEnd.Open
+
+    /** A read returned bytes to its caller: [StreamReadState.HandedOff] back to [StreamReadState.Idle], never over [StreamReadState.Finished]. */
+    internal fun returnHandOff() {
+        readState.compareAndSet(StreamReadState.HandedOff, StreamReadState.Idle)
+    }
+
+    /** The application is done reading this stream for good. */
+    internal fun finishReads() {
+        readState.store(StreamReadState.Finished)
+    }
 
     /**
      * Whether this stream still holds something for the application: bytes handed to a read that has not

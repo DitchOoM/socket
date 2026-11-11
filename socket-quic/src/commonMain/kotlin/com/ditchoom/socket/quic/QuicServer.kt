@@ -28,8 +28,12 @@ interface QuicServer {
     /**
      * Accept connections and run [handler] for each.
      *
-     * Each connection gets its own [QuicScope]. The handler runs after the
-     * handshake completes. When the handler returns, the connection is closed.
+     * Each connection gets its own [QuicScope]. The handler runs once the handshake completes or,
+     * with [QuicOptions.enableEarlyData], as soon as the client's 0-RTT is accepted — so a request sent
+     * early can be answered in the server's first flight. Streams the client opened early are
+     * [QuicStreamOrigin.Early], and reading one waits for the handshake to be confirmed unless the
+     * handler calls [QuicByteStream.markReplaySafe] on it; a handshake that fails closes the connection
+     * under the handler as any close does. When the handler returns, the connection is closed.
      * Multiple connections are handled concurrently.
      *
      * Suspends until the server is closed.

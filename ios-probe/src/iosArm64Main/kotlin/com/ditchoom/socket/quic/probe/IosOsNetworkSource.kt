@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.probe
 
-import com.ditchoom.socket.enumerateNetworkInterfaces
+import kotlinx.coroutines.runBlocking
+import com.ditchoom.socket.listNetworkInterfaces
 import com.ditchoom.socket.testkit.osnet.CellularBearer
 import com.ditchoom.socket.testkit.osnet.CellularData
 import com.ditchoom.socket.testkit.osnet.CellularRegistration
@@ -44,7 +45,7 @@ import kotlin.concurrent.AtomicReference
  * purpose.
  *
  * Links and their addresses come from `getifaddrs` through
- * [enumerateNetworkInterfaces][com.ditchoom.socket.enumerateNetworkInterfaces], the same scan every
+ * [listNetworkInterfaces][com.ditchoom.socket.listNetworkInterfaces], the same scan every
  * other platform uses — which is where an iPhone's answer to "does this device have IPv6" comes from.
  *
  * Radio changes are pushed: `CTRadioAccessTechnologyDidChangeNotification` fires on every technology
@@ -97,7 +98,7 @@ class IosOsNetworkSource : OsNetworkSource {
                     roaming = CellularRoaming.NotReported,
                     bearer = currentBearer(),
                 ),
-            links = osLinksFrom(enumerateNetworkInterfaces()),
+            links = osLinksFrom(runBlocking { listNetworkInterfaces() }),
         )
 
     /**

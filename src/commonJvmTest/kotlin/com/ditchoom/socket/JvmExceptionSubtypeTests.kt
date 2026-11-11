@@ -27,7 +27,7 @@ class JvmExceptionSubtypeTests {
             // the ConnectException branch (→ SocketConnectionException.Refused).
             // TODO(JVM/Windows): detect Iocp connect-refused codes explicitly.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
-            val port = 59400 + kotlin.random.Random.nextInt(599)
+            val port = REFUSED_PORT
             val ex =
                 try {
                     val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))

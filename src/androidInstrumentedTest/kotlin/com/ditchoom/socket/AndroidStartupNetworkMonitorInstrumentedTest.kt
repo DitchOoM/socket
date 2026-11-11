@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ditchoom.socket.transport.NetworkId
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
@@ -17,7 +18,7 @@ import org.junit.runner.RunWith
 
 /**
  * Proves the androidx.startup path end to end on a real device: **without any call to
- * `NetworkMonitor.installAndroidContext`**, `NetworkMonitor.default()` is a reactive
+ * `NetworkMonitor.installAndroidContext`**, `NetworkMonitor.open()` is a reactive
  * `ConnectivityManager`-backed monitor.
  *
  * This is the regression test for the failure mode App Startup removes. Previously the Android
@@ -31,7 +32,7 @@ import org.junit.runner.RunWith
 class AndroidStartupNetworkMonitorInstrumentedTest {
     @Test
     fun defaultIsReactiveWithoutAnyManualContextInstall() {
-        val monitor = NetworkMonitor.default()
+        val monitor = runBlocking { NetworkMonitor.open() }
         try {
             assertNotSame(
                 "NetworkMonitorInitializer should have supplied the application Context via " +
@@ -84,7 +85,7 @@ class AndroidStartupNetworkMonitorInstrumentedTest {
         // after is a transient the seed most likely saw too; one still there means the monitor
         // disagreed with the platform.
         val before = awaitEmulatorNetwork()
-        val monitor = NetworkMonitor.default()
+        val monitor = runBlocking { NetworkMonitor.open() }
         val state = monitor.state.value
         val after = connectivitySnapshot()
         try {
@@ -340,6 +341,6 @@ private fun seedVerdict(
                 "the active network was gone by the read after the seed, so the seed most likely saw the " +
                     "same absence — an emulator transient, not the monitor"
         }
-    return "NetworkMonitor.default() seeded $state although the emulator had a network: " +
+    return "NetworkMonitor.open() seeded $state although the emulator had a network: " +
         "before=[$before], after=[$after]. $owner"
 }

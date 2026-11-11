@@ -14,4 +14,11 @@ class LinuxClosedConnectionLateDatagramTests : ClosedConnectionLateDatagramTestS
     }
 
     override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
+
+    internal override suspend fun buildServer(
+        binding: QuicPortBinding,
+        tlsConfig: QuicTlsConfig,
+        options: QuicOptions,
+        tuning: QuicheDriverTuning,
+    ): SharedQuicheServer = buildLinuxQuicServer(binding, tlsConfig, options, tuning)
 }

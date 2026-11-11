@@ -8,6 +8,13 @@ import org.junit.runner.RunWith
 class AndroidClosedConnectionLateDatagramTests : ClosedConnectionLateDatagramTestSuite() {
     override fun testTlsConfig() = AndroidTestCerts.tlsConfig
 
+    internal override suspend fun buildServer(
+        binding: QuicPortBinding,
+        tlsConfig: QuicTlsConfig,
+        options: QuicOptions,
+        tuning: QuicheDriverTuning,
+    ): SharedQuicheServer = buildJvmQuicServer(binding, tlsConfig, options, tuning)
+
     override suspend fun wrapTestBody(block: suspend () -> Unit) =
         skipOnMissingNativeLib(AndroidClosedConnectionLateDatagramTests::class, block)
 }

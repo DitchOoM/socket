@@ -19,7 +19,7 @@ private const val SHA256_DIGEST_BYTES = 32
  * Apple (Kotlin/Native) SHA-256 via BoringSSL's one-shot `SHA256`, vendored into and force-loaded from
  * libquiche.a (see [BoringSslSha256.def]). Same "reuse the already-linked crypto" approach as
  * [Sha256.linux.kt], and collision-free on Apple because quiche's BoringSSL is the only crypto library
- * present (buffer-crypto is scoped to the JVM/Android path). Mirrors the linux contract: non-consuming on
+ * present (this module does not depend on buffer-crypto at all). Mirrors the linux contract: non-consuming on
  * [input] (reads positionally; its position is unchanged), writes 32 bytes into [dest] at its current
  * position.
  *

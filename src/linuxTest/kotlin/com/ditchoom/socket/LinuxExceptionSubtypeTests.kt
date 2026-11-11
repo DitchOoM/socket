@@ -23,7 +23,7 @@ class LinuxExceptionSubtypeTests {
     @Test
     fun connectionRefused_isRefused() =
         runTestNoTimeSkipping {
-            val port = 59500 + kotlin.random.Random.nextInt(499)
+            val port = REFUSED_PORT
             val ex =
                 try {
                     val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))

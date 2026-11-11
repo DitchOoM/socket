@@ -5,11 +5,11 @@ import androidx.startup.Initializer
 
 /**
  * androidx.startup [Initializer] that hands the application [Context] to this module at process start,
- * so `NetworkMonitor.default()` / `.processDefault()` are reactive on Android with **no** app-side call.
+ * so `NetworkMonitor.open()` / `.shared()` are reactive on Android with **no** app-side call.
  *
  * Before this existed, a working Android monitor required the app to remember
  * `NetworkMonitor.installAndroidContext(applicationContext)` in `Application.onCreate()`; forgetting it
- * silently degraded every `processDefault()` consumer (QUIC auto-migration, transport fallback's
+ * silently degraded every `shared()` consumer (QUIC auto-migration, transport fallback's
  * per-network capability cache) to [NetworkMonitor.AlwaysAvailable] — a no-op that reports the network
  * as permanently up. Nothing failed loudly, which is exactly the failure mode App Startup removes: this
  * module's manifest contributes a `<meta-data>` entry to `androidx.startup.InitializationProvider`, so
@@ -19,7 +19,7 @@ import androidx.startup.Initializer
  * **This only captures the context; it does not build a monitor.** Constructing an
  * [AndroidNetworkMonitor] registers a `ConnectivityManager.NetworkCallback`, and an app that merely
  * links this library should not pay that (or the wakeups it implies) at startup. The callback is
- * registered lazily, on the first `NetworkMonitor.processDefault()` read.
+ * registered lazily, on the first `NetworkMonitor.shared()` read.
  *
  * To opt out entirely, remove the entry in the app's manifest:
  *
@@ -32,7 +32,7 @@ import androidx.startup.Initializer
  * </provider>
  * ```
  *
- * With it removed, `NetworkMonitor.default()` falls back to [PollingNetworkMonitor] — late but true,
+ * With it removed, `NetworkMonitor.open()` falls back to [PollingNetworkMonitor] — late but true,
  * and it reports [MonitorMechanism.Polled] so the degradation is visible at configuration time — unless
  * the app supplies a context itself via [NetworkMonitor.Companion.installAndroidApplicationContext] or
  * installs a monitor via [NetworkMonitor.Companion.installAndroidContext].

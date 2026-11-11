@@ -159,7 +159,7 @@ afterEvaluate {
     val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
     tasks
         .withType<org.gradle.api.tasks.testing.Test>()
-        .matching { it.name == "jvmTest" || it.name.matches(Regex("test\\w*UnitTest")) }
+        .matching { it.name == "jvmTest" || it.name == "mainThreadSafetyTest" || it.name.matches(Regex("test\\w*UnitTest")) }
         .configureEach {
             dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
             classpath += files(stagedNatives)
@@ -176,6 +176,52 @@ afterEvaluate {
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
+}
+
+// Main-thread safety: every public operation, called from a UI-like thread, must suspend rather than
+// block it (the Android main thread, a desktop UI thread, Dispatchers.Main). BlockHound enforces it:
+// the `*MainThreadSafety*` tests drive the public APIs from a single-thread dispatcher BlockHound marks
+// non-blocking, so a blocking call on it (file or socket I/O, a park, a native library load, a DNS
+// lookup) fails with the stack that made it.
+//
+// Its own task, the way :lincheckTest is: BlockHound is a Java agent that retransforms JDK classes, and
+// Lincheck fails open under any other agent, so neither may share a JVM with the other or with jvmTest.
+// forkEvery = 1 gives every test class a fresh JVM, so each one is the FIRST use of what it drives —
+// the QUIC classes cover the one-time native library extraction and load, which a warm JVM would hide.
+val blockHoundVersion = providers.gradleProperty("blockHoundVersion").get()
+kotlin.sourceSets.named("jvmTest") {
+    dependencies {
+        implementation("io.projectreactor.tools:blockhound:$blockHoundVersion")
+        // CoroutinesBlockHoundIntegration: teaches BlockHound the coroutine scheduler's own parking.
+        implementation(libs.kotlinx.coroutines.debug)
+    }
+}
+val mainThreadSafetyTest =
+    tasks.register<Test>("mainThreadSafetyTest") {
+        description = "Calls every public API from a non-blocking, main-like thread under BlockHound"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm")
+        forkEvery = 1
+        // BlockHound installs itself as an agent at runtime and adds methods to the classes it
+        // instruments; JDK 21 refuses both unless told otherwise.
+        jvmArgs("-XX:+EnableDynamicAgentLoading", "-XX:+AllowRedefinitionToAddDeleteMethods")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+    }
+afterEvaluate {
+    val jvmTestTask = tasks.named<Test>("jvmTest").get()
+    mainThreadSafetyTest.configure {
+        testClassesDirs = jvmTestTask.testClassesDirs
+        classpath = jvmTestTask.classpath
+        filter { includeTestsMatching("*MainThreadSafety*") }
+    }
+    jvmTestTask.filter {
+        excludeTestsMatching("*MainThreadSafety*")
+        isFailOnNoMatchingTests = false
+    }
 }
 
 // --- Publishing (W7, RFC_DETERMINISTIC_SIMULATION §8) ---
