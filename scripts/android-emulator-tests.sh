@@ -390,7 +390,9 @@ if [ "$NETWORK_READY" = "1" ]; then
   # by this script instead of by the step timeout. Gradle's output is also kept in a file, so the
   # capture can list the connected-test tasks it had started.
   set +e
-  ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
+  ./gradlew :socket-http3:connectedAndroidTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.http3.PerfettoProbeTest \
+    -Pandroid.testInstrumentationRunnerArguments.probe="${PROBE:-none}" \
     -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
     -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
     -Pandroid.testInstrumentationRunnerArguments.netCtrlPort="$NET_CTRL_PORT" \

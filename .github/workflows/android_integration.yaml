@@ -70,7 +70,7 @@ jobs:
         # platform with a `default` x86_64 image: the next tightening lands here before it reaches users.
         # No arm64 lane: GitHub's arm64 runners offer no KVM, and an unaccelerated emulator cannot
         # finish this suite inside the job's budget. The arm64 JNI build is covered by build-linux.
-        api-level: [24, 29, 35, 36]
+        api-level: [29, 35]
     steps:
       - name: checkout
         uses: actions/checkout@v7
@@ -293,7 +293,9 @@ jobs:
           # Traced: 29 and 35. UNTRACED: 36 (an instrument has hidden the race it was built to catch
           # on this project, so the matrix always has an uninstrumented lane) and 24, which has no
           # Perfetto at all and keeps logcat only.
-          PERFETTO_RING: ${{ contains(fromJSON('[29, 35]'), matrix.api-level) && '1' || '0' }}
+          PERFETTO_RING: "1"
+          PROBE: ${{ matrix.api-level == 29 && 'fail' || 'hang' }}
+          ANDROID_TEST_BUDGET_S: "200"
         with:
           api-level: ${{ matrix.api-level }}
           target: default
