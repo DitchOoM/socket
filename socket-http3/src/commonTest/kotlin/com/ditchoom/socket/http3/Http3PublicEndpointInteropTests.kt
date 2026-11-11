@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -53,7 +54,13 @@ class Http3PublicEndpointInteropTests {
                         PublicEndpointAttempt.run("$host:$port", ENDPOINT_BUDGET) {
                             resolve(host)
                             enter("handshake")
-                            withHttp3Connection(host, port, connectionOptions = connectionOptions, timeout = 8.seconds) {
+                            withHttp3Connection(
+                                host,
+                                port,
+                                observing(QuicOptions(alpnProtocols = listOf(HTTP3_ALPN))),
+                                connectionOptions = connectionOptions,
+                                timeout = 8.seconds,
+                            ) {
                                 enter("request")
                                 val response = request(Http3Request(method = "GET", authority = host, path = "/"))
                                 try {
