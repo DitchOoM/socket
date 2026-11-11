@@ -1,0 +1,277 @@
+public final class com/ditchoom/socket/webtransport/Http3WebTransportConfig {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getConnectionOptions ()Lcom/ditchoom/socket/TransportConfig;
+	public final fun getQuicOptions ()Lcom/ditchoom/socket/quic/QuicOptions;
+}
+
+public final class com/ditchoom/socket/webtransport/Http3WebTransportConfigKt {
+	public static final fun connect (Lcom/ditchoom/socket/webtransport/WebTransportSupport;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/Http3WebTransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connectMultiplexed (Lcom/ditchoom/socket/webtransport/WebTransportSupport$Multiplexed;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/Http3WebTransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/MultiplexedWebTransport {
+	public abstract fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openSession (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun openSession$default (Lcom/ditchoom/socket/webtransport/MultiplexedWebTransport;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/MultiplexedWebTransport$DefaultImpls {
+	public static synthetic fun openSession$default (Lcom/ditchoom/socket/webtransport/MultiplexedWebTransport;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/NetworkCapabilities {
+	public fun <init> (Ljava/util/Set;)V
+	public final fun component1 ()Ljava/util/Set;
+	public final fun contains (Lcom/ditchoom/socket/webtransport/TransportKind;)Z
+	public final fun copy (Ljava/util/Set;)Lcom/ditchoom/socket/webtransport/NetworkCapabilities;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/NetworkCapabilities;Ljava/util/Set;ILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/NetworkCapabilities;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTransports ()Ljava/util/Set;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/NetworkCapabilitiesHttp3Kt {
+	public static final fun networkCapabilities ()Lcom/ditchoom/socket/webtransport/NetworkCapabilities;
+}
+
+public final class com/ditchoom/socket/webtransport/TransportKind : java/lang/Enum {
+	public static final field QUIC Lcom/ditchoom/socket/webtransport/TransportKind;
+	public static final field TCP Lcom/ditchoom/socket/webtransport/TransportKind;
+	public static final field WEB_SOCKET Lcom/ditchoom/socket/webtransport/TransportKind;
+	public static final field WEB_TRANSPORT Lcom/ditchoom/socket/webtransport/TransportKind;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/webtransport/TransportKind;
+	public static fun values ()[Lcom/ditchoom/socket/webtransport/TransportKind;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportByteStreamMux : com/ditchoom/buffer/flow/ByteStreamMux {
+	public fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lkotlinx/coroutines/CoroutineScope;)V
+	public fun acceptBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun acceptUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun openBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun openUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportCertificateHash {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;Ljava/lang/String;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/ReadBuffer;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAlgorithm ()Ljava/lang/String;
+	public final fun getValue ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportCloseInfo {
+	public fun <init> ()V
+	public synthetic fun <init> (ILjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (ILjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy-qim9Vi0 (ILjava/lang/String;)Lcom/ditchoom/socket/webtransport/WebTransportCloseInfo;
+	public static synthetic fun copy-qim9Vi0$default (Lcom/ditchoom/socket/webtransport/WebTransportCloseInfo;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportCloseInfo;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-pVg5ArA ()I
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public class com/ditchoom/socket/webtransport/WebTransportException : java/lang/Exception {
+	public fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportFailure;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportFailure;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getFailure ()Lcom/ditchoom/socket/webtransport/WebTransportFailure;
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/WebTransportFailure {
+	public abstract fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$ConnectRejected : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/webtransport/WebTransportFailure$ConnectRejected;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/WebTransportFailure$ConnectRejected;IILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$ConnectRejected;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStatus ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$DatagramsNotEnabled : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/webtransport/WebTransportFailure$DatagramsNotEnabled;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$NotEnabledLocally : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/webtransport/WebTransportFailure$NotEnabledLocally;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$PeerDoesNotSupport : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/webtransport/WebTransportFailure$PeerDoesNotSupport;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$SessionError : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$SessionError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/WebTransportFailure$SessionError;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$SessionError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$StreamAborted : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun copy-WZ4Q5Ns (I)Lcom/ditchoom/socket/webtransport/WebTransportFailure$StreamAborted;
+	public static synthetic fun copy-WZ4Q5Ns$default (Lcom/ditchoom/socket/webtransport/WebTransportFailure$StreamAborted;IILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$StreamAborted;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getErrorCode-pVg5ArA ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$StreamAbortedWithoutCode : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/webtransport/WebTransportFailure$StreamAbortedWithoutCode;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportFailure$TlsHandshake : com/ditchoom/socket/webtransport/WebTransportFailure {
+	public fun <init> (ZLjava/lang/String;)V
+	public final fun component1 ()Z
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ZLjava/lang/String;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$TlsHandshake;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/WebTransportFailure$TlsHandshake;ZLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportFailure$TlsHandshake;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBadCertificate ()Z
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportOptions {
+	public fun <init> ()V
+	public fun <init> (ZLjava/util/List;)V
+	public synthetic fun <init> (ZLjava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Z
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy (ZLjava/util/List;)Lcom/ditchoom/socket/webtransport/WebTransportOptions;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/webtransport/WebTransportOptions;ZLjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/webtransport/WebTransportOptions;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAllowPooling ()Z
+	public final fun getServerCertificateHashes ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/WebTransportSession {
+	public abstract fun awaitClosed (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun close-OzbTU-A (ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun close-OzbTU-A$default (Lcom/ditchoom/socket/webtransport/WebTransportSession;ILjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun getCloseInfo ()Lcom/ditchoom/socket/webtransport/WebTransportCloseInfo;
+	public abstract fun getDatagrams ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getIncomingBidiStreams ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getIncomingUniStreams ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun isClosed ()Z
+	public abstract fun openBidiStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openUniStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun sendDatagram (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportSession$DefaultImpls {
+	public static synthetic fun close-OzbTU-A$default (Lcom/ditchoom/socket/webtransport/WebTransportSession;ILjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportSessionTransport : com/ditchoom/socket/transport/SessionTransport {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lcom/ditchoom/socket/webtransport/WebTransportSupport;)V
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lcom/ditchoom/socket/webtransport/WebTransportSupport;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun close (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public synthetic fun close (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun establish (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract class com/ditchoom/socket/webtransport/WebTransportStreamAbortException : com/ditchoom/socket/webtransport/WebTransportException {
+	public synthetic fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportFailure;Ljava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportStreamAbortedWithoutCodeException : com/ditchoom/socket/webtransport/WebTransportStreamAbortException {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportStreamException : com/ditchoom/socket/webtransport/WebTransportStreamAbortException {
+	public synthetic fun <init> (ILjava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (ILjava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getErrorCode-pVg5ArA ()I
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportStreamMux : com/ditchoom/buffer/flow/StreamMux {
+	public fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lkotlinx/coroutines/CoroutineScope;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/webtransport/WebTransportSession;Lcom/ditchoom/buffer/codec/Codec;Lcom/ditchoom/socket/TransportConfig;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/codec/DecodeContext;Lcom/ditchoom/buffer/codec/EncodeContext;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun acceptBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun acceptUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun closeMintedConnections (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun openBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun openUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/WebTransportSupport {
+	public abstract fun connect (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/webtransport/WebTransportSupport;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportSupport$DefaultImpls {
+	public static synthetic fun connect$default (Lcom/ditchoom/socket/webtransport/WebTransportSupport;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/webtransport/WebTransportSupport$Multiplexed : com/ditchoom/socket/webtransport/WebTransportSupport {
+	public abstract fun connectMultiplexed (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connectMultiplexed$default (Lcom/ditchoom/socket/webtransport/WebTransportSupport$Multiplexed;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportSupport$Multiplexed$DefaultImpls {
+	public static synthetic fun connectMultiplexed$default (Lcom/ditchoom/socket/webtransport/WebTransportSupport$Multiplexed;Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportSupportHttp3Kt {
+	public static final fun webTransportSupport ()Lcom/ditchoom/socket/webtransport/WebTransportSupport;
+}
+
+public final class com/ditchoom/socket/webtransport/WebTransportTransport : com/ditchoom/socket/transport/MultiplexingTransport, com/ditchoom/socket/transport/Transport {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lcom/ditchoom/socket/webtransport/WebTransportSupport;)V
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/webtransport/WebTransportOptions;Lcom/ditchoom/socket/webtransport/WebTransportSupport;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connect (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getFamily ()Lcom/ditchoom/socket/transport/TransportFamily;
+	public fun withMux (Ljava/lang/String;ILcom/ditchoom/buffer/codec/Codec;ILcom/ditchoom/socket/transport/OverflowPolicy;Lcom/ditchoom/socket/TransportConfig;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+

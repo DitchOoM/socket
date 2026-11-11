@@ -1,0 +1,611 @@
+// Klib ABI Dump
+// Targets: [linuxArm64, linuxX64]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <com.ditchoom:socket-testsuite>
+final enum class com.ditchoom.socket.quic/ImpairDirection : kotlin/Enum<com.ditchoom.socket.quic/ImpairDirection> { // com.ditchoom.socket.quic/ImpairDirection|null[0]
+    enum entry ClientToServer // com.ditchoom.socket.quic/ImpairDirection.ClientToServer|null[0]
+    enum entry ServerToClient // com.ditchoom.socket.quic/ImpairDirection.ServerToClient|null[0]
+
+    final val entries // com.ditchoom.socket.quic/ImpairDirection.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.quic/ImpairDirection> // com.ditchoom.socket.quic/ImpairDirection.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.quic/ImpairDirection // com.ditchoom.socket.quic/ImpairDirection.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.quic/ImpairDirection> // com.ditchoom.socket.quic/ImpairDirection.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket.testsuite.harness/RelayDirection : kotlin/Enum<com.ditchoom.socket.testsuite.harness/RelayDirection> { // com.ditchoom.socket.testsuite.harness/RelayDirection|null[0]
+    enum entry ClientToServer // com.ditchoom.socket.testsuite.harness/RelayDirection.ClientToServer|null[0]
+    enum entry ServerToClient // com.ditchoom.socket.testsuite.harness/RelayDirection.ServerToClient|null[0]
+
+    final val entries // com.ditchoom.socket.testsuite.harness/RelayDirection.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.testsuite.harness/RelayDirection> // com.ditchoom.socket.testsuite.harness/RelayDirection.entries.<get-entries>|<get-entries>#static(){}[0]
+    final val wire // com.ditchoom.socket.testsuite.harness/RelayDirection.wire|{}wire[0]
+        final fun <get-wire>(): kotlin/String // com.ditchoom.socket.testsuite.harness/RelayDirection.wire.<get-wire>|<get-wire>(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.testsuite.harness/RelayDirection // com.ditchoom.socket.testsuite.harness/RelayDirection.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.testsuite.harness/RelayDirection> // com.ditchoom.socket.testsuite.harness/RelayDirection.values|values#static(){}[0]
+}
+
+final enum class com.ditchoom.socket.testsuite.harness/TlsScenario : kotlin/Enum<com.ditchoom.socket.testsuite.harness/TlsScenario> { // com.ditchoom.socket.testsuite.harness/TlsScenario|null[0]
+    enum entry EXPIRED // com.ditchoom.socket.testsuite.harness/TlsScenario.EXPIRED|null[0]
+    enum entry SELF_SIGNED // com.ditchoom.socket.testsuite.harness/TlsScenario.SELF_SIGNED|null[0]
+    enum entry TLS13_ONLY // com.ditchoom.socket.testsuite.harness/TlsScenario.TLS13_ONLY|null[0]
+    enum entry UNTRUSTED // com.ditchoom.socket.testsuite.harness/TlsScenario.UNTRUSTED|null[0]
+    enum entry VALID // com.ditchoom.socket.testsuite.harness/TlsScenario.VALID|null[0]
+    enum entry WRONG_HOST // com.ditchoom.socket.testsuite.harness/TlsScenario.WRONG_HOST|null[0]
+
+    final val entries // com.ditchoom.socket.testsuite.harness/TlsScenario.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.testsuite.harness/TlsScenario> // com.ditchoom.socket.testsuite.harness/TlsScenario.entries.<get-entries>|<get-entries>#static(){}[0]
+    final val manifestKey // com.ditchoom.socket.testsuite.harness/TlsScenario.manifestKey|{}manifestKey[0]
+        final fun <get-manifestKey>(): kotlin/String // com.ditchoom.socket.testsuite.harness/TlsScenario.manifestKey.<get-manifestKey>|<get-manifestKey>(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.testsuite.harness/TlsScenario // com.ditchoom.socket.testsuite.harness/TlsScenario.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.testsuite.harness/TlsScenario> // com.ditchoom.socket.testsuite.harness/TlsScenario.values|values#static(){}[0]
+}
+
+abstract fun interface com.ditchoom.socket.quic/ImpairmentPolicy { // com.ditchoom.socket.quic/ImpairmentPolicy|null[0]
+    abstract fun actionFor(com.ditchoom.socket.quic/ImpairDirection, kotlin/Int): com.ditchoom.socket.quic/ImpairAction // com.ditchoom.socket.quic/ImpairmentPolicy.actionFor|actionFor(com.ditchoom.socket.quic.ImpairDirection;kotlin.Int){}[0]
+}
+
+abstract fun interface com.ditchoom.socket.quic/StallDump { // com.ditchoom.socket.quic/StallDump|null[0]
+    abstract fun disarm() // com.ditchoom.socket.quic/StallDump.disarm|disarm(){}[0]
+}
+
+abstract interface com.ditchoom.socket.quic/ImpairingProxy { // com.ditchoom.socket.quic/ImpairingProxy|null[0]
+    abstract val delayedCount // com.ditchoom.socket.quic/ImpairingProxy.delayedCount|{}delayedCount[0]
+        abstract fun <get-delayedCount>(): kotlin/Int // com.ditchoom.socket.quic/ImpairingProxy.delayedCount.<get-delayedCount>|<get-delayedCount>(){}[0]
+    abstract val droppedCount // com.ditchoom.socket.quic/ImpairingProxy.droppedCount|{}droppedCount[0]
+        abstract fun <get-droppedCount>(): kotlin/Int // com.ditchoom.socket.quic/ImpairingProxy.droppedCount.<get-droppedCount>|<get-droppedCount>(){}[0]
+    abstract val duplicatedCount // com.ditchoom.socket.quic/ImpairingProxy.duplicatedCount|{}duplicatedCount[0]
+        abstract fun <get-duplicatedCount>(): kotlin/Int // com.ditchoom.socket.quic/ImpairingProxy.duplicatedCount.<get-duplicatedCount>|<get-duplicatedCount>(){}[0]
+    abstract val proxyPort // com.ditchoom.socket.quic/ImpairingProxy.proxyPort|{}proxyPort[0]
+        abstract fun <get-proxyPort>(): kotlin/Int // com.ditchoom.socket.quic/ImpairingProxy.proxyPort.<get-proxyPort>|<get-proxyPort>(){}[0]
+    abstract val reorderedCount // com.ditchoom.socket.quic/ImpairingProxy.reorderedCount|{}reorderedCount[0]
+        abstract fun <get-reorderedCount>(): kotlin/Int // com.ditchoom.socket.quic/ImpairingProxy.reorderedCount.<get-reorderedCount>|<get-reorderedCount>(){}[0]
+
+    abstract fun arm() // com.ditchoom.socket.quic/ImpairingProxy.arm|arm(){}[0]
+    abstract suspend fun close() // com.ditchoom.socket.quic/ImpairingProxy.close|close(){}[0]
+}
+
+abstract interface com.ditchoom.socket.quic/RebindingProxy { // com.ditchoom.socket.quic/RebindingProxy|null[0]
+    abstract val proxyPort // com.ditchoom.socket.quic/RebindingProxy.proxyPort|{}proxyPort[0]
+        abstract fun <get-proxyPort>(): kotlin/Int // com.ditchoom.socket.quic/RebindingProxy.proxyPort.<get-proxyPort>|<get-proxyPort>(){}[0]
+
+    abstract fun rebind() // com.ditchoom.socket.quic/RebindingProxy.rebind|rebind(){}[0]
+    abstract suspend fun close() // com.ditchoom.socket.quic/RebindingProxy.close|close(){}[0]
+}
+
+sealed interface com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction|null[0]
+    final class ForwardAfter : com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction.ForwardAfter|null[0]
+        constructor <init>(kotlin/Long) // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.<init>|<init>(kotlin.Long){}[0]
+
+        final val delayMs // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.delayMs|{}delayMs[0]
+            final fun <get-delayMs>(): kotlin/Long // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.delayMs.<get-delayMs>|<get-delayMs>(){}[0]
+
+        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.component1|component1(){}[0]
+        final fun copy(kotlin/Long = ...): com.ditchoom.socket.quic/ImpairAction.ForwardAfter // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.copy|copy(kotlin.Long){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/ImpairAction.ForwardAfter.toString|toString(){}[0]
+    }
+
+    final object Drop : com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction.Drop|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/ImpairAction.Drop.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/ImpairAction.Drop.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/ImpairAction.Drop.toString|toString(){}[0]
+    }
+
+    final object Forward : com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction.Forward|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/ImpairAction.Forward.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/ImpairAction.Forward.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/ImpairAction.Forward.toString|toString(){}[0]
+    }
+
+    final object ForwardTwice : com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction.ForwardTwice|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/ImpairAction.ForwardTwice.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/ImpairAction.ForwardTwice.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/ImpairAction.ForwardTwice.toString|toString(){}[0]
+    }
+
+    final object HoldUntilNext : com.ditchoom.socket.quic/ImpairAction { // com.ditchoom.socket.quic/ImpairAction.HoldUntilNext|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/ImpairAction.HoldUntilNext.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/ImpairAction.HoldUntilNext.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/ImpairAction.HoldUntilNext.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicHarnessAvailability { // com.ditchoom.socket.quic/QuicHarnessAvailability|null[0]
+    final class Unavailable : com.ditchoom.socket.quic/QuicHarnessAvailability { // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable|null[0]
+        constructor <init>(com.ditchoom.socket.testkit.skip/SkipReason) // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.<init>|<init>(com.ditchoom.socket.testkit.skip.SkipReason){}[0]
+
+        final val reason // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket.testkit.skip/SkipReason // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.reason.<get-reason>|<get-reason>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.testkit.skip/SkipReason // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.testkit.skip/SkipReason = ...): com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.copy|copy(com.ditchoom.socket.testkit.skip.SkipReason){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicHarnessAvailability.Unavailable.toString|toString(){}[0]
+    }
+
+    final object Available : com.ditchoom.socket.quic/QuicHarnessAvailability { // com.ditchoom.socket.quic/QuicHarnessAvailability.Available|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicHarnessAvailability.Available.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicHarnessAvailability.Available.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicHarnessAvailability.Available.toString|toString(){}[0]
+    }
+}
+
+abstract class com.ditchoom.socket.quic/QuicActiveMigrationTestSuite { // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun aMigrationAcrossAnInFlightReadLosesNoBytes() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.aMigrationAcrossAnInFlightReadLosesNoBytes|aMigrationAcrossAnInFlightReadLosesNoBytes(){}[0]
+    final fun migrateReportsACapabilityNotAnAbsence() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.migrateReportsACapabilityNotAnAbsence|migrateReportsACapabilityNotAnAbsence(){}[0]
+    final fun streamBytesRemainAnInOrderPrefixAcrossAMigration() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.streamBytesRemainAnInOrderPrefixAcrossAMigration|streamBytesRemainAnInOrderPrefixAcrossAMigration(){}[0]
+    final fun streamSurvivesActiveMigrationToAFreshLocalPort() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.streamSurvivesActiveMigrationToAFreshLocalPort|streamSurvivesActiveMigrationToAFreshLocalPort(){}[0]
+    final fun theConnectionCanKeepMigratingPastTheConnectionIdLimit() // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.theConnectionCanKeepMigratingPastTheConnectionIdLimit|theConnectionCanKeepMigratingPastTheConnectionIdLimit(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicActiveMigrationTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite { // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.<init>|<init>(){}[0]
+
+    abstract fun fixtureLeafHash(kotlin/String): com.ditchoom.socket.quic/CertificateHash // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.fixtureLeafHash|fixtureLeafHash(kotlin.String){}[0]
+    abstract fun fixtureTlsConfig(kotlin/String): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.fixtureTlsConfig|fixtureTlsConfig(kotlin.String){}[0]
+    final fun acceptsGeneratedPeerCertificate() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.acceptsGeneratedPeerCertificate|acceptsGeneratedPeerCertificate(){}[0]
+    final fun acceptsMatchingLeafHash() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.acceptsMatchingLeafHash|acceptsMatchingLeafHash(){}[0]
+    final fun rejectsExpiredGeneratedPeerCertificate() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.rejectsExpiredGeneratedPeerCertificate|rejectsExpiredGeneratedPeerCertificate(){}[0]
+    final fun rejectsExpiredLeaf() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.rejectsExpiredLeaf|rejectsExpiredLeaf(){}[0]
+    final fun rejectsNonP256KeyLeaf() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.rejectsNonP256KeyLeaf|rejectsNonP256KeyLeaf(){}[0]
+    final fun rejectsOverlyLongValidityLeaf() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.rejectsOverlyLongValidityLeaf|rejectsOverlyLongValidityLeaf(){}[0]
+    final fun rejectsWrongLeafHash() // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.rejectsWrongLeafHash|rejectsWrongLeafHash(){}[0]
+    open fun enforcesW3cConstraints(): kotlin/Boolean // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.enforcesW3cConstraints|enforcesW3cConstraints(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicCertificateHashPinningTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite { // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun manyConcurrentStreamsHighConcurrencyRoundTrip() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.manyConcurrentStreamsHighConcurrencyRoundTrip|manyConcurrentStreamsHighConcurrencyRoundTrip(){}[0]
+    final fun manyConcurrentStreamsOnOneConnectionRoundTrip() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.manyConcurrentStreamsOnOneConnectionRoundTrip|manyConcurrentStreamsOnOneConnectionRoundTrip(){}[0]
+    final fun manyConnectionsConcurrentlyRoundTrip() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.manyConnectionsConcurrentlyRoundTrip|manyConnectionsConcurrentlyRoundTrip(){}[0]
+    final fun manyConnectionsHighConcurrencyRoundTrip() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.manyConnectionsHighConcurrencyRoundTrip|manyConnectionsHighConcurrencyRoundTrip(){}[0]
+    final fun sustainedEchoLoopHasNoPerOperationLeak() // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.sustainedEchoLoopHasNoPerOperationLeak|sustainedEchoLoopHasNoPerOperationLeak(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicConcurrencySoakTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicDatagramTestSuite { // com.ditchoom.socket.quic/QuicDatagramTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicDatagramTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicDatagramTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun datagramRoundTrip() // com.ditchoom.socket.quic/QuicDatagramTestSuite.datagramRoundTrip|datagramRoundTrip(){}[0]
+    final fun datagramTooLargeThrows() // com.ditchoom.socket.quic/QuicDatagramTestSuite.datagramTooLargeThrows|datagramTooLargeThrows(){}[0]
+    final fun datagramsDisabledByDefault() // com.ditchoom.socket.quic/QuicDatagramTestSuite.datagramsDisabledByDefault|datagramsDisabledByDefault(){}[0]
+    final fun sendRejectsABufferWithoutNativeMemoryAsTheCapabilitySays() // com.ditchoom.socket.quic/QuicDatagramTestSuite.sendRejectsABufferWithoutNativeMemoryAsTheCapabilitySays|sendRejectsABufferWithoutNativeMemoryAsTheCapabilitySays(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicDatagramTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite { // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun aHandshakeStalledPastTheCallersBoundFailsTypedNotAsTheCallersCancellation() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.aHandshakeStalledPastTheCallersBoundFailsTypedNotAsTheCallersCancellation|aHandshakeStalledPastTheCallersBoundFailsTypedNotAsTheCallersCancellation(){}[0]
+    final fun aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation|aParentDeadlineFiringDuringEstablishmentStaysTheParentsCancellation(){}[0]
+    final fun activityKeepsConnectionAlivePastIdleTimeout() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.activityKeepsConnectionAlivePastIdleTimeout|activityKeepsConnectionAlivePastIdleTimeout(){}[0]
+    final fun idleTimeoutFailsAPendingReadWithTheTypedClose() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.idleTimeoutFailsAPendingReadWithTheTypedClose|idleTimeoutFailsAPendingReadWithTheTypedClose(){}[0]
+    final fun keepAliveSurvivesManyIdleTimeoutWindows() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.keepAliveSurvivesManyIdleTimeoutWindows|keepAliveSurvivesManyIdleTimeoutWindows(){}[0]
+    final fun oneSidedStreamSilenceStarvesTheDefaultReadPolicy() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.oneSidedStreamSilenceStarvesTheDefaultReadPolicy|oneSidedStreamSilenceStarvesTheDefaultReadPolicy(){}[0]
+    final fun persistentStreamsSurviveOneSidedSilenceBeyondTheDefaultReadDeadline() // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.persistentStreamsSurviveOneSidedSilenceBeyondTheDefaultReadDeadline|persistentStreamsSurviveOneSidedSilenceBeyondTheDefaultReadDeadline(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicIdleTimeoutTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicImpairmentTestSuite { // com.ditchoom.socket.quic/QuicImpairmentTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.<init>|<init>(){}[0]
+
+    abstract fun createImpairingProxy(kotlin/Int, com.ditchoom.socket.quic/ImpairmentPolicy): com.ditchoom.socket.quic/ImpairingProxy // com.ditchoom.socket.quic/QuicImpairmentTestSuite.createImpairingProxy|createImpairingProxy(kotlin.Int;com.ditchoom.socket.quic.ImpairmentPolicy){}[0]
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicImpairmentTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun streamStallsUnderTotalBlackhole() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamStallsUnderTotalBlackhole|streamStallsUnderTotalBlackhole(){}[0]
+    final fun streamSurvivesBurstLossThenRecovery() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamSurvivesBurstLossThenRecovery|streamSurvivesBurstLossThenRecovery(){}[0]
+    final fun streamSurvivesDeterministicLoss() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamSurvivesDeterministicLoss|streamSurvivesDeterministicLoss(){}[0]
+    final fun streamSurvivesDuplication() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamSurvivesDuplication|streamSurvivesDuplication(){}[0]
+    final fun streamSurvivesLatencyAndJitter() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamSurvivesLatencyAndJitter|streamSurvivesLatencyAndJitter(){}[0]
+    final fun streamSurvivesReordering() // com.ditchoom.socket.quic/QuicImpairmentTestSuite.streamSurvivesReordering|streamSurvivesReordering(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicImpairmentTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+
+    final object Companion // com.ditchoom.socket.quic/QuicImpairmentTestSuite.Companion|null[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicLargePayloadTestSuite { // com.ditchoom.socket.quic/QuicLargePayloadTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun largePayloadTransfersIntactOnOneStream() // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.largePayloadTransfersIntactOnOneStream|largePayloadTransfersIntactOnOneStream(){}[0]
+    final fun largePayloadTransfersIntactThroughProductionWriteFully() // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.largePayloadTransfersIntactThroughProductionWriteFully|largePayloadTransfersIntactThroughProductionWriteFully(){}[0]
+    final fun multipleInterleavedStreamsTransferIntact() // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.multipleInterleavedStreamsTransferIntact|multipleInterleavedStreamsTransferIntact(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+
+    final enum class WritePath : kotlin/Enum<com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath> { // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath|null[0]
+        enum entry Manual // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.Manual|null[0]
+        enum entry Production // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.Production|null[0]
+
+        final val entries // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.entries|#static{}entries[0]
+            final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath> // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.entries.<get-entries>|<get-entries>#static(){}[0]
+
+        final fun valueOf(kotlin/String): com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.valueOf|valueOf#static(kotlin.String){}[0]
+        final fun values(): kotlin/Array<com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath> // com.ditchoom.socket.quic/QuicLargePayloadTestSuite.WritePath.values|values#static(){}[0]
+    }
+}
+
+abstract class com.ditchoom.socket.quic/QuicMalformedPacketTestSuite { // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.<init>|<init>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    abstract suspend fun sendRawDatagram(kotlin/Int, kotlin/ByteArray) // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.sendRawDatagram|sendRawDatagram(kotlin.Int;kotlin.ByteArray){}[0]
+    final fun liveConnectionSurvivesMalformedDatagrams() // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.liveConnectionSurvivesMalformedDatagrams|liveConnectionSurvivesMalformedDatagrams(){}[0]
+    final fun serverSurvivesMalformedDatagramsThenServesLegitClient() // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.serverSurvivesMalformedDatagramsThenServesLegitClient|serverSurvivesMalformedDatagramsThenServesLegitClient(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+
+    final object Companion // com.ditchoom.socket.quic/QuicMalformedPacketTestSuite.Companion|null[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite { // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite.<init>|<init>(){}[0]
+
+    abstract fun createRebindingProxy(kotlin/Int): com.ditchoom.socket.quic/RebindingProxy // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite.createRebindingProxy|createRebindingProxy(kotlin.Int){}[0]
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun streamSurvivesPassiveSourceRebind() // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite.streamSurvivesPassiveSourceRebind|streamSurvivesPassiveSourceRebind(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicPassiveMigrationTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicServerLifecycleTestSuite { // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.<init>|<init>(){}[0]
+
+    final val testQuicOptions // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.testQuicOptions|{}testQuicOptions[0]
+        final fun <get-testQuicOptions>(): com.ditchoom.socket.quic/QuicOptions // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.testQuicOptions.<get-testQuicOptions>|<get-testQuicOptions>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    final fun closeWhileConnectionsBlockingDoesNotDeadlock() // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.closeWhileConnectionsBlockingDoesNotDeadlock|closeWhileConnectionsBlockingDoesNotDeadlock(){}[0]
+    final fun multipleBindCloseCyclesCompletePromptly() // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.multipleBindCloseCyclesCompletePromptly|multipleBindCloseCyclesCompletePromptly(){}[0]
+    final fun serverCloseReturnsWithinTwoSeconds() // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.serverCloseReturnsWithinTwoSeconds|serverCloseReturnsWithinTwoSeconds(){}[0]
+    final fun streamsFlowCompletesWhenConnectionCloses() // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.streamsFlowCompletesWhenConnectionCloses|streamsFlowCompletesWhenConnectionCloses(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicServerLifecycleTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/QuicServerTestSuite { // com.ditchoom.socket.quic/QuicServerTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/QuicServerTestSuite.<init>|<init>(){}[0]
+
+    final val testQuicOptions // com.ditchoom.socket.quic/QuicServerTestSuite.testQuicOptions|{}testQuicOptions[0]
+        final fun <get-testQuicOptions>(): com.ditchoom.socket.quic/QuicOptions // com.ditchoom.socket.quic/QuicServerTestSuite.testQuicOptions.<get-testQuicOptions>|<get-testQuicOptions>(){}[0]
+
+    abstract fun localhostCertPem(): kotlin/String // com.ditchoom.socket.quic/QuicServerTestSuite.localhostCertPem|localhostCertPem(){}[0]
+    abstract fun localhostTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicServerTestSuite.localhostTlsConfig|localhostTlsConfig(){}[0]
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/QuicServerTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    abstract fun unrelatedCaPem(): kotlin/String // com.ditchoom.socket.quic/QuicServerTestSuite.unrelatedCaPem|unrelatedCaPem(){}[0]
+    final fun aWildcardServerAnswersFromTheAddressEachClientDialled() // com.ditchoom.socket.quic/QuicServerTestSuite.aWildcardServerAnswersFromTheAddressEachClientDialled|aWildcardServerAnswersFromTheAddressEachClientDialled(){}[0]
+    final fun alpnDemux_twoProtocolsShareOneListener() // com.ditchoom.socket.quic/QuicServerTestSuite.alpnDemux_twoProtocolsShareOneListener|alpnDemux_twoProtocolsShareOneListener(){}[0]
+    final fun clientResetStreamIsObservedByServer() // com.ditchoom.socket.quic/QuicServerTestSuite.clientResetStreamIsObservedByServer|clientResetStreamIsObservedByServer(){}[0]
+    final fun echoSingleStream() // com.ditchoom.socket.quic/QuicServerTestSuite.echoSingleStream|echoSingleStream(){}[0]
+    final fun halfCloseAllowsReadAfterSendFin() // com.ditchoom.socket.quic/QuicServerTestSuite.halfCloseAllowsReadAfterSendFin|halfCloseAllowsReadAfterSendFin(){}[0]
+    final fun halfCloseReplyIsDeliveredAfterPeerConnectionClose() // com.ditchoom.socket.quic/QuicServerTestSuite.halfCloseReplyIsDeliveredAfterPeerConnectionClose|halfCloseReplyIsDeliveredAfterPeerConnectionClose(){}[0]
+    final fun multipleConnections() // com.ditchoom.socket.quic/QuicServerTestSuite.multipleConnections|multipleConnections(){}[0]
+    final fun peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable() // com.ditchoom.socket.quic/QuicServerTestSuite.peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable|peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable(){}[0]
+    final fun pinnedCorrectCaAnchorHandshakeAndEchoSucceed() // com.ditchoom.socket.quic/QuicServerTestSuite.pinnedCorrectCaAnchorHandshakeAndEchoSucceed|pinnedCorrectCaAnchorHandshakeAndEchoSucceed(){}[0]
+    final fun pinnedWrongCaAnchorRejectsPeer() // com.ditchoom.socket.quic/QuicServerTestSuite.pinnedWrongCaAnchorRejectsPeer|pinnedWrongCaAnchorRejectsPeer(){}[0]
+    final fun rapidBindConnectCloseCyclesAreClean() // com.ditchoom.socket.quic/QuicServerTestSuite.rapidBindConnectCloseCyclesAreClean|rapidBindConnectCloseCyclesAreClean(){}[0]
+    final fun serverAcceptsConnection() // com.ditchoom.socket.quic/QuicServerTestSuite.serverAcceptsConnection|serverAcceptsConnection(){}[0]
+    final fun serverBindsAndReportsPort() // com.ditchoom.socket.quic/QuicServerTestSuite.serverBindsAndReportsPort|serverBindsAndReportsPort(){}[0]
+    final fun serverCloseIsClean() // com.ditchoom.socket.quic/QuicServerTestSuite.serverCloseIsClean|serverCloseIsClean(){}[0]
+    final fun sharedPort_aClientCanRideAPortItDoesNotOwn() // com.ditchoom.socket.quic/QuicServerTestSuite.sharedPort_aClientCanRideAPortItDoesNotOwn|sharedPort_aClientCanRideAPortItDoesNotOwn(){}[0]
+    final fun sharedPort_quicAndANonQuicProtocolCoexist() // com.ditchoom.socket.quic/QuicServerTestSuite.sharedPort_quicAndANonQuicProtocolCoexist|sharedPort_quicAndANonQuicProtocolCoexist(){}[0]
+    final fun writeRejectsABufferWithoutNativeMemoryAsTheCapabilitySays() // com.ditchoom.socket.quic/QuicServerTestSuite.writeRejectsABufferWithoutNativeMemoryAsTheCapabilitySays|writeRejectsABufferWithoutNativeMemoryAsTheCapabilitySays(){}[0]
+    open fun assertConnectionCloseErrorObservedByPeer(com.ditchoom.socket.quic/QuicCloseReason) // com.ditchoom.socket.quic/QuicServerTestSuite.assertConnectionCloseErrorObservedByPeer|assertConnectionCloseErrorObservedByPeer(com.ditchoom.socket.quic.QuicCloseReason){}[0]
+    open fun assertResetObservedByPeer(kotlin/String?) // com.ditchoom.socket.quic/QuicServerTestSuite.assertResetObservedByPeer|assertResetObservedByPeer(kotlin.String?){}[0]
+    open fun connectionCloseWithErrorIsObservedByPeer() // com.ditchoom.socket.quic/QuicServerTestSuite.connectionCloseWithErrorIsObservedByPeer|connectionCloseWithErrorIsObservedByPeer(){}[0]
+    open fun hostInterfaceAddresses(): kotlin.collections/List<kotlin/String> // com.ditchoom.socket.quic/QuicServerTestSuite.hostInterfaceAddresses|hostInterfaceAddresses(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/QuicServerTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.quic/ServerCertVerifierTestSuite { // com.ditchoom.socket.quic/ServerCertVerifierTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.<init>|<init>(){}[0]
+
+    abstract fun twoCertificateChainPem(): kotlin/String // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.twoCertificateChainPem|twoCertificateChainPem(){}[0]
+    abstract fun twoCertificateChainTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.twoCertificateChainTlsConfig|twoCertificateChainTlsConfig(){}[0]
+    final fun aChainThePlatformRefusesNeverReachesTheVerifier() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.aChainThePlatformRefusesNeverReachesTheVerifier|aChainThePlatformRefusesNeverReachesTheVerifier(){}[0]
+    final fun aRejectionFailsTheConnectBeforeTheBlockRuns() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.aRejectionFailsTheConnectBeforeTheBlockRuns|aRejectionFailsTheConnectBeforeTheBlockRuns(){}[0]
+    final fun theVerifierSeesTheWholeChainLeafFirst() // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.theVerifierSeesTheWholeChainLeafFirst|theVerifierSeesTheWholeChainLeafFirst(){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.quic/ServerCertVerifierTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+abstract class com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite { // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.<init>|<init>(){}[0]
+
+    final fun blackholeAccessorConnectTimesOut() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.blackholeAccessorConnectTimesOut|blackholeAccessorConnectTimesOut(){}[0]
+    final fun impairedLatencyRoundTripMeasurablySlower() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.impairedLatencyRoundTripMeasurablySlower|impairedLatencyRoundTripMeasurablySlower(){}[0]
+    final fun manifestResolvesAndEchoRoundTrips() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.manifestResolvesAndEchoRoundTrips|manifestResolvesAndEchoRoundTrips(){}[0]
+    final fun quicEchoAccessorStreamRoundTrips() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.quicEchoAccessorStreamRoundTrips|quicEchoAccessorStreamRoundTrips(){}[0]
+    final fun rstAccessorSurfacesSocketClosedException() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.rstAccessorSurfacesSocketClosedException|rstAccessorSurfacesSocketClosedException(){}[0]
+    final fun skipsCleanlyWhenControllerUnreachable() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.skipsCleanlyWhenControllerUnreachable|skipsCleanlyWhenControllerUnreachable(){}[0]
+    final fun tlsAccessorRejectsExpiredCertAndAcceptsValidWithInsecure() // com.ditchoom.socket.testsuite.harness/NetworkHarnessTestSuite.tlsAccessorRejectsExpiredCertAndAcceptsValidWithInsecure|tlsAccessorRejectsExpiredCertAndAcceptsValidWithInsecure(){}[0]
+}
+
+abstract class com.ditchoom.socket.webtransport/WebTransportTestSuite { // com.ditchoom.socket.webtransport/WebTransportTestSuite|null[0]
+    constructor <init>() // com.ditchoom.socket.webtransport/WebTransportTestSuite.<init>|<init>(){}[0]
+
+    final val clientTraceSink // com.ditchoom.socket.webtransport/WebTransportTestSuite.clientTraceSink|{}clientTraceSink[0]
+        final fun <get-clientTraceSink>(): com.ditchoom.socket.testkit.trace/TraceSink // com.ditchoom.socket.webtransport/WebTransportTestSuite.clientTraceSink.<get-clientTraceSink>|<get-clientTraceSink>(){}[0]
+
+    abstract fun testTlsConfig(): com.ditchoom.socket.quic/QuicTlsConfig // com.ditchoom.socket.webtransport/WebTransportTestSuite.testTlsConfig|testTlsConfig(){}[0]
+    abstract suspend fun openMultiplexed(kotlin/String): com.ditchoom.socket.webtransport/MultiplexedWebTransport // com.ditchoom.socket.webtransport/WebTransportTestSuite.openMultiplexed|openMultiplexed(kotlin.String){}[0]
+    abstract suspend fun openSingleSession(kotlin/String): com.ditchoom.socket.webtransport/WebTransportSession // com.ditchoom.socket.webtransport/WebTransportTestSuite.openSingleSession|openSingleSession(kotlin.String){}[0]
+    final fun connect_peerResetsStream_surfacesNeutralExceptionWithCode() // com.ditchoom.socket.webtransport/WebTransportTestSuite.connect_peerResetsStream_surfacesNeutralExceptionWithCode|connect_peerResetsStream_surfacesNeutralExceptionWithCode(){}[0]
+    final fun connect_roundTripsBidiStream() // com.ditchoom.socket.webtransport/WebTransportTestSuite.connect_roundTripsBidiStream|connect_roundTripsBidiStream(){}[0]
+    final fun connect_twoSessions_areDedicatedConnections_notTransparentlyPooled() // com.ditchoom.socket.webtransport/WebTransportTestSuite.connect_twoSessions_areDedicatedConnections_notTransparentlyPooled|connect_twoSessions_areDedicatedConnections_notTransparentlyPooled(){}[0]
+    final fun multiplexed_close_isIdempotentAndTearsDown() // com.ditchoom.socket.webtransport/WebTransportTestSuite.multiplexed_close_isIdempotentAndTearsDown|multiplexed_close_isIdempotentAndTearsDown(){}[0]
+    final fun multiplexed_twoSessionsOverOneConnection_eachRoundTrip() // com.ditchoom.socket.webtransport/WebTransportTestSuite.multiplexed_twoSessionsOverOneConnection_eachRoundTrip|multiplexed_twoSessionsOverOneConnection_eachRoundTrip(){}[0]
+    open suspend fun osSocketsOnPort(kotlin/Int): kotlin/String // com.ditchoom.socket.webtransport/WebTransportTestSuite.osSocketsOnPort|osSocketsOnPort(kotlin.Int){}[0]
+    open suspend fun wrapTestBody(kotlin.coroutines/SuspendFunction0<kotlin/Unit>) // com.ditchoom.socket.webtransport/WebTransportTestSuite.wrapTestBody|wrapTestBody(kotlin.coroutines.SuspendFunction0<kotlin.Unit>){}[0]
+}
+
+final class com.ditchoom.socket.quic/EchoOwnershipLedger { // com.ditchoom.socket.quic/EchoOwnershipLedger|null[0]
+    constructor <init>() // com.ditchoom.socket.quic/EchoOwnershipLedger.<init>|<init>(){}[0]
+
+    final val outstandingCount // com.ditchoom.socket.quic/EchoOwnershipLedger.outstandingCount|{}outstandingCount[0]
+        final fun <get-outstandingCount>(): kotlin/Int // com.ditchoom.socket.quic/EchoOwnershipLedger.outstandingCount.<get-outstandingCount>|<get-outstandingCount>(){}[0]
+    final val releasedCount // com.ditchoom.socket.quic/EchoOwnershipLedger.releasedCount|{}releasedCount[0]
+        final fun <get-releasedCount>(): kotlin/Int // com.ditchoom.socket.quic/EchoOwnershipLedger.releasedCount.<get-releasedCount>|<get-releasedCount>(){}[0]
+    final val takenCount // com.ditchoom.socket.quic/EchoOwnershipLedger.takenCount|{}takenCount[0]
+        final fun <get-takenCount>(): kotlin/Int // com.ditchoom.socket.quic/EchoOwnershipLedger.takenCount.<get-takenCount>|<get-takenCount>(){}[0]
+
+    final fun assertNoLeaks(kotlin/String) // com.ditchoom.socket.quic/EchoOwnershipLedger.assertNoLeaks|assertNoLeaks(kotlin.String){}[0]
+    final fun release(com.ditchoom.socket.quic/EchoOwnershipLedger.Receipt) // com.ditchoom.socket.quic/EchoOwnershipLedger.release|release(com.ditchoom.socket.quic.EchoOwnershipLedger.Receipt){}[0]
+    final fun took(com.ditchoom.buffer/ReadBuffer): com.ditchoom.socket.quic/EchoOwnershipLedger.Receipt // com.ditchoom.socket.quic/EchoOwnershipLedger.took|took(com.ditchoom.buffer.ReadBuffer){}[0]
+
+    final class Receipt // com.ditchoom.socket.quic/EchoOwnershipLedger.Receipt|null[0]
+}
+
+final class com.ditchoom.socket.quic/TrackingBufferFactory : com.ditchoom.buffer/BufferFactory { // com.ditchoom.socket.quic/TrackingBufferFactory|null[0]
+    constructor <init>(com.ditchoom.buffer/BufferFactory = ...) // com.ditchoom.socket.quic/TrackingBufferFactory.<init>|<init>(com.ditchoom.buffer.BufferFactory){}[0]
+
+    final val liveCount // com.ditchoom.socket.quic/TrackingBufferFactory.liveCount|{}liveCount[0]
+        final fun <get-liveCount>(): kotlin/Int // com.ditchoom.socket.quic/TrackingBufferFactory.liveCount.<get-liveCount>|<get-liveCount>(){}[0]
+
+    final fun allocate(kotlin/Int, com.ditchoom.buffer/ByteOrder): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket.quic/TrackingBufferFactory.allocate|allocate(kotlin.Int;com.ditchoom.buffer.ByteOrder){}[0]
+    final fun assertLiveCount(kotlin/Int) // com.ditchoom.socket.quic/TrackingBufferFactory.assertLiveCount|assertLiveCount(kotlin.Int){}[0]
+    final fun assertNoLeaks() // com.ditchoom.socket.quic/TrackingBufferFactory.assertNoLeaks|assertNoLeaks(){}[0]
+    final fun wrap(kotlin/ByteArray, com.ditchoom.buffer/ByteOrder): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket.quic/TrackingBufferFactory.wrap|wrap(kotlin.ByteArray;com.ditchoom.buffer.ByteOrder){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/HarnessEndpoint { // com.ditchoom.socket.testsuite.harness/HarnessEndpoint|null[0]
+    constructor <init>(kotlin/String, kotlin/Int) // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.<init>|<init>(kotlin.String;kotlin.Int){}[0]
+
+    final val host // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.host|{}host[0]
+        final fun <get-host>(): kotlin/String // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.host.<get-host>|<get-host>(){}[0]
+    final val port // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.port.<get-port>|<get-port>(){}[0]
+
+    final fun component1(): kotlin/String // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.component2|component2(){}[0]
+    final fun copy(kotlin/String = ..., kotlin/Int = ...): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.copy|copy(kotlin.String;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.testsuite.harness/HarnessEndpoint.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/HarnessManifest { // com.ditchoom.socket.testsuite.harness/HarnessManifest|null[0]
+    final val scenarios // com.ditchoom.socket.testsuite.harness/HarnessManifest.scenarios|{}scenarios[0]
+        final fun <get-scenarios>(): kotlin.collections/Map<kotlin/String, com.ditchoom.socket.testsuite.harness/HarnessEndpoint> // com.ditchoom.socket.testsuite.harness/HarnessManifest.scenarios.<get-scenarios>|<get-scenarios>(){}[0]
+    final val toxiproxy // com.ditchoom.socket.testsuite.harness/HarnessManifest.toxiproxy|{}toxiproxy[0]
+        final fun <get-toxiproxy>(): com.ditchoom.socket.testsuite.harness/ToxiproxyPorts? // com.ditchoom.socket.testsuite.harness/HarnessManifest.toxiproxy.<get-toxiproxy>|<get-toxiproxy>(){}[0]
+    final val udpToxi // com.ditchoom.socket.testsuite.harness/HarnessManifest.udpToxi|{}udpToxi[0]
+        final fun <get-udpToxi>(): com.ditchoom.socket.testsuite.harness/UdpToxiPorts? // com.ditchoom.socket.testsuite.harness/HarnessManifest.udpToxi.<get-udpToxi>|<get-udpToxi>(){}[0]
+    final val version // com.ditchoom.socket.testsuite.harness/HarnessManifest.version|{}version[0]
+        final fun <get-version>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/HarnessManifest.version.<get-version>|<get-version>(){}[0]
+
+    final fun scenario(kotlin/String): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/HarnessManifest.scenario|scenario(kotlin.String){}[0]
+    final fun scenarioOrNull(kotlin/String): com.ditchoom.socket.testsuite.harness/HarnessEndpoint? // com.ditchoom.socket.testsuite.harness/HarnessManifest.scenarioOrNull|scenarioOrNull(kotlin.String){}[0]
+
+    final object Companion // com.ditchoom.socket.testsuite.harness/HarnessManifest.Companion|null[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/HarnessUnavailable : kotlin/IllegalStateException { // com.ditchoom.socket.testsuite.harness/HarnessUnavailable|null[0]
+    constructor <init>(com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason, kotlin/String) // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.<init>|<init>(com.ditchoom.socket.testsuite.harness.HarnessUnavailable.Reason;kotlin.String){}[0]
+
+    final val detail // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.detail|{}detail[0]
+        final fun <get-detail>(): kotlin/String // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.detail.<get-detail>|<get-detail>(){}[0]
+    final val reason // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.reason|{}reason[0]
+        final fun <get-reason>(): com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.reason.<get-reason>|<get-reason>(){}[0]
+
+    final enum class Reason : kotlin/Enum<com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason> { // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason|null[0]
+        enum entry ScenarioNotInManifest // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.ScenarioNotInManifest|null[0]
+        enum entry SidecarRejectedRequest // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.SidecarRejectedRequest|null[0]
+
+        final val entries // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.entries|#static{}entries[0]
+            final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason> // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.entries.<get-entries>|<get-entries>#static(){}[0]
+
+        final fun valueOf(kotlin/String): com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.valueOf|valueOf#static(kotlin.String){}[0]
+        final fun values(): kotlin/Array<com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason> // com.ditchoom.socket.testsuite.harness/HarnessUnavailable.Reason.values|values#static(){}[0]
+    }
+}
+
+final class com.ditchoom.socket.testsuite.harness/LegStats { // com.ditchoom.socket.testsuite.harness/LegStats|null[0]
+    constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.testsuite.harness/LegStats.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+    final val delivered // com.ditchoom.socket.testsuite.harness/LegStats.delivered|{}delivered[0]
+        final fun <get-delivered>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/LegStats.delivered.<get-delivered>|<get-delivered>(){}[0]
+    final val dropped // com.ditchoom.socket.testsuite.harness/LegStats.dropped|{}dropped[0]
+        final fun <get-dropped>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/LegStats.dropped.<get-dropped>|<get-dropped>(){}[0]
+
+    final fun component1(): kotlin/Int // com.ditchoom.socket.testsuite.harness/LegStats.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket.testsuite.harness/LegStats.component2|component2(){}[0]
+    final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.testsuite.harness/LegStats // com.ditchoom.socket.testsuite.harness/LegStats.copy|copy(kotlin.Int;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/LegStats.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.testsuite.harness/LegStats.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.testsuite.harness/LegStats.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/NetworkHarnessScope { // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope|null[0]
+    final val controllerHost // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.controllerHost|{}controllerHost[0]
+        final fun <get-controllerHost>(): kotlin/String // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.controllerHost.<get-controllerHost>|<get-controllerHost>(){}[0]
+    final val manifest // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.manifest|{}manifest[0]
+        final fun <get-manifest>(): com.ditchoom.socket.testsuite.harness/HarnessManifest // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.manifest.<get-manifest>|<get-manifest>(){}[0]
+
+    final fun echo(): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.echo|echo(){}[0]
+    final fun http(): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.http|http(){}[0]
+    final fun quicEcho(): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.quicEcho|quicEcho(){}[0]
+    final fun rst(): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.rst|rst(){}[0]
+    final fun tls(com.ditchoom.socket.testsuite.harness/TlsScenario): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.tls|tls(com.ditchoom.socket.testsuite.harness.TlsScenario){}[0]
+    final fun udpEcho(): com.ditchoom.socket.testsuite.harness/HarnessEndpoint // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.udpEcho|udpEcho(){}[0]
+    final suspend fun blackhole(kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/HarnessEndpoint, kotlin/Unit>) // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.blackhole|blackhole(kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.HarnessEndpoint,kotlin.Unit>){}[0]
+    final suspend fun impaired(kotlin.time/Duration, kotlin.time/Duration? = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/HarnessEndpoint, kotlin/Unit>) // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.impaired|impaired(kotlin.time.Duration;kotlin.time.Duration?;kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.HarnessEndpoint,kotlin.Unit>){}[0]
+    final suspend fun impairedQuic(com.ditchoom.socket.testkit.fault/FaultSchedule, com.ditchoom.socket.testkit.fault/FaultSchedule = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/HarnessEndpoint, kotlin/Unit>) // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.impairedQuic|impairedQuic(com.ditchoom.socket.testkit.fault.FaultSchedule;com.ditchoom.socket.testkit.fault.FaultSchedule;kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.HarnessEndpoint,kotlin.Unit>){}[0]
+    final suspend fun impairedUdp(com.ditchoom.socket.testkit.fault/FaultSchedule, com.ditchoom.socket.testkit.fault/FaultSchedule = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/HarnessEndpoint, kotlin/Unit>) // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.impairedUdp|impairedUdp(com.ditchoom.socket.testkit.fault.FaultSchedule;com.ditchoom.socket.testkit.fault.FaultSchedule;kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.HarnessEndpoint,kotlin.Unit>){}[0]
+    final suspend fun peerReset(kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/HarnessEndpoint, kotlin/Unit>) // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.peerReset|peerReset(kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.HarnessEndpoint,kotlin.Unit>){}[0]
+    final suspend fun quicRelayStats(): com.ditchoom.socket.testsuite.harness/RelayStats // com.ditchoom.socket.testsuite.harness/NetworkHarnessScope.quicRelayStats|quicRelayStats(){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/RelayStats { // com.ditchoom.socket.testsuite.harness/RelayStats|null[0]
+    constructor <init>(com.ditchoom.socket.testsuite.harness/LegStats, com.ditchoom.socket.testsuite.harness/LegStats) // com.ditchoom.socket.testsuite.harness/RelayStats.<init>|<init>(com.ditchoom.socket.testsuite.harness.LegStats;com.ditchoom.socket.testsuite.harness.LegStats){}[0]
+
+    final val clientToServer // com.ditchoom.socket.testsuite.harness/RelayStats.clientToServer|{}clientToServer[0]
+        final fun <get-clientToServer>(): com.ditchoom.socket.testsuite.harness/LegStats // com.ditchoom.socket.testsuite.harness/RelayStats.clientToServer.<get-clientToServer>|<get-clientToServer>(){}[0]
+    final val serverToClient // com.ditchoom.socket.testsuite.harness/RelayStats.serverToClient|{}serverToClient[0]
+        final fun <get-serverToClient>(): com.ditchoom.socket.testsuite.harness/LegStats // com.ditchoom.socket.testsuite.harness/RelayStats.serverToClient.<get-serverToClient>|<get-serverToClient>(){}[0]
+
+    final fun component1(): com.ditchoom.socket.testsuite.harness/LegStats // com.ditchoom.socket.testsuite.harness/RelayStats.component1|component1(){}[0]
+    final fun component2(): com.ditchoom.socket.testsuite.harness/LegStats // com.ditchoom.socket.testsuite.harness/RelayStats.component2|component2(){}[0]
+    final fun copy(com.ditchoom.socket.testsuite.harness/LegStats = ..., com.ditchoom.socket.testsuite.harness/LegStats = ...): com.ditchoom.socket.testsuite.harness/RelayStats // com.ditchoom.socket.testsuite.harness/RelayStats.copy|copy(com.ditchoom.socket.testsuite.harness.LegStats;com.ditchoom.socket.testsuite.harness.LegStats){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/RelayStats.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.testsuite.harness/RelayStats.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.testsuite.harness/RelayStats.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/ToxiproxyClient { // com.ditchoom.socket.testsuite.harness/ToxiproxyClient|null[0]
+    constructor <init>(kotlin/String, kotlin/Int) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.<init>|<init>(kotlin.String;kotlin.Int){}[0]
+
+    final suspend fun addLatencyToxic(kotlin/String, kotlin/Long, kotlin/Long = ..., kotlin/String = ..., kotlin/String = ...) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.addLatencyToxic|addLatencyToxic(kotlin.String;kotlin.Long;kotlin.Long;kotlin.String;kotlin.String){}[0]
+    final suspend fun addResetPeerToxic(kotlin/String, kotlin/Long = ..., kotlin/String = ...) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.addResetPeerToxic|addResetPeerToxic(kotlin.String;kotlin.Long;kotlin.String){}[0]
+    final suspend fun addSlicerToxic(kotlin/String, kotlin/Int = ..., kotlin/Long = ..., kotlin/String = ...) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.addSlicerToxic|addSlicerToxic(kotlin.String;kotlin.Int;kotlin.Long;kotlin.String){}[0]
+    final suspend fun clearToxics(kotlin/String) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.clearToxics|clearToxics(kotlin.String){}[0]
+    final suspend fun disableProxy(kotlin/String) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.disableProxy|disableProxy(kotlin.String){}[0]
+    final suspend fun enableProxy(kotlin/String) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.enableProxy|enableProxy(kotlin.String){}[0]
+    final suspend fun isAvailable(): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.isAvailable|isAvailable(){}[0]
+    final suspend fun upsertProxy(kotlin/String, kotlin/String, kotlin/String) // com.ditchoom.socket.testsuite.harness/ToxiproxyClient.upsertProxy|upsertProxy(kotlin.String;kotlin.String;kotlin.String){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/ToxiproxyPorts { // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts|null[0]
+    constructor <init>(kotlin/String, kotlin/Int, kotlin/Int, kotlin/Int, kotlin/Int) // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.<init>|<init>(kotlin.String;kotlin.Int;kotlin.Int;kotlin.Int;kotlin.Int){}[0]
+
+    final val api // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.api|{}api[0]
+        final fun <get-api>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.api.<get-api>|<get-api>(){}[0]
+    final val echo // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.echo|{}echo[0]
+        final fun <get-echo>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.echo.<get-echo>|<get-echo>(){}[0]
+    final val host // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.host|{}host[0]
+        final fun <get-host>(): kotlin/String // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.host.<get-host>|<get-host>(){}[0]
+    final val http // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.http|{}http[0]
+        final fun <get-http>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.http.<get-http>|<get-http>(){}[0]
+    final val tls // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.tls|{}tls[0]
+        final fun <get-tls>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.tls.<get-tls>|<get-tls>(){}[0]
+
+    final fun component1(): kotlin/String // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.component2|component2(){}[0]
+    final fun component3(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.component3|component3(){}[0]
+    final fun component4(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.component4|component4(){}[0]
+    final fun component5(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.component5|component5(){}[0]
+    final fun copy(kotlin/String = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.testsuite.harness/ToxiproxyPorts // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.copy|copy(kotlin.String;kotlin.Int;kotlin.Int;kotlin.Int;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.testsuite.harness/ToxiproxyPorts.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/UdpToxiClient { // com.ditchoom.socket.testsuite.harness/UdpToxiClient|null[0]
+    constructor <init>(kotlin/String, kotlin/Int) // com.ditchoom.socket.testsuite.harness/UdpToxiClient.<init>|<init>(kotlin.String;kotlin.Int){}[0]
+
+    final suspend fun clearSchedules(kotlin/String) // com.ditchoom.socket.testsuite.harness/UdpToxiClient.clearSchedules|clearSchedules(kotlin.String){}[0]
+    final suspend fun isAvailable(): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/UdpToxiClient.isAvailable|isAvailable(){}[0]
+    final suspend fun relayStats(kotlin/String): com.ditchoom.socket.testsuite.harness/RelayStats // com.ditchoom.socket.testsuite.harness/UdpToxiClient.relayStats|relayStats(kotlin.String){}[0]
+    final suspend fun setSchedule(kotlin/String, com.ditchoom.socket.testsuite.harness/RelayDirection, com.ditchoom.socket.testkit.fault/FaultSchedule) // com.ditchoom.socket.testsuite.harness/UdpToxiClient.setSchedule|setSchedule(kotlin.String;com.ditchoom.socket.testsuite.harness.RelayDirection;com.ditchoom.socket.testkit.fault.FaultSchedule){}[0]
+    final suspend fun upsertRelay(kotlin/String, kotlin/Int, kotlin/String) // com.ditchoom.socket.testsuite.harness/UdpToxiClient.upsertRelay|upsertRelay(kotlin.String;kotlin.Int;kotlin.String){}[0]
+}
+
+final class com.ditchoom.socket.testsuite.harness/UdpToxiPorts { // com.ditchoom.socket.testsuite.harness/UdpToxiPorts|null[0]
+    constructor <init>(kotlin/String, kotlin/Int, kotlin/Int) // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.<init>|<init>(kotlin.String;kotlin.Int;kotlin.Int){}[0]
+
+    final val api // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.api|{}api[0]
+        final fun <get-api>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.api.<get-api>|<get-api>(){}[0]
+    final val data // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.data|{}data[0]
+        final fun <get-data>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.data.<get-data>|<get-data>(){}[0]
+    final val host // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.host|{}host[0]
+        final fun <get-host>(): kotlin/String // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.host.<get-host>|<get-host>(){}[0]
+
+    final fun component1(): kotlin/String // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.component1|component1(){}[0]
+    final fun component2(): kotlin/Int // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.component2|component2(){}[0]
+    final fun component3(): kotlin/Int // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.component3|component3(){}[0]
+    final fun copy(kotlin/String = ..., kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.testsuite.harness/UdpToxiPorts // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.copy|copy(kotlin.String;kotlin.Int;kotlin.Int){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.testsuite.harness/UdpToxiPorts.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.webtransport/WebTransportDiagnostics { // com.ditchoom.socket.webtransport/WebTransportDiagnostics|null[0]
+    constructor <init>() // com.ditchoom.socket.webtransport/WebTransportDiagnostics.<init>|<init>(){}[0]
+
+    final val clientEventCount // com.ditchoom.socket.webtransport/WebTransportDiagnostics.clientEventCount|{}clientEventCount[0]
+        final fun <get-clientEventCount>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.clientEventCount.<get-clientEventCount>|<get-clientEventCount>(){}[0]
+    final val clientSink // com.ditchoom.socket.webtransport/WebTransportDiagnostics.clientSink|{}clientSink[0]
+        final fun <get-clientSink>(): com.ditchoom.socket.testkit.trace/TraceSink // com.ditchoom.socket.webtransport/WebTransportDiagnostics.clientSink.<get-clientSink>|<get-clientSink>(){}[0]
+    final val serverBinding // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverBinding|{}serverBinding[0]
+        final fun <get-serverBinding>(): com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverBinding.<get-serverBinding>|<get-serverBinding>(){}[0]
+    final val serverDropCount // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverDropCount|{}serverDropCount[0]
+        final fun <get-serverDropCount>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverDropCount.<get-serverDropCount>|<get-serverDropCount>(){}[0]
+    final val serverEventCount // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverEventCount|{}serverEventCount[0]
+        final fun <get-serverEventCount>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverEventCount.<get-serverEventCount>|<get-serverEventCount>(){}[0]
+    final val serverRingStartsWithDatagramIn // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverRingStartsWithDatagramIn|{}serverRingStartsWithDatagramIn[0]
+        final fun <get-serverRingStartsWithDatagramIn>(): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverRingStartsWithDatagramIn.<get-serverRingStartsWithDatagramIn>|<get-serverRingStartsWithDatagramIn>(){}[0]
+    final val sink // com.ditchoom.socket.webtransport/WebTransportDiagnostics.sink|{}sink[0]
+        final fun <get-sink>(): com.ditchoom.socket.testkit.trace/TraceSink // com.ditchoom.socket.webtransport/WebTransportDiagnostics.sink.<get-sink>|<get-sink>(){}[0]
+
+    final fun mark(kotlin/String) // com.ditchoom.socket.webtransport/WebTransportDiagnostics.mark|mark(kotlin.String){}[0]
+    final fun postMortem(kotlin/String) // com.ditchoom.socket.webtransport/WebTransportDiagnostics.postMortem|postMortem(kotlin.String){}[0]
+    final fun report(kotlin/Throwable): kotlin/String // com.ditchoom.socket.webtransport/WebTransportDiagnostics.report|report(kotlin.Throwable){}[0]
+    final fun serverBound(kotlin/Int) // com.ditchoom.socket.webtransport/WebTransportDiagnostics.serverBound|serverBound(kotlin.Int){}[0]
+
+    sealed interface ServerBinding { // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding|null[0]
+        final class Bound : com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding { // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound|null[0]
+            constructor <init>(kotlin/Int) // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.<init>|<init>(kotlin.Int){}[0]
+
+            final val port // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.port|{}port[0]
+                final fun <get-port>(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.port.<get-port>|<get-port>(){}[0]
+
+            final fun component1(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.component1|component1(){}[0]
+            final fun copy(kotlin/Int = ...): com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.copy|copy(kotlin.Int){}[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.Bound.toString|toString(){}[0]
+        }
+
+        final object NotBound : com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding { // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.NotBound|null[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.NotBound.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.NotBound.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // com.ditchoom.socket.webtransport/WebTransportDiagnostics.ServerBinding.NotBound.toString|toString(){}[0]
+        }
+    }
+}
+
+final const val com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_HOST // com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_HOST|{}DEFAULT_CONTROLLER_HOST[0]
+    final fun <get-DEFAULT_CONTROLLER_HOST>(): kotlin/String // com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_HOST.<get-DEFAULT_CONTROLLER_HOST>|<get-DEFAULT_CONTROLLER_HOST>(){}[0]
+final const val com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_PORT // com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_PORT|{}DEFAULT_CONTROLLER_PORT[0]
+    final fun <get-DEFAULT_CONTROLLER_PORT>(): kotlin/Int // com.ditchoom.socket.testsuite.harness/DEFAULT_CONTROLLER_PORT.<get-DEFAULT_CONTROLLER_PORT>|<get-DEFAULT_CONTROLLER_PORT>(){}[0]
+
+final fun com.ditchoom.socket.quic/armStallDump(kotlin.time/Duration, kotlin/String): com.ditchoom.socket.quic/StallDump // com.ditchoom.socket.quic/armStallDump|armStallDump(kotlin.time.Duration;kotlin.String){}[0]
+final fun com.ditchoom.socket.quic/isAppleKNative(): kotlin/Boolean // com.ditchoom.socket.quic/isAppleKNative|isAppleKNative(){}[0]
+final fun com.ditchoom.socket.quic/isKotlinNative(): kotlin/Boolean // com.ditchoom.socket.quic/isKotlinNative|isKotlinNative(){}[0]
+final fun com.ditchoom.socket.quic/quicHarnessAvailability(): com.ditchoom.socket.quic/QuicHarnessAvailability // com.ditchoom.socket.quic/quicHarnessAvailability|quicHarnessAvailability(){}[0]
+final fun com.ditchoom.socket.quic/runQuicTest(kotlin.time/Duration = ..., kotlin.coroutines/SuspendFunction1<kotlinx.coroutines/CoroutineScope, kotlin/Unit>) // com.ditchoom.socket.quic/runQuicTest|runQuicTest(kotlin.time.Duration;kotlin.coroutines.SuspendFunction1<kotlinx.coroutines.CoroutineScope,kotlin.Unit>){}[0]
+final fun com.ditchoom.socket.quic/testTimeScale(): kotlin/Double // com.ditchoom.socket.quic/testTimeScale|testTimeScale(){}[0]
+final suspend fun com.ditchoom.socket.quic/awaitUntil(kotlin.time/Duration, kotlin/String, kotlin/Function0<kotlin/Boolean>) // com.ditchoom.socket.quic/awaitUntil|awaitUntil(kotlin.time.Duration;kotlin.String;kotlin.Function0<kotlin.Boolean>){}[0]
+final suspend fun com.ditchoom.socket.testsuite.harness/withNetworkHarness(kotlin/String = ..., kotlin/Int = ..., kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.testsuite.harness/NetworkHarnessScope, kotlin/Unit>): kotlin/Boolean // com.ditchoom.socket.testsuite.harness/withNetworkHarness|withNetworkHarness(kotlin.String;kotlin.Int;kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.testsuite.harness.NetworkHarnessScope,kotlin.Unit>){}[0]

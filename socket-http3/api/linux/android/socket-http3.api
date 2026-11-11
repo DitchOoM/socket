@@ -1,0 +1,1598 @@
+public final class com/ditchoom/socket/http3/CriticalStreamType : java/lang/Enum {
+	public static final field CONTROL Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public static final field QPACK_DECODER Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public static final field QPACK_ENCODER Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getLabel ()Ljava/lang/String;
+	public final fun getWireType ()J
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public static fun values ()[Lcom/ditchoom/socket/http3/CriticalStreamType;
+}
+
+public abstract interface class com/ditchoom/socket/http3/DecoderStreamWrite {
+}
+
+public final class com/ditchoom/socket/http3/DecoderStreamWrite$NotSent : com/ditchoom/socket/http3/DecoderStreamWrite {
+	public fun <init> (Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason;
+	public final fun copy (Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason;)Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSent;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSent;Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSent;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getWhy ()Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason {
+}
+
+public final class com/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$ConnectionClosed : com/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$ConnectionClosed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$ConnectionClosed;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$ConnectionClosed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$StreamNotOpen : com/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/DecoderStreamWrite$NotSentReason$StreamNotOpen;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/DecoderStreamWrite$Sent : com/ditchoom/socket/http3/DecoderStreamWrite {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/DecoderStreamWrite$Sent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Connection {
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3Connection$Companion;
+	public final fun awaitConnectionError (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun connectWebTransport (Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connectWebTransport$default (Lcom/ditchoom/socket/http3/Http3Connection;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun getConnectionError ()Lcom/ditchoom/socket/http3/Http3StreamException;
+	public final fun getGoAway ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getPushes ()Lkotlinx/coroutines/flow/Flow;
+	public final fun peerSettings (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun request (Lcom/ditchoom/socket/http3/Http3Request;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun request (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun request$default (Lcom/ditchoom/socket/http3/Http3Connection;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3Connection$Companion {
+	public final fun bootstrap (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun bootstrap$default (Lcom/ditchoom/socket/http3/Http3Connection$Companion;Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3Connection$Http3RequestBody {
+	public final fun write (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3ErrorCode {
+	public static final field CLOSED_CRITICAL_STREAM J
+	public static final field CONNECT_ERROR J
+	public static final field EXCESSIVE_LOAD J
+	public static final field FRAME_ERROR J
+	public static final field FRAME_UNEXPECTED J
+	public static final field GENERAL_PROTOCOL_ERROR J
+	public static final field ID_ERROR J
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3ErrorCode;
+	public static final field INTERNAL_ERROR J
+	public static final field MESSAGE_ERROR J
+	public static final field MISSING_SETTINGS J
+	public static final field NO_ERROR J
+	public static final field QPACK_DECODER_STREAM_ERROR J
+	public static final field QPACK_DECOMPRESSION_FAILED J
+	public static final field QPACK_ENCODER_STREAM_ERROR J
+	public static final field REQUEST_CANCELLED J
+	public static final field REQUEST_INCOMPLETE J
+	public static final field REQUEST_REJECTED J
+	public static final field SETTINGS_ERROR J
+	public static final field STREAM_CREATION_ERROR J
+	public static final field VERSION_FALLBACK J
+}
+
+public final class com/ditchoom/socket/http3/Http3FiltersKt {
+	public static final fun then (Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)Lkotlin/jvm/functions/Function1;
+	public static final fun then (Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;)Lkotlin/jvm/functions/Function2;
+}
+
+public abstract interface class com/ditchoom/socket/http3/Http3Frame {
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$CancelPush : com/ditchoom/socket/http3/Http3Frame {
+	public fun <init> (J)V
+	public synthetic fun <init> (JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()J
+	public final fun copy-TF0YncM (JJ)Lcom/ditchoom/socket/http3/Http3Frame$CancelPush;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$CancelPush;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$CancelPush;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrameType-0BYdr6U ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$Data : com/ditchoom/socket/http3/Http3Frame {
+	public synthetic fun <init> (JLcom/ditchoom/buffer/ReadBuffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-TF0YncM (JLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/Http3Frame$Data;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$Data;JLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$Data;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrameType-0BYdr6U ()J
+	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$GoAway : com/ditchoom/socket/http3/Http3Frame {
+	public fun <init> (J)V
+	public synthetic fun <init> (JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()J
+	public final fun copy-TF0YncM (JJ)Lcom/ditchoom/socket/http3/Http3Frame$GoAway;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$GoAway;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$GoAway;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrameType-0BYdr6U ()J
+	public final fun getId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$Headers : com/ditchoom/socket/http3/Http3Frame {
+	public synthetic fun <init> (JLcom/ditchoom/buffer/ReadBuffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-TF0YncM (JLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/Http3Frame$Headers;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$Headers;JLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$Headers;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEncodedFieldSection ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun getFrameType-0BYdr6U ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$MaxPushId : com/ditchoom/socket/http3/Http3Frame {
+	public fun <init> (J)V
+	public synthetic fun <init> (JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()J
+	public final fun copy-TF0YncM (JJ)Lcom/ditchoom/socket/http3/Http3Frame$MaxPushId;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$MaxPushId;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$MaxPushId;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrameType-0BYdr6U ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$PushPromise : com/ditchoom/socket/http3/Http3Frame {
+	public synthetic fun <init> (JJLcom/ditchoom/buffer/ReadBuffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (JLcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()J
+	public final fun component3 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-NtjypG8 (JJLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/Http3Frame$PushPromise;
+	public static synthetic fun copy-NtjypG8$default (Lcom/ditchoom/socket/http3/Http3Frame$PushPromise;JJLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$PushPromise;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEncodedFieldSection ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun getFrameType-0BYdr6U ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$Settings : com/ditchoom/socket/http3/Http3Frame {
+	public synthetic fun <init> (JLjava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1-0BYdr6U ()J
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy-TF0YncM (JLjava/util/List;)Lcom/ditchoom/socket/http3/Http3Frame$Settings;
+	public static synthetic fun copy-TF0YncM$default (Lcom/ditchoom/socket/http3/Http3Frame$Settings;JLjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$Settings;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEntries ()Ljava/util/List;
+	public final fun getFrameType-0BYdr6U ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Frame$Unknown : com/ditchoom/socket/http3/Http3Frame {
+	public fun <init> (JLcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1 ()J
+	public final fun component2 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy (JLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/Http3Frame$Unknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Frame$Unknown;JLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Frame$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun getType ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameCancelPushCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameCancelPushCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$CancelPush;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$CancelPush;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameContext : java/lang/Enum {
+	public static final field BEFORE_CONNECT_RESPONSE_HEADERS Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field BEFORE_REQUEST_HEADERS Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field BEFORE_RESPONSE_HEADERS Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field CONTROL_STREAM Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field PUSH_STREAM Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field REQUEST_BODY Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field REQUEST_HEAD Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static final field RESPONSE_BODY Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getLabel ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public static fun values ()[Lcom/ditchoom/socket/http3/Http3FrameContext;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameDataCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameDataCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$Data;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$Data;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameGoAwayCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameGoAwayCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$GoAway;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$GoAway;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameHeadersCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameHeadersCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$Headers;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$Headers;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameMaxPushIdCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameMaxPushIdCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$MaxPushId;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$MaxPushId;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FramePushPromiseCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FramePushPromiseCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$PushPromise;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$PushPromise;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameSettingsCodec : com/ditchoom/buffer/codec/FrameDetector {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameSettingsCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Frame$Settings;
+	public final fun encode (Lcom/ditchoom/socket/http3/Http3Frame$Settings;Lcom/ditchoom/buffer/codec/EncodeContext;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameType {
+	public static final field CANCEL_PUSH J
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3FrameType$Companion;
+	public static final field DATA J
+	public static final field GOAWAY J
+	public static final field HEADERS J
+	public static final field MAX_PUSH_ID J
+	public static final field PUSH_PROMISE J
+	public static final field SETTINGS J
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/http3/Http3FrameType;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getRaw ()J
+	public static final fun getType-impl (J)I
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameType$Companion {
+	public final fun isReserved (J)Z
+	public final fun isReservedHttp2 (J)Z
+}
+
+public final class com/ditchoom/socket/http3/Http3FrameTypeCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3FrameTypeCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-M1wsRbs (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)J
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-kqb2qFU (Lcom/ditchoom/buffer/WriteBuffer;JLcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun sizeHint-TF0YncM (JLcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-TF0YncM (JLcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/Http3LengthCodec : com/ditchoom/buffer/codec/BoundingLengthCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3LengthCodec;
+	public synthetic fun applyBound (Lcom/ditchoom/buffer/ReadBuffer;Ljava/lang/Object;)V
+	public fun applyBound-Qn1smSk (Lcom/ditchoom/buffer/ReadBuffer;I)V
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-xfHcF5w (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)I
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-OsBMiQA (Lcom/ditchoom/buffer/WriteBuffer;ILcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun getMaxWireSize ()I
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun sizeHint-qim9Vi0 (ILcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-qim9Vi0 (ILcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/Http3PromisedRequest {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()Ljava/util/List;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;)Lcom/ditchoom/socket/http3/Http3PromisedRequest;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3PromisedRequest;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3PromisedRequest;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getHeaders ()Ljava/util/List;
+	public final fun getMethod ()Ljava/lang/String;
+	public final fun getPath ()Ljava/lang/String;
+	public final fun getScheme ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/http3/Http3ReplaySafety {
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3ReplaySafety$Companion;
+	public abstract fun isReplaySafe (Lcom/ditchoom/socket/http3/Http3ServerRequest;)Z
+}
+
+public final class com/ditchoom/socket/http3/Http3ReplaySafety$Companion {
+	public final fun getSafeMethods ()Lcom/ditchoom/socket/http3/Http3ReplaySafety;
+}
+
+public final class com/ditchoom/socket/http3/Http3Request {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()Ljava/util/List;
+	public final fun component6 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/Http3Request;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Request;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Request;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getBody ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun getHeaders ()Ljava/util/List;
+	public final fun getMethod ()Ljava/lang/String;
+	public final fun getPath ()Ljava/lang/String;
+	public final fun getScheme ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Response {
+	public final fun cancel (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun close ()V
+	public final fun getHeaders ()Ljava/util/List;
+	public final fun getStatus ()I
+	public final fun getTrailers ()Ljava/util/List;
+	public final fun nextBodyChunk (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun readFullBody (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3Server {
+	public final fun getPort ()I
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerConnection {
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3ServerConnection$Companion;
+	public final fun serve (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerConnection$Companion {
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerExchange {
+	public final fun getRequest ()Lcom/ditchoom/socket/http3/Http3ServerRequest;
+	public final fun getResponse ()Lcom/ditchoom/socket/http3/Http3ServerResponse;
+	public final fun push (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun push$default (Lcom/ditchoom/socket/http3/Http3ServerExchange;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerPush {
+	public final fun cancel (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getPromisedRequest ()Lcom/ditchoom/socket/http3/Http3PromisedRequest;
+	public final fun getPushId ()J
+	public final fun response (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerRequest {
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getHeaders ()Ljava/util/List;
+	public final fun getMethod ()Ljava/lang/String;
+	public final fun getPath ()Ljava/lang/String;
+	public final fun getScheme ()Ljava/lang/String;
+	public final fun getTrailers ()Ljava/util/List;
+	public final fun nextBodyChunk (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun readFullBody (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3ServerResponse {
+	public final fun send (ILjava/util/List;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun send$default (Lcom/ditchoom/socket/http3/Http3ServerResponse;ILjava/util/List;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun sendHeaders (ILjava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun sendHeaders$default (Lcom/ditchoom/socket/http3/Http3ServerResponse;ILjava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun sendTrailers (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun writeBody (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/Http3Setting {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/socket/http3/Http3Setting;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Setting;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Setting;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIdentifier ()J
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3SettingCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3SettingCodec;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/socket/http3/Http3Setting;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/socket/http3/Http3Setting;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun sizeHint (Lcom/ditchoom/socket/http3/Http3Setting;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun wireSize (Lcom/ditchoom/socket/http3/Http3Setting;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/Http3SettingId {
+	public static final field ENABLE_CONNECT_PROTOCOL J
+	public static final field ENABLE_WEBTRANSPORT J
+	public static final field H3_DATAGRAM J
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3SettingId;
+	public static final field MAX_FIELD_SECTION_SIZE J
+	public static final field QPACK_BLOCKED_STREAMS J
+	public static final field QPACK_MAX_TABLE_CAPACITY J
+	public static final field WEBTRANSPORT_MAX_SESSIONS J
+	public final fun getRESERVED_HTTP2_IDS ()Ljava/util/Set;
+}
+
+public final class com/ditchoom/socket/http3/Http3Settings {
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/socket/http3/Http3Settings;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Settings;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Settings;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnableConnectProtocol ()Z
+	public final fun getEnableWebTransportLegacy ()Z
+	public final fun getEntries ()Ljava/util/List;
+	public final fun getH3DatagramEnabled ()Z
+	public final fun getMaxFieldSectionSize ()Ljava/lang/Long;
+	public final fun getQpackBlockedStreams ()J
+	public final fun getQpackMaxTableCapacity ()J
+	public final fun getWebTransportSupported ()Z
+	public final fun getWtMaxSessions ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3StreamException : java/lang/Exception {
+	public fun <init> (Lcom/ditchoom/socket/http3/Http3Violation;)V
+	public final fun getErrorCode ()J
+	public final fun getViolation ()Lcom/ditchoom/socket/http3/Http3Violation;
+}
+
+public final class com/ditchoom/socket/http3/Http3StreamReader {
+	public static final field Companion Lcom/ditchoom/socket/http3/Http3StreamReader$Companion;
+	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/stream/StreamProcessor;)V
+	public final fun nextFrame-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun nextFrame-VtjQ1oo$default (Lcom/ditchoom/socket/http3/Http3StreamReader;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun nextVarInt-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun nextVarInt-VtjQ1oo$default (Lcom/ditchoom/socket/http3/Http3StreamReader;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun peekVarInt-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun peekVarInt-VtjQ1oo$default (Lcom/ditchoom/socket/http3/Http3StreamReader;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun release ()V
+}
+
+public final class com/ditchoom/socket/http3/Http3StreamReader$Companion {
+	public final fun create (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/socket/http3/Http3StreamReader;
+	public static synthetic fun create$default (Lcom/ditchoom/socket/http3/Http3StreamReader$Companion;Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/buffer/ByteOrder;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3StreamReader;
+}
+
+public final class com/ditchoom/socket/http3/Http3StreamType {
+	public static final field CONTROL J
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3StreamType;
+	public static final field PUSH J
+	public static final field QPACK_DECODER J
+	public static final field QPACK_ENCODER J
+}
+
+public abstract interface class com/ditchoom/socket/http3/Http3Violation {
+	public abstract fun describe ()Ljava/lang/String;
+	public abstract fun getErrorCode ()J
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ClosedCriticalStream : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/CriticalStreamType;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public final fun copy (Lcom/ditchoom/socket/http3/CriticalStreamType;)Lcom/ditchoom/socket/http3/Http3Violation$ClosedCriticalStream;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$ClosedCriticalStream;Lcom/ditchoom/socket/http3/CriticalStreamType;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$ClosedCriticalStream;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getType ()Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ConnectionClosedBeforeSettings : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$ConnectionClosedBeforeSettings;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ControlStreamEndedBeforeSettings : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$ControlStreamEndedBeforeSettings;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ControlStreamError : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$ControlStreamError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$ControlStreamError;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$ControlStreamError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$DuplicateCriticalStream : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/CriticalStreamType;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public final fun copy (Lcom/ditchoom/socket/http3/CriticalStreamType;)Lcom/ditchoom/socket/http3/Http3Violation$DuplicateCriticalStream;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$DuplicateCriticalStream;Lcom/ditchoom/socket/http3/CriticalStreamType;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$DuplicateCriticalStream;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getType ()Lcom/ditchoom/socket/http3/CriticalStreamType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$DuplicateSetting : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$DuplicateSetting;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$DuplicateSetting;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$DuplicateSetting;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getIdentifier ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$FirstControlFrameNotSettings : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$FirstControlFrameNotSettings;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$FirstControlFrameNotSettings;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$FirstControlFrameNotSettings;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getFrameType ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$FrameSizeExceedsAddressableRange : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$FrameSizeExceedsAddressableRange;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$FrameTruncatedAtEnd : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/http3/Http3Violation$FrameTruncatedAtEnd;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$FrameTruncatedAtEnd;IILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$FrameTruncatedAtEnd;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getTrailingBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$MalformedFrame : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$MalformedFrame;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$MalformedFrame;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$MalformedFrame;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$MalformedQpackInstruction : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/QpackStream;
+	public final fun component2 ()Ljava/lang/Throwable;
+	public final fun copy (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$MalformedQpackInstruction;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$MalformedQpackInstruction;Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$MalformedQpackInstruction;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public final fun getStream ()Lcom/ditchoom/socket/http3/QpackStream;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$MaxPushIdFromServer : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$MaxPushIdFromServer;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$MissingPseudoHeader : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Ljava/lang/String;Z)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Z
+	public final fun copy (Ljava/lang/String;Z)Lcom/ditchoom/socket/http3/Http3Violation$MissingPseudoHeader;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$MissingPseudoHeader;Ljava/lang/String;ZILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$MissingPseudoHeader;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getInPushPromise ()Z
+	public final fun getName ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired : com/ditchoom/socket/http3/Http3Violation {
+	public synthetic fun <init> (JJLjava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJLjava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-2h5TKLY ()J
+	public final fun component2-UwyO8pc ()J
+	public final fun component3 ()Ljava/lang/Throwable;
+	public final fun copy-piSvPNk (JJLjava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
+	public static synthetic fun copy-piSvPNk$default (Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;JJLjava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public final fun getDeadline-UwyO8pc ()J
+	public fun getErrorCode ()J
+	public final fun getStreamId-2h5TKLY ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushCancelledByClient : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByClient;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByClient;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByClient;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushCancelledByServer : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByServer;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByServer;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PushCancelledByServer;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushDisabled : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$PushDisabled;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushIdExceedsMax : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/socket/http3/Http3Violation$PushIdExceedsMax;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$PushIdExceedsMax;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PushIdExceedsMax;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getMax ()J
+	public final fun getPushId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushPromiseOnControlStream : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$PushPromiseOnControlStream;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$PushStreamError : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$PushStreamError;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$PushStreamError;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PushStreamError;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackDecompressionFailed : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$QpackDecompressionFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackDecompressionFailed;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackDecompressionFailed;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackEncoderRelativeIndexMissing : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackEncoderRelativeIndexMissing;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackEncoderRelativeIndexMissing;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackEncoderRelativeIndexMissing;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getRelativeIndex ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackInsertCountIncrementPastInserts : com/ditchoom/socket/http3/Http3Violation {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-OcpA07c ()J
+	public final fun copy--WPqLOg (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertCountIncrementPastInserts;
+	public static synthetic fun copy--WPqLOg$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertCountIncrementPastInserts;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertCountIncrementPastInserts;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getIncrement-OcpA07c ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackInsertExceedsCapacity : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertExceedsCapacity;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertExceedsCapacity;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackInsertExceedsCapacity;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCapacity ()J
+	public final fun getEntrySize ()J
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackInstructionTruncated : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/QpackStream;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/QpackStream;
+	public final fun copy (Lcom/ditchoom/socket/http3/QpackStream;)Lcom/ditchoom/socket/http3/Http3Violation$QpackInstructionTruncated;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackInstructionTruncated;Lcom/ditchoom/socket/http3/QpackStream;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackInstructionTruncated;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getStream ()Lcom/ditchoom/socket/http3/QpackStream;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackPumpDeadlineExpired : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/QpackStream;
+	public final fun component2 ()Ljava/lang/Throwable;
+	public final fun copy (Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$QpackPumpDeadlineExpired;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackPumpDeadlineExpired;Lcom/ditchoom/socket/http3/QpackStream;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackPumpDeadlineExpired;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public final fun getStream ()Lcom/ditchoom/socket/http3/QpackStream;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding : com/ditchoom/socket/http3/Http3Violation {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-2h5TKLY ()J
+	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
+	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getStreamId-2h5TKLY ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackSetCapacityExceedsMax : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackSetCapacityExceedsMax;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackSetCapacityExceedsMax;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackSetCapacityExceedsMax;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getRequested ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackStaticNameIndexOutOfRange : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackStaticNameIndexOutOfRange;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackStaticNameIndexOutOfRange;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackStaticNameIndexOutOfRange;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getIndex ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$QpackStreamReset : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$QpackStreamReset;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ReservedHttp2Frame : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Frame;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Frame;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Frame;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getType ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$ReservedHttp2Setting : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Setting;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Setting;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$ReservedHttp2Setting;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getIdentifier ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$SecondSettingsFrame : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$SecondSettingsFrame;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$StatusNotNumeric : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/socket/http3/Http3Violation$StatusNotNumeric;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$StatusNotNumeric;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$StatusNotNumeric;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public final fun getRaw ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$StatusPseudoHeaderMissing : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$StatusPseudoHeaderMissing;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$StreamEndedBeforeHeaders : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (Lcom/ditchoom/socket/http3/Http3FrameContext;)V
+	public final fun component1 ()Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public final fun copy (Lcom/ditchoom/socket/http3/Http3FrameContext;)Lcom/ditchoom/socket/http3/Http3Violation$StreamEndedBeforeHeaders;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$StreamEndedBeforeHeaders;Lcom/ditchoom/socket/http3/Http3FrameContext;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$StreamEndedBeforeHeaders;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getContext ()Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$StreamResetByPeer : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$StreamResetByPeer;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$UnexpectedFrame : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> (JLcom/ditchoom/socket/http3/Http3FrameContext;)V
+	public final fun component1 ()J
+	public final fun component2 ()Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public final fun copy (JLcom/ditchoom/socket/http3/Http3FrameContext;)Lcom/ditchoom/socket/http3/Http3Violation$UnexpectedFrame;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$UnexpectedFrame;JLcom/ditchoom/socket/http3/Http3FrameContext;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$UnexpectedFrame;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getContext ()Lcom/ditchoom/socket/http3/Http3FrameContext;
+	public fun getErrorCode ()J
+	public final fun getFrameType ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$VarIntTruncatedAtEnd : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$VarIntTruncatedAtEnd;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$WebTransportCloseCapsuleTooShort : com/ditchoom/socket/http3/Http3Violation {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/Http3Violation$WebTransportCloseCapsuleTooShort;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/Http3Violation$WebTransportCloseReasonNotUtf8 : com/ditchoom/socket/http3/Http3Violation {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$WebTransportCloseReasonNotUtf8;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/Http3Violation$WebTransportCloseReasonNotUtf8;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$WebTransportCloseReasonNotUtf8;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun getErrorCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/InsertCount : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/socket/http3/InsertCount$Companion;
+	public static final fun advanceFrom-FczNN2k (JJ)Lcom/ditchoom/socket/http3/InsertCountDelta;
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/http3/InsertCount;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-ewoQDYg (J)I
+	public static fun compareTo-ewoQDYg (JJ)I
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun minus-CaiD9r4 (JJ)J
+	public static final fun plus-YQE1Kng (JJ)J
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/http3/InsertCount$Companion {
+	public final fun getZERO-nqBbYAs ()J
+}
+
+public final class com/ditchoom/socket/http3/InsertCountDelta : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/socket/http3/InsertCountDelta$Companion;
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/http3/InsertCountDelta;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo--WPqLOg (J)I
+	public static fun compareTo--WPqLOg (JJ)I
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/http3/InsertCountDelta$Companion {
+	public final fun getZERO-OcpA07c ()J
+}
+
+public final class com/ditchoom/socket/http3/QpackDecoder {
+	public fun <init> (JLcom/ditchoom/socket/http3/QpackDecoderStream;)V
+	public final fun applyEncoderInstruction (Lcom/ditchoom/socket/http3/QpackEncoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun cancelStream-pr_NtLM (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun decodeSection-p19wJLg (Lcom/ditchoom/buffer/ReadBuffer;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getInsertCountValue-nqBbYAs ()J
+}
+
+public abstract interface class com/ditchoom/socket/http3/QpackDecoderInstruction {
+}
+
+public final class com/ditchoom/socket/http3/QpackDecoderInstruction$InsertCountIncrement : com/ditchoom/socket/http3/QpackDecoderInstruction {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-OcpA07c ()J
+	public final fun copy--WPqLOg (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$InsertCountIncrement;
+	public static synthetic fun copy--WPqLOg$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$InsertCountIncrement;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$InsertCountIncrement;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIncrement-OcpA07c ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck : com/ditchoom/socket/http3/QpackDecoderInstruction {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-2h5TKLY ()J
+	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
+	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStreamId-2h5TKLY ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation : com/ditchoom/socket/http3/QpackDecoderInstruction {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-2h5TKLY ()J
+	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
+	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStreamId-2h5TKLY ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackDecoderInstructionCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackDecoderInstructionCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction;
+	public final fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/socket/http3/QpackDecoderInstruction;)V
+	public final fun peekLength (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public abstract class com/ditchoom/socket/http3/QpackDecoderStream {
+	public fun <init> ()V
+	public final fun acknowledgeSection-ItB0RqY (JJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun cancelStream-pr_NtLM (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun reportInsertsUpTo-_SaS9hY (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	protected abstract fun write (Lcom/ditchoom/socket/http3/QpackDecoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/QpackDynamicTable {
+	public static final field Companion Lcom/ditchoom/socket/http3/QpackDynamicTable$Companion;
+	public fun <init> (J)V
+	public final fun canInsertWithoutEviction (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun findExact (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Long;
+	public final fun findName (Ljava/lang/String;)Ljava/lang/Long;
+	public final fun getByAbsolute (J)Lcom/ditchoom/socket/http3/QpackDynamicTable$Entry;
+	public final fun getCapacity ()J
+	public final fun getEntryCount ()I
+	public final fun getInsertCount-nqBbYAs ()J
+	public final fun getMaxCapacity ()J
+	public final fun getMaxEntries ()J
+	public final fun getSize ()J
+	public final fun insert (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Long;
+	public final fun insertIfEvictable (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;)Ljava/lang/Long;
+	public final fun isDraining (J)Z
+	public final fun isLive (J)Z
+	public final fun setCapacity (J)Z
+}
+
+public final class com/ditchoom/socket/http3/QpackDynamicTable$Companion {
+}
+
+public final class com/ditchoom/socket/http3/QpackDynamicTable$Entry {
+	public fun <init> (JLjava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()J
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (JLjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/http3/QpackDynamicTable$Entry;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackDynamicTable$Entry;JLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDynamicTable$Entry;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAbsoluteIndex ()J
+	public final fun getName ()Ljava/lang/String;
+	public final fun getSize ()J
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoder {
+	public fun <init> (JJLkotlin/jvm/functions/Function2;)V
+	public synthetic fun <init> (JJLkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun encodeSection-p19wJLg (Ljava/util/List;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getInsertCountValue-nqBbYAs ()J
+	public final fun processDecoderInstruction (Lcom/ditchoom/socket/http3/QpackDecoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setCapacity (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/http3/QpackEncoderInstruction {
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoderInstruction$Duplicate : com/ditchoom/socket/http3/QpackEncoderInstruction {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$Duplicate;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackEncoderInstruction$Duplicate;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$Duplicate;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIndex ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithLiteralName : com/ditchoom/socket/http3/QpackEncoderInstruction {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithLiteralName;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithLiteralName;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithLiteralName;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithNameRef : com/ditchoom/socket/http3/QpackEncoderInstruction {
+	public fun <init> (JZLjava/lang/String;)V
+	public final fun component1 ()J
+	public final fun component2 ()Z
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (JZLjava/lang/String;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithNameRef;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithNameRef;JZLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$InsertWithNameRef;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getNameIndex ()J
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public final fun isStatic ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoderInstruction$SetCapacity : com/ditchoom/socket/http3/QpackEncoderInstruction {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$SetCapacity;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackEncoderInstruction$SetCapacity;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction$SetCapacity;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCapacity ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackEncoderInstructionCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackEncoderInstructionCodec;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/pool/BufferPool;)Lcom/ditchoom/socket/http3/QpackEncoderInstruction;
+	public final fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/socket/http3/QpackEncoderInstruction;)V
+	public final fun peekLength (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+}
+
+public final class com/ditchoom/socket/http3/QpackFieldSectionCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackFieldSectionCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/util/List;
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/util/List;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun sizeHint (Ljava/util/List;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize (Ljava/util/List;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/QpackFieldSectionPrefix {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackFieldSectionPrefix;
+	public final fun decode-zDccXFc (Lcom/ditchoom/buffer/ReadBuffer;JJ)Lcom/ditchoom/socket/http3/QpackPrefix;
+	public final fun encode-f9kQ83Q (Lcom/ditchoom/buffer/WriteBuffer;JJJ)V
+}
+
+public final class com/ditchoom/socket/http3/QpackHeaderField {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/http3/QpackHeaderField;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackHeaderField;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackHeaderField;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackHuffman {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackHuffman;
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/String;Lcom/ditchoom/buffer/pool/BufferPool;)Ljava/lang/String;
+	public static synthetic fun decode$default (Lcom/ditchoom/socket/http3/QpackHuffman;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/String;Lcom/ditchoom/buffer/pool/BufferPool;ILjava/lang/Object;)Ljava/lang/String;
+	public final fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/CharSequence;)V
+	public final fun huffmanByteLength (Ljava/lang/CharSequence;)I
+}
+
+public final class com/ditchoom/socket/http3/QpackInstructionReader {
+	public static final field Companion Lcom/ditchoom/socket/http3/QpackInstructionReader$Companion;
+	public final fun next-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun next-VtjQ1oo$default (Lcom/ditchoom/socket/http3/QpackInstructionReader;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun release ()V
+}
+
+public final class com/ditchoom/socket/http3/QpackInstructionReader$Companion {
+	public final fun decoder (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/pool/BufferPool;)Lcom/ditchoom/socket/http3/QpackInstructionReader;
+	public final fun decoder (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/stream/StreamProcessor;)Lcom/ditchoom/socket/http3/QpackInstructionReader;
+	public final fun encoder (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/pool/BufferPool;)Lcom/ditchoom/socket/http3/QpackInstructionReader;
+	public final fun encoder (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/stream/StreamProcessor;Lcom/ditchoom/buffer/pool/BufferPool;)Lcom/ditchoom/socket/http3/QpackInstructionReader;
+}
+
+public final class com/ditchoom/socket/http3/QpackPrefix {
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-nqBbYAs ()J
+	public final fun component2 ()J
+	public final fun copy-_SaS9hY (JJ)Lcom/ditchoom/socket/http3/QpackPrefix;
+	public static synthetic fun copy-_SaS9hY$default (Lcom/ditchoom/socket/http3/QpackPrefix;JJILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackPrefix;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBase ()J
+	public final fun getRequiredInsertCount-nqBbYAs ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackPrefixedInteger {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackPrefixedInteger;
+	public static final field MAX_VALUE J
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;I)J
+	public final fun decodeFromFirstByte (Lcom/ditchoom/buffer/ReadBuffer;II)J
+	public final fun encode (Lcom/ditchoom/buffer/WriteBuffer;JII)V
+	public static synthetic fun encode$default (Lcom/ditchoom/socket/http3/QpackPrefixedInteger;Lcom/ditchoom/buffer/WriteBuffer;JIIILjava/lang/Object;)V
+	public final fun encodedLength (JI)I
+	public final fun peek (Lcom/ditchoom/buffer/stream/StreamProcessor;II)Lcom/ditchoom/socket/http3/QpackPrefixedInteger$Peeked;
+}
+
+public final class com/ditchoom/socket/http3/QpackPrefixedInteger$Peeked {
+	public fun <init> (IJ)V
+	public final fun component1 ()I
+	public final fun component2 ()J
+	public final fun copy (IJ)Lcom/ditchoom/socket/http3/QpackPrefixedInteger$Peeked;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/QpackPrefixedInteger$Peeked;IJILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackPrefixedInteger$Peeked;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getByteLength ()I
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/QpackScratchPoolKey : com/ditchoom/buffer/codec/DecodeKey {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackScratchPoolKey;
+}
+
+public final class com/ditchoom/socket/http3/QpackStaticTable {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/QpackStaticTable;
+	public final fun entry (I)Lcom/ditchoom/socket/http3/QpackHeaderField;
+	public final fun findExact (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Integer;
+	public final fun findName (Ljava/lang/String;)Ljava/lang/Integer;
+	public final fun getEntries ()Ljava/util/List;
+	public final fun getSize ()I
+}
+
+public final class com/ditchoom/socket/http3/QpackStream : java/lang/Enum {
+	public static final field DECODER Lcom/ditchoom/socket/http3/QpackStream;
+	public static final field ENCODER Lcom/ditchoom/socket/http3/QpackStream;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getLabel ()Ljava/lang/String;
+	public final fun getStreamErrorCode ()J
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/http3/QpackStream;
+	public static fun values ()[Lcom/ditchoom/socket/http3/QpackStream;
+}
+
+public final class com/ditchoom/socket/http3/ReadBufferViewCodec : com/ditchoom/buffer/codec/ViewCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/ReadBufferViewCodec;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/buffer/ReadBuffer;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun sizeHint (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun wireSize (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/VarIntCodec : com/ditchoom/buffer/codec/VariableLengthCodec {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/VarIntCodec;
+	public static final field MAX_VALUE J
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Long;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;JLcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encodedLength (J)I
+	public synthetic fun encodedLength (Ljava/lang/Object;)I
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun peekValue (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/VarLenPeek;
+	public fun sizeHint (JLcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun wireSize (JLcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportCloseInfo {
+	public fun <init> ()V
+	public fun <init> (ILjava/lang/String;)V
+	public synthetic fun <init> (ILjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;)Lcom/ditchoom/socket/http3/WebTransportCloseInfo;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/WebTransportCloseInfo;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/WebTransportCloseInfo;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()I
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportException : java/lang/Exception {
+	public final fun getFailure ()Lcom/ditchoom/socket/http3/WebTransportFailure;
+}
+
+public abstract interface class com/ditchoom/socket/http3/WebTransportFailure {
+	public abstract fun describe ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportFailure$ConnectRejected : com/ditchoom/socket/http3/WebTransportFailure {
+	public fun <init> (ILjava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/http3/WebTransportFailure$ConnectRejected;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/WebTransportFailure$ConnectRejected;ILjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/WebTransportFailure$ConnectRejected;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getPath ()Ljava/lang/String;
+	public final fun getStatus ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportFailure$DatagramsNotEnabled : com/ditchoom/socket/http3/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/WebTransportFailure$DatagramsNotEnabled;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportFailure$NotEnabledLocally : com/ditchoom/socket/http3/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/WebTransportFailure$NotEnabledLocally;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportFailure$PeerDoesNotSupport : com/ditchoom/socket/http3/WebTransportFailure {
+	public static final field INSTANCE Lcom/ditchoom/socket/http3/WebTransportFailure$PeerDoesNotSupport;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportOptions {
+	public fun <init> ()V
+	public fun <init> (J)V
+	public synthetic fun <init> (JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/socket/http3/WebTransportOptions;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/http3/WebTransportOptions;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/WebTransportOptions;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMaxSessions ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportReceiveStream : com/ditchoom/buffer/flow/ByteSource, com/ditchoom/buffer/flow/Resettable {
+	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public final fun getSessionId ()J
+	public final fun getStreamId ()J
+	public fun isOpen ()Z
+	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun reset (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportSendStream : com/ditchoom/buffer/flow/ByteSink, com/ditchoom/buffer/flow/Resettable {
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getSessionId ()J
+	public final fun getStreamId ()J
+	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public fun isOpen ()Z
+	public fun reset (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportServerExchange {
+	public final fun accept (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getAuthority ()Ljava/lang/String;
+	public final fun getHeaders ()Ljava/util/List;
+	public final fun getPath ()Ljava/lang/String;
+	public final fun reject (ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun reject$default (Lcom/ditchoom/socket/http3/WebTransportServerExchange;ILkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportSession {
+	public final fun awaitClosed (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun close (ILjava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun close$default (Lcom/ditchoom/socket/http3/WebTransportSession;ILjava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun drain (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun getCloseInfo ()Lcom/ditchoom/socket/http3/WebTransportCloseInfo;
+	public final fun getDatagrams ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getDrained ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getIncomingBidiStreams ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getIncomingUniStreams ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getSessionId ()J
+	public final fun isClosed ()Z
+	public final fun isDrainRequested ()Z
+	public final fun openBidiStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun openUniStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sendDatagram (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportStream : com/ditchoom/buffer/flow/ByteStream, com/ditchoom/buffer/flow/HalfCloseable, com/ditchoom/buffer/flow/Resettable {
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
+	public final fun getSessionId ()J
+	public final fun getStreamId ()J
+	public fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
+	public fun isOpen ()Z
+	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun reset (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun shutdownSend (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WebTransportStreamException : java/lang/Exception {
+	public synthetic fun <init> (ILjava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getErrorCode-pVg5ArA ()I
+}
+
+public final class com/ditchoom/socket/http3/WithHttp3ConnectionKt {
+	public static final field HTTP3_ALPN Ljava/lang/String;
+	public static final fun withHttp3Connection-efNRYWU (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Connection-efNRYWU$default (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/http3/WithHttp3ServerKt {
+	public static final fun serveHttp3 (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final synthetic fun serveHttp3 (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun serveHttp3$default (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun serveHttp3$default (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/socket/TransportConfig;JLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun withHttp3Server-J1moZ4E (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun withHttp3Server-J1moZ4E (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-J1moZ4E$default (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-J1moZ4E$default (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lcom/ditchoom/socket/http3/Http3ReplaySafety;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final synthetic fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final synthetic fun withHttp3Server-j-K6F28 (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-j-K6F28$default (ILcom/ditchoom/socket/quic/PeerCertificate;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun withHttp3Server-j-K6F28$default (ILcom/ditchoom/socket/quic/QuicTlsConfig;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JJLcom/ditchoom/socket/http3/WebTransportOptions;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
