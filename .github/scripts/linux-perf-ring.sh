@@ -39,7 +39,7 @@ WINDOW_SECONDS="${PERF_RING_WINDOW_SECONDS:-60}"    # the part of a snapshot kep
 CAP_BYTES="${PERF_RING_CAP_BYTES:-20971520}"        # 20 MB compressed per job
 KEEP_PIDS="${PERF_RING_KEEP_PIDS:-3}"               # on-disk rings of finished processes
 
-say() { echo "perf-ring: $*"; }
+say() { echo "perf-ring: $*" >&2; }
 
 start_recorder() { # <dir> <pid>
   local d="$1/pid-$2"
@@ -84,13 +84,20 @@ do_start() { # <dir>
 filter_snapshot() {
   local f="$1" raw max
   raw=$(mktemp)
-  # `trace` prints the tracepoint arguments (prev_comm/prev_state/next_comm, the woken comm/pid).
-  $SUDO "$PERF" script -i "$f" -F comm,tid,cpu,time,event,trace,ip,sym >"$raw" 2>/dev/null
+  # Per-type field lists: `trace` (the tracepoint's arguments: prev_comm/prev_state/next_comm, the
+  # woken comm and pid) is only valid for tracepoints, and asking for it on the cpu-clock samples makes
+  # perf refuse the whole command (seen on the first hosted-runner probe: "produced nothing"). The
+  # plain list is the fallback, and perf's own complaint is kept in the log either way.
+  if ! $SUDO "$PERF" script -i "$f" -F trace:comm,tid,cpu,time,event,trace,ip,sym -F sw:comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err" || [ ! -s "$raw" ]; then
+    say "perf script with per-type fields failed ($(head -c 200 "$raw.err" | tr '\n' ' ')); retrying with plain fields"
+    $SUDO "$PERF" script -i "$f" -F comm,tid,cpu,time,event,ip,sym >"$raw" 2>"$raw.err"
+  fi
+  [ -s "$raw" ] || say "perf script produced no output: $(head -c 300 "$raw.err" | tr '\n' ' ')"
   max=$(awk '/^[^ \t]/ && match($0, /[0-9]+\.[0-9]+:/) { t = substr($0, RSTART, RLENGTH - 1) + 0; if (t > m) m = t } END { printf "%.6f", m }' "$raw")
   awk -v th="$max" -v win="$WINDOW_SECONDS" '
     /^[^ \t]/ { keep = 0; if (match($0, /[0-9]+\.[0-9]+:/)) keep = ((substr($0, RSTART, RLENGTH - 1) + 0) >= th - win) }
     keep' "$raw"
-  rm -f "$raw"
+  rm -f "$raw" "$raw.err"
 }
 
 do_collect() { # <dir> <out>
