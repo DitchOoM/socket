@@ -17,6 +17,8 @@ plugins {
 // quiche-backed `QuicTraceRecorder` (one module downstream) keeps projecting quiche's PathKey /
 // QuicPathStats onto these neutral types. Later phases add FaultSchedule + the neutral Tier-A pipe.
 //
+// The trace model itself now lives in `:socket-trace` (same packages), re-exported here with `api`.
+//
 // Depends only on root `:socket` for the connectivity vocabulary the trace already carries
 // (NetworkAvailability / NetworkId / Liveness); those move to `:network-monitor` in P5, at which
 // point this dependency narrows.
@@ -81,6 +83,10 @@ kotlin {
             // NetworkAvailability / Liveness) in their public surface, so consumers need them
             // transitively. No QUIC dependency — that is the whole point of the split.
             api(project(":"))
+            // The trace model (TraceSink / TraceEvent / v1 codec) lives in :socket-trace so that
+            // production modules can use it without this harness. `api`: testkit users keep seeing
+            // those types exactly as before.
+            api(project(":socket-trace"))
         }
         androidMain.dependencies {
             // compileOnly, NOT implementation: this module is published, and an instrumented-test
