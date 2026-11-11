@@ -9,6 +9,7 @@ import kotlinx.cinterop.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
@@ -75,13 +76,17 @@ class LinuxNetworkMonitor : NetworkMonitor {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var netlinkFd: Int = -1
 
+    /** The netlink reader; ends once it has left the netlink descriptor. Test seam for "close ends the reader". */
+    internal var reader: Job = Job().also { it.complete() }
+        private set
+
     init {
         netlinkFd = createNetlinkSocket()
         // A synchronous seed, not the network talking: published without advancing the count.
         observationRelay.publish(resolveNetworkState())
 
         if (netlinkFd >= 0) {
-            scope.launch {
+            reader = scope.launch {
                 // Allocate a native scratch buffer once, reuse across netlink recvs. A raw malloc/free
                 // off nativeHeap, so it is released when the coroutine exits — no GC-managed ByteArray
                 // and no per-iteration pin/unpin. A plain allocArray rather than a PlatformBuffer keeps
