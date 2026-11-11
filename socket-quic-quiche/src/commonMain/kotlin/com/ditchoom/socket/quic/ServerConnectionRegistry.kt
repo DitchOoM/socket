@@ -130,6 +130,17 @@ internal class ServerConnectionRegistry<K>(
      */
     private val closedConnections = mutableMapOf<ConnectionIdKey, TimeMark>()
 
+    /**
+     * The drivers [retire] has removed, each until its draining period ends. Retirement is a terminal
+     * fact, so it is recorded as one rather than left to the order the queues happen to drain in: a
+     * driver's last turn can enqueue a projection *after* the receive loop has applied its cleanup, and
+     * a projection applied on its own finds no baseline and would route the dead driver again and erase
+     * its [closedConnections] entries. A projection for a retired driver is dropped. Entries live as
+     * long as the ids they retired (the pruning in [drainRoutingQueues]): the driver's loop ends within
+     * a turn of its cleanup, far inside one draining period. Receive-loop only.
+     */
+    private val retiredDrivers = mutableMapOf<QuicheDriver, TimeMark>()
+
     // --- Routing table (receive-loop coroutine only) ---
 
     fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]
@@ -154,6 +165,7 @@ internal class ServerConnectionRegistry<K>(
             closedConnections[key] = until
         }
         projectedRoutes.remove(driver)
+        retiredDrivers[driver] = until
     }
 
     fun routeDriver(
@@ -194,9 +206,10 @@ internal class ServerConnectionRegistry<K>(
      * Apply the routing queues to [connectionsByDcid]: projections first, cleanup removals last.
      * Receive-loop coroutine only.
      *
-     * **Cleanups last.** A cleanup is a terminal fact about a driver; a projection is a snapshot of a driver
-     * that was live when it was taken. Draining cleanups last means the terminal fact always wins, so
-     * a projection taken just before a handler closed its connection cannot resurrect routes for it.
+     * **Cleanups last, and remembered.** A cleanup is a terminal fact about a driver; a projection is a
+     * snapshot of a driver that was live when it was taken. Draining cleanups last means the terminal
+     * fact wins inside one drain, and [retiredDrivers] makes it win across drains: a projection a driver
+     * enqueues after its cleanup was applied is dropped, so a retired driver is never routed again.
      * (Nothing depends on ordering *within* the projections: each is a whole set, so applying them in
      * any order leaves the map at the newest one per driver.)
      */
@@ -207,7 +220,7 @@ internal class ServerConnectionRegistry<K>(
             val projection = routeProjectionQueue.tryReceive().getOrNull() ?: break
             newest[projection.driver] = projection
         }
-        val projections = newest.values
+        val projections = newest.values.filter { it.driver !in retiredDrivers }
         // Every release before any claim: the same bytes re-issued by a later connection are claimed
         // in the same drain that releases them, in whichever order the queue holds the two projections.
         for (projection in projections) releaseDroppedIds(projection)
@@ -220,6 +233,7 @@ internal class ServerConnectionRegistry<K>(
             retire(driver)
         }
         closedConnections.values.removeAll { it.hasPassedNow() }
+        retiredDrivers.values.removeAll { it.hasPassedNow() }
         return contested.orEmpty()
     }
 
