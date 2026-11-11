@@ -30,10 +30,13 @@ import kotlin.coroutines.CoroutineContext
  * members' readers run in [readerContext]: the server's event loop in production, so they wait in its
  * selector and the hand-off stays on one thread.
  */
-internal fun socketPerLocalAddress(readerContext: CoroutineContext): UnpinnedWildcard =
+internal fun socketPerLocalAddress(
+    readerContext: CoroutineContext,
+    enumerate: () -> List<String> = ::enumerateLocalUnicastAddresses,
+): UnpinnedWildcard =
     UnpinnedWildcard { wildcard, binding, recvBufPool ->
         val ipv4Only = wildcard.localAddress.family == AddressFamily.IPv4
-        val addresses = enumerateLocalUnicastAddresses().distinct().filter { !ipv4Only || ':' !in it }
+        val addresses = enumerate().distinct().filter { !ipv4Only || ':' !in it }
         if (addresses.isEmpty()) return@UnpinnedWildcard ServerChannel(wildcard, ReplySourcePinning.PlatformChooses)
         wildcard.close()
         when (val bind = bindEachAddress(addresses, binding.port) { host, port -> bindServerMember(host, port, recvBufPool) }) {
