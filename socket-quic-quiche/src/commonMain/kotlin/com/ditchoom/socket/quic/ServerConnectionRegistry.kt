@@ -200,37 +200,75 @@ internal class ServerConnectionRegistry<K>(
      * (Nothing depends on ordering *within* the projections: each is a whole set, so applying them in
      * any order leaves the map at the newest one per driver.)
      */
-    fun drainRoutingQueues() {
+    fun drainRoutingQueues(): List<ConnectionIdKey> {
+        // Each projection is a whole set, so only a driver's newest matters.
+        val newest = LinkedHashMap<QuicheDriver, RouteProjection>()
         while (true) {
             val projection = routeProjectionQueue.tryReceive().getOrNull() ?: break
-            applyProjection(projection)
+            newest[projection.driver] = projection
+        }
+        val projections = newest.values
+        // Every release before any claim: the same bytes re-issued by a later connection are claimed
+        // in the same drain that releases them, in whichever order the queue holds the two projections.
+        for (projection in projections) releaseDroppedIds(projection)
+        var contested: MutableList<ConnectionIdKey>? = null
+        for (projection in projections) {
+            claimIds(projection) { key -> (contested ?: mutableListOf<ConnectionIdKey>().also { contested = it }).add(key) }
         }
         while (true) {
             val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
             retire(driver)
         }
         closedConnections.values.removeAll { it.hasPassedNow() }
+        return contested.orEmpty()
     }
 
     /**
-     * Make [projection]'s driver route exactly its source ids, plus whatever else was registered for
-     * it outside the projection (the accept-time handshake DCID — see [projectedRoutes]).
-     *
-     * Idempotent by construction: it is a set difference in both directions, so replaying the same
-     * projection is a no-op and a projection that was never applied is fully subsumed by the next.
-     * Removals are identity-checked, so a key another connection has since claimed is left alone.
+     * The removal half of applying [projection]: unroute what its driver's last projection routed and this one
+     * no longer lists. Removals are identity-checked, so a key another connection has since claimed
+     * is left alone.
      */
-    private fun applyProjection(projection: RouteProjection) {
+    private fun releaseDroppedIds(projection: RouteProjection) {
         val driver = projection.driver
-        val previous = projectedRoutes[driver] ?: emptySet()
+        val previous = projectedRoutes[driver] ?: return
         for (key in previous) {
             if (key !in projection.sourceIds && connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
         }
+    }
+
+    /**
+     * The addition half of applying [projection]: make its driver route its source ids, plus whatever
+     * else was registered for it outside the projection (the accept-time handshake DCID — see
+     * [projectedRoutes]).
+     *
+     * Idempotent by construction: replaying the same projection is a no-op and a projection that was
+     * never applied is fully subsumed by the next.
+     *
+     * **Additions are identity-checked too.** A source id belongs to one connection, so an id another
+     * live driver still routes, after every release of this drain, is not taken from it: the second
+     * driver claiming the same bytes is the fault, and handing it the route would send the first
+     * connection's datagrams to a driver that cannot read them, for as long as either lives. Each such
+     * id is reported to [contested] and left with its first owner. (A second claim is only possible when
+     * two ids were drawn equal, which is what a source of randomness shared across threads without
+     * synchronisation does: see [connectionIdRandom].)
+     */
+    private fun claimIds(
+        projection: RouteProjection,
+        contested: (ConnectionIdKey) -> Unit,
+    ) {
+        val driver = projection.driver
+        val claimed = HashSet<ConnectionIdKey>(projection.sourceIds.size)
         for (key in projection.sourceIds) {
+            val holder = connectionsByDcid[key]
+            if (holder != null && holder !== driver) {
+                contested(key)
+                continue
+            }
             connectionsByDcid[key] = driver
             closedConnections.remove(key)
+            claimed += key
         }
-        projectedRoutes[driver] = projection.sourceIds
+        projectedRoutes[driver] = claimed
     }
 
     // --- Live-driver ledger ---

@@ -127,10 +127,10 @@ class QuicheDriver(
     private val sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
     /**
      * Entropy for the stateless-reset tokens minted by [issueSpareCids]. Defaults to
-     * [Random.Default]; the simulation harness injects a seeded instance so every token (and, via
+     * [connectionIdRandom]; the simulation harness injects a seeded instance so every token (and, via
      * [generateScid]'s matching parameter, every connection ID) is reproducible per seed.
      */
-    private val random: Random = Random.Default,
+    private val random: Random = connectionIdRandom,
     /**
      * Opt-in trace capture (RFC_DETERMINISTIC_SIMULATION.md §5, W3). When non-null the driver:
      *  - wraps every path's [UdpChannel] in the recorder's decorator (DGRAM_OUT/DGRAM_IN + typed

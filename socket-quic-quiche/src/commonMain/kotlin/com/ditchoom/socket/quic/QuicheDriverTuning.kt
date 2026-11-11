@@ -26,7 +26,7 @@ import kotlin.time.Instant
  *  - [clock] — the driver's keepalive/idle timing seam ([DriverClock]). Default [RealDriverClock];
  *    tests inject `ManualDriverClock` to hand-fire timers race-free.
  *  - [random] — entropy for connection IDs ([generateScid]) and stateless-reset tokens. Default
- *    [Random.Default]; one seeded instance makes every generated CID/token reproducible.
+ *    [connectionIdRandom]; one seeded instance makes every generated CID/token reproducible.
  *  - [wallClock] — "now" for the W3C `serverCertificateHashes` validity-window check
  *    ([verifyServerCertificateHashes]/[checkServerCertificatePinConstraints]). Default
  *    `Clock.System.now()`; a fixture replay pins it to the recorded capture time.
@@ -44,7 +44,7 @@ import kotlin.time.Instant
 internal class QuicheDriverTuning(
     val driverContext: CoroutineContext = productionDriverContext,
     val clock: DriverClock = RealDriverClock,
-    val random: Random = Random.Default,
+    val random: Random = connectionIdRandom,
     val wallClock: () -> Instant = { Clock.System.now() },
     val captureFactory: () -> TraceCapture = { TraceCapture.Off },
     /**
