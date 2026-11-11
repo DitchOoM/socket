@@ -50,6 +50,66 @@ while [ "$i" -lt "${#args[@]}" ]; do
 done
 last="${args[${#args[@]} - 1]:-}"
 
+global=("${args[@]:0:$i}")
+
+# Device queries are bounded so a wedged adb cannot hang the capture. The test engine's environment
+# is not the CI step's, so do not assume `timeout` is on its PATH.
+if command -v timeout >/dev/null 2>&1; then
+  bounded() { timeout "$@"; }
+else
+  bounded() { shift; "$@"; }
+fi
+
+# A LOST ADB LINK: WHAT THE HOST AND THE DEVICE LOOKED LIKE AT THAT INSTANT
+# --------------------------------------------------------------------------
+# adb ends a command with 255 when its link to the device or to the adb server broke under it. The
+# test engine reads that as a failed device query and gives up without saying why. Each probe below
+# answers one question: is the server the same process as before (pid and start time: a restart
+# shows as a young server), does the server still list the device and in what state, does a shell
+# round trip work now, and is the emulator process alive and running. The two adb probes run with
+# ADB_TRACE=adb,transport, whose output goes to this file only: the engine's own commands run
+# untraced, so its stdout, stderr and exit status are exactly what they were.
+#
+# Recorded to <diag dir>/adb-link-loss-<n>.txt, at most LINK_LOSS_CAPTURES per run, by a detached
+# background job started before the failing command's status is returned. Every probe is bounded
+# to PROBE_S seconds and its own exit status is written next to its output.
+LINK_LOSS_CAPTURES=3
+PROBE_S=4
+
+probe() { # <title> <command...>: the command's output, bounded, with its exit status
+  local title="$1"
+  shift
+  echo
+  echo "--- $title ---"
+  bounded "$PROBE_S" "$@" 2>&1 | head -c 6000
+  echo "[exit ${PIPESTATUS[0]}]"
+}
+
+record_link_loss() { # <exit status> <failed command line>
+  local n=1 report
+  while [ -e "$DIAG_DIR/adb-link-loss-$n.txt" ]; do n=$((n + 1)); done
+  [ "$n" -le "$LINK_LOSS_CAPTURES" ] || return 0
+  report="$DIAG_DIR/adb-link-loss-$n.txt"
+  {
+    echo "adb ended with status $1: $2"
+    echo "captured $(date -u +%FT%TZ)"
+    probe "adb get-state" "$REAL_ADB" "${global[@]}" get-state
+    probe "adb devices -l" "$REAL_ADB" devices -l
+    probe "adb shell echo ok" "$REAL_ADB" "${global[@]}" shell echo ok
+    # The bracketed first letter keeps each pgrep from matching the bash that carries its pattern.
+    # shellcheck disable=SC2016 # the scripts are for the inner bash
+    probe "adb server processes (pid, started, age)" bash -c \
+      'for p in $(pgrep -f "adb.*([f]ork-server|[n]odaemon) server"); do ps -o pid=,lstart=,etime=,stat= -p "$p"; done'
+    # shellcheck disable=SC2016
+    probe "emulator processes (pid, state, age, cpu%, rss KiB)" bash -c \
+      'for p in $(pgrep -f "[q]emu-system|[e]mulator64"); do ps -o pid=,stat=,etime=,pcpu=,rss=,comm= -p "$p"; done'
+    probe "adb get-state, traced (adb,transport)" env ADB_TRACE=adb,transport "$REAL_ADB" "${global[@]}" get-state
+    probe "adb shell echo ok, traced (adb,transport)" env ADB_TRACE=adb,transport "$REAL_ADB" "${global[@]}" shell echo ok
+    # shellcheck disable=SC2016
+    probe "adb server log, tail" bash -c 'tail -n 60 "$1"/adb.*.log 2>&1' _ "${TMPDIR:-/tmp}"
+  } >"$report" 2>&1
+}
+
 # THE ADB JOURNAL
 # ---------------
 # Every command, install or not, is recorded in $DIAG_DIR/adb-journal.txt: when it started, which
@@ -110,6 +170,11 @@ run_journaled() {
     journal "end   pid=$child rc=0 ${ms}ms"
   else
     journal "end   pid=$child rc=$rc ${ms}ms FAILED adb $* | stderr: $(head -c 400 "$errf" | tr '\n' ' ')"
+    if [ "$rc" = "255" ]; then
+      # Detached, with no fd shared with the engine, so it neither delays the status below nor holds
+      # a pipe the engine waits on.
+      record_link_loss "$rc" "adb $*" 0</dev/null >/dev/null 2>&1 &
+    fi
   fi
   rm -f "$errf"
   exit "$rc"
@@ -121,18 +186,10 @@ fi
 mkdir -p "$DIAG_DIR" 2>/dev/null
 journal "start pid=$$ (install guard) adb $*"
 
-global=("${args[@]:0:$i}")
 install_opts=("${args[@]:$((i + 1))}")
 unset 'install_opts[${#install_opts[@]}-1]'
 apk="$last"
 
-# Device queries are bounded so a wedged adb cannot hang the capture. The test engine's environment
-# is not the CI step's, so do not assume `timeout` is on its PATH.
-if command -v timeout >/dev/null 2>&1; then
-  bounded() { timeout "$@"; }
-else
-  bounded() { shift; "$@"; }
-fi
 dev() { bounded "$1" "$REAL_ADB" "${global[@]}" shell "${@:2}" 2>&1; }
 
 # Runs the real adb with the given arguments in the background; waits up to $1 seconds.

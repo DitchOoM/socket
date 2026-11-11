@@ -434,6 +434,16 @@ Full capture: ${NO_TESTS_FILE} (artifact android-test-reports-${API_LEVEL})")"
   fi
 fi
 
+# The test engine's adb link broke before any test APK was installed: said apart from a module that
+# ran and reported nothing, with the capture the guard took at that moment.
+# shellcheck source=scripts/adb-link-loss.sh
+source "$(dirname "${BASH_SOURCE[0]}")/adb-link-loss.sh"
+if lost_link=$(engine_lost_adb_link emulator-diagnostics/adb-journal.txt); then
+  echo "::error title=Test engine lost its adb link (API ${API_LEVEL})::$(gh_escape "The test engine lost its adb link while collecting device info, before any install. No test ran; its device queries ended with status 255:
+${lost_link}
+Capture taken at that moment (server and emulator process state, device state, adb transport trace): emulator-diagnostics/adb-link-loss-*.txt (artifact android-test-reports-${API_LEVEL})")"
+fi
+
 # Every install the guard recorded, recovered or not.
 for stall in emulator-diagnostics/install-stall-*.txt; do
   [ -e "$stall" ] || continue
