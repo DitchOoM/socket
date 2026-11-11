@@ -28,6 +28,7 @@ internal class QuichePairByHand private constructor(
     clientEndpoints: List<SocketAddress>,
     serverSocket: SocketAddress,
     options: QuicOptions,
+    configureClient: (QuicheConfig) -> Unit,
 ) {
     /** A datagram as the network carries it: its bytes, and the client endpoint it leaves or reaches. */
     class Datagram(
@@ -119,6 +120,7 @@ internal class QuichePairByHand private constructor(
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
             applyQuicOptions(options, SimQuicConfigCalls(api, cfg), role)
+            if (role == QuicRole.Client) configureClient(cfg)
         }
         simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
             check(api.configLoadCertChainFromPemFile(serverCfg, buf.nativeMemoryAccess!!.nativeAddress.toLong()) == 0)
@@ -447,12 +449,15 @@ internal class QuichePairByHand private constructor(
         suspend fun open(
             env: MigrationSimEnv,
             options: QuicOptions = migrationSimOptions(),
+            /** Extra settings for the client's config, applied before it connects (e.g. `configLogKeys`). */
+            configureClient: (QuicheConfig) -> Unit = {},
         ): QuichePairByHand =
             QuichePairByHand(
                 env,
                 (0 until CLIENT_ENDPOINTS).map { UdpSocket.resolve("127.0.0.1", CLIENT_PORT + it) },
                 UdpSocket.resolve("127.0.0.1", SERVER_PORT),
                 options,
+                configureClient,
             )
 
         /** Local endpoints the client can send from: the one it connects from, then one per probe. */
