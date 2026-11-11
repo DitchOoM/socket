@@ -148,6 +148,10 @@ actual object UdpSocket {
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
         trace: NwConnectTrace = NwConnectTrace(),
+        /** The peer's address once the connection is ready; a seam so a test can make this step throw. */
+        peerOf: suspend (platform.Network.nw_connection_t) -> SocketAddress = { ready ->
+            copyConnectionSockaddr(ready, local = false) ?: resolve(remoteHost, remotePort)
+        },
         create: () -> platform.Network.nw_connection_t,
     ): ConnectedDatagramChannel {
         trace.mark("create begun")
@@ -183,15 +187,22 @@ actual object UdpSocket {
             nw_udp_cancel(conn)
             throw t
         }
-        val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
-        val local = copyConnectionSockaddr(conn, local = true)
-        return NwUdpDatagramChannel(
-            conn,
-            peer,
-            local?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown,
-            receiveBufferSize,
-            bufferFactory,
-        )
+        // The connection is ready, so it is started, and a started nw_connection_t must be cancelled
+        // (connection.h): anything below that throws (the peer lookup resolves a name) takes it down.
+        try {
+            val peer = peerOf(conn)
+            val local = copyConnectionSockaddr(conn, local = true)
+            return NwUdpDatagramChannel(
+                conn,
+                peer,
+                local?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown,
+                receiveBufferSize,
+                bufferFactory,
+            )
+        } catch (t: Throwable) {
+            nw_udp_cancel(conn)
+            throw t
+        }
     }
 
     actual suspend fun bindMulticast(
