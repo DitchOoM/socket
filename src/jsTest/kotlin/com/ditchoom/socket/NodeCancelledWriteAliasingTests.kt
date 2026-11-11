@@ -32,6 +32,12 @@ class NodeCancelledWriteAliasingTests {
     @Test
     fun aCancelledWriteNeverPutsTheCallersLaterBytesOnTheWire() =
         runTestNoTimeSkipping {
+            // jsTest also runs in a headless browser, which has no `net` module and no TCP sockets:
+            // there is nothing for this defect to exist in, so the test has nothing to measure there.
+            if (!isNodeJs) {
+                println("[NodeCancelledWriteAliasingTests] SKIP: a browser has no TCP socket to write to")
+                return@runTestNoTimeSkipping
+            }
             val peerSocket = CompletableDeferred<Socket>()
             val portReady = CompletableDeferred<Int>()
             val server =
