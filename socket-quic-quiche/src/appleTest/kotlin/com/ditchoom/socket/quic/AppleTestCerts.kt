@@ -11,11 +11,16 @@ import kotlinx.cinterop.set
 import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
+import platform.posix.close
 import platform.posix.fclose
+import platform.posix.fdopen
+import platform.posix.fflush
 import platform.posix.fopen
 import platform.posix.fputs
 import platform.posix.fread
 import platform.posix.getenv
+import platform.posix.mkstemp
+import platform.posix.rename
 
 /**
  * Shared cert resolution for this module's Apple K/Native suites — the Apple counterpart of
@@ -47,13 +52,48 @@ internal object AppleTestCerts {
         val pem = if (name.endsWith(".key")) TEST_KEY_PEM else TEST_CERT_PEM
         val dir = getenv("TMPDIR")?.toKString()?.trimEnd('/') ?: "/tmp"
         val path = "$dir/aqe-$name"
-        val file = fopen(path, "w") ?: error("Cannot write temp cert to $path")
+        materialize(path, pem)
+        return path
+    }
+
+    /**
+     * Put [text] at [path] so that no process can ever read a missing-then-partial file there.
+     *
+     * Concurrent test processes share `$TMPDIR/aqe-<name>`. A plain `fopen(path, "w")` truncates the file
+     * the moment it opens, so a second process's reader (quiche loading the chain) could see it empty, or
+     * half-written, or truncated again under it. Instead the text is written to a unique `mkstemp` sibling
+     * and `rename`d over [path]: rename is atomic, so a reader sees the previous complete file or the new
+     * complete one, and every writer writes the same content. The name stays fixed, so nothing accumulates.
+     *
+     * [whileWriting] runs after the sibling holds part of the text and before it is published; the
+     * tests use it to look at [path] at the one moment a partial file would be visible.
+     */
+    internal fun materialize(
+        path: String,
+        text: String,
+        whileWriting: () -> Unit = {},
+    ) = memScoped {
+        val template = "$path.XXXXXX"
+        val sibling = allocArray<ByteVar>(template.length + 1)
+        for (i in template.indices) sibling[i] = template[i].code.toByte()
+        sibling[template.length] = 0
+        val fd = mkstemp(sibling)
+        check(fd >= 0) { "Cannot create temp cert beside $path" }
+        val file =
+            fdopen(fd, "w") ?: run {
+                close(fd)
+                error("Cannot write temp cert beside $path")
+            }
         try {
-            fputs(pem, file)
+            val half = text.length / 2
+            fputs(text.substring(0, half), file)
+            fflush(file)
+            whileWriting()
+            fputs(text.substring(half), file)
         } finally {
             fclose(file)
         }
-        return path
+        check(rename(sibling.toKString(), path) == 0) { "Cannot publish temp cert at $path" }
     }
 
     /** The committed `cert.crt` + `cert.key` identity every Apple quiche suite here uses. */
