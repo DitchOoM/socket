@@ -8,12 +8,10 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.SystemTrustFailure
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
 import kotlin.time.Instant
+import kotlin.time.TimeMark
 
 // A real certificate is a few KiB and a real chain three or four deep; the caps only stop a hostile peer
 // from making this client allocate without bound. Over either, the connect fails closed.
@@ -26,10 +24,28 @@ internal sealed interface PlatformChainTrust {
     /** BoringSSL validated it during the handshake. */
     data object InHandshake : PlatformChainTrust
 
-    /** A store outside BoringSSL evaluates the whole chain (DER, leaf first) after the handshake. */
+    /**
+     * A store outside BoringSSL evaluates the whole chain (DER, leaf first) after the handshake.
+     *
+     * [evaluate] must suspend rather than block its thread: the connect bounds it with the handshake's
+     * remaining budget, and a blocked thread cannot be interrupted, so a slow store would hold the
+     * connect past its deadline and past its cancellation.
+     */
     class AfterHandshake(
         val evaluate: suspend (serverName: String, chain: List<ReadBuffer>) -> SystemTrustVerdict,
     ) : PlatformChainTrust
+}
+
+/**
+ * What is left of a connect's handshake budget. The chain check runs after the handshake proper but is
+ * part of it as far as the caller is concerned: [total] is the bound they passed, [started] when it
+ * began to run.
+ */
+internal class HandshakeBudget(
+    val total: Duration,
+    private val started: TimeMark,
+) {
+    fun remaining(): Duration = (total - started.elapsedNow()).coerceAtLeast(Duration.ZERO)
 }
 
 /** A platform trust store's answer for one chain. */
@@ -60,6 +76,7 @@ internal suspend fun verifyServerCertificateChain(
     readChainDer: suspend (index: Int, der: PlatformBuffer, capacity: Int) -> Int,
     closeConnection: suspend () -> Unit,
     now: Instant,
+    budget: HandshakeBudget,
 ) {
     if (platformTrust is PlatformChainTrust.InHandshake && verifiers.isEmpty()) return
     val chain = mutableListOf<PlatformBuffer>()
@@ -72,10 +89,40 @@ internal suspend fun verifyServerCertificateChain(
                     throw ServerCertificateRejectedException(ServerCertificateRejection.NoPeerCertificate)
             }
         }
+        // The platform store and the verifiers are the caller-visible part of the handshake: past its
+        // budget the connect fails with the same typed bound an unanswered handshake does, and the catch
+        // below closes the connection. A caller's own cancellation is not this bound and passes through.
+        val judged =
+            withTimeoutOrNull(budget.remaining()) {
+                judge(serverName, platformTrust, verifiers, chain, now)
+                true
+            }
+        if (judged == null) {
+            throw QuicCloseException(
+                QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(budget.total)),
+                "QUIC handshake did not complete within ${budget.total}: the server's certificate chain was still being checked",
+            )
+        }
+    } catch (t: Throwable) {
+        runCatching { closeConnection() }
+        throw t
+    } finally {
+        chain.forEach { it.freeNativeMemory() }
+    }
+}
+
+private suspend fun judge(
+    serverName: String,
+    platformTrust: PlatformChainTrust,
+    verifiers: List<ServerCertVerifier>,
+    chain: List<PlatformBuffer>,
+    now: Instant,
+) {
+    run {
         when (platformTrust) {
             PlatformChainTrust.InHandshake -> Unit
             is PlatformChainTrust.AfterHandshake ->
-                when (val verdict = platformTrust.evaluateWithoutHoldingTheCaller(serverName, chain, bufferFactory)) {
+                when (val verdict = platformTrust.evaluate(serverName, chain.map { it.slice() })) {
                     SystemTrustVerdict.Trusted -> Unit
                     is SystemTrustVerdict.Untrusted ->
                         throw ServerCertificateRejectedException(
@@ -90,59 +137,7 @@ internal suspend fun verifyServerCertificateChain(
                     throw ServerCertificateRejectedException(ServerCertificateRejection.RejectedByVerifier(verdict.reason))
             }
         }
-    } catch (t: Throwable) {
-        runCatching { closeConnection() }
-        throw t
-    } finally {
-        chain.forEach { it.freeNativeMemory() }
     }
-}
-
-/**
- * Where an evaluation that outlives the connect that asked for it finishes. Nothing in it is ever
- * cancelled: an evaluation is a blocking platform call that cannot be interrupted, so the only choice
- * is whose thread waits for it.
- */
-private val abandonedEvaluations = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-/**
- * Put [chain] to the platform trust store without making the connect wait on it uninterruptibly.
- *
- * A platform evaluator (iOS's `SecTrustEvaluateWithError`) blocks its thread while the OS fetches
- * revocation data or missing intermediates, and nothing can interrupt it. Awaited in the connect's own
- * coroutine, that call held the connect past its timeout and past its cancellation. So the evaluation
- * runs on its own, and the connect only awaits its verdict, which a cancellation or deadline leaves at
- * once. The evaluation then finishes on its own thread and its verdict is dropped.
- *
- * The evaluator is handed copies of the chain, freed when it returns: [chain] belongs to the caller,
- * who frees it as soon as this returns, which may be while the evaluation is still running.
- */
-private suspend fun PlatformChainTrust.AfterHandshake.evaluateWithoutHoldingTheCaller(
-    serverName: String,
-    chain: List<PlatformBuffer>,
-    bufferFactory: BufferFactory,
-): SystemTrustVerdict {
-    val owned =
-        chain.map { der ->
-            bufferFactory.allocate(der.remaining()).also {
-                it.write(der.slice())
-                it.resetForRead()
-            }
-        }
-    val verdict = CompletableDeferred<SystemTrustVerdict>()
-    abandonedEvaluations.launch {
-        try {
-            verdict.complete(evaluate(serverName, owned.map { it.slice() }))
-        } catch (t: Throwable) {
-            verdict.completeExceptionally(t)
-        } finally {
-            owned.forEach { it.freeNativeMemory() }
-        }
-    }
-    return reportingStall(
-        "the platform trust store's verdict on the server's chain",
-        { "server=$serverName chain=${chain.size} certificate(s); the connect is waiting on a blocking platform call" },
-    ) { verdict.await() }
 }
 
 /** Read every certificate of the chain into [into], each positioned for reading. */

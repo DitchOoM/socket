@@ -7,7 +7,12 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
+import com.ditchoom.socket.IpFamily
+import com.ditchoom.socket.ResolvedAddress
+import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.Test
@@ -143,6 +148,46 @@ abstract class ServerCertVerifierTestSuite {
                             }.exceptionOrNull()
                         assertIs<Throwable>(failure, "the platform's own validation refuses a self-signed chain")
                         assertFalse(consulted, "the verifier narrows trust; it is never asked about a chain the platform refused")
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The post-handshake chain check is part of the handshake, so it spends the handshake's budget: a
+     * verifier that never answers ends the connect with the same typed `HandshakeTimeout` an unanswered
+     * handshake does, rather than leaving a connect that has no outer bound waiting for it forever. The
+     * platform trust store (iOS SecTrust) is consulted from the same place, so it is bound the same way.
+     */
+    @Test
+    fun aVerifierThatNeverAnswersEndsTheConnectAtTheHandshakeBudget() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = twoCertificateChainTlsConfig(), quicOptions = options()) {
+                    val serverJob = launch { runCatching { connections {} } }
+                    try {
+                        val silent = options().copy(serverCertVerifiers = listOf(ServerCertVerifier { awaitCancellation() }))
+                        val budget = 3.seconds.scaled
+                        // The engine's own connect, which has no bound but the one it is handed; withQuicConnection
+                        // adds an outer deadline that would end this wait whatever the engine did.
+                        val outcome =
+                            withTimeoutOrNull(budget + 10.seconds.scaled) {
+                                runCatching {
+                                    defaultQuicEngine.connect(
+                                        QuicClientBinding.OwnSocket,
+                                        QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
+                                        "127.0.0.1",
+                                        silent,
+                                        TransportConfig(),
+                                        budget,
+                                    )
+                                }.exceptionOrNull()
+                            }
+                        assertTrue(outcome != null, "the connect was still waiting on the verifier 10 s after its $budget budget")
+                        val failure = assertIs<QuicCloseException>(outcome)
+                        assertEquals(QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(budget)), failure.closeReason)
                     } finally {
                         serverJob.cancel()
                     }

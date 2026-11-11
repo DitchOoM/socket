@@ -17,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
@@ -70,6 +71,7 @@ internal suspend fun buildJvmQuicConnection(
     // socket; QuicClientBinding.Shared rides a port a demultiplexer owns (RFC 9443).
     binding: QuicClientBinding = QuicClientBinding.OwnSocket,
 ): JvmQuicConnection {
+    val handshakeStarted = TimeSource.Monotonic.markNow()
     // The options this connection actually runs with. On a shared port GREASE is forced off before
     // anything reads them, because applyQuicOptions below writes it into the quiche config and RFC
     // 9443 §3 forbids it there — see QuicClientBinding.transportOptionsFor.
@@ -314,6 +316,7 @@ internal suspend fun buildJvmQuicConnection(
             readChainDer = quicConnection::readPeerCertChainDer,
             closeConnection = { quicConnection.close() },
             now = tuning.wallClock(),
+            budget = HandshakeBudget(timeout, handshakeStarted),
         )
         return quicConnection
     } finally {

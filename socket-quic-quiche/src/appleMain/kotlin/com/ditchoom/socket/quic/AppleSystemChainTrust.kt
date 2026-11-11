@@ -13,14 +13,12 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.set
 import kotlinx.cinterop.value
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.CoreFoundation.CFArrayAppendValue
 import platform.CoreFoundation.CFArrayCreateMutable
 import platform.CoreFoundation.CFDataCreate
 import platform.CoreFoundation.CFErrorCopyDescription
 import platform.CoreFoundation.CFErrorGetCode
-import platform.CoreFoundation.CFErrorRefVar
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.CFStringCreateWithCString
 import platform.CoreFoundation.CFTypeRef
@@ -30,62 +28,127 @@ import platform.Foundation.CFBridgingRelease
 import platform.Security.SecCertificateCreateWithData
 import platform.Security.SecPolicyCreateSSL
 import platform.Security.SecTrustCreateWithCertificates
-import platform.Security.SecTrustEvaluateWithError
+import platform.Security.SecTrustEvaluateAsyncWithError
+import platform.Security.SecTrustRef
 import platform.Security.SecTrustRefVar
 import platform.Security.errSecSuccess
+import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
+import platform.darwin.dispatch_get_global_queue
+import kotlin.coroutines.resume
 
 /**
  * [AppleTrustSource.SystemTrustStore]: the chain evaluated by Security.framework against the device trust
- * store with an SSL policy for the server name. `SecTrustEvaluateWithError` blocks (it may fetch revocation
- * or intermediates), so it runs on [Dispatchers.Default].
+ * store with an SSL policy for the server name.
+ *
+ * Evaluated with `SecTrustEvaluateAsyncWithError`, which may fetch revocation data or intermediates and
+ * answers on a dispatch queue when it is done. The coroutine suspends cancellably on that answer and
+ * holds no thread meanwhile; the synchronous `SecTrustEvaluateWithError` blocked one, and could not be
+ * interrupted, so a slow evaluation held the connect past its deadline and past its cancellation.
+ * (Available on every Apple target built here: macOS 10.15, iOS 13, tvOS 13, watchOS 6.)
+ *
+ * The callback owns the chain's Core Foundation objects and releases them when it runs, whether or not
+ * anything is still waiting: a cancelled evaluation is abandoned, not freed under Security.framework.
+ * Every certificate is copied into a CFData before the call, so nothing here refers to the caller's
+ * buffers once it has started.
  */
 internal val appleSystemChainTrust =
-    PlatformChainTrust.AfterHandshake { serverName, chain ->
-        withContext(Dispatchers.Default) { evaluateWithSecTrust(serverName, chain) }
+    PlatformChainTrust.AfterHandshake { serverName, chain -> evaluateWithSecTrust(serverName, chain) }
+
+/** The Core Foundation objects an evaluation owns, released exactly once by whoever finishes with them. */
+private class OwnedCf {
+    private val objects = mutableListOf<CFTypeRef?>()
+
+    fun <T : CFTypeRef?> keep(obj: T): T {
+        objects += obj
+        return obj
     }
 
-private fun evaluateWithSecTrust(
+    fun release() {
+        objects.forEach { if (it != null) CFRelease(it) }
+        objects.clear()
+    }
+}
+
+/** What building the trust object came to: one to evaluate, or the verdict that ends it before that. */
+private sealed interface Prepared {
+    class Ready(
+        val trust: SecTrustRef,
+        val owned: OwnedCf,
+    ) : Prepared
+
+    class Refused(
+        val verdict: SystemTrustVerdict,
+    ) : Prepared
+}
+
+private suspend fun evaluateWithSecTrust(
     serverName: String,
     chain: List<ReadBuffer>,
-): SystemTrustVerdict {
-    val owned = mutableListOf<CFTypeRef?>()
-    try {
-        return memScoped {
-            val certificates = CFArrayCreateMutable(null, chain.size.convert(), kCFTypeArrayCallBacks.ptr)
-            owned += certificates
-            for ((index, der) in chain.withIndex()) {
-                val data = cfData(der) ?: return untrusted(SystemTrustFailure.CopyFailed(index))
-                owned += data
-                val certificate =
-                    SecCertificateCreateWithData(null, data)
-                        ?: return untrusted(SystemTrustFailure.UnreadableCertificate(index))
-                owned += certificate
-                CFArrayAppendValue(certificates, certificate)
-            }
-            val host = CFStringCreateWithCString(null, serverName, kCFStringEncodingUTF8)
-            owned += host
-            val policy = SecPolicyCreateSSL(true, host)
-            owned += policy
-            val trust = alloc<SecTrustRefVar>()
-            val created = SecTrustCreateWithCertificates(certificates, policy, trust.ptr)
-            if (created != errSecSuccess || trust.value == null) return untrusted(SystemTrustFailure.TrustCreationFailed(created))
-            owned += trust.value
-            val error = alloc<CFErrorRefVar>()
-            if (SecTrustEvaluateWithError(trust.value, error.ptr)) {
-                SystemTrustVerdict.Trusted
-            } else {
-                when (val err = error.value) {
-                    null -> untrusted(SystemTrustFailure.RefusedWithoutError)
-                    else -> {
-                        owned += err
-                        val description = CFBridgingRelease(CFErrorCopyDescription(err)).toString()
-                        untrusted(SystemTrustFailure.Refused(CFErrorGetCode(err).convert(), description))
+): SystemTrustVerdict =
+    when (val prepared = prepare(serverName, chain)) {
+        is Prepared.Refused -> prepared.verdict
+        is Prepared.Ready ->
+            suspendCancellableCoroutine { continuation ->
+                val started =
+                    SecTrustEvaluateAsyncWithError(
+                        prepared.trust,
+                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.convert(), 0u),
+                    ) { _, trusted, error ->
+                        // Runs on a dispatch thread, once, possibly after the caller has gone: resuming a
+                        // cancelled continuation is ignored, and the objects are released here regardless.
+                        val verdict =
+                            when {
+                                trusted -> SystemTrustVerdict.Trusted
+                                error == null -> untrusted(SystemTrustFailure.RefusedWithoutError)
+                                else -> {
+                                    val description = CFBridgingRelease(CFErrorCopyDescription(error)).toString()
+                                    untrusted(SystemTrustFailure.Refused(CFErrorGetCode(error).convert(), description))
+                                }
+                            }
+                        prepared.owned.release()
+                        continuation.resume(verdict)
                     }
+                if (started != errSecSuccess) {
+                    // The callback will not run, so nothing else will release these.
+                    prepared.owned.release()
+                    continuation.resume(untrusted(SystemTrustFailure.TrustCreationFailed(started)))
                 }
             }
+    }
+
+private fun prepare(
+    serverName: String,
+    chain: List<ReadBuffer>,
+): Prepared {
+    val owned = OwnedCf()
+    return memScoped {
+        val certificates = owned.keep(CFArrayCreateMutable(null, chain.size.convert(), kCFTypeArrayCallBacks.ptr))
+        for ((index, der) in chain.withIndex()) {
+            val data = cfData(der)
+            if (data == null) {
+                owned.release()
+                return@memScoped Prepared.Refused(untrusted(SystemTrustFailure.CopyFailed(index)))
+            }
+            owned.keep(data)
+            val certificate = SecCertificateCreateWithData(null, data)
+            if (certificate == null) {
+                owned.release()
+                return@memScoped Prepared.Refused(untrusted(SystemTrustFailure.UnreadableCertificate(index)))
+            }
+            owned.keep(certificate)
+            CFArrayAppendValue(certificates, certificate)
         }
-    } finally {
-        owned.forEach { if (it != null) CFRelease(it) }
+        val host = owned.keep(CFStringCreateWithCString(null, serverName, kCFStringEncodingUTF8))
+        val policy = owned.keep(SecPolicyCreateSSL(true, host))
+        val trust = alloc<SecTrustRefVar>()
+        val created = SecTrustCreateWithCertificates(certificates, policy, trust.ptr)
+        val made = trust.value
+        if (created != errSecSuccess || made == null) {
+            owned.release()
+            return@memScoped Prepared.Refused(untrusted(SystemTrustFailure.TrustCreationFailed(created)))
+        }
+        owned.keep(made)
+        Prepared.Ready(made, owned)
     }
 }
 
