@@ -2679,7 +2679,16 @@ class QuicheDriver(
         try {
             while (true) {
                 val streamId = api.streamIterNext(iter) ?: break
-                if (_state.value is QuicConnectionState.Handshaking && earlyStreamData is EarlyStreamData.None) {
+                // Early means readable before quiche completed the handshake, so ask quiche now. The published
+                // state is not that: updateState() runs after this sweep, so a turn that fed quiche the
+                // datagram completing the handshake and one carrying 1-RTT stream data (coalesced, or queued
+                // together) still reads Handshaking here, and ordinary 1-RTT data was reported as 0-RTT on a
+                // connection that had declined it. The established flag and the readable set are read in
+                // this one loop turn, so no datagram can land between them.
+                if (earlyStreamData is EarlyStreamData.None &&
+                    _state.value is QuicConnectionState.Handshaking &&
+                    !api.connIsEstablished(conn)
+                ) {
                     earlyStreamData = EarlyStreamData.Received(streamId.id)
                 }
                 val existing = streams[streamId.id]

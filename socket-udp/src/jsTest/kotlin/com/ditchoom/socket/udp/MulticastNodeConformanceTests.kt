@@ -92,8 +92,12 @@ class MulticastNodeConformanceTests {
     @Test
     fun senderReachesJoinedReceiverOnSameHost() =
         mcTest {
-            val port = 42_344
-            val receiver = bindMc(port)
+            // The receiver binds port 0 and the group uses the port it was given. A fixed port here
+            // (it was 42_344) sits inside Linux's ephemeral range (32768-60999), so any socket on the host
+            // that did not ask for address reuse may already own it, and the multicast bind is refused:
+            // "bind to 0.0.0.0:42344 failed: the address and port are already in use" (CI, 2026-11-11).
+            val receiver = bindMc(0)
+            val port = receiver.localAddress.port
             val sender = bindMc(0)
             val got =
                 try {
@@ -124,8 +128,9 @@ class MulticastNodeConformanceTests {
     @Test
     fun senderReachesJoinedReceiverOnSameHostIpv6() =
         mcTest {
-            val port = 42_346
-            val receiver = bindMc(port, AddressFamily.IPv6)
+            // Port 0, for the reason given on the IPv4 test above.
+            val receiver = bindMc(0, AddressFamily.IPv6)
+            val port = receiver.localAddress.port
             val sender = bindMc(0, AddressFamily.IPv6)
             val got =
                 try {
