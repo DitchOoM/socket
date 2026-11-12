@@ -3,7 +3,7 @@ name: "Build & Test (Linux)"
 # FAN-OUT SHAPE (was one ~28-31 minute serial `build` job plus a 6-7 minute fuzz tail):
 #
 #   natives ──┬── checks-tests   (the big JVM/JS/Android/K-N suite + the netns + Docker-harness lanes)
-#             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI)
+#             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI | JDK 25 / FFM)
 #             ├── link ──┬── integration-linux-x64
 #             │          └── integration-linux-arm64
 #             ├── abi-linux      (checkKotlinAbi against the api/linux/ dumps)
@@ -745,7 +745,7 @@ jobs:
 
       # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 21): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:
-      # this one and the quiche-jvm FFM leg; the quiche-jvm JNI and JDK 17 legs stay UNTRACED.
+      # this one and the quiche-jvm FFM leg; the quiche-jvm JNI, JDK 17 and JDK 25 legs stay UNTRACED.
       - uses: ./.github/actions/jvm-flight-recorder
         with:
           mode: start
@@ -1299,7 +1299,7 @@ jobs:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
       # Protocol ring (socket-testsuite TraceRing.kt): the last events of every connection the shared
       # QUIC suites open, attached to a failing test's report. On for the JNI leg only; the FFM leg
-      # carries the JFR ring instead and the JDK 17 leg stays uninstrumented, so no lane has both and
+      # carries the JFR ring instead and the JDK 17 and JDK 25 legs stay uninstrumented, so no lane has both and
       # no recorder is the only configuration. Job-level on purpose: a daemon started by an earlier
       # step would not see a step-level variable.
       QUIC_TEST_TRACE_RING: ${{ matrix.leg.ring }}
@@ -1321,7 +1321,7 @@ jobs:
           - name: "JNI"
             args: ""
             sim-fuzz: "2000"
-            jdk17: "false"
+            test-launcher-jdk: ""
             core-dump: "true"
             audit: "false"
             ring: "1"
@@ -1334,7 +1334,7 @@ jobs:
           - name: "FFM"
             args: "-PquicheJvmBackend=ffm"
             sim-fuzz: "2000"
-            jdk17: "false"
+            test-launcher-jdk: ""
             core-dump: "false"
             audit: "false"
             ring: "0"
@@ -1356,20 +1356,37 @@ jobs:
           - name: "JDK 17 / JNI"
             args: "-PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64"
             sim-fuzz: ""
-            jdk17: "true"
+            test-launcher-jdk: "17"
             core-dump: "false"
             audit: "true"
+            ring: "0"
+            jfr: "false"
+          # FFM backend on a JDK 25 launcher, the newest LTS. The multi-release jar's
+          # META-INF/versions/21 tier (the FFM bindings) is compiled by jvmToolchain(21) but selected
+          # at runtime by every JDK >= 21, so a consumer on 25 runs code no other lane has run on that
+          # JDK: the link check in `publish` resolves every reference against JDK 25, and this leg is
+          # the one that executes them. The build/toolchain stays on 21; only this Test task runs on
+          # 25, found via the JAVA_HOME_25_X64 install from setup-java.
+          #
+          # No deep-fuzz seeds, ring, recorder or audit here, as on the JDK 17 leg: those ride the
+          # JDK 21 legs, and this one answers a single question, whether the suite passes on 25.
+          - name: "JDK 25 / FFM"
+            args: "-PquicheJvmBackend=ffm -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
+            sim-fuzz: ""
+            test-launcher-jdk: "25"
+            core-dump: "false"
+            audit: "false"
             ring: "0"
             jfr: "false"
     steps:
       - uses: actions/checkout@v7
       # konan: false — this lane is JVM-only (see -PlinuxTargets=false on the test step), so restoring
-      # the ~450MB Kotlin/Native toolchain would be download cost for nothing. jdk17 only on the leg
-      # that needs a 17 launcher.
+      # the ~450MB Kotlin/Native toolchain would be download cost for nothing. A second JDK only on
+      # the legs whose Test task runs on a 17 or 25 launcher.
       - uses: ./.github/actions/linux-quiche-env
         with:
           konan: "false"
-          jdk17: ${{ matrix.leg.jdk17 }}
+          test-launcher-jdk: ${{ matrix.leg.test-launcher-jdk }}
 
       # Harness-backed tests use the in-repo Docker stack (`docker compose up`
       # is wired via Gradle's harnessUp/harnessDown tasks). The TLS server
@@ -1386,7 +1403,8 @@ jobs:
           sudo update-ca-certificates
 
       # Imports into $JAVA_HOME (21) only, exactly as the monolith did — including on the JDK-17
-      # leg, whose Test launcher is JAVA_HOME_17_X64 and therefore does NOT see this alias. Left
+      # and JDK-25 legs, whose Test launchers are JAVA_HOME_17_X64 / JAVA_HOME_25_X64 and therefore do
+      # NOT see this alias. Left
       # as-is on purpose: changing it would change which harness TLS tests that leg exercises.
       - name: Trust harness CA in JVM keystore (Linux)
         run: |
@@ -1399,8 +1417,8 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
-      # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI and
-      # JDK 17 legs are not, so the recorder is never the only configuration this lane has run. JNI is
+      # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI,
+      # JDK 17 and JDK 25 legs are not, so the recorder is never the only configuration this lane has run. JNI is
       # traced in checks-tests (above) and FFM here, which is what covers both backends.
       - uses: ./.github/actions/jvm-flight-recorder
         with:
@@ -1450,9 +1468,9 @@ jobs:
           # virtual time). Without this the deep lane never runs anywhere and only the
           # 25-seed commonTest smoke guards the fuzzer. Forwarded into the test worker
           # by the quiche build script (daemon env is not step env). Empty on the JDK-17
-          # leg, which is how the monolith had it.
+          # leg, which is how the monolith had it, and on the JDK-25 leg.
           SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
-          # All three legs build their own natives and inventoried zero skips.
+          # Every leg builds its own natives and inventoried zero skips.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           # A run still going at 20 of its 24 minutes is hung (a healthy one takes under 10): print every

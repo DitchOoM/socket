@@ -4106,9 +4106,15 @@ afterEvaluate {
         // JDK 17 launcher so CI can exercise JNI on the runtime that Android /
         // legacy-JVM consumers actually use, while the rest of the build stays on
         // 21. The java21/FFM classes aren't on the JNI classpath, so there is no
-        // UnsupportedClassVersionError. Do not combine with `quicheJvmBackend=ffm`.
+        // UnsupportedClassVersionError. A launcher newer than 21 (`-PjvmTestLauncher=25`)
+        // runs either backend, and with `quicheJvmBackend=ffm` it is how CI runs the
+        // FFM tier on the JDK a consumer of the multi-release jar may be on. A launcher
+        // older than 21 cannot load the FFM classes, so that pair is refused below.
         providers.gradleProperty("jvmTestLauncher").orNull?.let { version ->
             val launcherVersion = version.toInt()
+            require(launcherVersion >= 21 || providers.gradleProperty("quicheJvmBackend").orNull != "ffm") {
+                "-PjvmTestLauncher=$launcherVersion cannot run -PquicheJvmBackend=ffm: the FFM bindings need JDK 21 or newer"
+            }
             val toolchains = project.extensions.getByType<JavaToolchainService>()
             javaLauncher.set(
                 toolchains.launcherFor {
