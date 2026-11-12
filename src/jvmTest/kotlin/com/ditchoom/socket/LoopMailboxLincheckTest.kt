@@ -23,7 +23,7 @@ abstract class LoopMailboxHarness(
     private val mailbox = LoopMailbox<Int>(wake = { sleep.updateAndGet { if (it == SLEEPING) IDLE else PERMIT } })
 
     @Operation
-    fun post() = mailbox.post(1, onLoopThread = postsAsLoopThread)
+    fun post() = if (postsAsLoopThread) mailbox.postFromLoopThread(1) else mailbox.post(1)
 
     @Operation(nonParallelGroup = LOOP)
     fun loopTurn() {

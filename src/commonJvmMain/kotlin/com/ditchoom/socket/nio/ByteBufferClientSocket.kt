@@ -8,6 +8,7 @@ import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.IoTuning
 import com.ditchoom.socket.JvmTlsHandler
 import com.ditchoom.socket.ReadBufferSource
+import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TlsConfig
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.aClose
@@ -15,6 +16,7 @@ import com.ditchoom.socket.nio.util.localAddressOrNull
 import java.net.InetSocketAddress
 import java.net.StandardSocketOptions
 import java.nio.channels.NetworkChannel
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
 abstract class ByteBufferClientSocket<T : NetworkChannel>(
@@ -102,7 +104,29 @@ abstract class ByteBufferClientSocket<T : NetworkChannel>(
         options.sendBuffer?.let { socket.setOption(StandardSocketOptions.SO_SNDBUF, it) }
     }
 
+    private sealed interface CloseState {
+        data object Open : CloseState
+
+        data object Closing : CloseState
+
+        data object Closed : CloseState
+    }
+
+    private val closeState = AtomicReference<CloseState>(CloseState.Open)
+
+    /**
+     * What a read that saw end of stream failed with. Closing shuts the input down first, which ends a parked
+     * read exactly as a peer's FIN does; the state is set before that shutdown, so only a FIN that arrived
+     * while the socket was still open is [SocketClosedException.EndOfStream].
+     */
+    internal fun endOfStream(detail: String): SocketClosedException =
+        when (closeState.get()) {
+            CloseState.Open -> SocketClosedException.EndOfStream(detail)
+            CloseState.Closing, CloseState.Closed -> SocketClosedException.General("Socket closed during read")
+        }
+
     override suspend fun close() {
+        closeState.compareAndSet(CloseState.Open, CloseState.Closing)
         tlsHandler?.let {
             try {
                 it.closeOutbound()
@@ -112,6 +136,7 @@ abstract class ByteBufferClientSocket<T : NetworkChannel>(
         if (isSocketInitialized) {
             socket.aClose()
         }
+        closeState.set(CloseState.Closed)
     }
 
     private companion object {

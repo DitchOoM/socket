@@ -1066,7 +1066,6 @@ public final class com/ditchoom/socket/nio/NioServerSocket : com/ditchoom/socket
 	public fun <init> ()V
 	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
 	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun <init> (Lcom/ditchoom/socket/TransportConfig;Z)V
 	public fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun isListening ()Z
@@ -1076,7 +1075,16 @@ public final class com/ditchoom/socket/nio/NioServerSocket : com/ditchoom/socket
 public final class com/ditchoom/socket/nio/NioServerToClientSocket : com/ditchoom/socket/nio/BaseClientSocket {
 	public fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;)V
 	public synthetic fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;Z)V
+}
+
+public final class com/ditchoom/socket/nio/SelectorServerSocket : com/ditchoom/socket/ServerSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun isListening ()Z
+	public fun port ()I
 }
 
 public final class com/ditchoom/socket/nio/util/NetworkChannelExtensionsKt {

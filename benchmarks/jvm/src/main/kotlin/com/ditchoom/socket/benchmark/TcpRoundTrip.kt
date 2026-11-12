@@ -9,10 +9,9 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.ServerSocket
-import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.allocate
 import com.ditchoom.socket.connect
-import com.ditchoom.socket.nio.NioServerSocket
+import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.useAsyncChannels
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +65,7 @@ open class TcpRoundTrip {
         ioDeadline = if (deadline == "infinite") Duration.INFINITE else IO_TIMEOUT
         runBlocking {
             // The listener is NIO2 wherever the runtime has it, so the selector-loop run builds its own.
-            server = if (backend == "nio2") ServerSocket.allocate() else NioServerSocket(TransportConfig(), nonBlocking = true)
+            server = if (backend == "nio2") ServerSocket.allocate() else SelectorServerSocket()
             val accepted = server.bind(0, "127.0.0.1")
             serverScope.launch {
                 accepted.collect { peer -> launch { echo(peer) } }

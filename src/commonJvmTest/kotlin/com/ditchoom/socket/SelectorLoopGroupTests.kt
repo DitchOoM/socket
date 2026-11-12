@@ -7,8 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
-import com.ditchoom.socket.nio.BaseClientSocket
-import com.ditchoom.socket.nio.NioServerSocket
+import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import kotlinx.coroutines.CompletableDeferred
@@ -44,7 +43,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The non-blocking NIO path (`useAsyncChannels = false`, `useNioBlocking = false`, and a listener built with
- * `NioServerSocket(nonBlocking = true)`) runs every connection on a few shared selector loops: no thread and
+ * `SelectorServerSocket`) runs every connection on a few shared selector loops: no thread and
  * no selector per connection, deadlines owned by the loop, a closed socket failing its own waiters, and no
  * user code on a loop thread.
  */
@@ -69,9 +68,9 @@ class SelectorLoopGroupTests {
 
     private fun loopThreads() = Thread.getAllStackTraces().keys.count { it.name.startsWith("socket-nio") }
 
-    private fun listener() = NioServerSocket(TransportConfig(), nonBlocking = true)
+    private fun listener() = SelectorServerSocket()
 
-    private fun loopOf(socket: ClientSocket) = (socket as BaseClientSocket).loop!!
+    private fun parkedChannels() = SelectorLoopGroup.running().sumOf { it.parkedChannelCount }
 
     /** Runs [block] with a connected pair: the accepted side and a client. */
     private suspend fun usingPair(block: suspend CoroutineScope.(server: ClientSocket, client: ClientSocket) -> Unit) =
@@ -95,10 +94,7 @@ class SelectorLoopGroupTests {
     private fun withPair(block: suspend CoroutineScope.(server: ClientSocket, client: ClientSocket) -> Unit) =
         runBlocking(Dispatchers.IO) { withTimeout(30.seconds) { usingPair(block) } }
 
-    /**
-     * Before the shared loops every non-blocking socket opened its own selector and a thread to run it, so
-     * 40 connections cost 40 threads. Now they cost a registration each on at most four.
-     */
+    /** Forty connections cost a registration each on at most four loop threads. */
     @Test
     fun manyConnectionsShareAFewLoopThreads() =
         runBlocking(Dispatchers.IO) {
@@ -256,19 +252,19 @@ class SelectorLoopGroupTests {
 
     @Test
     fun theLoopCountIsClampedToASaneRange() {
-        assertEquals(1, SelectorLoopGroup.loopCount(0, 8))
-        assertEquals(1, SelectorLoopGroup.loopCount(-3, 8))
-        assertEquals(16, SelectorLoopGroup.loopCount(1000, 8))
-        assertEquals(4, SelectorLoopGroup.loopCount(null, 64))
-        assertEquals(1, SelectorLoopGroup.loopCount(null, 1))
-        assertEquals(3, SelectorLoopGroup.loopCount(3, 64))
+        assertEquals(1, SelectorLoopGroup.loopCount(0))
+        assertEquals(1, SelectorLoopGroup.loopCount(-3))
+        assertEquals(16, SelectorLoopGroup.loopCount(1000))
+        assertEquals(4, SelectorLoopGroup.loopCount(SelectorLoopGroup.defaultLoopCount(64)))
+        assertEquals(1, SelectorLoopGroup.loopCount(SelectorLoopGroup.defaultLoopCount(1)))
+        assertEquals(3, SelectorLoopGroup.loopCount(3))
     }
 
     /** A read and a write waiting on one socket are cancelled independently: each leaves the other waiting and nothing dead behind. */
     @Test
     fun cancellingAReadAndAWriteIndependentlyLeavesNoWaiterBehind() =
         withPair { server, client ->
-            val loop = loopOf(client)
+            val base = parkedChannels()
             val reader = launch(Dispatchers.IO) { runCatching { client.read(Duration.INFINITE) } }
             val chunk = BufferFactory.Default.allocate(1 shl 20)
             val writer =
@@ -284,18 +280,18 @@ class SelectorLoopGroupTests {
                     }
                 }
             // The peer reads nothing, so the send buffer fills and the writer waits for OP_WRITE.
-            awaitUntil { loop.parkedChannelCount == 1 && writer.isActive && reader.isActive }
+            awaitUntil { parkedChannels() - base == 1 && writer.isActive && reader.isActive }
             writer.cancelAndJoin()
             assertTrue(reader.isActive, "cancelling the writer must not end the reader")
             // The reader still waits and is still woken by the peer.
             server.writeString("x")
             withTimeout(5.seconds) { reader.join() }
-            awaitUntil { loop.parkedChannelCount == 0 }
+            awaitUntil { parkedChannels() - base == 0 }
             // Cancel the other way round: a reader cancelled while a later write completes does not hit a dead continuation.
             val second = launch(Dispatchers.IO) { runCatching { client.read(Duration.INFINITE) } }
-            awaitUntil { loop.parkedChannelCount == 1 }
+            awaitUntil { parkedChannels() - base == 1 }
             second.cancelAndJoin()
-            awaitUntil { loop.parkedChannelCount == 0 }
+            awaitUntil { parkedChannels() - base == 0 }
             server.writeString("y")
             assertEquals("y", client.readString())
         }
@@ -304,7 +300,7 @@ class SelectorLoopGroupTests {
     @Test
     fun closingUnderAReaderAndAWriterFailsEachOnce() =
         withPair { _, client ->
-            val loop = loopOf(client)
+            val base = parkedChannels()
             val readerOutcomes =
                 java.util.concurrent.atomic
                     .AtomicInteger()
@@ -326,7 +322,7 @@ class SelectorLoopGroupTests {
                         }
                     }.also { writerOutcomes.incrementAndGet() }
                 }
-            awaitUntil { loop.parkedChannelCount == 1 && reader.isActive && writer.isActive }
+            awaitUntil { parkedChannels() - base == 1 && reader.isActive && writer.isActive }
             delay(300)
             client.close()
             val read = withTimeout(5.seconds) { reader.await() }.exceptionOrNull()

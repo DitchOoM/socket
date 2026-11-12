@@ -40,13 +40,6 @@ abstract class AsyncBaseClientSocket(
     private val writeMutex = Mutex()
 
     /**
-     * Set by [close] before it touches the channel. Closing shuts the input down first, which completes a
-     * pending read with -1, exactly what a peer's FIN does; this flag is how a read told those two apart: a
-     * -1 that arrives once this side has begun closing is this side's close, never a graceful end of stream.
-     */
-    @Volatile private var closing = false
-
-    /**
      * The single outstanding read, if one is in flight — enforces single-flight (§3.2), and is the
      * *orphaned* read (RFC §3.2): the JDK's timed `AsynchronousSocketChannel.read` is destructive — an
      * elapsed timeout arms `readKilled` and kills the read half. To enforce a deadline **non-destructively**
@@ -85,6 +78,9 @@ abstract class AsyncBaseClientSocket(
         }
 
         private val state = AtomicReference<State>(State.Pending)
+
+        /** Thrown if a second reader awaits while one already waits: readers are serialized by the read mutex, so it cannot happen. */
+        class ConcurrentOrphanedReadAwait : IllegalStateException()
 
         override fun completed(
             result: Int,
@@ -128,7 +124,7 @@ abstract class AsyncBaseClientSocket(
                             continuation.resumeWith(current.outcome)
                             return@suspendCancellableCoroutine
                         }
-                        is State.Waiting -> error("a second reader awaited an orphaned read: readMutex was bypassed")
+                        is State.Waiting -> throw ConcurrentOrphanedReadAwait()
                     }
                 }
             }
@@ -192,8 +188,7 @@ abstract class AsyncBaseClientSocket(
             inFlightRead = null
             if (bytesRead < 0) {
                 inFlight.buffer.freeNativeMemory()
-                if (closing) throw SocketClosedException.General("Socket closed during read")
-                throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
+                throw endOfStream("Received $bytesRead from server indicating a socket close.")
             }
             inFlight.buffer.resetForRead()
             inFlight.buffer
@@ -245,8 +240,7 @@ abstract class AsyncBaseClientSocket(
                 throw wrapJvmException(e)
             }
         if (bytesRead < 0) {
-            if (closing) throw SocketClosedException.General("Socket closed during read")
-            throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
+            throw endOfStream("Received $bytesRead from server indicating a socket close.")
         }
         return bytesRead
     }
@@ -295,7 +289,6 @@ abstract class AsyncBaseClientSocket(
     }
 
     override suspend fun close() {
-        closing = true
         // Closing the channel (in super.close) is what completes the outstanding JDK read, exceptionally,
         // so no read leaks past close.
         offTheAndroidMainThread { super.close() }

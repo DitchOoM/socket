@@ -15,8 +15,10 @@ import com.ditchoom.socket.nio.util.ReadPacing
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import com.ditchoom.socket.nio.util.read
+import com.ditchoom.socket.nio.util.readBlocking
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
+import com.ditchoom.socket.nio.util.writeBlocking
 import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
@@ -44,26 +46,31 @@ abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
     config: TransportConfig = TransportConfig(),
 ) : ByteBufferClientSocket<SocketChannel>(config) {
-    /** The shared loop this socket's readiness waits go through; none for a blocking socket. */
-    internal val loop: SelectorLoop? = if (!blocking) SelectorLoopGroup.next() else null
+    private sealed interface Readiness {
+        /** A blocking channel: a read or write blocks a thread until it can proceed, so nothing waits on a loop. */
+        data object Blocking : Readiness
+
+        /** A non-blocking channel: a read or write that cannot proceed waits for readiness on [loop]. */
+        class OnLoop(
+            val loop: SelectorLoop,
+        ) : Readiness
+    }
+
+    private val readiness: Readiness = if (blocking) Readiness.Blocking else Readiness.OnLoop(SelectorLoopGroup.next())
 
     /**
-     * The selector of this socket's loop, null for a blocking socket. It is **shared** by every non-blocking
-     * socket on that loop, so closing it or selecting on it by hand breaks them all; nothing here needs it.
-     * Kept for source and binary compatibility.
+     * The selector of this socket's loop, null for a blocking socket. It is shared by every non-blocking
+     * socket on that loop, so closing it or selecting on it by hand breaks them all.
      */
     @Deprecated("Shared by every non-blocking socket on this loop: closing it or selecting on it affects them all.")
-    val selector: Selector? get() = loop?.selector
+    val selector: Selector?
+        get() =
+            when (val r = readiness) {
+                Readiness.Blocking -> null
+                is Readiness.OnLoop -> r.loop.selector
+            }
 
     private val readMutex = Mutex()
-
-    /**
-     * Set by [close] before it touches the channel. Closing shuts the input down first, which makes a parked
-     * read ready with -1, exactly what a peer's FIN does; this flag is how a read tells those two apart: a -1
-     * that arrives once this side has begun closing is this side's close, never a graceful end of stream.
-     * (The loop used to close a per-socket selector first, which failed the waiter before the shutdown.)
-     */
-    @Volatile private var closing = false
     private val readPacing = ReadPacing()
     private val writeMutex = Mutex()
 
@@ -129,18 +136,16 @@ abstract class BaseClientSocket(
      * this side's close ([SocketClosedException.General]), not a raw java.net exception the caller
      * cannot type.
      */
-    private fun receiveBufferSize(): Int {
-        // One getsockopt for the connection's life, not one per read: the size only changes if the app
-        // sets it, and it does that through the options applied before the first read.
-        if (cachedReceiveBufferSize > 0) return cachedReceiveBufferSize
-        return try {
-            socket.socket().receiveBufferSize.also { cachedReceiveBufferSize = it }
+    private fun receiveBufferSize(): Int = receiveBuffer
+
+    /** One `getsockopt` for the connection's life; a failed query is not cached. */
+    private val receiveBuffer: Int by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        try {
+            socket.socket().receiveBufferSize
         } catch (e: IOException) {
             throw wrapJvmException(e)
         }
     }
-
-    private var cachedReceiveBufferSize = 0
 
     /**
      * The blocking-path read (RFC §3.2 orphaned-read single-flight). Enforces [deadline] by racing
@@ -194,8 +199,7 @@ abstract class BaseClientSocket(
             inFlightBlockingRead = null
             if (bytesRead < 0) {
                 inFlight.buffer.freeNativeMemory()
-                if (closing) throw SocketClosedException.General("Socket closed during read")
-                throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
+                throw endOfStream("Received $bytesRead from server indicating a socket close.")
             }
             inFlight.buffer.resetForRead()
             inFlight.buffer
@@ -212,7 +216,7 @@ abstract class BaseClientSocket(
         val deferred =
             blockingReadScope.async {
                 try {
-                    socket.read(byteBuffer, null as Selector?, Duration.INFINITE)
+                    socket.readBlocking(byteBuffer)
                 } catch (e: IOException) {
                     throw wrapJvmException(e)
                 }
@@ -226,7 +230,14 @@ abstract class BaseClientSocket(
     ): Int {
         val bytesRead =
             try {
-                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, loop, timeout, readPacing) } }
+                readMutex.withLock {
+                    offTheAndroidMainThread {
+                        when (val r = readiness) {
+                            Readiness.Blocking -> socket.readBlocking(buffer.byteBuffer)
+                            is Readiness.OnLoop -> socket.read(buffer.byteBuffer, r.loop, timeout, readPacing)
+                        }
+                    }
+                }
             } catch (e: IOException) {
                 // Route every platform IOException (ClosedChannelException, Connection reset,
                 // etc.) through the single mapper. Already-wrapped SocketException is passed
@@ -234,8 +245,7 @@ abstract class BaseClientSocket(
                 throw wrapJvmException(e)
             }
         if (bytesRead < 0) {
-            if (closing) throw SocketClosedException.General("Socket closed during read")
-            throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
+            throw endOfStream("Received $bytesRead from server indicating a socket close.")
         }
         return bytesRead
     }
@@ -257,7 +267,11 @@ abstract class BaseClientSocket(
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         // The blocking channel can't honor a deadline in-line, so route bounded blocking writes through
         // a background write the caller withTimeouts (RFC_WRITE_TIMEOUT_CONTRACT §5).
-        if (blocking) return blockingWriteRaw(byteBuffer, timeout)
+        val loop =
+            when (val r = readiness) {
+                Readiness.Blocking -> return blockingWriteRaw(byteBuffer, timeout)
+                is Readiness.OnLoop -> r.loop
+            }
         var totalWritten = 0
         try {
             writeMutex.withLock {
@@ -302,7 +316,7 @@ abstract class BaseClientSocket(
                     var total = 0
                     try {
                         while (byteBuffer.hasRemaining()) {
-                            val n = socket.write(byteBuffer, null as Selector?, Duration.INFINITE)
+                            val n = socket.writeBlocking(byteBuffer)
                             if (n < 0) {
                                 throw SocketClosedException.EndOfStream("Received $n from server indicating a socket close.")
                             }
@@ -325,7 +339,6 @@ abstract class BaseClientSocket(
         }
 
     override suspend fun close() {
-        closing = true
         // Closing the channel (in super.close) is what unblocks an orphaned blocking read/write;
         // cancelling their scopes tears down the waiters so nothing leaks past close.
         if (blocking) {
@@ -333,8 +346,10 @@ abstract class BaseClientSocket(
             blockingWriteScope.cancel()
         }
         offTheAndroidMainThread { super.close() }
-        // After the channel is closed: whoever still waits on it fails instead of waiting on a key that
-        // will never fire. The selector is shared, so closing it is not an option.
-        if (isSocketInitialized) loop?.release(socket)
+        // Once the channel is closed whoever still waits on it fails, rather than waiting on a key that never fires.
+        when (val r = readiness) {
+            Readiness.Blocking -> Unit
+            is Readiness.OnLoop -> if (isSocketInitialized) r.loop.release(socket)
+        }
     }
 }

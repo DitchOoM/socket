@@ -41,7 +41,7 @@ class NioClientSocket(
                 try {
                     attempt.aConfigureBlocking(blocking)
                     val address = InetSocketAddress(InetAddress.getByName(candidate.ip), port)
-                    if (!attempt.connect(address, loop?.selector, timeout)) {
+                    if (!attempt.connect(address, @Suppress("DEPRECATION") selector, timeout)) {
                         throw SocketIOException("Failed to connect client $port $attempt")
                     }
                     attempt
