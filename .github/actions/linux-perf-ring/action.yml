@@ -1,0 +1,71 @@
+name: "Linux perf ring"
+description: >-
+  A `perf record` ring (scheduling tracepoints + low-rate call-graph samples) of the Kotlin/Native
+  test binary, written out only when the job fails or hangs. `mode: start` before the test step;
+  `mode: collect` with `if: failure() || cancelled()`.
+
+# Why this exists: the Linux soak stall left the stacks of one instant (the hang watchdog's gdb
+# `thread apply all bt`). A scheduling timeline shows which thread was descheduled, who woke whom and
+# where the CPU time went in the minute before. The logic and the measurements of what a hosted
+# runner permits are in .github/scripts/linux-perf-ring.sh (tested by tests/linux-perf-ring.test.sh).
+#
+# Hosted ubuntu-24.04 and ubuntu-24.04-arm runners (kernel 7.0 azure) ship perf matching the running
+# kernel, have kernel.perf_event_paranoid=4 and a root-only tracefs, and offer passwordless sudo: so
+# perf runs under sudo, and the apt step below only fires on an image that lacks the binary (it uses
+# the project's cached apt action, since the mirror has stalled whole jobs here, #368).
+#
+# Never changes the job's result (callers set continue-on-error on collect) and never retries.
+
+inputs:
+  mode:
+    description: "`start` (arm) or `collect` (snapshot, filter, compress, upload)"
+    required: true
+  enabled:
+    description: "`false` makes the action a no-op (an untraced lane)"
+    required: false
+    default: "true"
+  artifact-name:
+    description: "collect: artifact name; unique per job and matrix shard"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Does this runner have perf
+      id: have
+      if: ${{ inputs.mode == 'start' && inputs.enabled == 'true' }}
+      shell: bash
+      run: |
+        if perf --version >/dev/null 2>&1; then echo "missing=false" >> "$GITHUB_OUTPUT"
+        else echo "missing=true" >> "$GITHUB_OUTPUT"; echo "pkgs=linux-tools-common linux-tools-$(uname -r)" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Install perf (only when the image lacks it)
+      if: ${{ inputs.mode == 'start' && inputs.enabled == 'true' && steps.have.outputs.missing == 'true' }}
+      uses: ./.github/actions/apt-install-cached
+      with:
+        packages: ${{ steps.have.outputs.pkgs }}
+        purpose: perf for the Linux perf ring
+
+    - name: Arm the perf ring
+      if: ${{ inputs.mode == 'start' && inputs.enabled == 'true' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/linux-perf-ring.sh" start "${RUNNER_TEMP}/perf-ring"
+        echo "PERF_RING_DIR=${RUNNER_TEMP}/perf-ring" >> "$GITHUB_ENV"
+
+    # `|| true`: this step must never fail the job even if the script itself is broken.
+    - name: Collect the perf ring
+      if: ${{ inputs.mode == 'collect' && inputs.enabled == 'true' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/linux-perf-ring.sh" collect "$PERF_RING_DIR" "${RUNNER_TEMP}/perf-ring-out" || true
+
+    - name: Upload the perf ring
+      if: ${{ inputs.mode == 'collect' && inputs.enabled == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/perf-ring-out
+        retention-days: 14
+        if-no-files-found: ignore

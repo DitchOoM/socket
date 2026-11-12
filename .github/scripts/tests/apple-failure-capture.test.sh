@@ -164,6 +164,57 @@ else
   echo "skip: no CAPTURE_TEST_SIMULATOR_UDID (simulator half)"
 fi
 
+# ── 7. the timeline ring: `sample` snapshots and Time Profiler recordings of a live test binary ──
+# (macOS only: `sample` and `xctrace` are Apple tools). The binary burns CPU in a named frame so a
+# snapshot has something to name.
+if [ "$(uname -s)" = Darwin ] && command -v cc >/dev/null 2>&1; then
+  printf '#include <unistd.h>\nvolatile unsigned long x;\nvoid burn_in_the_ring_test(void){for(;;)x++;}\nint main(void){burn_in_the_ring_test();return 0;}\n' >"$work/burn.c"
+  cc -g -O0 -o "$work/bin/$uniq" "$work/burn.c" 2>/dev/null
+  export CAPTURE_RING_SAMPLE_INTERVAL=1 CAPTURE_RING_SAMPLE_KEEP=3
+  "$work/bin/$uniq" &
+  HANG_PID=$!
+  "$script" start "$work/cap9" 0 0 sample >/dev/null
+  sleep 14
+  out="$("$script" collect "$work/cap9" "$work/out9" 2>&1)"
+  n=$(ls "$work"/out9/ring/pid-*-sample-*.txt.gz 2>/dev/null | wc -l | tr -d ' ')
+  [ "$n" -gt 0 ] && [ "$n" -le 3 ] && ok "ring/sample: only the newest $n of many snapshots are kept (ring of 3)" || bad "ring/sample: $n snapshots" "$out"
+  expect "ring/sample: a snapshot names the burning frame" "burn_in_the_ring_test" "$(gunzip -c "$(ls "$work"/out9/ring/pid-*-sample-*.txt.gz | head -1)" 2>/dev/null)"
+  expect "ring/sample: the log says how much was kept" "ring: $n file(s)" "$out"
+  [ -s "$work/out9/ring/README.txt" ] && ok "ring/sample: README written" || bad "ring/sample: no README"
+  kill "$HANG_PID" 2>/dev/null; wait "$HANG_PID" 2>/dev/null; HANG_PID=""
+  # cap: nothing fits under 1 byte, and the log says so
+  "$work/bin/$uniq" &
+  HANG_PID=$!
+  "$script" start "$work/cap10" 0 0 sample >/dev/null
+  sleep 8
+  out="$(CAPTURE_RING_CAP_BYTES=1 "$script" collect "$work/cap10" "$work/out10" 2>&1)"
+  expect "ring/cap: dropped files are named in the log" "TRUNCATED" "$out"
+  kill "$HANG_PID" 2>/dev/null; wait "$HANG_PID" 2>/dev/null; HANG_PID=""
+  # no ring requested: nothing recorded, nothing uploaded
+  "$script" start "$work/cap11" 0 0 >/dev/null
+  out="$("$script" collect "$work/cap11" "$work/out11" 2>&1)"
+  [ ! -d "$work/out11/ring" ] && ok "ring/none: a lane without a ring uploads no ring" || bad "ring/none: a ring directory appeared"
+  # Time Profiler, when this machine lets xctrace attach (it may need a developer-tools authorisation)
+  "$work/bin/$uniq" &
+  HANG_PID=$!
+  CAPTURE_RING_XCTRACE_WINDOW=6 "$script" start "$work/cap12" 0 0 xctrace >/dev/null
+  sleep 16
+  out="$(CAPTURE_RING_XCTRACE_WINDOW=6 "$script" collect "$work/cap12" "$work/out12" 2>&1)"
+  if ls "$work"/out12/ring/ 2>/dev/null | grep -q 'xctrace-.*\.tar\.\|xctrace-.*\.tgz'; then
+    ok "ring/xctrace: a Time Profiler recording of the live process is compressed into the artifact"
+    t="$(ls "$work"/out12/ring/pid-*-xctrace-*.tar.* | head -1)"
+    mkdir -p "$work/unpack"
+    case "$t" in *.zst) zstd -dc "$t" | tar -xf - -C "$work/unpack" ;; *) tar -xzf "$t" -C "$work/unpack" ;; esac
+    tr_dir="$(ls -d "$work"/unpack/*.trace | head -1)"
+    expect "ring/xctrace: the recording shows the burning frame" "burn_in_the_ring_test" "$(xcrun xctrace export --input "$tr_dir" --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' 2>/dev/null | grep -o 'burn_in_the_ring_test' | head -1)"
+  else
+    echo "skip: xctrace could not record on this machine: $(cat "$work"/cap12/ring/pid-*/*.log 2>/dev/null | tail -2 | tr '\n' ' ')"
+  fi
+  kill "$HANG_PID" 2>/dev/null; wait "$HANG_PID" 2>/dev/null; HANG_PID=""
+else
+  echo "skip: the ring half needs macOS and a C compiler"
+fi
+
 echo "---"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
