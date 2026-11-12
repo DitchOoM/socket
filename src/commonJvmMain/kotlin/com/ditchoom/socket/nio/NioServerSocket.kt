@@ -41,6 +41,9 @@ class NioServerSocket(
     // A separate constructor, not a default argument, so the signature released callers link against stays.
     constructor(config: TransportConfig = TransportConfig()) : this(config, nonBlocking = false)
 
+    // The no-argument constructor a class whose constructor had only default arguments always had.
+    constructor() : this(TransportConfig())
+
     private sealed interface Listener {
         data object Unbound : Listener
 

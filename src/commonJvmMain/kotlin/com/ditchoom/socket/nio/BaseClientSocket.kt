@@ -56,6 +56,14 @@ abstract class BaseClientSocket(
     val selector: Selector? get() = loop?.selector
 
     private val readMutex = Mutex()
+
+    /**
+     * Set by [close] before it touches the channel. Closing shuts the input down first, which makes a parked
+     * read ready with -1, exactly what a peer's FIN does; this flag is how a read tells those two apart: a -1
+     * that arrives once this side has begun closing is this side's close, never a graceful end of stream.
+     * (The loop used to close a per-socket selector first, which failed the waiter before the shutdown.)
+     */
+    @Volatile private var closing = false
     private val readPacing = ReadPacing()
     private val writeMutex = Mutex()
 
@@ -186,6 +194,7 @@ abstract class BaseClientSocket(
             inFlightBlockingRead = null
             if (bytesRead < 0) {
                 inFlight.buffer.freeNativeMemory()
+                if (closing) throw SocketClosedException.General("Socket closed during read")
                 throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
             }
             inFlight.buffer.resetForRead()
@@ -225,6 +234,7 @@ abstract class BaseClientSocket(
                 throw wrapJvmException(e)
             }
         if (bytesRead < 0) {
+            if (closing) throw SocketClosedException.General("Socket closed during read")
             throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
         }
         return bytesRead
@@ -315,6 +325,7 @@ abstract class BaseClientSocket(
         }
 
     override suspend fun close() {
+        closing = true
         // Closing the channel (in super.close) is what unblocks an orphaned blocking read/write;
         // cancelling their scopes tears down the waiters so nothing leaks past close.
         if (blocking) {

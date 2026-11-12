@@ -9,8 +9,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.ServerSocket
-import com.ditchoom.socket.allocate
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.allocate
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.nio.NioServerSocket
 import com.ditchoom.socket.useAsyncChannels
