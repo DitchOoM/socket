@@ -147,16 +147,10 @@ internal class NativeDeadlineTimer private constructor(
             if (sleepUntil == Long.MAX_VALUE) {
                 self.park(PARK_FOREVER_MICROS, true)
             } else {
-                val remainingMicros = (sleepUntil - now()) / 1_000L
-                if (remainingMicros <= SLEEP_THE_REST_MICROS) {
+                when (val step = waitStepFor((sleepUntil - now()) / 1_000L)) {
                     // Too short to be woken for: a nap that cannot be interrupted, then the pass that fires it.
-                    if (remainingMicros > 0) usleep(remainingMicros.toUInt())
-                } else {
-                    // Half of what is left, not all of it: Worker.park sleeps about 1.5 times what it is asked for
-                    // (measured: park(2000 us) returns after 3010 us, park(10000 us) after 14600 us, macOS arm64),
-                    // so asking for the whole wait would fire every deadline half its length late. Each park ends
-                    // before the deadline and the pass re-asks for half of the remainder, down to the nap above.
-                    self.park(minOf(remainingMicros / 2, PARK_FOREVER_MICROS), true)
+                    is WaitStep.Nap -> if (step.micros > 0) usleep(step.micros.toUInt())
+                    is WaitStep.Park -> self.park(step.micros, true)
                 }
             }
         }
@@ -176,17 +170,44 @@ internal class NativeDeadlineTimer private constructor(
         /** The timer every production connection and server on this process shares. */
         val Shared: NativeDeadlineTimer by lazy { NativeDeadlineTimer() }
 
-        private const val PARK_FOREVER_MICROS = 3_600_000_000L
-
-        /** A remainder this short is slept, uninterruptibly, rather than parked for. */
-        private const val SLEEP_THE_REST_MICROS = 200L
-
         /** The handle of a deadline that is never due: nothing was scheduled, so there is nothing to disarm. */
         private object NeverDue : DisposableHandle {
             override fun dispose() = Unit
         }
     }
 }
+
+private const val PARK_FOREVER_MICROS = 3_600_000_000L
+
+/** A remainder this short is slept, uninterruptibly, rather than parked for. */
+private const val SLEEP_THE_REST_MICROS = 200L
+
+/** One wait of the timer thread's, chosen by [waitStepFor]. */
+internal sealed interface WaitStep {
+    /** An uninterruptible sleep of [micros], after which the thread makes a pass: the last step before a deadline. */
+    class Nap(
+        val micros: Long,
+    ) : WaitStep
+
+    /** A park of [micros] that an earlier deadline being armed can cut short. */
+    class Park(
+        val micros: Long,
+    ) : WaitStep
+}
+
+/**
+ * The next wait toward a deadline [remainingMicros] away. A park is never asked for the whole remainder, only
+ * half of it: a park can return later than asked, and one that overshoots by less than 2x still ends before the
+ * deadline, so each pass re-asks for half of what is left, down to a nap. A wait that returns 2x late or more
+ * (every primitive does on a hosted macOS runner, see NativeDeadlineTimerLatenessTests) is late whatever this
+ * asks for; the halving only guarantees that a modest, proportional overshoot costs nothing.
+ */
+internal fun waitStepFor(remainingMicros: Long): WaitStep =
+    if (remainingMicros <= SLEEP_THE_REST_MICROS) {
+        WaitStep.Nap(maxOf(remainingMicros, 0L))
+    } else {
+        WaitStep.Park(minOf(remainingMicros / 2, PARK_FOREVER_MICROS))
+    }
 
 /** What [DeadlineQueue.nextDue] answers: the earliest live deadline, or that there is none. */
 internal sealed interface NextDue {

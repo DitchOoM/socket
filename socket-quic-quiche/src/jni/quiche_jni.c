@@ -592,6 +592,10 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnStreamDataUnacknowledged)(JNIEnv *env, jc
     return (jboolean)quiche_conn_stream_data_unacknowledged((const quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nConnRecvGaps)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_recv_gaps((const quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnTimeoutAsNanos)(JNIEnv *env, jclass cls, jlong conn) {
     return (jlong)quiche_conn_timeout_as_nanos((const quiche_conn *)(uintptr_t)conn);
 }

@@ -43,12 +43,14 @@ inputs:
       download needs no token.
     required: false
     default: ""
-  jdk17:
+  test-launcher-jdk:
     description: >-
-      Also install JDK 17 alongside 21, for the `JDK 17 / JNI` quiche lane. Off by default because
-      only that one matrix leg runs a Test task on a 17 launcher, and each extra JDK is a download.
+      A second JDK to install alongside 21, for a quiche lane whose Test task runs on another launcher:
+      `17` for `JDK 17 / JNI`, `25` for `JDK 25 / FFM`. Empty (the default) installs 21 alone, because
+      only those matrix legs run a Test task on another launcher and each extra JDK is a download.
+      Gradle itself always runs on 21.
     required: false
-    default: "false"
+    default: ""
 
 runs:
   using: composite
@@ -68,25 +70,33 @@ runs:
     # points at ~/.gradle/caches, byte-for-byte the same directory the explicit step already
     # saves, so enabling both stored that tree TWICE per run under two different keys.
     - name: Set up JDK 21
-      if: inputs.jdk17 != 'true'
+      if: inputs.test-launcher-jdk == ''
       uses: actions/setup-java@v5
       with:
         distribution: 'zulu'
         java-version: '21'
 
-    # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
-    # becomes the default JAVA_HOME) — required to compile the FFM bindings —
-    # while JDK 17 (exposed as JAVA_HOME_17_X64) lets the "JDK 17 / JNI" test
-    # step run :socket-quic-quiche:jvmTest on a JDK < 21 launcher.
+    # Install the test-launcher JDK and 21. The build/toolchain runs on 21 (the last entry
+    # becomes the default JAVA_HOME), which is required to compile the FFM bindings, while the
+    # other JDK (exposed as JAVA_HOME_<version>_X64) lets a quiche lane run
+    # :socket-quic-quiche:jvmTest on that launcher: 17 for the JNI backend on a JDK < 21, 25 for the
+    # FFM backend on the newest LTS.
     # ONE setup-java call, not two: the last entry of the multi-line java-version becomes
-    # JAVA_HOME, so two separate steps (21 then 17) would silently hand Gradle a 17 launcher.
-    - name: Set up JDKs (17 + 21)
-      if: inputs.jdk17 == 'true'
+    # JAVA_HOME, so two separate steps (21 then the other) would silently hand Gradle the other launcher.
+    - name: Refuse a test-launcher JDK this action does not know
+      if: inputs.test-launcher-jdk != '' && inputs.test-launcher-jdk != '17' && inputs.test-launcher-jdk != '25'
+      shell: bash
+      run: |
+        echo "::error::test-launcher-jdk must be empty, 17 or 25; got '${{ inputs.test-launcher-jdk }}'"
+        exit 1
+
+    - name: Set up JDKs (${{ inputs.test-launcher-jdk }} + 21)
+      if: inputs.test-launcher-jdk != ''
       uses: actions/setup-java@v5
       with:
         distribution: 'zulu'
         java-version: |
-          17
+          ${{ inputs.test-launcher-jdk }}
           21
 
     # Yarn for the Kotlin/JS + Wasm npm installs, from the runner image (or the npm registry), never

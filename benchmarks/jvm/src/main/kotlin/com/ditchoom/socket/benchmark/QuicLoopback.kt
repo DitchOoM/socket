@@ -123,7 +123,11 @@ internal fun assertQuicheBackend(): String {
         "quiche backend mismatch: the build asked for '$expected' but this JVM loaded '$actual'. " +
             "The numbers would be reported under the wrong backend, so the run stops here."
     }
-    println("# quiche backend: $actual (${loadQuicheApi()::class.java.name}) on JDK ${System.getProperty("java.version")}")
+    println(
+        "# quiche backend: $actual (${loadQuicheApi()::class.java.name}) on JDK ${System.getProperty(
+            "java.version",
+        )} (${System.getProperty("java.vm.version")})",
+    )
     return actual
 }
 
