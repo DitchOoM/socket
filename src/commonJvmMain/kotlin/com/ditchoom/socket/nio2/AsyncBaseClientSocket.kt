@@ -41,6 +41,18 @@ abstract class AsyncBaseClientSocket(
 
     override fun toString() = "${super.toString()} orphanedReadPending=${inFlightRead != null}"
 
+    /**
+     * One `getsockopt` for the connection's life; a failed query is not cached. A close() landing between
+     * `readRaw`'s open check and here makes it throw, mapped like every platform IOException to this side's close.
+     */
+    private val receiveBuffer: Int by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        try {
+            socket.getOption(StandardSocketOptions.SO_RCVBUF)
+        } catch (e: IOException) {
+            throw wrapJvmException(e)
+        }
+    }
+
     private val writeMutex = Mutex()
 
     /**
@@ -202,15 +214,6 @@ abstract class AsyncBaseClientSocket(
      * timeout (RFC §3.2).
      */
     private fun startOrphanedRead(): InFlightRead {
-        // A close() landing between readRaw's isOpen check and here makes getOption throw a bare
-        // ClosedChannelException; mapped like every other platform IOException, it is this side's
-        // close (SocketClosedException.General), not a raw java.nio exception the caller cannot type.
-        val receiveBuffer =
-            try {
-                socket.getOption(StandardSocketOptions.SO_RCVBUF)
-            } catch (e: IOException) {
-                throw wrapJvmException(e)
-            }
         val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBuffer))
         // Started right here and completed by the JDK's completion handler: no coroutine is launched for the
         // read, so there is no dispatch to start it and none to resume it.
