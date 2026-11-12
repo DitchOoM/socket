@@ -51,7 +51,6 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -5070,7 +5069,7 @@ class DriverStreamAdapter(
         }
         try {
             val result =
-                withTimeout(timeout) {
+                withStreamDeadline(timeout) {
                     // The FIN (or Reset) may have arrived coalesced with the last data chunk on a previous
                     // read() (which returned that Data and latched slot.end here). quiche has already
                     // delivered it, so there is no further data and no readable-signal coming — return now
@@ -5082,7 +5081,7 @@ class DriverStreamAdapter(
                     // stream_recv — is the only truthful answer a later read can give. Skipped while the
                     // stream is open: the entry check above has just looked at the queue.
                     if (slot.end != StreamEnd.Open) {
-                        slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
+                        slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
                     }
                     while (true) {
                         val deferred = CompletableDeferred<StreamRecvResult>()
@@ -5110,18 +5109,18 @@ class DriverStreamAdapter(
                                     // Ownership transfers to the caller — do not release in the finally.
                                     transferred = true
                                     delivered = ReadResult.Data(buffer)
-                                    return@withTimeout delivered
+                                    return@withStreamDeadline delivered
                                 }
                                 // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
                                 // the same driver wake that answers this FIN, and End must never overtake
                                 // them.
                                 if (result.fin) {
-                                    return@withTimeout takePending() ?: ReadResult.End
+                                    return@withStreamDeadline takePending() ?: ReadResult.End
                                 }
                                 // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
                                 // unenforced assumption): wait for the data signal like a Done and retry.
-                                takePending()?.let { return@withTimeout it }
-                                awaitDataThenQueued()?.let { return@withTimeout it }
+                                takePending()?.let { return@withStreamDeadline it }
+                                awaitDataThenQueued()?.let { return@withStreamDeadline it }
                                 continue
                             }
                             is StreamRecvResult.Done -> {
@@ -5131,15 +5130,15 @@ class DriverStreamAdapter(
                                 // the queue (see queuedOrLatchedVerdict: the other order reports End over
                                 // the stream's last chunk). If the FIN (or Reset) was consumed earlier
                                 // (coalesced with data), no signal is coming — end now rather than park.
-                                slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
-                                awaitDataThenQueued()?.let { return@withTimeout it }
+                                slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
+                                awaitDataThenQueued()?.let { return@withStreamDeadline it }
                                 continue
                             }
                             is StreamRecvResult.Error -> {
                                 // Bytes quiche already handed over outrank the failure, exactly as they
                                 // outrank a FIN (RFC 9000 §2.4) and the connection's death (§10.2).
                                 // Only once the slot is dry does the failure surface.
-                                takePending()?.let { return@withTimeout it }
+                                takePending()?.let { return@withStreamDeadline it }
                                 // ...and it surfaces AS a failure. Mapping this onto ReadResult.End would tell
                                 // every caller the peer had finished politely, which is a contract — stop
                                 // reading, release the stream — and the wrong response to an error; it would
@@ -5165,13 +5164,13 @@ class DriverStreamAdapter(
                                 // code-carrying abort is not the peer finishing politely. Bytes the
                                 // transport already accepted still outrank the verdict.
                                 slot.latchReset(result.applicationErrorCode)
-                                return@withTimeout takePending() ?: ReadResult.Reset
+                                return@withStreamDeadline takePending() ?: ReadResult.Reset
                             }
                             is StreamRecvResult.ConnectionGone -> {
                                 // Includes the teardown sentinel from failCommand: the connection went away
                                 // while this StreamRecv was queued, so whatever quiche still held for us was
                                 // drained into the slot on the way out — deliver it before the verdict.
-                                return@withTimeout takePending() ?: verdictAfterConnectionGone()
+                                return@withStreamDeadline takePending() ?: verdictAfterConnectionGone()
                             }
                         }
                     }
@@ -5305,7 +5304,7 @@ class DriverStreamAdapter(
         // and the lifetime contract must hold symmetrically.)
         var inFlight: CompletableDeferred<StreamSendResult>? = null
         return try {
-            withTimeout(timeout) {
+            withStreamDeadline(timeout) {
                 while (true) {
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
@@ -5327,7 +5326,7 @@ class DriverStreamAdapter(
                         // is untouched (zero-copy); the caller advances by it and re-enters for the remainder.
                         else ->
                             if (written > 0) {
-                                return@withTimeout written
+                                return@withStreamDeadline written
                             } else if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED ||
                                 written == QuicheDriver.QUICHE_ERR_STREAM_RESET
                             ) {
