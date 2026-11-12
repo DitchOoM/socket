@@ -40,6 +40,26 @@ static inline int socket_connect(int sockfd, const struct sockaddr *addr, sockle
     return connect(sockfd, addr, addrlen);
 }
 
+// --- non-blocking datagram I/O on the caller's thread ---
+// One system call that never waits: the result is the byte count, or -errno (as an io_uring completion
+// reports it), with EINTR retried here. -EAGAIN means the socket could not take or give a datagram right now.
+
+static inline int socket_sendmsg_now(int fd, const struct msghdr *msg) {
+    for (;;) {
+        ssize_t n = sendmsg(fd, msg, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (n >= 0) return (int) n;
+        if (errno != EINTR) return -errno;
+    }
+}
+
+static inline int socket_recvmsg_now(int fd, struct msghdr *msg) {
+    for (;;) {
+        ssize_t n = recvmsg(fd, msg, MSG_DONTWAIT);
+        if (n >= 0) return (int) n;
+        if (errno != EINTR) return -errno;
+    }
+}
+
 // --- cmsg macro wrappers ---
 // CMSG_FIRSTHDR/NXTHDR/SPACE/LEN/DATA are function-like C macros; cinterop binds only
 // functions/typedefs/enums, not macros. Wrap them as static inline functions so the Kotlin control
