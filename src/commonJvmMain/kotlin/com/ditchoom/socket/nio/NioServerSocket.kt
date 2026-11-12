@@ -33,9 +33,12 @@ import kotlin.time.Duration
  * blocks a [Dispatchers.IO] thread and the accepted connections are blocking channels.
  */
 class NioServerSocket(
-    private val config: TransportConfig = TransportConfig(),
-    private val nonBlocking: Boolean = false,
+    private val config: TransportConfig,
+    private val nonBlocking: Boolean,
 ) : ServerSocket {
+    // A separate constructor, not a default argument, so the signature released callers link against stays.
+    constructor(config: TransportConfig = TransportConfig()) : this(config, nonBlocking = false)
+
     private sealed interface Listener {
         data object Unbound : Listener
 
@@ -146,9 +149,11 @@ class NioServerSocket(
 /** The server side of a connection [NioServerSocket] accepted: blocking NIO, like [NioClientSocket]'s default. */
 class NioServerToClientSocket(
     channel: SocketChannel,
-    config: TransportConfig = TransportConfig(),
-    blocking: Boolean = true,
+    config: TransportConfig,
+    blocking: Boolean,
 ) : BaseClientSocket(blocking, config) {
+    constructor(channel: SocketChannel, config: TransportConfig = TransportConfig()) : this(channel, config, blocking = true)
+
     init {
         this.socket = channel
     }
