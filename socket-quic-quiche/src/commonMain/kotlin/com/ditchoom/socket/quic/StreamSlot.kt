@@ -14,9 +14,30 @@ import kotlin.concurrent.atomics.AtomicReference
  * The [dataSignal] channel wakes pending reads when quiche reports data available.
  * CONFLATED: multiple signals before a receive coalesce into one wakeup.
  */
-class StreamSlot(
+class StreamSlot internal constructor(
     val id: QuicStreamId,
+    initial: StreamLifecycle,
 ) {
+    constructor(id: QuicStreamId) : this(id, StreamLifecycle.Open)
+
+    private val lifecycleState = AtomicReference(initial)
+
+    /** What of this stream is still to happen. See [StreamLifecycle]. */
+    internal val lifecycle: StreamLifecycle get() = lifecycleState.load()
+
+    /**
+     * [direction] is over for good. Returns true for the one call that made the stream [StreamLifecycle.Finished]:
+     * from then on nothing the driver could do for this stream is left, and it releases the slot.
+     */
+    internal fun finish(direction: StreamDirection): Boolean {
+        while (true) {
+            val current = lifecycleState.load()
+            val next = current.after(direction)
+            if (next === current) return false
+            if (lifecycleState.compareAndSet(current, next)) return next === StreamLifecycle.Finished
+        }
+    }
+
     val dataSignal = Channel<Unit>(Channel.CONFLATED)
 
     /**
@@ -231,4 +252,64 @@ sealed interface StreamEnd {
     data class Reset(
         val applicationErrorCode: QuicAppErrorCode,
     ) : StreamEnd
+}
+
+/** The two directions of a stream. */
+internal enum class StreamDirection { Send, Receive }
+
+/**
+ * What of a stream is still to happen, from the driver's side. A direction is over when this endpoint can
+ * neither do nor be told anything more in it: the send side once the FIN is accepted by quiche, a
+ * RESET_STREAM is sent, or the peer's STOP_SENDING arrives; the receive side once the application has
+ * been given the peer's FIN or RESET_STREAM, or has sent STOP_SENDING. A direction the stream does not
+ * have (the receive side of a unidirectional stream this endpoint opened, the send side of one the peer
+ * opened) is over from the start.
+ *
+ * [Finished] is absorbing, and is the only state in which the driver drops its slot: quiche collects a
+ * stream in the same condition, and its identifier is never again a stream to announce (see
+ * [ReleasedPeerStreams]).
+ */
+internal sealed interface StreamLifecycle {
+    /** Both directions are live. */
+    data object Open : StreamLifecycle
+
+    /** The send side is over; the receive side is live. */
+    data object SendOver : StreamLifecycle
+
+    /** The receive side is over; the send side is live. */
+    data object ReceiveOver : StreamLifecycle
+
+    /** Both directions are over. */
+    data object Finished : StreamLifecycle
+
+    /** This lifecycle once [direction] is over. */
+    fun after(direction: StreamDirection): StreamLifecycle =
+        when (direction) {
+            StreamDirection.Send ->
+                when (this) {
+                    Open, SendOver -> SendOver
+                    ReceiveOver, Finished -> Finished
+                }
+            StreamDirection.Receive ->
+                when (this) {
+                    Open, ReceiveOver -> ReceiveOver
+                    SendOver, Finished -> Finished
+                }
+        }
+
+    companion object {
+        /** The lifecycle of stream [id] when an endpoint of [role] first has it. */
+        fun of(
+            id: QuicStreamId,
+            role: QuicRole,
+        ): StreamLifecycle {
+            if (id.isBidirectional) return Open
+            val openedHere =
+                when (role) {
+                    QuicRole.Client -> id.isClientInitiated
+                    QuicRole.Server -> id.isServerInitiated
+                }
+            return if (openedHere) ReceiveOver else SendOver
+        }
+    }
 }
