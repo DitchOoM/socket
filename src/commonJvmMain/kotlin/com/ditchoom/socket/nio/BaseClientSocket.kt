@@ -72,6 +72,13 @@ abstract class BaseClientSocket(
 
     private val readMutex = Mutex()
 
+    /** Waiters parked on this socket's channel right now, for a test that must know a read and a write are really waiting. */
+    internal fun parkedWaiters(): Int =
+        when (val r = readiness) {
+            Readiness.Blocking -> 0
+            is Readiness.OnLoop -> r.loop.parkedWaiters(socket)
+        }
+
     override fun toString() =
         "${super.toString()} readiness=${readiness::class.simpleName} blockingReadPending=${inFlightBlockingRead != null}"
 

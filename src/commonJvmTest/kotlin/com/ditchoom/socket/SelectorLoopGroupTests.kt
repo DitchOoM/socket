@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import com.ditchoom.socket.nio.BaseClientSocket
 import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
@@ -68,6 +69,8 @@ class SelectorLoopGroupTests {
     private fun loopThreads() = Thread.getAllStackTraces().keys.count { it.name.startsWith("socket-nio") }
 
     private fun listener() = SelectorServerSocket()
+
+    private fun parkedOn(socket: ClientSocket) = (socket as BaseClientSocket).parkedWaiters()
 
     private fun parkedChannels() = SelectorLoopGroup.shared.running().sumOf { it.parkedChannelCount }
 
@@ -269,7 +272,6 @@ class SelectorLoopGroupTests {
     @Test
     fun cancellingAReadAndAWriteIndependentlyLeavesNoWaiterBehind() =
         withPair { server, client ->
-            val base = parkedChannels()
             val reader = launch(Dispatchers.IO) { runCatching { client.read(Duration.INFINITE) } }
             val chunk = BufferFactory.Default.allocate(1 shl 20)
             val writer =
@@ -285,18 +287,23 @@ class SelectorLoopGroupTests {
                     }
                 }
             // The peer reads nothing, so the send buffer fills and the writer waits for OP_WRITE.
-            awaitUntil { parkedChannels() - base == 1 && writer.isActive && reader.isActive }
+            awaitUntil(
+                state = { "parked=${parkedOn(client)} writerActive=${writer.isActive} readerActive=${reader.isActive} client=$client" },
+            ) {
+                parkedOn(client) == 2 && writer.isActive && reader.isActive
+            }
             writer.cancelAndJoin()
+            awaitUntil { parkedOn(client) == 1 }
             assertTrue(reader.isActive, "cancelling the writer must not end the reader")
             // The reader still waits and is still woken by the peer.
             server.writeString("x")
             withTimeout(5.seconds) { reader.join() }
-            awaitUntil { parkedChannels() - base == 0 }
+            awaitUntil { parkedOn(client) == 0 }
             // Cancel the other way round: a reader cancelled while a later write completes does not hit a dead continuation.
             val second = launch(Dispatchers.IO) { runCatching { client.read(Duration.INFINITE) } }
-            awaitUntil { parkedChannels() - base == 1 }
+            awaitUntil { parkedOn(client) == 1 }
             second.cancelAndJoin()
-            awaitUntil { parkedChannels() - base == 0 }
+            awaitUntil { parkedOn(client) == 0 }
             server.writeString("y")
             assertEquals("y", client.readString())
         }
@@ -305,7 +312,6 @@ class SelectorLoopGroupTests {
     @Test
     fun closingUnderAReaderAndAWriterFailsEachOnce() =
         withPair { _, client ->
-            val base = parkedChannels()
             val readerOutcomes =
                 java.util.concurrent.atomic
                     .AtomicInteger()
@@ -327,7 +333,11 @@ class SelectorLoopGroupTests {
                         }
                     }.also { writerOutcomes.incrementAndGet() }
                 }
-            awaitUntil { parkedChannels() - base == 1 && reader.isActive && writer.isActive }
+            awaitUntil(
+                state = { "parked=${parkedOn(client)} writerActive=${writer.isActive} readerActive=${reader.isActive} client=$client" },
+            ) {
+                parkedOn(client) == 2 && reader.isActive && writer.isActive
+            }
             delay(300)
             client.close()
             val read = withTimeout(5.seconds) { reader.await() }.exceptionOrNull()
@@ -489,11 +499,17 @@ class SelectorLoopGroupTests {
         }
     }
 
+    /** Waits for [condition]; if it never holds, fails with [state] (what the test saw) instead of a bare timeout. */
     private suspend fun awaitUntil(
         bound: Duration = 5.seconds,
+        state: () -> String = { "" },
         condition: () -> Boolean,
     ) {
-        withTimeout(bound) { while (!condition()) delay(10) }
+        try {
+            withTimeout(bound) { while (!condition()) delay(10) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError("the condition did not hold within $bound: ${state()}", e)
+        }
     }
 
     private suspend fun Job.cancelAndJoin() {
