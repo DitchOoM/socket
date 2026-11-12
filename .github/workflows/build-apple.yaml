@@ -3,7 +3,7 @@ name: "Build & Test (Apple)"
 # FAN-OUT SHAPE (was one ~32-43 minute serial job):
 #
 #   natives ──┬── kn-tests (matrix: macos-x64 | ios-sim | other-sims | device-compile)
-#             ├── jvm-tests (matrix: jni | ffm)
+#             ├── jvm-tests (matrix: JNI | FFM | JDK 25 / FFM)
 #             ├── link ── integration-macos-arm64
 #             └── publish
 #
@@ -543,13 +543,19 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # ── Stage 2b: JVM quiche suites (JNI and FFM backends) ───────────────────────────────────────
+  # ── Stage 2b: JVM quiche suites (JNI and FFM backends, plus FFM on a JDK 25 launcher) ───────
   # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
   # The two backends were sequential steps in one job purely because they shared it; they are
   # independent (the old `if: !cancelled()` on the FFM step existed to express exactly that), so
   # they are now two parallel jobs. -PquicheJvmBackend=ffm prepends the java21/Panama loader.
   # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure
   # so a broken native can't pass as green.
+  #
+  # The `JDK 25 / FFM` leg keeps Gradle and the toolchain on 21 and moves only the Test task to a 25
+  # launcher (`-PjvmTestLauncher=25`, found through TEST_LAUNCHER_JDK_HOME, which apple-quiche-env
+  # exports from the setup-java step's output rather than from the arch-coupled JAVA_HOME_25_ARM64).
+  # The multi-release jar's FFM tier is selected at runtime by every JDK >= 21, so a macOS consumer on
+  # 25 runs code the JDK 21 legs never executed there. It carries no recorder, as on Linux.
   jvm-tests:
     name: "JVM quiche (${{ matrix.backend.name }})"
     needs: natives
@@ -559,12 +565,23 @@ jobs:
       fail-fast: false
       matrix:
         backend:
+          # `slug` names this leg's artifacts: `name` is a check name and may hold characters an
+          # artifact name cannot (the `/` of `JDK 25 / FFM`).
           - name: "JNI"
+            slug: "JNI"
             args: ""
             jfr: "false"
+            test-launcher-jdk: ""
           - name: "FFM"
+            slug: "FFM"
             args: "-PquicheJvmBackend=ffm"
             jfr: "true"
+            test-launcher-jdk: ""
+          - name: "JDK 25 / FFM"
+            slug: "JDK25-FFM"
+            args: "-PquicheJvmBackend=ffm -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME"
+            jfr: "false"
+            test-launcher-jdk: "25"
     env:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
       # See the provisioning step below: this asserts the alias exists, so a skip for want of it
@@ -577,6 +594,7 @@ jobs:
       - uses: ./.github/actions/apple-quiche-env
         with:
           konan: "false"
+          test-launcher-jdk: ${{ matrix.backend.test-launcher-jdk }}
 
       # `streamSurvivesActiveMigrationToLoopbackAlias` migrates to a different local **address**
       # rather than a different port — the case closest to a real Wi-Fi↔cellular handoff, and the
@@ -664,7 +682,7 @@ jobs:
         uses: ./.github/actions/apple-failure-capture
         with:
           mode: collect
-          artifact-name: apple-capture-jvm-${{ matrix.backend.name }}
+          artifact-name: apple-capture-jvm-${{ matrix.backend.slug }}
 
       - name: Flight recorder ring (on failure)
         if: ${{ (failure() || cancelled()) && matrix.backend.jfr == 'true' }}
@@ -672,14 +690,14 @@ jobs:
         uses: ./.github/actions/jvm-flight-recorder
         with:
           mode: collect
-          artifact-name: jfr-ring-macos-jvm-${{ matrix.backend.name }}
+          artifact-name: jfr-ring-macos-jvm-${{ matrix.backend.slug }}
 
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: test-reports-apple-jvm-${{ matrix.backend.name }}
+          name: test-reports-apple-jvm-${{ matrix.backend.slug }}
           path: |
             **/build/reports/tests/
             **/build/test-results/

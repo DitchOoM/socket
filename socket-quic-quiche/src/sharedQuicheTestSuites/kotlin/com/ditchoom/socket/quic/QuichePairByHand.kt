@@ -196,6 +196,9 @@ internal class QuichePairByHand private constructor(
     /** How long until [conn]'s next timer falls due, or null when none is armed. */
     fun nextTimer(conn: QuicheConn): Duration? = at { api.connTimeout(conn) }
 
+    /** Packets [conn] received after a gap in the packet numbers, as `quiche_conn_recv_gaps` counts them. */
+    fun recvGaps(conn: QuicheConn): Long = at { api.connRecvGaps(conn) }
+
     /** Whether [conn]'s handshake has completed. */
     fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
 

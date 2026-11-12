@@ -48,6 +48,11 @@ check(quicheBackend == "ffm" || quicheBackend == "jni") {
 }
 val multiRelease = providers.gradleProperty("benchMultiRelease").map(String::toBooleanStrict).getOrElse(true)
 // With multi-release off nothing can load the FFM loader, whatever the jar holds.
+
+// The JVM the benchmark run tasks launch on, `-PbenchLauncher=25` for JDK 25 (default 21). The build and its
+// toolchain stay on 21; only the JVM that runs the benchmarks (and so its forks) changes. Gradle's toolchain
+// discovery finds the JDK and fails the task when none matches, so a missing JDK cannot fall back to 21.
+val benchLauncherVersion = providers.gradleProperty("benchLauncher").map(String::toInt).getOrElse(21)
 val expectedBackend = if (multiRelease) quicheBackend else "jni"
 
 // The host's quiche natives (libquiche + the JNI shim), staged by :socket-quic-quiche under
@@ -71,7 +76,26 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation("org.jetbrains.kotlinx:kotlinx-benchmark-runtime:${providers.gradleProperty("kotlinxBenchmarkVersion").get()}")
     runtimeOnly(stagedQuicheNatives)
+
+    // The other stacks of the comparison benchmarks (NettyQuic*, NettyTcp*, Kwik*, KtorTcp*). This module is
+    // never published and nothing depends on it, so these reach no consumer.
+    val nettyVersion = providers.gradleProperty("nettyVersion").get()
+    implementation("io.netty:netty-codec-classes-quic:$nettyVersion")
+    implementation("io.netty:netty-handler:$nettyVersion")
+    implementation("io.netty:netty-transport:$nettyVersion")
+    for (classifier in listOf("osx-aarch_64", "osx-x86_64", "linux-x86_64", "linux-aarch_64")) {
+        runtimeOnly("io.netty:netty-codec-native-quic:$nettyVersion:$classifier")
+    }
+    implementation("tech.kwik:kwik:${providers.gradleProperty("kwikVersion").get()}")
+    implementation("io.ktor:ktor-network:${providers.gradleProperty("ktorVersion").get()}")
 }
+
+// The comparison benchmarks (other stacks, plus this library's own matching shapes as the reference) run in
+// their own configuration: the PR A/B lane and the nightly compare this library against itself and must not
+// pay for, or be moved by, a third-party stack.
+val comparisonOnly = ".*\\.(Netty|Kwik|Ktor).*"
+val comparisonSet =
+    ".*\\.(Netty|Kwik|Ktor).*|.*\\.(QuicLongLivedStreamRoundTrip|QuicStreamPerRequest|QuicBulkThroughput|TcpRoundTrip)\\..*"
 
 benchmark {
     targets {
@@ -82,6 +106,7 @@ benchmark {
     }
     configurations {
         named("main") {
+            exclude(comparisonOnly)
             warmups = 5
             iterations = 10
             iterationTime = 1
@@ -92,6 +117,7 @@ benchmark {
         // The PR A/B lane (quic-bench.yaml `ab`): base and head each run this once per backend in one job,
         // so it trades the main config's second fork for wall-clock.
         register("ci") {
+            exclude(comparisonOnly)
             warmups = 3
             iterations = 5
             iterationTime = 1
@@ -102,6 +128,28 @@ benchmark {
         // A short run that proves every benchmark still executes ("did I break a benchmark"). Its
         // numbers are not for comparison.
         register("smoke") {
+            exclude(comparisonOnly)
+            warmups = 1
+            iterations = 1
+            iterationTime = 1
+            iterationTimeUnit = "s"
+            reportFormat = "json"
+            advanced("jvmForks", 1)
+        }
+        // `compareBenchmark`: this library against Netty QUIC/TCP, Kwik and Ktor on the same loopback shapes.
+        // One fork per run: repeat the task (A, B, C, D, A, B, C, D, ...) rather than fork each benchmark twice
+        // back to back, so a noisy minute on a shared machine lands on every library, not on one.
+        register("compare") {
+            include(comparisonSet)
+            warmups = 5
+            iterations = 10
+            iterationTime = 1
+            iterationTimeUnit = "s"
+            reportFormat = "json"
+            advanced("jvmForks", 1)
+        }
+        register("compareSmoke") {
+            include(comparisonSet)
             warmups = 1
             iterations = 1
             iterationTime = 1
@@ -122,6 +170,9 @@ benchmark {
 afterEvaluate {
     tasks.named<org.gradle.jvm.tasks.Jar>("mainBenchmarkJar") {
         manifest { attributes("Multi-Release" to "true") }
+        // One of the comparison libraries' jars is signed (META-INF/PFOPENSO.*); copied into this fat jar its
+        // signature no longer matches the merged manifest, and the JVM refuses the jar (SecurityException).
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/*.EC")
     }
 }
 
@@ -170,7 +221,7 @@ tasks.register<JavaExec>("multiConnectionLoad") {
         val replacement = quicheJniOnlyJar.flatMap { it.archiveFile }
         classpath = files(replacement) + classpath.filter { !it.isQuicheJvmJar() }
     }
-    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
     outputs.upToDateWhen { false }
 }
 
@@ -194,6 +245,14 @@ tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureE
     outputs.upToDateWhen { false }
 }
 
+// Set after evaluation: kotlinx-benchmark configures the run task's JVM itself, and a launcher set earlier
+// than that is replaced (a first attempt ran the forks on the build's own JDK whatever -PbenchLauncher said).
+afterEvaluate {
+    tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureEach {
+        javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
+    }
+}
+
 ktlint {
     filter {
         exclude { it.file.path.contains("/build/") }
@@ -214,6 +273,8 @@ dependencies {
     proguardTool("com.guardsquare:proguard-base:${providers.gradleProperty("proguardVersion").get()}")
 }
 
+fun File.isComparisonJar() = listOf("netty-", "kwik-", "agent15-", "hkdf-", "ktor-").any { name.startsWith(it) } || "siphash" in name
+
 val consumerDir = layout.buildDirectory.dir("shrunk-consumer")
 val consumerFatJar =
     tasks.register<Jar>("consumerFatJar") {
@@ -221,7 +282,12 @@ val consumerFatJar =
         archiveFileName.set("consumer-fat.jar")
         destinationDirectory.set(consumerDir)
         from(sourceSets.main.map { it.output })
-        from(configurations.runtimeClasspath.map { cp -> cp.filter { it.name.endsWith(".jar") }.map { zipTree(it) } })
+        from(
+            configurations.runtimeClasspath.map { cp ->
+                // The comparison libraries are not part of what a consumer ships.
+                cp.filter { it.name.endsWith(".jar") && !it.isComparisonJar() }.map { zipTree(it) }
+            },
+        )
         from(stagedQuicheNatives)
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         exclude(

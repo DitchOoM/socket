@@ -268,6 +268,10 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
+    // Count the ack-eliciting packets that arrive after a gap of at least two packet numbers (a loss or a
+    // reorder: RFC 9000 §13.2.1's immediate-ACK trigger) and export the count, so a receiver that never has packets of
+    // its own lost can still see loss. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
+    patchQuicheRecvGapCounter(sourceDir)
     // Export the peer's certificate chain (quiche's C API has only the leaf), for SecTrust on iOS and
     // ServerCertVerifier. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuichePeerCertChainFfi(sourceDir)
@@ -723,6 +727,101 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_stream_data_unacknowledged FFI export")
+}
+
+/**
+ * Count, and export as `quiche_conn_recv_gaps`, the ack-eliciting packets that arrived with at least two
+ * packet numbers missing before them in their space: a packet after a gap, which is a loss or a reorder. The
+ * first packet of a space has nothing before it to be missing from, so it never counts.
+ *
+ * RFC 9000 §13.2.1 makes exactly this the moment to ACK at once ("an endpoint SHOULD send an ACK frame
+ * immediately ... when the packet is out of order"). quiche knows it (`recv_pkt_need_ack` is a range set
+ * and a gap is a second range) but exposes nothing, and has no ACK timer, so the embedding's flush cadence
+ * is the whole ACK policy and cannot tell a receiver that is losing packets from one that is not. The
+ * only loss evidence the C API gives is about packets this endpoint sent (`lost`, `retrans`), which a pure
+ * receiver has none of after its handshake.
+ *
+ * One field (`Connection::socket_recv_gaps`, a monotonic `u64` over all packet-number spaces), one
+ * increment at the point where a received packet number is recorded, and the export. A late packet that
+ * fills a hole is not counted again: only the packet that jumped ahead is. A gap of one missing number is
+ * deliberately not counted: quiche's own optimistic-ACK defence skips one packet number every few tens of
+ * packets (`PktNumManager`, 2 x the initial window plus a random part of the congestion window), so every
+ * quiche peer produces gaps of exactly one on a clean path, and counting them held the cadence in its
+ * careful mode on 64 % of turns with no loss at all (measured in the sim). A swap of two neighbouring
+ * packets is a gap of one too, so mild reordering does not count either: the same threshold the ACK
+ * frequency extension defaults to for its Reordering Threshold. Marker-guarded and loud in both directions: a re-run returns, a moved
+ * anchor throws, and an upstream that exports an equivalent throws, telling you to delete this patch.
+ *
+ * Mutation-testing it: delete the `socket_recv_gaps += 1` line (the export stays, so the natives still link)
+ * and `QuicheRecvGapCounterTest` goes red; see the quiche-patch mutation recipe (rebuild with the marker
+ * for the digest deleted).
+ */
+fun patchQuicheRecvGapCounter(sourceDir: File) {
+    val marker = "socket-recv-gaps"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!libRs.exists() || !ffiRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_recv_gaps")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_recv_gaps — DELETE patchQuicheRecvGapCounter " +
+                "and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump moved it. Re-fit patchQuicheRecvGapCounter, or delete it if quiche now exposes a " +
+                    "receive-side gap count.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        libRs,
+        "    handshake_confirmed: bool,\n",
+        "    handshake_confirmed: bool,\n\n" +
+            "    // $marker: ack-eliciting packets received after a gap of two or more packet numbers.\n" +
+            "    socket_recv_gaps: u64,\n",
+    )
+    replaceOnce(
+        libRs,
+        "            handshake_confirmed: false,\n",
+        "            handshake_confirmed: false,\n\n            socket_recv_gaps: 0,\n",
+    )
+    replaceOnce(
+        libRs,
+        "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
+        "        // $marker: at least two packet numbers missing before this packet: a loss or a reorder, and\n" +
+            "        // never quiche's own single skipped number, and never the first packet of a space.\n" +
+            "        if ack_elicited &&\n" +
+            "            self.pkt_num_spaces[epoch].largest_rx_pkt_num > 0 &&\n" +
+            "            pn > self.pkt_num_spaces[epoch].largest_rx_pkt_num.saturating_add(2)\n" +
+            "        {\n" +
+            "            self.socket_recv_gaps += 1;\n" +
+            "        }\n\n" +
+            "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: ack-eliciting packets received after a gap of two or more packet numbers (a loss or a
+            |// reorder) — RFC 9000 §13.2.1's immediate-ACK trigger, as a monotonic count.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_recv_gaps(conn: &Connection) -> u64 {
+            |    conn.socket_recv_gaps
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_recv_gaps counter and FFI export")
 }
 
 /**
@@ -4106,9 +4205,15 @@ afterEvaluate {
         // JDK 17 launcher so CI can exercise JNI on the runtime that Android /
         // legacy-JVM consumers actually use, while the rest of the build stays on
         // 21. The java21/FFM classes aren't on the JNI classpath, so there is no
-        // UnsupportedClassVersionError. Do not combine with `quicheJvmBackend=ffm`.
+        // UnsupportedClassVersionError. A launcher newer than 21 (`-PjvmTestLauncher=25`)
+        // runs either backend, and with `quicheJvmBackend=ffm` it is how CI runs the
+        // FFM tier on the JDK a consumer of the multi-release jar may be on. A launcher
+        // older than 21 cannot load the FFM classes, so that pair is refused below.
         providers.gradleProperty("jvmTestLauncher").orNull?.let { version ->
             val launcherVersion = version.toInt()
+            require(launcherVersion >= 21 || providers.gradleProperty("quicheJvmBackend").orNull != "ffm") {
+                "-PjvmTestLauncher=$launcherVersion cannot run -PquicheJvmBackend=ffm: the FFM bindings need JDK 21 or newer"
+            }
             val toolchains = project.extensions.getByType<JavaToolchainService>()
             javaLauncher.set(
                 toolchains.launcherFor {

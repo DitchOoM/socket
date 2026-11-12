@@ -2322,17 +2322,18 @@ class QuicheDriver(
      *   burst once (the same section's MAY), and that one ACK is then the burst's only acknowledgement:
      *   lose it and the sender waits out a PTO. Two halves the ACK datagrams of a bulk receive: loopback
      *   bulk throughput rose about 2.5x.
-     * - one after the connection has recorded loss (lost packets or probe retransmissions) in the last
-     *   [AckCadenceMemory.LOSS_MEMORY_RTTS] round trips. Fewer ACKs cost something on a lossy link: the
-     *   deterministic sim (a 34 KB reply over an 800 ms, 30 %-loss path, seeds 0..1999) missed the
-     *   handler's 30 s write bound or the 120 s close linger in 34 seeds with a flush every second
-     *   datagram and 9 with a flush every datagram.
+     * - one after the connection has recorded loss in the last [AckCadenceMemory.LOSS_MEMORY_RTTS] round
+     *   trips, on either of two counters ([EvidenceSource]): packets it sent that were lost or probed
+     *   (`lost + retrans`), and packets it received after a gap of at least two packet numbers
+     *   (`quiche_conn_recv_gaps`). Fewer ACKs cost something on a lossy link: the deterministic sim (a 34 KB
+     *   reply over an 800 ms, 30 %-loss path, seeds 0..1999) missed the handler's 30 s write bound or the
+     *   120 s close linger in 34 seeds with a flush every second datagram and 9 with a flush every datagram.
      *
-     * Known limit: the evidence is the connection's own sender-side loss counters, because quiche
-     * exposes nothing about what it received (no gap in the received packet numbers, which RFC 9000
-     * §13.2.1 makes an immediate-ACK trigger). An endpoint that only receives sees loss only through
-     * what it sent earlier (handshake, request, FIN); one whose own packets are never lost stays on two
-     * however much it is sent loses.
+     * The gap counter exists because the sent-packet counters alone are blind to a pure receiver: its own
+     * packets in flight are over once its request is acknowledged, so loss that starts after that never
+     * moves them. It counts gaps of two or more, not one, because quiche itself skips a single packet
+     * number every few tens of packets and every quiche peer therefore produces gaps of one on a clean
+     * path; a swap of two neighbouring packets is a gap of one too, so mild reordering does not count.
      *
      * Two ways a shared flush went wrong before that rule, both caught by tests. quiche sends nothing
      * but CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close
@@ -2387,11 +2388,22 @@ class QuicheDriver(
      * and keeps [AckCadence.Relaxed].
      */
     private fun ackCadenceForTurn(): AckCadence {
-        when (ackMemory.observe(api.connLossEvidence(conn))) {
+        noteLossEvidence(EvidenceSource.PacketsLost, api.connLossEvidence(conn))
+        noteLossEvidence(EvidenceSource.ReceiveGap, api.connRecvGaps(conn))
+        return ackMemory.cadence()
+    }
+
+    private fun noteLossEvidence(
+        source: EvidenceSource,
+        counter: Long,
+    ) {
+        when (val evidence = ackMemory.observe(source, counter)) {
             LossEvidence.Unchanged -> Unit
             // Rare, so the allocating read of the path's RTT is fine here.
-            LossEvidence.Grew ->
+            is LossEvidence.Grew ->
                 ackMemory.remember(
+                    source,
+                    evidence,
                     clock.markNow(),
                     when (val active = api.readActivePath(conn)) {
                         is ActivePath.Read -> active.stats.rtt
@@ -2399,7 +2411,6 @@ class QuicheDriver(
                     },
                 )
         }
-        return ackMemory.cadence()
     }
 
     /**
@@ -2656,11 +2667,17 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
-        // Before the flush, not after it: handing a parked read its bytes is what makes quiche owe the
-        // peer flow-control credit, and the flush below then carries that credit with the ACK in one
-        // pass. After the flush it needed a second one. What quiche reports readable depends on what it
-        // received, not on what it sent, so the sweep sees the same streams on either side of the flush.
-        discoverNewStreams()
+        // Once established, the sweep comes before the flush, not after it: handing a parked read its
+        // bytes is what makes quiche owe the peer flow-control credit, and the flush then carries that
+        // credit with the ACK in one pass; after it, the credit needed a second flush. quiche's readable
+        // set grows only inside `quiche_conn_recv` (a received STREAM frame), never in `quiche_conn_send`
+        // (checked in the vendored 0.30.0 source: `insert_readable` is reached from frame processing and
+        // from `stream_recv`), so the sweep sees the same streams on either side of the flush. Before the
+        // handshake is established the old order stays: `quiche_conn_send` runs `do_handshake`, so it can
+        // complete the handshake, and [discoverNewStreams] classifies a stream as early data by whether
+        // the handshake is complete.
+        val swept = _state.value is QuicConnectionState.Established
+        if (swept) discoverNewStreams()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -2668,6 +2685,7 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
+        if (!swept) discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
@@ -2772,7 +2790,7 @@ class QuicheDriver(
             } else {
                 QuicStreamId(nextStreamId).also { nextStreamId += 4 }
             }
-        val slot = StreamSlot(id)
+        val slot = StreamSlot(id, if (unidirectional) StreamReceiveSide.Never else StreamReceiveSide.FromPeer)
         streams[id.id] = slot
         // Make the stream real to quiche now, so that openStream() means what its name says.
         // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
@@ -2907,12 +2925,11 @@ class QuicheDriver(
                 if (result.bytesRead > 0) {
                     // Consuming stream bytes is what makes quiche owe the peer flow-control credit.
                     quicheOwesAFlush = true
-                    // A chunk that filled the request may be followed by more in quiche; the signal that
-                    // wakes this read is consumed by the wake, so say so where the next read will look.
-                    if (result.bytesRead >= size) slot.noteChunkFilledRequest()
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
-                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                    // A chunk that filled the request may be followed by more in quiche: deliverHandedOff
+                    // marks the stream for the next read, because the signal that wakes this one is consumed.
+                    if (!slot.deliverHandedOff(buffer, result.fin, size, result.bytesRead)) buffer.freeNativeMemory()
                 } else {
                     buffer.freeNativeMemory()
                     if (result.fin) slot.latchFin()
@@ -3075,9 +3092,11 @@ class QuicheDriver(
         // conn that cleanup() is about to free.
         latchForClose()
         refreshSessionTicket()
-        // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
-        // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
-        // would skip it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
+        // A close that does not come out of [afterCommand]'s own sequence (a Close command's updateState,
+        // which runs inside execute before the turn's sweep; a cancelled loop; a rejected send during the
+        // handshake, where the sweep still follows the flush) can run before the sweep has looked at the
+        // streams, so a stream that became readable is not in [streams] yet and the drain below would skip
+        // it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
         discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
