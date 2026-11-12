@@ -11,11 +11,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * A wait cancelled with the signal that woke it in flight leaves the stream marked, so the next read asks.
+ * A wait cancelled with the signal that woke it in flight leaves the stream [ReaderMay.Ask], so the next read asks.
  *
  * The loop's signal resumes the parked receiver, but the resumption runs later on the reader's dispatcher;
  * a cancellation landing in between wins, and the channel does not hand the element to anyone else. The
- * bytes the signal announced stay in quiche with no signal left, so only the mark can tell the next read.
+ * bytes it announced stay in quiche with no wake left, so only the stream's state can tell the next read.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class StreamSlotWaitCancelMarkTest {
@@ -29,7 +29,7 @@ class StreamSlotWaitCancelMarkTest {
             reader.cancel()
             runCurrent()
             assertTrue(reader.isCancelled)
-            assertTrue(slot.readNeedsQuicheAnswer(), "the signal died with the cancelled wait and nothing marked the stream")
+            assertTrue(slot.readNeedsQuicheAnswer(), "the signal died with the cancelled wait and the stream was not left asking")
         }
 
     @Test

@@ -183,8 +183,8 @@ class StreamResetReadTests {
                 // The announced read asked, was answered with nothing, and now waits for the next signal:
                 // it must still be waiting, not have reported an end.
                 assertNull(withTimeoutOrNull(300) { read.await() }, "the read returned on an empty, FIN-less answer")
-                // The data the loop's next sweep would announce.
-                slot.dataSignal.trySend(Unit)
+                // The data the loop's next sweep announces.
+                slot.announce()
                 val result = withTimeout(2.seconds) { read.await() }
                 assertIs<ReadResult.Data>(
                     result,
@@ -216,7 +216,7 @@ class StreamResetReadTests {
                 val read = async { adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 5.seconds) }
                 assertNull(withTimeoutOrNull(300) { read.await() }, "the read returned without any announcement")
                 assertEquals(1, api.streamRecvSequence.size, "the read asked the loop for bytes nothing had announced")
-                slot.dataSignal.trySend(Unit)
+                slot.announce()
                 val result = withTimeout(2.seconds) { read.await() }
                 assertIs<ReadResult.Data>(result)
                 result.buffer.freeIfNeeded()
