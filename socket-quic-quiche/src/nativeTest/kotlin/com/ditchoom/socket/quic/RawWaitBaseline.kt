@@ -80,24 +80,35 @@ private fun portableRawWaits(): List<RawWait> {
     )
 }
 
+/** How late one raw wait returned for [delayMicros], over its samples, ascending. */
+internal class RawWaitLateness(
+    val name: String,
+    val delayMicros: Long,
+    val lateMicros: List<Long>,
+) {
+    val median: Long get() = lateMicros[lateMicros.size / 2]
+
+    override fun toString(): String =
+        "RAW-WAIT delay_us=$delayMicros $name p50_us=$median p99_us=${lateMicros[lateMicros.size * 99 / 100]} max_us=${lateMicros.last()}"
+}
+
 /**
  * For each delay, how many microseconds late each raw wait returns, measured on one dedicated thread (`Worker.park`
  * only parks the worker it is called on) in the same run as everything else, so the machine's own scheduling noise
- * is in every row. Returns lines `delay primitive p50 p99 max`.
+ * is in every row.
  */
 internal fun rawWaitLateness(
     delaysMicros: List<Long>,
     samples: (Long) -> Int,
-): List<String> {
+): List<RawWaitLateness> {
     val worker = Worker.start(name = "raw-wait-baseline")
     try {
-        val lines = ArrayList<String>()
+        val rows = ArrayList<RawWaitLateness>()
         for (delay in delaysMicros) {
             val n = samples(delay)
             val future =
                 worker.execute(TransferMode.SAFE, { Triple(delay, n, Unit) }) { (d, count, _) ->
-                    val waits = portableRawWaits() + platformRawWaits()
-                    waits.map { w ->
+                    (portableRawWaits() + platformRawWaits()).map { w ->
                         val late = ArrayList<Long>()
                         repeat(count) {
                             val start = TimeSource.Monotonic.markNow()
@@ -105,12 +116,12 @@ internal fun rawWaitLateness(
                             late.add(maxOf(start.elapsedNow().inWholeMicroseconds - d, 0L))
                         }
                         late.sort()
-                        "RAW-WAIT delay_us=$d ${w.name} p50_us=${late[late.size / 2]} p99_us=${late[late.size * 99 / 100]} max_us=${late.last()}"
+                        RawWaitLateness(w.name, d, late)
                     }
                 }
-            lines += future.result
+            rows += future.result
         }
-        return lines
+        return rows
     } finally {
         worker.requestTermination().result
     }
