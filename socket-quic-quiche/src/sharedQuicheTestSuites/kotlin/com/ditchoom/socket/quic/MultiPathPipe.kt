@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Per-**path** impairment — the piece [ImpairmentConfig] structurally cannot express.
@@ -71,7 +72,12 @@ internal data class PathImpairment(
  * bursts of [meanBurst] datagrams on average and [overall] of all datagrams are lost in the long run.
  * Its state changes are drawn from a second seeded stream, so a scenario that never uses it draws what it
  * always drew. The state belongs to the link and direction, so a burst on the downlink says nothing
- * about the uplink.
+ * about the uplink. A run is a stretch of time as well as of datagrams: a link that has carried nothing for
+ * [BAD_RUN_ENDS_AFTER_QUIET] is good again when it next carries one, because a sender that backs off (a
+ * PTO that has doubled five times) sends one datagram a minute and a fade does not outlast that. Counted
+ * in datagrams alone, the run survived the silence, and a seed could lose the sender's every packet for
+ * longer than the idle timeout (seed 0 of `aBurstyLinkLosesInRunsAtTheRateItWasGiven` on Kotlin/Native
+ * once #883 changed which datagrams the draws landed on).
  */
 internal sealed interface LossModel {
     data object Independent : LossModel
@@ -81,6 +87,9 @@ internal sealed interface LossModel {
         val overall: Double,
     ) : LossModel
 }
+
+/** How long a link carries nothing before a [LossModel.Bursty] bad run on it is over. */
+internal val BAD_RUN_ENDS_AFTER_QUIET: Duration = 1.seconds
 
 /** Which way a datagram crosses a path, from the client's side: [Uplink] is client→server. */
 internal enum class LinkDirection { Uplink, Downlink }
@@ -235,6 +244,9 @@ internal class MultiPathPipe(
 
     /** Whether each (path, direction) link is in a bad run right now. */
     private val inBadRun = HashMap<Pair<PathKey, LinkDirection>, Boolean>()
+
+    /** When each (path, direction) link last carried a datagram under [LossModel.Bursty], for [BAD_RUN_ENDS_AFTER_QUIET]. */
+    private val lastBurstyDatagramAt = HashMap<Pair<PathKey, LinkDirection>, Duration>()
     private val lock = SynchronizedObject()
 
     /**
@@ -474,7 +486,10 @@ internal class MultiPathPipe(
                     LossModel.Independent -> lossRoll < impairment.loss
                     is LossModel.Bursty -> {
                         val link = path.key to direction
-                        val bad = inBadRun[link] ?: false
+                        val at = now()
+                        val quietFor = lastBurstyDatagramAt[link]?.let { at - it } ?: Duration.ZERO
+                        lastBurstyDatagramAt[link] = at
+                        val bad = (inBadRun[link] ?: false) && quietFor <= BAD_RUN_ENDS_AFTER_QUIET
                         val leave = 1.0 / model.meanBurst
                         val enter = model.overall * leave / (1.0 - model.overall)
                         val nowBad = if (bad) burstRng.nextDouble() >= leave else burstRng.nextDouble() < enter

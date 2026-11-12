@@ -2322,17 +2322,18 @@ class QuicheDriver(
      *   burst once (the same section's MAY), and that one ACK is then the burst's only acknowledgement:
      *   lose it and the sender waits out a PTO. Two halves the ACK datagrams of a bulk receive: loopback
      *   bulk throughput rose about 2.5x.
-     * - one after the connection has recorded loss (lost packets or probe retransmissions) in the last
-     *   [AckCadenceMemory.LOSS_MEMORY_RTTS] round trips. Fewer ACKs cost something on a lossy link: the
-     *   deterministic sim (a 34 KB reply over an 800 ms, 30 %-loss path, seeds 0..1999) missed the
-     *   handler's 30 s write bound or the 120 s close linger in 34 seeds with a flush every second
-     *   datagram and 9 with a flush every datagram.
+     * - one after the connection has recorded loss in the last [AckCadenceMemory.LOSS_MEMORY_RTTS] round
+     *   trips, on either of two counters ([EvidenceSource]): packets it sent that were lost or probed
+     *   (`lost + retrans`), and packets it received after a gap of at least two packet numbers
+     *   (`quiche_conn_recv_gaps`). Fewer ACKs cost something on a lossy link: the deterministic sim (a 34 KB
+     *   reply over an 800 ms, 30 %-loss path, seeds 0..1999) missed the handler's 30 s write bound or the
+     *   120 s close linger in 34 seeds with a flush every second datagram and 9 with a flush every datagram.
      *
-     * Known limit: the evidence is the connection's own sender-side loss counters, because quiche
-     * exposes nothing about what it received (no gap in the received packet numbers, which RFC 9000
-     * §13.2.1 makes an immediate-ACK trigger). An endpoint that only receives sees loss only through
-     * what it sent earlier (handshake, request, FIN); one whose own packets are never lost stays on two
-     * however much it is sent loses.
+     * The gap counter exists because the sent-packet counters alone are blind to a pure receiver: its own
+     * packets in flight are over once its request is acknowledged, so loss that starts after that never
+     * moves them. It counts gaps of two or more, not one, because quiche itself skips a single packet
+     * number every few tens of packets and every quiche peer therefore produces gaps of one on a clean
+     * path; a swap of two neighbouring packets is a gap of one too, so mild reordering does not count.
      *
      * Two ways a shared flush went wrong before that rule, both caught by tests. quiche sends nothing
      * but CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close
@@ -2387,11 +2388,22 @@ class QuicheDriver(
      * and keeps [AckCadence.Relaxed].
      */
     private fun ackCadenceForTurn(): AckCadence {
-        when (ackMemory.observe(api.connLossEvidence(conn))) {
+        noteLossEvidence(EvidenceSource.PacketsLost, api.connLossEvidence(conn))
+        noteLossEvidence(EvidenceSource.ReceiveGap, api.connRecvGaps(conn))
+        return ackMemory.cadence()
+    }
+
+    private fun noteLossEvidence(
+        source: EvidenceSource,
+        counter: Long,
+    ) {
+        when (val evidence = ackMemory.observe(source, counter)) {
             LossEvidence.Unchanged -> Unit
             // Rare, so the allocating read of the path's RTT is fine here.
-            LossEvidence.Grew ->
+            is LossEvidence.Grew ->
                 ackMemory.remember(
+                    source,
+                    evidence,
                     clock.markNow(),
                     when (val active = api.readActivePath(conn)) {
                         is ActivePath.Read -> active.stats.rtt
@@ -2399,7 +2411,6 @@ class QuicheDriver(
                     },
                 )
         }
-        return ackMemory.cadence()
     }
 
     /**

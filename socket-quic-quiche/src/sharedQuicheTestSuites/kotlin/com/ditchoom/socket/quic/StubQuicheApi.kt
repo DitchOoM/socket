@@ -825,6 +825,11 @@ internal class StubQuicheApi : QuicheApi {
             )
         }
 
+    /** What [connRecvGaps] reports: set by a test that scripts receive-side gaps. */
+    @Volatile var recvGaps = 0L
+
+    override fun connRecvGaps(conn: QuicheConn): Long = recvGaps
+
     /** The scripted path stats' counters, summed (0 when none are scripted, like an unbound stats FFI). */
     override fun connLossEvidence(conn: QuicheConn): Long = pathStats.sumOf { it.lost + it.retrans }
 
