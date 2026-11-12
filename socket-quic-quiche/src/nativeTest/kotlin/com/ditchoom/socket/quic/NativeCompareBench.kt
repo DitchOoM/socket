@@ -13,6 +13,7 @@ import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.allocate
 import com.ditchoom.socket.connect
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
@@ -22,10 +23,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import platform.posix.RUSAGE_SELF
+import platform.posix.CLOCK_PROCESS_CPUTIME_ID
+import platform.posix.clock_gettime
 import platform.posix.getenv
-import platform.posix.getrusage
-import platform.posix.rusage
+import platform.posix.timespec
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -43,6 +44,9 @@ import kotlin.time.TimeSource
  */
 abstract class NativeCompareBench {
     abstract fun testTlsConfig(): QuicTlsConfig
+
+    /** The process's peak resident set as the OS reports it: bytes on macOS (`ru_maxrss`), KiB on Linux (`VmHWM`). */
+    abstract fun maxRssRaw(): Long
 
     private val options =
         QuicOptions(
@@ -265,7 +269,7 @@ abstract class NativeCompareBench {
     }
 
     /** Runs [op] back to back: [warmup] seconds discarded, then [window] seconds timed per op with a monotonic clock. */
-    private class Run(
+    private inner class Run(
         val stack: String,
         val workload: String,
         val op: suspend () -> Unit,
@@ -299,20 +303,15 @@ abstract class NativeCompareBench {
             )
         }
 
+        /** User + system CPU time of the whole process, all threads. */
         private fun cpuMicros(): Long =
             memScoped {
-                val ru = alloc<rusage>()
-                getrusage(RUSAGE_SELF, ru.ptr)
-                (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1_000_000L + ru.ru_utime.tv_usec + ru.ru_stime.tv_usec
+                val ts = alloc<timespec>()
+                clock_gettime(CLOCK_PROCESS_CPUTIME_ID.convert(), ts.ptr)
+                ts.tv_sec * 1_000_000L + ts.tv_nsec / 1000
             }
 
-        /** `ru_maxrss` as the OS reports it: bytes on macOS, KiB on Linux. The runner normalises. */
-        private fun maxRss(): Long =
-            memScoped {
-                val ru = alloc<rusage>()
-                getrusage(RUSAGE_SELF, ru.ptr)
-                ru.ru_maxrss
-            }
+        private fun maxRss(): Long = maxRssRaw()
     }
 
     private companion object {
