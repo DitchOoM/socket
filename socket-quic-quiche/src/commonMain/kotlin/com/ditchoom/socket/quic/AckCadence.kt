@@ -66,8 +66,11 @@ internal sealed interface LossEvidence {
  * first gap held the cadence in its careful mode on a fifth of a bulk receive's turns. The memory is in round trips, not turns,
  * because how many turns a round trip takes depends on how the peer's datagrams arrive. Four was the
  * smallest of 1, 2, 4, 8 and 16 that recovered the sim's misses on the 800 ms, 30 %-loss path (see
- * [QuicheDriver.dispatchQueued]); at 20 and 100 ms and on iid loss 2, 4 and 8 recover alike, and on bursty
- * loss no hold recovers what an ACK per datagram does, because the receiver does not see the loss.
+ * [QuicheDriver.dispatchQueued]); at 20 and 100 ms and on iid loss 2, 4 and 8 recover alike. Bursty loss
+ * does not tell the holds apart: on the sim's bursty paths (mean burst 5, 15 % and 30 %, 100 and 800 ms)
+ * every cadence reads the whole reply in every seed. An earlier reading, that no hold recovered there what
+ * an ACK per datagram did, came from the sim's burst model, which kept a backed-off sender's link dark
+ * for longer than the idle timeout (the test pipe's `LossModel.Bursty` now ends a bad run after a quiet second).
  *
  * Confined to the driver loop, like everything the loop reads: no lock, no atomics.
  */
