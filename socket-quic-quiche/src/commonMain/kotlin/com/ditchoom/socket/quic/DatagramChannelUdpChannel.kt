@@ -97,10 +97,10 @@ internal class DatagramChannelUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         target: SendTarget,
-    ): SendOutcome? {
+    ): ImmediateSend {
         buffer.position(0)
         buffer.setLimit(len)
-        return immediateOutcomeOf { sendImmediately(channel, buffer, to = null, DatagramSendOptions.Default) }
+        return sendImmediately(channel, buffer, DatagramSendOptions.Default)
     }
 
     override fun close() {

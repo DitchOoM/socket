@@ -102,7 +102,7 @@ internal class ServerConnectionUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         target: SendTarget,
-    ): SendOutcome? {
+    ): ImmediateSend {
         val peer: SocketAddress
         val options: DatagramSendOptions
         when (target) {
@@ -112,8 +112,8 @@ internal class ServerConnectionUdpChannel(
             }
 
             is SendTarget.ServerReply -> {
-                // An unknown destination is reported by [send]; leave it to the waiting path.
-                peer = (if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to)) ?: return null
+                // A destination nothing knows any more is reported by [send].
+                peer = if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to) ?: return ImmediateSend.MustWait
                 options =
                     when (pinning) {
                         ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress -> optionsFor(target.from)
@@ -123,7 +123,7 @@ internal class ServerConnectionUdpChannel(
         }
         buffer.position(0)
         buffer.setLimit(len)
-        return immediateOutcomeOf { sendImmediately(channel, buffer, to = peer, options) }
+        return sendImmediately(channel, buffer, peer, options)
     }
 
     private fun optionsFor(source: ReplySource): DatagramSendOptions =

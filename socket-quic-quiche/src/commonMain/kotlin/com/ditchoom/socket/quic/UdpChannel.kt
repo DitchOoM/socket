@@ -69,20 +69,17 @@ class OwnedDatagram(
 )
 
 /**
- * A [UdpChannel] that can try one send without suspending. Kept apart from [UdpChannel] (a published
- * interface) so the driver's fast path is not part of the public ABI; the driver asks a channel for it and
- * takes the bounded [UdpChannel.send] when the channel has none or the answer is `null`.
+ * A [UdpChannel] that can try one send without suspending. Separate from [UdpChannel], a published interface,
+ * so the driver's fast path is not part of the public ABI.
  */
 internal interface ImmediateUdpSend {
     /**
-     * One attempt to send that never suspends: [SendOutcome.Sent] or a [SendOutcome.Failed] when the socket
-     * answers at once, `null` when it would have to wait. A `null` leaves everything untouched, and the caller
-     * sends through [UdpChannel.send], which waits. The driver tries this first because the socket almost
-     * always has room, and a send that returns at once needs no bound.
+     * One attempt to send that never suspends. [ImmediateSend.MustWait] leaves everything untouched, and the
+     * caller sends through [UdpChannel.send], which waits under the driver's stall bound.
      */
     fun sendNow(
         buffer: PlatformBuffer,
         len: Int,
         target: SendTarget = SendTarget.ConnectedPeer,
-    ): SendOutcome?
+    ): ImmediateSend
 }

@@ -89,20 +89,3 @@ internal inline fun sendOutcomeOf(send: () -> Unit): SendOutcome =
     } catch (untyped: Exception) {
         SendOutcome.Failed(DatagramSendError.Transport(untyped))
     }
-
-/**
- * [attempt]'s [ImmediateSend] as a [SendOutcome], or null when the send has to be made the waiting way. A
- * failure is the same typed value [sendOutcomeOf] reports. The attempt never suspends, so there is no
- * cancellation to pass through.
- */
-internal inline fun immediateOutcomeOf(attempt: () -> ImmediateSend): SendOutcome? =
-    try {
-        when (attempt()) {
-            ImmediateSend.Sent -> SendOutcome.Sent
-            ImmediateSend.WouldWait, ImmediateSend.Unsupported -> null
-        }
-    } catch (typed: DatagramSendException) {
-        SendOutcome.Failed(typed.error)
-    } catch (untyped: Exception) {
-        SendOutcome.Failed(DatagramSendError.Transport(untyped))
-    }

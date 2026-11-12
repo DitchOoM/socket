@@ -11,13 +11,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
-/**
- * A send the socket takes at once is made without the bounded wait, and a send that has to wait still takes
- * it: [UdpChannel.sendNow] answers first and only a `null` goes on to [UdpChannel.send] under the stall bound.
- */
+/** A send the socket takes at once skips the bounded wait; a send that must wait still goes through [UdpChannel.send]. */
 class SendNowTests {
     private class CountingChannel(
-        private val now: SendOutcome?,
+        private val now: ImmediateSend,
     ) : UdpChannel,
         ImmediateUdpSend {
         @Volatile
@@ -32,7 +29,7 @@ class SendNowTests {
             buffer: PlatformBuffer,
             len: Int,
             target: SendTarget,
-        ): SendOutcome? {
+        ): ImmediateSend {
             nowCount++
             return now
         }
@@ -80,7 +77,7 @@ class SendNowTests {
     @Test
     fun aSendTheSocketTakesAtOnceNeverReachesTheBoundedSend() =
         runQuicTest(timeout = 20.seconds) {
-            val channel = CountingChannel(now = SendOutcome.Sent)
+            val channel = CountingChannel(now = ImmediateSend.Sent)
             flushOnce(channel)
             assertEquals(1, channel.nowCount)
             assertEquals(0, channel.sendCount, "a send that was taken at once went through the bounded wait as well")
@@ -89,7 +86,7 @@ class SendNowTests {
     @Test
     fun aSendThatWouldWaitIsMadeTheWaitingWay() =
         runQuicTest(timeout = 20.seconds) {
-            val channel = CountingChannel(now = null)
+            val channel = CountingChannel(now = ImmediateSend.MustWait)
             flushOnce(channel)
             assertEquals(1, channel.nowCount)
             assertEquals(1, channel.sendCount, "a send that would wait was dropped instead of made under the bound")
