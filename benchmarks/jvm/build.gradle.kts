@@ -241,9 +241,16 @@ tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureE
         val replacement = quicheJniOnlyJar.flatMap { it.archiveFile }
         classpath = files(replacement) + classpath.filter { !it.isQuicheJvmJar() }
     }
-    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
     // Re-run on every invocation: a benchmark result is a measurement, not a cacheable output.
     outputs.upToDateWhen { false }
+}
+
+// Set after evaluation: kotlinx-benchmark configures the run task's JVM itself, and a launcher set earlier
+// than that is replaced (a first attempt ran the forks on the build's own JDK whatever -PbenchLauncher said).
+afterEvaluate {
+    tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureEach {
+        javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
+    }
 }
 
 ktlint {
