@@ -685,6 +685,7 @@ class FfmQuicheApi private constructor(
         val fin: MemorySegment = arena.allocate(JAVA_BOOLEAN)
         val errorCode: MemorySegment = arena.allocate(JAVA_LONG)
         val pathStats: MemorySegment = arena.allocate(PATH_STATS_SIZE, 8)
+        val connStats: MemorySegment = arena.allocate(CONN_STATS_SIZE, 8)
 
         /** `const uint8_t **out` and `size_t *out_len` of quiche's byte-slice readers. */
         val bytePtr: MemorySegment = arena.allocate(JAVA_LONG)
@@ -827,6 +828,12 @@ class FfmQuicheApi private constructor(
                 pathsCount = out.get(JAVA_LONG, 96),
             )
         }
+
+    override fun connLossEvidence(conn: QuicheConn): Long {
+        val out = outParams.get().connStats
+        hConnStats.invokeExact(conn.handle, out.address())
+        return out.get(JAVA_LONG, 16) + out.get(JAVA_LONG, 32) // lost + retrans, offsets as in connStats
+    }
 
     /**
      * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's

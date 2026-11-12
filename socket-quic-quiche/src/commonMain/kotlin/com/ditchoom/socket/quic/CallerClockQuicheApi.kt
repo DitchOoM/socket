@@ -188,6 +188,8 @@ internal class CallerClockQuicheApi(
 
     override fun connStats(conn: QuicheConn): QuicConnStats? = synced { delegate.connStats(conn) }
 
+    override fun connLossEvidence(conn: QuicheConn): Long = synced { delegate.connLossEvidence(conn) }
+
     override fun connPathStats(
         conn: QuicheConn,
         pathIdx: Long,

@@ -572,6 +572,18 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
 
     // --- Stats (RFC_DETERMINISTIC_SIMULATION.md §5.1 item 5) ---
 
+    /**
+     * [QuicheApi.connLossEvidence] reads two fields of the stats struct and builds no [QuicConnStats]: the
+     * struct is a `memScoped` out-parameter, native memory like the ones of [connStreamRecv] and
+     * [connStreamSend], so a call allocates nothing on the Kotlin heap beyond what those do.
+     */
+    override fun connLossEvidence(conn: QuicheConn): Long =
+        memScoped {
+            val out = alloc<quiche_stats>()
+            quiche_conn_stats(conn.handle.toCPointer()!!, out.ptr)
+            out.lost.toLong() + out.retrans.toLong()
+        }
+
     override fun connStats(conn: QuicheConn): QuicConnStats? =
         memScoped {
             val out = alloc<quiche_stats>()

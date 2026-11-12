@@ -2305,8 +2305,8 @@ class QuicheDriver(
 
     /**
      * Run the commands already queued behind [first], up to [MAX_COMMANDS_PER_TURN] in all, so one
-     * [afterCommand] serves several: a run of writes, opens and reads, and up to [RECEIVES_PER_FLUSH]
-     * received datagrams, then one flush sends what they call for (a window update rides with the data, a
+     * [afterCommand] serves several: a run of writes, opens and reads, and up to the turn's
+     * [AckCadence.receivesPerFlush] received datagrams, then one flush sends what they call for (a window update rides with the data, a
      * stream's writes leave together). Flushing after each command made a burst of N datagrams cost N
      * flushes, each walking every stream and path.
      *
@@ -2316,16 +2316,24 @@ class QuicheDriver(
      * it sent and signalled, and the commands after it see what it did.
      *
      * Received datagrams are the one thing it does not batch freely, because a flush is also where
-     * quiche writes its ACK. RFC 9000 §13.2.2: "A receiver SHOULD send an ACK frame after receiving at
-     * least two ack-eliciting packets." So the loop flushes once it has read [RECEIVES_PER_FLUSH]
-     * datagrams, before running anything else. Reading the whole queue first would ACK a burst once
-     * (the same section's MAY), and that one ACK is then the burst's only acknowledgement: lose it and
-     * the sender waits out a PTO. The deterministic sim measured what that costs: a 34 KB reply over an
-     * 800 ms, 30 %-loss path missed the handler's 30 s write bound or the 120 s close linger in 121 of
-     * 2000 seeds with the whole queue read before one flush, 39 with a flush every two datagrams, 11 with
-     * a flush every datagram, and 10 on the loop that flushed after every command. One flush per datagram
-     * gave up most of the bulk-throughput gain (loopback, median of three: 62 against 155 MiB/s on FFM,
-     * 84 against 128 on JNI), so two it is: the RFC's own number.
+     * quiche writes its ACK. The loop flushes once it has read [AckCadence.receivesPerFlush] datagrams,
+     * before running anything else, and picks that number once per turn ([ackCadenceForTurn]):
+     * - two on a path that has shown no loss. RFC 9000 §13.2.2: "A receiver SHOULD send an ACK frame
+     *   after receiving at least two ack-eliciting packets." Reading the whole queue first would ACK a
+     *   burst once (the same section's MAY), and that one ACK is then the burst's only acknowledgement:
+     *   lose it and the sender waits out a PTO. Two halves the ACK datagrams of a bulk receive: loopback
+     *   bulk throughput rose about 2.5x.
+     * - one after the connection has recorded loss (lost packets or probe retransmissions) in the last
+     *   [AckCadenceMemory.LOSS_MEMORY_RTTS] round trips. Fewer ACKs cost something on a lossy link: the
+     *   deterministic sim (a 34 KB reply over an 800 ms, 30 %-loss path, seeds 0..1999) missed the
+     *   handler's 30 s write bound or the 120 s close linger in 34 seeds with a flush every second
+     *   datagram and 9 with a flush every datagram.
+     *
+     * Known limit: the evidence is the connection's own sender-side loss counters, because quiche
+     * exposes nothing about what it received (no gap in the received packet numbers, which RFC 9000
+     * §13.2.1 makes an immediate-ACK trigger). An endpoint that only receives sees loss only through
+     * what it sent earlier (handshake, request, FIN); one whose own packets are never lost stays on two
+     * however much it is sent loses.
      *
      * Two ways a shared flush went wrong before that rule, both caught by tests. quiche sends nothing
      * but CONNECTION_CLOSE once asked to close (RFC 9000 §10.2), so a write queued just before the close
@@ -2340,13 +2348,14 @@ class QuicheDriver(
      */
     private suspend fun dispatchQueued(first: QuicheCmd): Boolean {
         var previous = first
+        val cadence = ackCadenceForTurn()
         repeat(MAX_COMMANDS_PER_TURN - 1) {
             val next = commands.tryReceive().getOrNull() ?: return true
             if (!currentCoroutineContext().isActive) {
                 failCommand(next)
                 return false
             }
-            if (!previous.sharesAFlush() || !next.sharesAFlush() || receivedSinceFlush >= RECEIVES_PER_FLUSH) {
+            if (!previous.sharesAFlush() || !next.sharesAFlush() || receivedSinceFlush >= cadence.receivesPerFlush) {
                 afterCommand()
             }
             dispatch(next)
@@ -2371,9 +2380,32 @@ class QuicheDriver(
             -> false
         }
 
+    private val ackMemory = AckCadenceMemory()
+
+    /**
+     * This turn's [AckCadence]: one read of the connection's loss counters ([QuicheApi.connLossEvidence],
+     * which JNI and FFM answer without allocating). A backend that has not bound the stats FFI reads 0
+     * and keeps [AckCadence.Relaxed].
+     */
+    private fun ackCadenceForTurn(): AckCadence {
+        when (ackMemory.observe(api.connLossEvidence(conn))) {
+            LossEvidence.Unchanged -> Unit
+            // Rare, so the allocating read of the path's RTT is fine here.
+            LossEvidence.Grew ->
+                ackMemory.remember(
+                    clock.markNow(),
+                    when (val active = api.readActivePath(conn)) {
+                        is ActivePath.Read -> active.stats.rtt
+                        ActivePath.Unreadable -> Duration.ZERO
+                    },
+                )
+        }
+        return ackMemory.cadence()
+    }
+
     /**
      * Datagrams handed to quiche since the last [afterCommand] flushed: what [dispatchQueued] counts
-     * toward [RECEIVES_PER_FLUSH]. Loop-confined, like everything the loop's commands touch.
+     * toward [AckCadence.receivesPerFlush]. Loop-confined, like everything the loop's commands touch.
      */
     private var receivedSinceFlush = 0
 
@@ -4612,12 +4644,6 @@ class QuicheDriver(
          * ~86 KB at [MAX_DATAGRAM_SIZE].
          */
         internal const val MAX_COMMANDS_PER_TURN = 64
-
-        /**
-         * Received datagrams one loop turn reads before it flushes, so that quiche ACKs at least every
-         * second ack-eliciting packet (RFC 9000 §13.2.2). See [dispatchQueued].
-         */
-        internal const val RECEIVES_PER_FLUSH = 2
 
         /**
          * What every driver-backed connection declares to its callers. All three bindings —
