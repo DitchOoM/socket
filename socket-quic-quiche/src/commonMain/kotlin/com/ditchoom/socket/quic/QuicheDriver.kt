@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
@@ -978,8 +979,12 @@ class QuicheDriver(
 
         /**
          * The driver sends nothing more on this socket. Called after the socket is closed (or, for the
-         * primary at [cleanup], handed back to its owner), so a stalled datagram is freed only once no
-         * platform operation can still read it.
+         * primary at [cleanup], handed back to its owner).
+         *
+         * A stalled datagram is freed when its retry has completed, never before: cancelling a send is a
+         * request, and a platform that has handed the buffer to the kernel (an io_uring submission) ends
+         * the operation only when the kernel does, so the retry may still be reading [PathEgress.Stalled.lent]
+         * after the cancel. [Job.invokeOnCompletion] runs at once when the retry has already ended.
          */
         fun shut() {
             val current = egress
@@ -987,7 +992,7 @@ class QuicheDriver(
             when (current) {
                 is PathEgress.Stalled -> {
                     current.retry.cancel()
-                    current.lent.freeNativeMemory()
+                    current.retry.invokeOnCompletion { current.lent.freeNativeMemory() }
                 }
                 PathEgress.Open, PathEgress.Shut -> Unit
             }
@@ -1889,7 +1894,11 @@ class QuicheDriver(
     /** Every coroutine this driver launches is named after the connection it serves. */
     private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
 
+    /** Set by the first [start], which is the only one there may be: a second loop would share this `conn`. */
+    private val started = AtomicBoolean(false)
+
     fun start(scope: CoroutineScope) {
+        check(started.compareAndSet(false, true)) { "QuicheDriver.start() was already called for $coroutineName" }
         driverScope = scope
         val placed = placeDriver(driverContext)
         placement = placed
@@ -1913,10 +1922,7 @@ class QuicheDriver(
                 // run() starts never enters it, and its hold must end all the same.
                 job.invokeOnCompletion { placed.release() }
             }
-
-        if (ingress is DatagramIngress.DriverReaderLoop) {
-            startReaderLoop(primary)
-        }
+        // The primary reader is launched by run() itself, not here: see [run].
     }
 
     private fun startReaderLoop(entry: PathEntry) {
@@ -2084,6 +2090,12 @@ class QuicheDriver(
     private suspend fun run() {
         loopGuard.beginLoop()
         try {
+            // The primary path's reader is launched from inside the loop, as every migration path's is, so
+            // `readerJob` is only ever written by the loop and the `finally` below that joins it cannot run
+            // before it is set. Launched from `start()` it was assigned on the caller's thread after the
+            // loop had been launched: a loop that exited at once found no reader to join, freed the recv
+            // pool, and the reader was launched afterwards into a driver that was already gone.
+            if (ingress is DatagramIngress.DriverReaderLoop) startReaderLoop(primary)
             when (role) {
                 // Before the first send, so every handshake secret is written.
                 QuicRole.Client -> api.nameTrafficSecretsLog(conn, capture, role) { sessionId }
