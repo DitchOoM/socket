@@ -24,17 +24,115 @@ internal sealed interface NextDue {
 }
 
 /**
+ * What a deadline is: [DeadlineNode.Armed] is the node itself (the node being its own armed state is what lets a
+ * bound cost one object and not a node plus a state wrapper), or one of these two. A node leaves armed once.
+ */
+internal sealed interface NodeState {
+    object Fired : NodeState
+
+    object Disarmed : NodeState
+}
+
+/**
+ * The cell a [DeadlineNode] keeps its [NodeState] in, compare-and-set. Platform code, so that the cell is the
+ * node's own field and not a second object per deadline: the JVM extends `AtomicReference`, Kotlin/Native keeps
+ * a volatile field it updates in place. Nothing public; [setInitial] is called once, from the node's
+ * constructor, before the node is published.
+ */
+internal expect abstract class StateCell() {
+    protected fun setInitial(state: NodeState)
+
+    protected fun loadState(): NodeState
+
+    protected fun swapState(
+        expected: NodeState,
+        new: NodeState,
+    ): Boolean
+}
+
+/**
+ * A deadline: one object that is its own queue entry (the inbox's link), its own armed state, its
+ * disarm handle and, in a subclass, its own action. Allocating it is the whole cost of arming a bound.
+ *
+ * [fire] runs on the timer thread, once, if the deadline falls due armed. [release] runs once, on the thread
+ * that disarmed it, so a subclass drops what it holds (a continuation, a scope) at disarm and not when the
+ * deadline would have fallen due; it never runs when the deadline fired. The two are exclusive because each
+ * is behind the compare-and-set that takes the node out of the armed state.
+ */
+internal abstract class DeadlineNode(
+    private val queue: DeadlineQueue,
+    val dueNanos: Long,
+) : StateCell(),
+    DisposableHandle,
+    DeadlineQueue.Inbox,
+    NodeState {
+    /** Order of arming, for deadlines due at the same instant. */
+    internal val seq: Long = queue.nextSeq()
+    internal var next: DeadlineQueue.Inbox = DeadlineQueue.Inbox.End
+
+    init {
+        // The node is its own armed state.
+        setInitial(this)
+    }
+
+    protected abstract fun fire()
+
+    protected open fun release() = Unit
+
+    /** Disarms the deadline; true when this call did, false when it had fired or was already disarmed. */
+    fun disarm(): Boolean {
+        if (loadState() !== this || !swapState(this, NodeState.Disarmed)) return false
+        queue.noteDisarmed()
+        release()
+        return true
+    }
+
+    override fun dispose() {
+        disarm()
+    }
+
+    /** Fires the action if this call is the one that takes the node from armed to fired; false when it was disarmed first. */
+    internal fun fireIfArmed(): Boolean {
+        if (loadState() !== this || !swapState(this, NodeState.Fired)) return false
+        runGuarded(::fire)
+        return true
+    }
+
+    internal fun isDisarmed(): Boolean = loadState() === NodeState.Disarmed
+}
+
+/** A [DeadlineNode] that runs a [Runnable]: what the code that is not on the stream-bound path arms. */
+private class RunnableNode(
+    queue: DeadlineQueue,
+    dueNanos: Long,
+    private var action: Runnable,
+) : DeadlineNode(queue, dueNanos) {
+    override fun fire() {
+        action.run()
+    }
+
+    // The continuation an application's long timeout holds is dropped when the timeout is disarmed, not when it would have fired.
+    override fun release() {
+        action = NoAction
+    }
+}
+
+private object NoAction : Runnable {
+    override fun run() = Unit
+}
+
+/**
  * A heap of deadlines owned by one thread, fed lock-free from any. Never blocks and takes the time as an
  * argument: [fireDue] runs, in order of due time and then of arming, every action due at the time it is
  * given.
  *
  * Shared by the JVM's [DeadlineTimer] and Kotlin/Native's `NativeDeadlineTimer`; the thread, the clock and the
- * waiting are theirs, the queue is the same code. Only `kotlin.concurrent.atomics` and `Int`/`Long` are used, so
- * it compiles for every target of the module (no pointer-width-dependent type, as watchosArm64 needs).
+ * waiting are theirs, the queue is the same code. Only `kotlin.concurrent.atomics`, `Int` and `Long` are used
+ * outside [StateCell], so it compiles for every target of the module (no pointer-width-dependent type, as
+ * watchosArm64 needs).
  *
- * Arming allocates a [Node], its state cell and a [NodeState.Armed] (which carries the action); disarming
- * allocates nothing, and a disarmed node holds no action. The timer thread's own bookkeeping (the heap's
- * growth) is off that path.
+ * Arming allocates the [DeadlineNode] and nothing else; disarming allocates nothing. The timer thread's own
+ * bookkeeping (the heap's growth) is off that path.
  *
  * [compactMin] is the size from which disarmed nodes are swept out of the heap; a model-checking test
  * lowers it so a scenario of a few nodes reaches the sweep.
@@ -42,50 +140,6 @@ internal sealed interface NextDue {
 internal class DeadlineQueue(
     private val compactMin: Int = COMPACT_MIN,
 ) {
-    /** What a node is: armed with its action, fired, or disarmed. A node leaves [Armed] once, never returns. */
-    internal sealed interface NodeState {
-        class Armed(
-            val action: Runnable,
-        ) : NodeState
-
-        object Fired : NodeState
-
-        object Disarmed : NodeState
-    }
-
-    /** A disarmable deadline: what [arm] returns. */
-    class Node internal constructor(
-        val dueNanos: Long,
-        /** Order of arming, for deadlines due at the same instant. */
-        val seq: Long,
-        action: Runnable,
-        private val queue: DeadlineQueue,
-    ) : DisposableHandle,
-        Inbox {
-        internal val state = AtomicReference<NodeState>(NodeState.Armed(action))
-        internal var next: Inbox = Inbox.End
-
-        /** Disarms the deadline; true when this call did, false when it had fired or was already disarmed. */
-        fun disarm(): Boolean {
-            val current = state.load()
-            if (current !is NodeState.Armed || !state.compareAndSet(current, NodeState.Disarmed)) return false
-            queue.disarmed.incrementAndFetch()
-            return true
-        }
-
-        override fun dispose() {
-            disarm()
-        }
-
-        /** The action, if this call is the one that takes the node from armed to fired; null when it was disarmed first. */
-        internal fun claimToFire(): Runnable? {
-            val current = state.load()
-            return if (current is NodeState.Armed && state.compareAndSet(current, NodeState.Fired)) current.action else null
-        }
-
-        internal fun isDisarmed(): Boolean = state.load() === NodeState.Disarmed
-    }
-
     /** The inbox: a Treiber stack of nodes, newest first. */
     sealed interface Inbox {
         object End : Inbox
@@ -96,7 +150,7 @@ internal class DeadlineQueue(
     /** Nodes disarmed and not yet removed from the queue. */
     private val disarmed = AtomicInt(0)
 
-    /** Nodes ever armed; also the next node's [Node.seq]. */
+    /** Nodes made; also the next node's [DeadlineNode.seq]. */
     private val armed = AtomicLong(0L)
 
     /** Nodes taken out of the queue (fired, or dropped disarmed); written by the timer thread only. */
@@ -109,7 +163,7 @@ internal class DeadlineQueue(
     val drainedTotal: Long get() = drained.load()
 
     // Owned by the thread that calls fireDue / nextDue; touched by nothing else.
-    private val heap = ArrayList<Node>(INITIAL_CAPACITY)
+    private val heap = ArrayList<DeadlineNode>(INITIAL_CAPACITY)
 
     /**
      * What a drain has taken off the inbox and not yet put in the heap, oldest first. A drain that fails
@@ -118,18 +172,32 @@ internal class DeadlineQueue(
      */
     private var draining: Inbox = Inbox.End
 
-    /** Schedules [action] for [dueNanos]; callable from any thread. */
-    fun arm(
-        dueNanos: Long,
-        action: Runnable,
-    ): Node {
-        val node = Node(dueNanos, armed.fetchAndIncrement(), action, this)
+    internal fun nextSeq(): Long = armed.fetchAndIncrement()
+
+    internal fun noteDisarmed() {
+        disarmed.incrementAndFetch()
+    }
+
+    /** Publishes [node], made on this queue; callable from any thread. */
+    fun arm(node: DeadlineNode) {
         while (true) {
             val head = inbox.load()
             node.next = head
-            if (inbox.compareAndSet(head, node)) return node
+            if (inbox.compareAndSet(head, node)) return
         }
     }
+
+    /** A deadline for [dueNanos] that runs [action]; not yet armed. */
+    fun node(
+        dueNanos: Long,
+        action: Runnable,
+    ): DeadlineNode = RunnableNode(this, dueNanos, action)
+
+    /** Arms a new deadline for [dueNanos] that runs [action]. */
+    fun arm(
+        dueNanos: Long,
+        action: Runnable,
+    ): DeadlineNode = node(dueNanos, action).also(::arm)
 
     /** Nodes held, disarmed ones included; what a sweep keeps bounded. */
     val size: Int get() = (armed.load() - removed.load()).toInt()
@@ -153,7 +221,7 @@ internal class DeadlineQueue(
             var chain = inbox.exchange(Inbox.End)
             // The stack is newest-first: reverse it. Allocation-free, so nothing here can fail half way.
             var reversed: Inbox = Inbox.End
-            while (chain is Node) {
+            while (chain is DeadlineNode) {
                 val following = chain.next
                 chain.next = reversed
                 reversed = chain
@@ -162,7 +230,11 @@ internal class DeadlineQueue(
             draining = reversed
         }
         while (true) {
-            val cursor = draining as? Node ?: break
+            val cursor =
+                when (val rest = draining) {
+                    Inbox.End -> break
+                    is DeadlineNode -> rest
+                }
             val following = cursor.next
             push(cursor)
             drained.incrementAndFetch()
@@ -179,22 +251,18 @@ internal class DeadlineQueue(
             val top = heap[0]
             if (top.dueNanos > nowNanos) return
             pop()
-            val action = top.claimToFire()
-            if (action != null) runGuarded(action) else disarmed.decrementAndFetch()
+            if (!top.fireIfArmed()) disarmed.decrementAndFetch()
         }
     }
 
     /**
-     * When the queue next needs looking at, after draining the inbox: the earliest deadline, which may be a
-     * disarmed one. The thread sleeps towards it and drops it when it gets there, rather than going idle the
-     * moment everything armed has been disarmed; an arming that is later than that, which is every arming of a
-     * bound that is re-armed on each operation, then finds a thread already asleep until then and wakes nothing.
+     * When the queue next needs looking at, after draining the inbox: the earliest deadline, which may be a disarmed
+     * one. The thread sleeps towards it and drops it there, so a bound re-armed on every operation (each later than
+     * the disarmed one) finds a thread already asleep and wakes nothing.
      *
-     * Only for a disarmed deadline that is far away. Waking at one costs a pass, and it saves a wake only for
-     * armings that are later still, so a disarmed deadline due within [staleHorizonNanos] of [nowNanos] is
-     * dropped here and not slept towards: a deadline that short that is armed and disarmed over and over (the
-     * driver's own timers, on Kotlin/Native, which are armed on this queue) would otherwise wake the thread
-     * every time one fell due, measured at some twenty times the passes of skipping them.
+     * A disarmed deadline due within [staleHorizonNanos] of [nowNanos] is dropped instead: waking at it costs a pass
+     * and saves a wake only for armings later still, and a deadline that short armed and disarmed over and over (the
+     * driver's own timers, on Kotlin/Native) would wake the thread every time one fell due.
      */
     fun nextDue(
         nowNanos: Long,
@@ -225,11 +293,11 @@ internal class DeadlineQueue(
     }
 
     private fun before(
-        a: Node,
-        b: Node,
+        a: DeadlineNode,
+        b: DeadlineNode,
     ): Boolean = a.dueNanos < b.dueNanos || (a.dueNanos == b.dueNanos && a.seq < b.seq)
 
-    private fun push(node: Node) {
+    private fun push(node: DeadlineNode) {
         heap.add(node)
         siftUp(heap.size - 1)
     }
@@ -282,9 +350,9 @@ internal class DeadlineQueue(
  * Runs a deadline's action. One that throws must not end the timer thread, which every other connection's
  * deadlines depend on, and must not vanish either: it is handed to [reportOnThisThread].
  */
-internal fun runGuarded(action: Runnable) {
+internal inline fun runGuarded(action: () -> Unit) {
     try {
-        action.run()
+        action()
     } catch (failure: Throwable) {
         reportOnThisThread(failure)
     }

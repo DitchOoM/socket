@@ -12,14 +12,12 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * **A bounded stream read or write that completes before its bound wakes no timer thread** (the Kotlin/Native
- * twin of the JVM's `StreamDeadlineWakeupTests`).
+ * **A bounded stream read or write that completes before its bound wakes no timer thread** (the Kotlin/Native twin of
+ * the JVM's `StreamDeadlineWakeupTests`).
  *
- * A busy stream arms a deadline and disarms it microseconds later, on every read and write. The timer thread
- * needs to wake only for a deadline earlier than the one it already sleeps towards; a thread that went idle
- * the moment everything armed had been disarmed is woken by the next arming, which is a wake-up per
- * operation. The property is counted through [NativeDeadlineTimer.passes], one per wake-up, so it is a count
- * and not a timing: N operations give a handful of passes at most, whatever N is.
+ * The property is counted through [NativeDeadlineTimer.passes], one per wake-up: N operations make a handful of
+ * passes at most, whatever N is. On a real connection the driver's own deadlines are armed on the same timer, so
+ * there the bounds' share is read as the difference against the same round trips with no bound armed.
  */
 abstract class NativeStreamDeadlineWakeupTests {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -140,12 +138,7 @@ abstract class NativeStreamDeadlineWakeupTests {
         const val OPERATIONS = 500
         const val AT_MOST = 25
 
-        /**
-         * Round trips on a real connection: the connection's own deadlines (the driver's wake, loss recovery) are armed on this
-         * timer too, so the bound's share is read as a difference against the same trips with nothing armed. It was 5 or so when
-         * measured (about 25 passes either way); a policy that sleeps towards every disarmed deadline, short driver timers
-         * included, measured 900 against 730, and one wake per operation would be 500 or more.
-         */
+        /** Passes the bounds may add over the same round trips with none armed; one wake per operation would add [OPERATIONS]. */
         const val AT_MOST_REAL = 60
     }
 }
