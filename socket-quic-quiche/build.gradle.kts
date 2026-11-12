@@ -3436,11 +3436,13 @@ fun createBuildQuicheSharedTask(
             // macOS takes no `-C strip`: on Apple targets rustc strips by rewriting the linked dylib with
             // rust-objcopy, which can leave the LINKEDIT string pool only 4-byte aligned, and Xcode 27's ld
             // refuses to link against such a dylib. The Apple `strip -x` below strips it instead.
+            // opt-level=3, as quiche's own release profile: the packet-path calls (`quiche_conn_recv`,
+            // `quiche_conn_send`) are the largest part of a connection's CPU, and `s` makes them slower.
             val baseRustflags =
                 if (os == "macos") {
-                    "-C opt-level=s -C codegen-units=1"
+                    "-C opt-level=3 -C codegen-units=1"
                 } else {
-                    "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+                    "-C opt-level=3 -C codegen-units=1 -C strip=symbols"
                 }
             if (os == "linux" && usesExternalBssl) {
                 // External-BoringSSL path: whole-archive libssl.a + libcrypto.a INTO the cdylib so
