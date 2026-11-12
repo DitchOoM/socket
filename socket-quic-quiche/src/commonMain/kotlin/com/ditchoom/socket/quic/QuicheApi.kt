@@ -343,6 +343,16 @@ interface QuicheApi {
     fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean
 
     /**
+     * Ack-eliciting packets this connection received beyond the next expected packet number in their space
+     * (`quiche_conn_recv_gaps`, a patched-in export): a packet after a gap, so a loss or a reorder, which is
+     * RFC 9000 §13.2.1's immediate-ACK trigger. Monotonic over the connection's life, over all packet-number
+     * spaces. The receive-side loss evidence [connLossEvidence] cannot give: that counts packets this
+     * endpoint sent. Read once per loop turn by [AckCadenceMemory], so every backend answers without
+     * allocating. **No default**, like [connLossEvidence]. Same threading contract as [connStats].
+     */
+    fun connRecvGaps(conn: QuicheConn): Long
+
+    /**
      * Pin libquiche's internal clock for the **calling thread** to [nanos] — a monotonic reading in
      * nanoseconds from libquiche's fixed per-process anchor (RFC §6.1 caller-clock patch). While set,
      * every internal `Instant::now()` in the patched libquiche (loss/PTO/RTT/pacing/congestion — 72

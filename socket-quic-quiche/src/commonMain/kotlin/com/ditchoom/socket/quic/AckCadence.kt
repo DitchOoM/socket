@@ -26,23 +26,33 @@ internal enum class AckCadence(
     EveryDatagram(receivesPerFlush = 1),
 }
 
-/** What one reading of the connection's loss counters says against the one before it. */
+/** Where a counter of loss evidence comes from: what the connection sent, or what it received. */
+internal enum class EvidenceSource {
+    /** `lost` + `retrans`: packets this endpoint sent that were declared lost or sent again as a probe. */
+    PacketsLost,
+
+    /** Ack-eliciting packets that arrived beyond the next expected packet number: a gap or a reorder. */
+    ReceiveGap,
+}
+
+/** What one reading of an [EvidenceSource]'s counter says against the one before it. */
 internal sealed interface LossEvidence {
     /** The counters did not grow. */
     data object Unchanged : LossEvidence
 
-    /** A packet was declared lost, or a probe retransmitted, since the last reading. */
+    /** The counter grew since the last reading: a loss, a probe, or a gap, depending on the source. */
     data object Grew : LossEvidence
 }
 
 /**
  * Remembers whether the path has shown loss lately, so the loop can pick an [AckCadence] once per turn.
  *
- * The evidence is the connection's own sender-side loss counters (`lost` + `retrans` of
- * `quiche_conn_stats`): packets this endpoint sent that were declared lost, and packets it sent again as
- * a probe. quiche exposes nothing on the receive side — no gap in the packet numbers it received, which
- * is RFC 9000 §13.2.1's trigger for an immediate ACK — so an endpoint that only receives sees loss
- * only through what it sent earlier (the handshake, a request, a stream's FIN).
+ * There are two sources of evidence ([EvidenceSource]), each a monotonic counter read once per turn:
+ *  - [EvidenceSource.PacketsLost]: the connection's own sender-side counters (`lost` + `retrans` of
+ *    `quiche_conn_stats`), packets this endpoint sent that were declared lost or sent again as a probe;
+ *  - [EvidenceSource.ReceiveGap]: ack-eliciting packets that arrived after a gap in the packet numbers
+ *    (`quiche_conn_recv_gaps`, a patched-in export), RFC 9000 §13.2.1's trigger for an immediate ACK. It
+ *    is the only evidence a pure receiver has once its handshake is over, and it fires on a reorder too.
  *
  * Once evidence grows, the path counts as lossy for [LOSS_MEMORY_RTTS] round trips ([remember]); after
  * that long without new evidence the cadence relaxes again. The memory is in round trips, not turns,
@@ -62,13 +72,24 @@ internal class AckCadenceMemory {
     }
 
     private var memory: Memory = Memory.Clean
-    private var seenEvidence = 0L
+    private var seenLost = 0L
+    private var seenGaps = 0L
 
-    /** Compare the counters with the previous reading; the first reading is against zero. */
-    fun observe(evidence: Long): LossEvidence {
-        val grew = evidence > seenEvidence
-        seenEvidence = evidence
-        return if (grew) LossEvidence.Grew else LossEvidence.Unchanged
+    /** Compare [source]'s counter with its previous reading; the first reading is against zero. */
+    fun observe(
+        source: EvidenceSource,
+        counter: Long,
+    ): LossEvidence {
+        val seen =
+            when (source) {
+                EvidenceSource.PacketsLost -> seenLost
+                EvidenceSource.ReceiveGap -> seenGaps
+            }
+        when (source) {
+            EvidenceSource.PacketsLost -> seenLost = counter
+            EvidenceSource.ReceiveGap -> seenGaps = counter
+        }
+        return if (counter > seen) LossEvidence.Grew else LossEvidence.Unchanged
     }
 
     /** New loss evidence at [now]: lossy for [LOSS_MEMORY_RTTS] of [rtt], never less than one timer granularity's worth. */

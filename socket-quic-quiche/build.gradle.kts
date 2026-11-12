@@ -268,6 +268,10 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
+    // Count the ack-eliciting packets that arrive beyond the next expected packet number (a gap or a reorder:
+    // RFC 9000 §13.2.1's immediate-ACK trigger) and export the count, so a receiver that never has packets of
+    // its own lost can still see loss. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
+    patchQuicheRecvGapCounter(sourceDir)
     // Export the peer's certificate chain (quiche's C API has only the leaf), for SecTrust on iOS and
     // ServerCertVerifier. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuichePeerCertChainFfi(sourceDir)
@@ -723,6 +727,92 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_stream_data_unacknowledged FFI export")
+}
+
+/**
+ * Count, and export as `quiche_conn_recv_gaps`, the ack-eliciting packets that arrived with a packet number
+ * beyond the next one expected in their space: a packet after a gap, which is a loss or a reorder.
+ *
+ * RFC 9000 §13.2.1 makes exactly this the moment to ACK at once ("an endpoint SHOULD send an ACK frame
+ * immediately ... when the packet is out of order"). quiche knows it (`recv_pkt_need_ack` is a range set
+ * and a gap is a second range) but exposes nothing, and has no ACK timer, so the embedding's flush cadence
+ * is the whole ACK policy and cannot tell a receiver that is losing packets from one that is not. The
+ * only loss evidence the C API gives is about packets this endpoint sent (`lost`, `retrans`), which a pure
+ * receiver has none of after its handshake.
+ *
+ * One field (`Connection::socket_recv_gaps`, a monotonic `u64` over all packet-number spaces), one
+ * increment at the point where a received packet number is recorded, and the export. A late packet that
+ * fills a hole is not counted again: only the packet that jumped ahead is. quiche's own optimistic-ACK
+ * defence skips one packet number every few thousand packets (`PktNumManager`), which reads as a gap of one;
+ * that is rare enough to be noise. Marker-guarded and loud in both directions: a re-run returns, a moved
+ * anchor throws, and an upstream that exports an equivalent throws, telling you to delete this patch.
+ *
+ * Mutation-testing it: delete the `socket_recv_gaps += 1` line (the export stays, so the natives still link)
+ * and `QuicheRecvGapCounterTest` goes red; see the quiche-patch mutation recipe (rebuild with the marker
+ * for the digest deleted).
+ */
+fun patchQuicheRecvGapCounter(sourceDir: File) {
+    val marker = "socket-recv-gaps"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!libRs.exists() || !ffiRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_recv_gaps")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_recv_gaps — DELETE patchQuicheRecvGapCounter " +
+                "and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump moved it. Re-fit patchQuicheRecvGapCounter, or delete it if quiche now exposes a " +
+                    "receive-side gap count.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        libRs,
+        "    handshake_confirmed: bool,\n",
+        "    handshake_confirmed: bool,\n\n" +
+            "    // $marker: ack-eliciting packets received beyond the next expected packet number.\n" +
+            "    socket_recv_gaps: u64,\n",
+    )
+    replaceOnce(
+        libRs,
+        "            handshake_confirmed: false,\n",
+        "            handshake_confirmed: false,\n\n            socket_recv_gaps: 0,\n",
+    )
+    replaceOnce(
+        libRs,
+        "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
+        "        // $marker: a packet that jumped past the next expected number is a gap (loss) or a reorder.\n" +
+            "        if ack_elicited && pn > self.pkt_num_spaces[epoch].largest_rx_pkt_num.saturating_add(1) {\n" +
+            "            self.socket_recv_gaps += 1;\n" +
+            "        }\n\n" +
+            "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: ack-eliciting packets received beyond the next expected packet number (a gap or a
+            |// reorder) — RFC 9000 §13.2.1's immediate-ACK trigger, as a monotonic count.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_recv_gaps(conn: &Connection) -> u64 {
+            |    conn.socket_recv_gaps
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_recv_gaps counter and FFI export")
 }
 
 /**

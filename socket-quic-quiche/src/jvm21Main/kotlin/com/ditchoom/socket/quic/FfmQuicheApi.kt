@@ -239,6 +239,10 @@ class FfmQuicheApi private constructor(
         // bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn) — patched-in export
         downcall("quiche_conn_stream_data_unacknowledged", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
+    private val hRecvGaps by lazy {
+        // uint64_t quiche_conn_recv_gaps(const quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_recv_gaps", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
+    }
     private val hTimeoutNanos by lazy {
         downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
@@ -1000,6 +1004,8 @@ class FfmQuicheApi private constructor(
     override fun connEarlyDataReason(conn: QuicheConn): Int = hEarlyDataReason.invokeExact(conn.handle) as Int
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean = hStreamDataUnacknowledged.invokeExact(conn.handle) as Boolean
+
+    override fun connRecvGaps(conn: QuicheConn): Long = hRecvGaps.invokeExact(conn.handle) as Long
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = hTimeoutNanos.invokeExact(conn.handle) as Long

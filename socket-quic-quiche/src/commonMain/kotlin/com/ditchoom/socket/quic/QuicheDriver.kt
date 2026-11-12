@@ -2370,7 +2370,16 @@ class QuicheDriver(
      * and keeps [AckCadence.Relaxed].
      */
     private fun ackCadenceForTurn(): AckCadence {
-        when (ackMemory.observe(api.connLossEvidence(conn))) {
+        noteLossEvidence(EvidenceSource.PacketsLost, api.connLossEvidence(conn))
+        noteLossEvidence(EvidenceSource.ReceiveGap, api.connRecvGaps(conn))
+        return ackMemory.cadence()
+    }
+
+    private fun noteLossEvidence(
+        source: EvidenceSource,
+        counter: Long,
+    ) {
+        when (ackMemory.observe(source, counter)) {
             LossEvidence.Unchanged -> Unit
             // Rare, so the allocating read of the path's RTT is fine here.
             LossEvidence.Grew ->
@@ -2382,7 +2391,6 @@ class QuicheDriver(
                     },
                 )
         }
-        return ackMemory.cadence()
     }
 
     /**

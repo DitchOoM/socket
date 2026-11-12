@@ -413,6 +413,52 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * quiche counts the ack-eliciting packets that arrive after a gap in the packet numbers
+     * (`quiche_conn_recv_gaps`, patched in by `patchQuicheRecvGapCounter`): RFC 9000 §13.2.1's trigger for an
+     * immediate ACK, and the only loss a pure receiver can see. A flight delivered whole counts none; the
+     * same flight with its first datagram lost counts one, the datagram after the gap; the lost one arriving
+     * late fills the hole and counts nothing more.
+     *
+     * Red against a quiche built without the `socket_recv_gaps += 1` line of the patch.
+     */
+    @Test
+    fun aPacketThatArrivesAfterAGapIsCountedAndAnInOrderOneIsNot() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val stream = QuicStreamId(0)
+                    pair.settle()
+                    assertEquals(7, pair.streamSend(pair.client, stream, "request", fin = true))
+                    pair.settle()
+                    val reply = "reply;".repeat(STAGED_REPLY_BYTES / 6)
+
+                    val before = pair.recvGaps(pair.client)
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val whole = pair.sends(pair.server)
+                    assertTrue(whole.size >= 4, "the reply must span at least four datagrams, was ${whole.size}")
+                    pair.deliver(whole, pair.client)
+                    assertEquals(before, pair.recvGaps(pair.client), "a flight delivered in order has no gap")
+                    pair.settle()
+
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val flight = pair.sends(pair.server)
+                    assertTrue(flight.size >= 4, "the reply must span at least four datagrams, was ${flight.size}")
+                    pair.deliver(flight.drop(1), pair.client)
+                    assertEquals(
+                        before + 1,
+                        pair.recvGaps(pair.client),
+                        "the datagram after the lost one is one gap, however many follow it",
+                    )
+                    pair.deliver(flight.take(1), pair.client)
+                    assertEquals(before + 1, pair.recvGaps(pair.client), "the late datagram fills the hole and is not counted again")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * A FIN written after a stream's last bytes were sent, while an earlier range of it waits to be
      * retransmitted, is still sent.
      *

@@ -1316,6 +1316,11 @@ uint32_t quiche_conn_early_data_reason(const quiche_conn *conn);
 // patch in socket-quic-quiche/build.gradle.kts (patchQuicheStreamDataUnacknowledgedFfi).
 bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn);
 
+// socket-recv-gaps: ack-eliciting packets received beyond the next expected packet number (a gap or a
+// reorder), a monotonic count over all packet-number spaces. Added by the marker-guarded source patch in
+// socket-quic-quiche/build.gradle.kts (patchQuicheRecvGapCounter).
+uint64_t quiche_conn_recv_gaps(const quiche_conn *conn);
+
 // socket-peer-cert-chain: the peer's certificate at `index` of its chain, DER, leaf first (index 0 is
 // what quiche_conn_peer_cert returns). *out_len is 0 past the end of the chain. The bytes are conn-owned.
 // quiche's Rust API has `Connection::peer_cert_chain` and its C API does not; added by the marker-guarded
