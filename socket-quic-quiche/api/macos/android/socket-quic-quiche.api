@@ -157,6 +157,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connIsResumed-ObL0uzk (J)Z
 	public fun connIsTimedOut-ObL0uzk (J)Z
 	public fun connLocalError-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicError;
+	public fun connLossEvidence-ObL0uzk (J)J
 	public fun connMigrate-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/MigrateOutcome;
 	public fun connMigrateSource-rezszl0 (JJIJ)I
 	public fun connNewScid-KE9HG-0 (JJIJZJ)I
@@ -613,6 +614,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connIsResumed-ObL0uzk (J)Z
 	public abstract fun connIsTimedOut-ObL0uzk (J)Z
 	public fun connLocalError-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicError;
+	public abstract fun connLossEvidence-ObL0uzk (J)J
 	public abstract fun connMigrate-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/MigrateOutcome;
 	public abstract fun connMigrateSource-rezszl0 (JJIJ)I
 	public abstract fun connNewScid-KE9HG-0 (JJIJZJ)I
