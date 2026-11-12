@@ -5709,7 +5709,12 @@ kotlin {
                 // "nw_udp_create: symbol multiply defined" (the C symbols are module-agnostic).
             }
         }
-        macosArm64 { configureQuicheApple("macos-arm64") }
+        macosArm64 {
+            configureQuicheApple("macos-arm64")
+            // An optimized (-opt) test binary for profiling the native data path: a debug K/N binary is not
+            // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
+            binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
+        }
         macosX64 { configureQuicheApple("macos-x64") }
         iosArm64 { configureQuicheApple("ios-arm64") }
         iosSimulatorArm64 { configureQuicheApple("ios-simulator-arm64") }

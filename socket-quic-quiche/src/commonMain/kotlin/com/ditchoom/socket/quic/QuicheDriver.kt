@@ -51,7 +51,6 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -250,13 +249,25 @@ class QuicheDriver(
     private val sessionOffer: SessionOffer = SessionOffer.None,
 ) {
     /**
+     * Debug-only check that only the loop's turn touches the connection, see [LoopGuard]. [LoopGuard.Unchecked]
+     * unless [DebugLoopGuard] has been switched on by a test, so production pays nothing for it. Not a
+     * constructor parameter: the constructor is part of the published surface and the guard is not.
+     */
+    private val loopGuard: LoopGuard = DebugLoopGuard.newGuard()
+
+    /**
      * The quiche FFI. When [clock] is a virtual-time clock ([DriverTime.Virtual]) the backend api is
      * wrapped in [CallerClockQuicheApi] so every connection call pins libquiche's internal clock first
      * (RFC §6.1 caller-clock — QUIC Tier-A bit-exact). A production [RealDriverClock] reports
      * [DriverTime.Real], so the bare backend api is used unchanged and nothing is injected — zero cost.
      */
     private val api: QuicheApi =
-        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi
+        (if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi).let { backend ->
+            when (loopGuard) {
+                LoopGuard.Unchecked -> backend
+                is LoopGuard.Checking -> GuardedQuicheApi(backend, loopGuard)
+            }
+        }
 
     /**
      * The command channel — and the owner of every command in it. A command the channel accepted but
@@ -2076,6 +2087,7 @@ class QuicheDriver(
      * Timeout is integrated via [select]: no separate timeout coroutine, no polling.
      */
     private suspend fun run() {
+        loopGuard.beginLoop()
         try {
             // The primary path's reader is launched from inside the loop, as every migration path's is, so
             // `readerJob` is only ever written by the loop and the `finally` below that joins it cannot run
@@ -2127,17 +2139,19 @@ class QuicheDriver(
                     }
                 flight.record(FlightEvent.LoopParked, wait?.inWholeMilliseconds ?: -1L)
                 val cmd =
-                    if (wait == null) {
-                        // No timer pending — block until next command (or channel close)
-                        commands.receiveCatching().getOrNull() ?: break
-                    } else {
-                        select<QuicheCmd?> {
-                            commands.onReceiveCatching { it.getOrNull() }
-                            clock.armTimeout(this, wait)
+                    loopGuard.suspending {
+                        if (wait == null) {
+                            // No timer pending — block until next command (or channel close)
+                            commands.receiveCatching().getOrNull()
+                        } else {
+                            select<QuicheCmd?> {
+                                commands.onReceiveCatching { it.getOrNull() }
+                                clock.armTimeout(this, wait)
+                            }
                         }
                     }
-                // null from onReceiveCatching means channel closed — exit
-                if (cmd == null && commands.isClosedForReceive) break
+                // null from receive/onReceiveCatching means channel closed — exit
+                if (cmd == null && (wait == null || commands.isClosedForReceive)) break
                 // A command the channel accepted but cannot deliver is failed by the channel; a
                 // cancelled loop fails the command in hand — if any — and exits, whether the wake
                 // that observed the cancellation was a dequeued command or a bare timer firing.
@@ -2241,14 +2255,15 @@ class QuicheDriver(
                         reportingStall(
                             "reader ${entry.key} to exit in $coroutineName",
                             { "reader.isActive=${reader.isActive} reader.isCompleted=${reader.isCompleted}" },
-                        ) { reader.join() }
+                        ) { loopGuard.suspending { reader.join() } }
                     }
                 }
                 cleanup()
                 // The trace reaches the application's sink off this loop; let what this connection
                 // recorded arrive before its end is reported (bounded, and a suspension, not a block).
-                capture.record { it.flush() }
+                loopGuard.suspending { capture.record { it.flush() } }
             }
+            loopGuard.endLoop()
         }
     }
 
@@ -2263,9 +2278,11 @@ class QuicheDriver(
     private suspend fun holdFirstFlight(flight: FirstFlight.HeldForEarlyData) {
         while (true) {
             val cmd =
-                select<QuicheCmd?> {
-                    flight.released.onAwait { null }
-                    commands.onReceiveCatching { it.getOrNull() }
+                loopGuard.suspending {
+                    select<QuicheCmd?> {
+                        flight.released.onAwait { null }
+                        commands.onReceiveCatching { it.getOrNull() }
+                    }
                 } ?: return
             if (!currentCoroutineContext().isActive) {
                 failCommand(cmd)
@@ -2404,6 +2421,7 @@ class QuicheDriver(
 
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
     private fun dispatch(cmd: QuicheCmd) {
+        loopGuard.assertOnLoop(LoopSite.Dispatch)
         try {
             when (cmd) {
                 is QuicheCmd.Migrate -> handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
@@ -2647,6 +2665,7 @@ class QuicheDriver(
     }
 
     private suspend fun afterCommand() {
+        loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
@@ -3382,7 +3401,7 @@ class QuicheDriver(
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
                     flight.record(FlightEvent.SendBegin, written.toLong())
-                    clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) }
+                    loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
@@ -4018,6 +4037,7 @@ class QuicheDriver(
      * in [reservedPorts] until quiche evicts the path, and [releaseReservedPort] frees the rest.
      */
     private fun teardownPath(entry: PathEntry) {
+        loopGuard.assertOnLoop(LoopSite.TeardownPath)
         // quiche routes the active path through this socket; closing it would strand the connection.
         check(entry !== active) { "teardownPath on the active path ${entry.key}" }
         // First, and unconditionally: the path stops holding its destination CID, which retires it
@@ -4180,6 +4200,7 @@ class QuicheDriver(
     }
 
     private fun cleanup() {
+        loopGuard.assertOnLoop(LoopSite.Cleanup)
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         // Before anything fails a PeerCert read and before conn is freed: see [peerChain].
@@ -5059,7 +5080,7 @@ class DriverStreamAdapter(
         }
         try {
             val result =
-                withTimeout(timeout) {
+                withStreamDeadline(timeout) {
                     // The FIN (or Reset) may have arrived coalesced with the last data chunk on a previous
                     // read() (which returned that Data and latched slot.end here). quiche has already
                     // delivered it, so there is no further data and no readable-signal coming — return now
@@ -5071,7 +5092,7 @@ class DriverStreamAdapter(
                     // stream_recv — is the only truthful answer a later read can give. Skipped while the
                     // stream is open: the entry check above has just looked at the queue.
                     if (slot.end != StreamEnd.Open) {
-                        slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
+                        slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
                     }
                     while (true) {
                         val deferred = CompletableDeferred<StreamRecvResult>()
@@ -5099,18 +5120,18 @@ class DriverStreamAdapter(
                                     // Ownership transfers to the caller — do not release in the finally.
                                     transferred = true
                                     delivered = ReadResult.Data(buffer)
-                                    return@withTimeout delivered
+                                    return@withStreamDeadline delivered
                                 }
                                 // A pure FIN. Drain the slot first: the teardown drain can queue bytes in
                                 // the same driver wake that answers this FIN, and End must never overtake
                                 // them.
                                 if (result.fin) {
-                                    return@withTimeout takePending() ?: ReadResult.End
+                                    return@withStreamDeadline takePending() ?: ReadResult.End
                                 }
                                 // 0 bytes and no FIN is not an end of anything ("0 implies FIN" was an
                                 // unenforced assumption): wait for the data signal like a Done and retry.
-                                takePending()?.let { return@withTimeout it }
-                                awaitDataThenQueued()?.let { return@withTimeout it }
+                                takePending()?.let { return@withStreamDeadline it }
+                                awaitDataThenQueued()?.let { return@withStreamDeadline it }
                                 continue
                             }
                             is StreamRecvResult.Done -> {
@@ -5120,15 +5141,15 @@ class DriverStreamAdapter(
                                 // the queue (see queuedOrLatchedVerdict: the other order reports End over
                                 // the stream's last chunk). If the FIN (or Reset) was consumed earlier
                                 // (coalesced with data), no signal is coming — end now rather than park.
-                                slot.queuedOrLatchedVerdict { takePending() }?.let { return@withTimeout it }
-                                awaitDataThenQueued()?.let { return@withTimeout it }
+                                slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
+                                awaitDataThenQueued()?.let { return@withStreamDeadline it }
                                 continue
                             }
                             is StreamRecvResult.Error -> {
                                 // Bytes quiche already handed over outrank the failure, exactly as they
                                 // outrank a FIN (RFC 9000 §2.4) and the connection's death (§10.2).
                                 // Only once the slot is dry does the failure surface.
-                                takePending()?.let { return@withTimeout it }
+                                takePending()?.let { return@withStreamDeadline it }
                                 // ...and it surfaces AS a failure. Mapping this onto ReadResult.End would tell
                                 // every caller the peer had finished politely, which is a contract — stop
                                 // reading, release the stream — and the wrong response to an error; it would
@@ -5154,13 +5175,13 @@ class DriverStreamAdapter(
                                 // code-carrying abort is not the peer finishing politely. Bytes the
                                 // transport already accepted still outrank the verdict.
                                 slot.latchReset(result.applicationErrorCode)
-                                return@withTimeout takePending() ?: ReadResult.Reset
+                                return@withStreamDeadline takePending() ?: ReadResult.Reset
                             }
                             is StreamRecvResult.ConnectionGone -> {
                                 // Includes the teardown sentinel from failCommand: the connection went away
                                 // while this StreamRecv was queued, so whatever quiche still held for us was
                                 // drained into the slot on the way out — deliver it before the verdict.
-                                return@withTimeout takePending() ?: verdictAfterConnectionGone()
+                                return@withStreamDeadline takePending() ?: verdictAfterConnectionGone()
                             }
                         }
                     }
@@ -5294,7 +5315,7 @@ class DriverStreamAdapter(
         // and the lifetime contract must hold symmetrically.)
         var inFlight: CompletableDeferred<StreamSendResult>? = null
         return try {
-            withTimeout(timeout) {
+            withStreamDeadline(timeout) {
                 while (true) {
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
@@ -5316,7 +5337,7 @@ class DriverStreamAdapter(
                         // is untouched (zero-copy); the caller advances by it and re-enters for the remainder.
                         else ->
                             if (written > 0) {
-                                return@withTimeout written
+                                return@withStreamDeadline written
                             } else if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED ||
                                 written == QuicheDriver.QUICHE_ERR_STREAM_RESET
                             ) {
