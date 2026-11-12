@@ -63,6 +63,58 @@ def run_once(cmd, env, seconds, warmup, certs):
     r["cpu_us_per_mib"] = r["cpu_us"] / (r["ops"] * 16) if r["workload"] == "qbulk" else 0
     return r
 
+JMH = {"qrr": ("QuicLongLivedStreamRoundTrip", ["-p", "size=64"]), "qspr": ("QuicStreamPerRequest", []),
+       "qbulk": ("QuicBulkThroughput", []), "tcp": ("TcpRoundTrip", ["-p", "size=64"])}
+
+def cpu_seconds(pid):
+    """Cumulative user+system CPU of a live process: /proc ticks on Linux, `ps -o cputime` (10 ms) on macOS."""
+    try:
+        if LINUX:
+            f = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+            return (int(f[11]) + int(f[12])) / os.sysconf("SC_CLK_TCK")
+        t = subprocess.run(["ps", "-o", "cputime=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        m, s = t.split(":")
+        return int(m) * 60 + float(s)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+def run_jvm(workload, jar, java, certs_repo, seconds, warmup):
+    """Our JVM build (FFM backend, JMH from benchmarks/jvm) in-process (-f 0): warm-up, then one measured iteration."""
+    import threading, tempfile
+    cls, params = JMH[workload]
+    out = tempfile.mktemp(suffix=".json")
+    cmd = [java, "--enable-native-access=ALL-UNNAMED", "--add-opens", "java.base/java.nio=ALL-UNNAMED",
+           "-Dquiche.expectedJvmBackend=ffm", f"-Dbench.certDir={certs_repo}", "-cp", jar, "org.openjdk.jmh.Main",
+           f"com.ditchoom.socket.benchmark.{cls}", "-f", "0", "-wi", "1", "-w", "5s", "-i", "1", "-r", f"{seconds}s",
+           "-rf", "json", "-rff", out] + params
+    load = subprocess.run(["uptime"], capture_output=True, text=True).stdout.split("load average")[-1].strip(" s:\n")
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    st = {"cpu0": 0.0, "cpu1": 0.0, "threads": 0}
+    for line in p.stdout:
+        if line.startswith("# Warmup Iteration"):
+            st["cpu0"] = cpu_seconds(p.pid)
+            threading.Timer(seconds / 2, lambda: st.update(threads=threads(p.pid))).start()
+        elif line.startswith("Iteration"):
+            st["cpu1"] = cpu_seconds(p.pid)
+    _, _, ru = os.wait4(p.pid, 0)
+    if not os.path.exists(out):
+        return None
+    pm = json.load(open(out))[0]["primaryMetric"]
+    bulk = workload == "qbulk"
+    r = {"stack": "jvm-ours", "workload": workload, "threads": st["threads"], "load": load,
+         "rss_mib": ru.ru_maxrss / (1024 if LINUX else 1048576)}
+    if bulk:
+        r.update(mib_per_s=pm["score"], ops_per_s=pm["score"] / 16, p50_us=0.0, p99_us=0.0)
+        r["cpu_us_per_mib"] = (st["cpu1"] - st["cpu0"]) * 1e6 / (pm["score"] * seconds)
+        r["cpu_us_per_op"] = 0.0
+    else:
+        pc = pm["scorePercentiles"]
+        r.update(p50_us=pc["50.0"], p99_us=pc["99.0"], mib_per_s=0.0, ops_per_s=1e6 / pm["score"])
+        r["cpu_us_per_op"] = (st["cpu1"] - st["cpu0"]) * 1e6 / (r["ops_per_s"] * seconds)
+        r["cpu_us_per_mib"] = 0.0
+    os.remove(out)
+    return r
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument("--kexe", required=True)
@@ -73,6 +125,9 @@ def main():
     a.add_argument("--only", default="")
     a.add_argument("--workloads", default="qrr,qspr,qbulk,tcp")
     a.add_argument("--json", default="")
+    a.add_argument("--jmh-jar", default="", help="benchmarks/jvm's mainBenchmarkJar: adds the jvm-ours stack")
+    a.add_argument("--java", default="java", help="JVM for jvm-ours (JDK 25)")
+    a.add_argument("--certs-repo", default="", help="socket-quic-quiche/testcerts, for jvm-ours")
     a.add_argument("--lock", default="", help="lock directory to mkdir while running (released on exit)")
     args = a.parse_args()
     if args.lock:
@@ -83,8 +138,13 @@ def main():
         runs = []
         for rnd in range(args.rounds):
             for w in args.workloads.split(","):
-                for s in only:
-                    if w in table[s]:
+                for s in only + (["jvm-ours"] if args.jmh_jar else []):
+                    if s == "jvm-ours":
+                        r = run_jvm(w, args.jmh_jar, args.java, args.certs_repo, args.seconds, args.warmup)
+                        print(f"round {rnd} {s} {w}: {None if r is None else (r['p50_us'], r['ops_per_s'], r['mib_per_s'], r['load'])}", file=sys.stderr, flush=True)
+                        if r:
+                            runs.append(r)
+                    elif w in table[s]:
                         cmd, env = table[s][w]
                         r = run_once(cmd, env, args.seconds, args.warmup, args.certs)
                         print(f"round {rnd} {s} {w}: {None if r is None else (r['p50_us'], r['ops_per_s'], r['mib_per_s'], r['load'])}", file=sys.stderr, flush=True)
