@@ -71,7 +71,26 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation("org.jetbrains.kotlinx:kotlinx-benchmark-runtime:${providers.gradleProperty("kotlinxBenchmarkVersion").get()}")
     runtimeOnly(stagedQuicheNatives)
+
+    // The other stacks of the comparison benchmarks (NettyQuic*, NettyTcp*, Kwik*, KtorTcp*). This module is
+    // never published and nothing depends on it, so these reach no consumer.
+    val nettyVersion = providers.gradleProperty("nettyVersion").get()
+    implementation("io.netty:netty-codec-classes-quic:$nettyVersion")
+    implementation("io.netty:netty-handler:$nettyVersion")
+    implementation("io.netty:netty-transport:$nettyVersion")
+    for (classifier in listOf("osx-aarch_64", "osx-x86_64", "linux-x86_64", "linux-aarch_64")) {
+        runtimeOnly("io.netty:netty-codec-native-quic:$nettyVersion:$classifier")
+    }
+    implementation("tech.kwik:kwik:${providers.gradleProperty("kwikVersion").get()}")
+    implementation("io.ktor:ktor-network:${providers.gradleProperty("ktorVersion").get()}")
 }
+
+// The comparison benchmarks (other stacks, plus this library's own matching shapes as the reference) run in
+// their own configuration: the PR A/B lane and the nightly compare this library against itself and must not
+// pay for, or be moved by, a third-party stack.
+val comparisonOnly = ".*\\.(Netty|Kwik|Ktor).*"
+val comparisonSet =
+    ".*\\.(Netty|Kwik|Ktor).*|.*\\.(QuicLongLivedStreamRoundTrip|QuicStreamPerRequest|QuicBulkThroughput|TcpRoundTrip)\\..*"
 
 benchmark {
     targets {
@@ -82,6 +101,7 @@ benchmark {
     }
     configurations {
         named("main") {
+            exclude(comparisonOnly)
             warmups = 5
             iterations = 10
             iterationTime = 1
@@ -92,6 +112,7 @@ benchmark {
         // The PR A/B lane (quic-bench.yaml `ab`): base and head each run this once per backend in one job,
         // so it trades the main config's second fork for wall-clock.
         register("ci") {
+            exclude(comparisonOnly)
             warmups = 3
             iterations = 5
             iterationTime = 1
@@ -102,6 +123,28 @@ benchmark {
         // A short run that proves every benchmark still executes ("did I break a benchmark"). Its
         // numbers are not for comparison.
         register("smoke") {
+            exclude(comparisonOnly)
+            warmups = 1
+            iterations = 1
+            iterationTime = 1
+            iterationTimeUnit = "s"
+            reportFormat = "json"
+            advanced("jvmForks", 1)
+        }
+        // `compareBenchmark`: this library against Netty QUIC/TCP, Kwik and Ktor on the same loopback shapes.
+        // One fork per run: repeat the task (A, B, C, D, A, B, C, D, ...) rather than fork each benchmark twice
+        // back to back, so a noisy minute on a shared machine lands on every library, not on one.
+        register("compare") {
+            include(comparisonSet)
+            warmups = 5
+            iterations = 10
+            iterationTime = 1
+            iterationTimeUnit = "s"
+            reportFormat = "json"
+            advanced("jvmForks", 1)
+        }
+        register("compareSmoke") {
+            include(comparisonSet)
             warmups = 1
             iterations = 1
             iterationTime = 1
@@ -122,6 +165,9 @@ benchmark {
 afterEvaluate {
     tasks.named<org.gradle.jvm.tasks.Jar>("mainBenchmarkJar") {
         manifest { attributes("Multi-Release" to "true") }
+        // One of the comparison libraries' jars is signed (META-INF/PFOPENSO.*); copied into this fat jar its
+        // signature no longer matches the merged manifest, and the JVM refuses the jar (SecurityException).
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/*.EC")
     }
 }
 
@@ -214,6 +260,8 @@ dependencies {
     proguardTool("com.guardsquare:proguard-base:${providers.gradleProperty("proguardVersion").get()}")
 }
 
+fun File.isComparisonJar() = listOf("netty-", "kwik-", "agent15-", "hkdf-", "ktor-").any { name.startsWith(it) } || "siphash" in name
+
 val consumerDir = layout.buildDirectory.dir("shrunk-consumer")
 val consumerFatJar =
     tasks.register<Jar>("consumerFatJar") {
@@ -221,7 +269,12 @@ val consumerFatJar =
         archiveFileName.set("consumer-fat.jar")
         destinationDirectory.set(consumerDir)
         from(sourceSets.main.map { it.output })
-        from(configurations.runtimeClasspath.map { cp -> cp.filter { it.name.endsWith(".jar") }.map { zipTree(it) } })
+        from(
+            configurations.runtimeClasspath.map { cp ->
+                // The comparison libraries are not part of what a consumer ships.
+                cp.filter { it.name.endsWith(".jar") && !it.isComparisonJar() }.map { zipTree(it) }
+            },
+        )
         from(stagedQuicheNatives)
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         exclude(
