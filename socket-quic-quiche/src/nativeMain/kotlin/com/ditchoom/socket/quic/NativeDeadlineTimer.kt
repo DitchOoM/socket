@@ -16,7 +16,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
-import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -43,11 +42,14 @@ import kotlin.time.TimeSource
  * into a heap it alone owns, so the heap needs no synchronisation. Disarming is one compare-and-set on the
  * node. The thread is woken only when a new deadline is earlier than the one it is sleeping until, which
  * for the common case (a deadline re-armed a little later than the stale one it replaces) it is not.
- * A disarmed node is dropped when it reaches the top of the heap or, when they outnumber the live ones,
- * by a sweep ([compact]); its action is replaced on disarm so it no longer keeps a continuation alive.
+ * A far-off disarmed node stays queued and the thread keeps sleeping towards it, so the next arming, which is
+ * later, wakes nothing (a near one is dropped at once, see [DeadlineQueue.nextDue]); it is dropped when it falls due or, when disarmed nodes are most of the queue, by a sweep that
+ * the arming which makes them so asks the thread for ([DeadlineQueue.needsSweep]), so they are not held in the
+ * inbox for the length of the bound. Its action is dropped on disarm so it no longer keeps a continuation alive.
  *
- * The queue itself, [DeadlineQueue], takes the time as an argument and never blocks, so its ordering is
- * tested without a clock. This class adds the thread and the clock.
+ * The queue itself, [DeadlineQueue] (commonMain, shared with the JVM's `DeadlineTimer`), takes the time as an
+ * argument and never blocks, so its ordering is tested without a clock. This class adds the thread, the clock
+ * and the waiting.
  */
 internal class NativeDeadlineTimer private constructor(
     private val queue: DeadlineQueue,
@@ -65,6 +67,9 @@ internal class NativeDeadlineTimer private constructor(
         class Sleeping(
             val dueNanos: Long,
         ) : TimerThread
+
+        /** Parked with nothing queued, until woken. */
+        object Idle : TimerThread
 
         /** [close]d: arming no longer schedules anything. */
         object Closed : TimerThread
@@ -91,7 +96,7 @@ internal class NativeDeadlineTimer private constructor(
         if (!delay.isFinite() || wait >= Long.MAX_VALUE / 4) return NeverDue
         val due = now() + maxOf(wait, 0L)
         val node = queue.arm(due, action)
-        wakeIfEarlier(due)
+        if (queue.needsSweep()) wakeToSweep() else wakeIfEarlier(due)
         return node
     }
 
@@ -106,6 +111,25 @@ internal class NativeDeadlineTimer private constructor(
                         worker.executeAfter(0L) {}
                         return
                     }
+                TimerThread.Idle ->
+                    if (thread.compareAndSet(TimerThread.Idle, TimerThread.Awake)) {
+                        worker.executeAfter(0L) {}
+                        return
+                    }
+            }
+        }
+    }
+
+    /** Wakes the thread, whatever it sleeps towards, to drop the disarmed deadlines that have piled up. */
+    private fun wakeToSweep() {
+        while (true) {
+            when (val state = thread.value) {
+                TimerThread.Awake, TimerThread.Closed -> return
+                is TimerThread.Sleeping, TimerThread.Idle ->
+                    if (thread.compareAndSet(state, TimerThread.Awake)) {
+                        worker.executeAfter(0L) {}
+                        return
+                    }
             }
         }
     }
@@ -116,43 +140,70 @@ internal class NativeDeadlineTimer private constructor(
     /** Deadlines the timer thread has taken off the inbox so far (see [DeadlineQueue.drainedTotal]). */
     internal val drainedTotal: Long get() = queue.drainedTotal
 
+    /** Deadlines held, disarmed ones not yet dropped included, so a test can see the queue stays bounded. */
+    internal val queued: Int get() = queue.size
+
+    /** Whether the timer thread is waiting (until a deadline, or with nothing queued) and will not pass until woken. */
+    internal val isParked: Boolean get() = thread.value.let { it is TimerThread.Sleeping || it === TimerThread.Idle }
+
+    /**
+     * The timer thread's life, for as long as the timer is open. A pass that throws anything is reported (to the
+     * error stream: Kotlin/Native has no per-thread handler to hand it to) and followed by another after a short
+     * pause, so a failure does not end the thread, which every deadline in the process depends on; the queue keeps
+     * what a failed pass had taken off its inbox ([DeadlineQueue]). What a `Worker` cannot do: it cannot be
+     * restarted once it has terminated, and a failure that terminates the process (an allocation the runtime
+     * cannot satisfy) is not catchable, so what this guards is a `Throwable` that reaches the loop.
+     */
     private fun run(self: Worker) {
-        while (true) {
+        while (pass(self)) {
+            // pass() answers false only when the timer was closed.
+        }
+    }
+
+    /** One pass: fire what is due, then wait. False once the timer is closed. */
+    private fun pass(self: Worker): Boolean {
+        try {
             while (true) {
                 val before = thread.value
-                if (before === TimerThread.Closed) return
+                if (before === TimerThread.Closed) return false
                 if (thread.compareAndSet(before, TimerThread.Awake)) break
             }
             passes.incrementAndGet()
             queue.fireDue(now())
-            val sleepUntil =
-                when (val next = queue.nextDue()) {
+            val sleeping =
+                when (val next = queue.nextDue(now())) {
                     is NextDue.At -> {
-                        if (next.nanos <= now()) continue
-                        next.nanos
+                        if (next.nanos <= now()) return true
+                        TimerThread.Sleeping(next.nanos)
                     }
-                    NextDue.None -> Long.MAX_VALUE
+                    NextDue.None -> TimerThread.Idle
                 }
-            val sleeping = TimerThread.Sleeping(sleepUntil)
             if (!thread.compareAndSet(TimerThread.Awake, sleeping)) {
                 // Closed, or woken between the pass and here: another pass.
-                if (thread.value === TimerThread.Closed) return
-                continue
+                return thread.value !== TimerThread.Closed
             }
             // An arm that raced the compare-and-set above saw Awake and did not wake us; it pushed first.
             if (queue.hasInbox()) {
                 thread.compareAndSet(sleeping, TimerThread.Awake)
-                continue
+                return true
             }
-            if (sleepUntil == Long.MAX_VALUE) {
-                self.park(PARK_FOREVER_MICROS, true)
-            } else {
-                when (val step = waitStepFor((sleepUntil - now()) / 1_000L)) {
-                    // Too short to be woken for: a nap that cannot be interrupted, then the pass that fires it.
-                    is WaitStep.Nap -> if (step.micros > 0) usleep(step.micros.toUInt())
-                    is WaitStep.Park -> self.park(step.micros, true)
-                }
+            when (sleeping) {
+                TimerThread.Idle -> self.park(PARK_FOREVER_MICROS, true)
+                is TimerThread.Sleeping ->
+                    when (val step = waitStepFor((sleeping.dueNanos - now()) / 1_000L)) {
+                        // Too short to be woken for: a nap that cannot be interrupted, then the pass that fires it.
+                        is WaitStep.Nap -> if (step.micros > 0) usleep(step.micros.toUInt())
+                        is WaitStep.Park -> self.park(step.micros, true)
+                    }
+                else -> Unit
             }
+            return true
+        } catch (failure: Throwable) {
+            if (thread.value === TimerThread.Closed) return false
+            thread.value = TimerThread.Awake
+            reportOnThisThread(failure)
+            usleep(FAILED_PASS_PAUSE_MICROS.toUInt())
+            return true
         }
     }
 
@@ -178,6 +229,9 @@ internal class NativeDeadlineTimer private constructor(
 }
 
 private const val PARK_FOREVER_MICROS = 3_600_000_000L
+
+/** The pause after a pass that failed, before the next. */
+private const val FAILED_PASS_PAUSE_MICROS = 50_000L
 
 /** A remainder this short is slept, uninterruptibly, rather than parked for. */
 private const val SLEEP_THE_REST_MICROS = 200L
@@ -209,209 +263,11 @@ internal fun waitStepFor(remainingMicros: Long): WaitStep =
         WaitStep.Park(minOf(remainingMicros / 2, PARK_FOREVER_MICROS))
     }
 
-/** What [DeadlineQueue.nextDue] answers: the earliest live deadline, or that there is none. */
-internal sealed interface NextDue {
-    /** Nothing live is armed. */
-    object None : NextDue
-
-    /** The earliest live deadline falls due at [nanos]. */
-    class At(
-        val nanos: Long,
-    ) : NextDue
-}
-
-/** What a [DeadlineQueue] holds: [size] nodes in its heap, disarmed ones included, of which [disarmed] are disarmed. */
-internal data class HeapCensus(
-    val size: Int,
-    val disarmed: Int,
-)
-
-/**
- * A heap of deadlines owned by one thread, fed lock-free from any. Never blocks and takes the time as an
- * argument: [fireDue] runs, in order of due time and then of arming, every action due at the time it is
- * given. Arming and disarming allocate only the node; the timer thread's own bookkeeping ([nextDue]'s answer,
- * the heap's growth) is off that path.
- */
-internal class DeadlineQueue {
-    /** A disarmable deadline: what [arm] returns. */
-    class Node internal constructor(
-        val dueNanos: Long,
-        action: Runnable,
-        private val queue: DeadlineQueue,
-    ) : DisposableHandle,
-        Inbox {
-        internal val state = AtomicReference<NodeState>(NodeState.Armed)
-        internal val action = AtomicReference(action)
-        internal var next: Inbox = Inbox.End
-        internal var seq: Long = 0L
-
-        override fun dispose() {
-            if (state.compareAndSet(NodeState.Armed, NodeState.Disarmed)) {
-                // Drop the reference the action holds (a coroutine's continuation) now rather than at its due time.
-                action.value = DoNothing
-                queue.disarmed.incrementAndGet()
-            }
-        }
-    }
-
-    internal sealed interface NodeState {
-        object Armed : NodeState
-
-        object Fired : NodeState
-
-        object Disarmed : NodeState
-    }
-
-    /** The inbox: a Treiber stack of nodes, newest first. */
-    sealed interface Inbox {
-        object End : Inbox
-    }
-
-    private val inbox = AtomicReference<Inbox>(Inbox.End)
-    internal val disarmed = AtomicInt(0)
-    private val armed = AtomicLong(0L)
-
-    /** Nodes moved from the inbox to the heap so far. */
-    val drainedTotal: Long get() = armed.value
-
-    // Owned by the thread that calls fireDue / nextDue; touched by nothing else.
-    private val heap = ArrayList<Node>(INITIAL_CAPACITY)
-
-    /** Schedules [action] for [dueNanos]; callable from any thread. */
-    fun arm(
-        dueNanos: Long,
-        action: Runnable,
-    ): Node {
-        val node = Node(dueNanos, action, this)
-        while (true) {
-            val head = inbox.value
-            node.next = head
-            if (inbox.compareAndSet(head, node)) return node
-        }
-    }
-
-    fun hasInbox(): Boolean = inbox.value !== Inbox.End
-
-    /** Moves what was armed into the heap, oldest first, so equal due times fire in the order they were armed. */
-    private fun drain() {
-        var chain = inbox.getAndSet(Inbox.End)
-        if (chain === Inbox.End) return
-        // The stack is newest-first: reverse it.
-        var reversed: Inbox = Inbox.End
-        while (chain is Node) {
-            val following = chain.next
-            chain.next = reversed
-            reversed = chain
-            chain = following
-        }
-        var cursor = reversed
-        while (cursor is Node) {
-            val following = cursor.next
-            cursor.next = Inbox.End
-            cursor.seq = armed.incrementAndGet()
-            push(cursor)
-            cursor = following
-        }
-        compact()
-    }
-
-    /** Runs every live action due at [nowNanos], in order. */
-    fun fireDue(nowNanos: Long) {
-        drain()
-        while (heap.isNotEmpty()) {
-            val top = heap[0]
-            if (top.state.value === NodeState.Disarmed) {
-                pop()
-                disarmed.decrementAndGet()
-                continue
-            }
-            if (top.dueNanos > nowNanos) return
-            pop()
-            if (top.state.compareAndSet(NodeState.Armed, NodeState.Fired)) {
-                top.action.value.run()
-            } else {
-                disarmed.decrementAndGet()
-            }
-        }
-    }
-
-    /** The earliest live deadline, after draining the inbox. */
-    fun nextDue(): NextDue {
-        drain()
-        while (heap.isNotEmpty()) {
-            val top = heap[0]
-            if (top.state.value === NodeState.Disarmed) {
-                pop()
-                disarmed.decrementAndGet()
-                continue
-            }
-            return NextDue.At(top.dueNanos)
-        }
-        return NextDue.None
-    }
-
-    /** Sweeps disarmed nodes out of the heap when they are most of it, so a burst of cancelled long deadlines is bounded. */
-    private fun compact() {
-        if (heap.size < COMPACT_MIN || disarmed.value * 2 < heap.size) return
-        val before = heap.size
-        heap.removeAll { it.state.value === NodeState.Disarmed }
-        disarmed.addAndGet(-(before - heap.size))
-        for (i in heap.size / 2 - 1 downTo 0) siftDown(i)
-    }
-
-    private fun before(
-        a: Node,
-        b: Node,
-    ): Boolean = a.dueNanos < b.dueNanos || (a.dueNanos == b.dueNanos && a.seq < b.seq)
-
-    private fun push(node: Node) {
-        heap.add(node)
-        siftUp(heap.size - 1)
-    }
-
-    private fun pop() {
-        val last = heap.removeAt(heap.size - 1)
-        if (heap.isNotEmpty()) {
-            heap[0] = last
-            siftDown(0)
-        }
-    }
-
-    private fun siftUp(from: Int) {
-        var i = from
-        val node = heap[i]
-        while (i > 0) {
-            val parent = (i - 1) / 2
-            if (!before(node, heap[parent])) break
-            heap[i] = heap[parent]
-            i = parent
-        }
-        heap[i] = node
-    }
-
-    private fun siftDown(from: Int) {
-        var i = from
-        val node = heap[i]
-        while (true) {
-            var child = 2 * i + 1
-            if (child >= heap.size) break
-            if (child + 1 < heap.size && before(heap[child + 1], heap[child])) child++
-            if (!before(heap[child], node)) break
-            heap[i] = heap[child]
-            i = child
-        }
-        heap[i] = node
-    }
-
-    internal fun census(): HeapCensus = HeapCensus(heap.size, disarmed.value)
-
-    companion object {
-        private const val INITIAL_CAPACITY = 64
-        private const val COMPACT_MIN = 1024
-
-        private object DoNothing : Runnable {
-            override fun run() = Unit
-        }
+internal actual fun reportOnThisThread(failure: Throwable) {
+    try {
+        failure.printStackTrace()
+    } catch (_: Throwable) {
+        // Nothing left to tell: the timer thread must survive a failure to report.
     }
 }
 
