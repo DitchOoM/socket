@@ -559,7 +559,9 @@ jobs:
             args: ""
           - jfr: "false"
             launcher: "25"
-            args: "-PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME"
+            # The second argument is quoted for PowerShell, this job's shell: unquoted, it splits a
+            # `-P` argument at its first dot and Gradle is handed `.gradle.java...` as a task name.
+            args: '-PjvmTestLauncher=25 "-Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME"'
     runs-on: windows-latest
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
