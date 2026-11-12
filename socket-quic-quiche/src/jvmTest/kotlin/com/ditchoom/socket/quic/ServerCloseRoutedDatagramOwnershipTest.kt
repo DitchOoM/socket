@@ -64,21 +64,25 @@ class ServerCloseRoutedDatagramOwnershipTest {
             // and the gate tells datagrams apart by address.
             val initial = initialPacket()
             val backUp = shortPacket(marker = 1)
+            val inFlight = shortPacket(marker = 2)
             val victim = shortPacket(marker = 3)
 
             rig.connect(initial)
             val backUpHold = rig.freezeTheLoopOn(backUp)
 
-            // The loop is frozen in header parsing, so it is not receiving: the member reader takes the
-            // victim from its socket and parks in its own hand-off to the loop's next receive, holding it.
+            // The server's reader takes the next datagram and parks handing it to the frozen loop...
+            rig.dialled.deliver(inFlight)
+            rig.readers.pumpUntil("the second short packet was handed to the server") { rig.dialled.entered.get() == 4 }
+
+            // ...so the member reader parks in its own hand-off, holding the victim.
             rig.dialled.deliver(victim)
             rig.readers.runUntilIdle()
-            assertEquals(3, rig.dialled.returned.get(), "premise: the member reader took the victim from its socket")
-            assertEquals(3, rig.dialled.entered.get(), "premise: the member reader is parked handing the victim over, not reading again")
+            assertEquals(4, rig.dialled.returned.get(), "premise: the member reader took the victim from its socket")
+            assertEquals(4, rig.dialled.entered.get(), "premise: the member reader is parked handing the victim over, not reading again")
 
-            // Unfreeze: the loop drains and takes the victim — completing the member reader's hand-off,
-            // whose resumption the stepped dispatcher now holds — and freezes on the victim's header, past
-            // its `closed` check.
+            // Unfreeze: the loop drains, the server's reader takes the victim — completing the member
+            // reader's hand-off, whose resumption the stepped dispatcher now holds — and the loop freezes
+            // on the victim's header, past its `closed` check.
             val victimHold = rig.api.holdAt(victim)
             backUpHold.release()
             victimHold.awaitEntered("the receive loop never reached header parsing for the victim")
@@ -115,12 +119,12 @@ class ServerCloseRoutedDatagramOwnershipTest {
         }
 
     /**
-     * The same rule from the other side: a datagram the composite's member reader took from its socket and
-     * never handed to the receive loop — the loop was busy, and the server closed before it received again —
-     * is freed by the close, exactly once, not lost with the reader.
+     * The server's own reader-to-loop hand-off keeps the same rule from the other side: a datagram the
+     * server's reader took from the socket and never handed over — the loop stopped taking as the server
+     * closed, and cancelled the reader mid-hand-off — is freed by the hand-off, not lost with the reader.
      */
     @Test
-    fun aDatagramTheMemberReaderNeverHandedToTheLoopIsFreedWhenTheServerCloses() =
+    fun aDatagramTheServerReaderNeverHandedOverIsFreedWhenTheServerCloses() =
         withRealHeaderParsing { real ->
             val rig = rig(real)
             val initial = initialPacket()
@@ -130,10 +134,9 @@ class ServerCloseRoutedDatagramOwnershipTest {
             rig.connect(initial)
             val backUpHold = rig.freezeTheLoopOn(backUp)
 
-            // The member reader takes the stranded datagram and parks handing it to the frozen loop.
+            // The server's reader takes the stranded datagram and parks handing it to the frozen loop.
             rig.dialled.deliver(stranded)
-            rig.readers.runUntilIdle()
-            assertEquals(3, rig.dialled.returned.get(), "premise: the member reader took the stranded datagram")
+            rig.readers.pumpUntil("the stranded packet was handed to the server's reader") { rig.dialled.entered.get() == 4 }
 
             // Close first, so the loop — once unfrozen — sees `closed` and never takes the stranded datagram.
             val closing = async(Dispatchers.IO) { runCatching { rig.server.close() } }
@@ -144,7 +147,7 @@ class ServerCloseRoutedDatagramOwnershipTest {
 
             assertTrue(
                 runCatching { stranded.nativeMemoryAccess }.isFailure,
-                "a datagram the member reader took and never handed to the receive loop was never freed: " +
+                "a datagram the server's reader took and never handed to the receive loop was never freed: " +
                     "the reader was cancelled mid-hand-off as the server closed and the payload went with it",
             )
             assertEquals(emptyList(), rig.escaped.map { "${it::class.simpleName}: ${it.message}" }, "a server driver died")
