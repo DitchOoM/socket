@@ -54,6 +54,18 @@ interface UdpChannel {
         target: SendTarget = SendTarget.ConnectedPeer,
     ): SendOutcome
 
+    /**
+     * One attempt to send that never suspends: [SendOutcome.Sent] or a [SendOutcome.Failed] when the socket
+     * answers at once, `null` when it would have to wait or this channel has no such attempt. A `null` leaves
+     * everything untouched, and the caller sends through [send], which waits. The driver tries this first
+     * because the socket almost always has room, and a send that returns at once needs no bound.
+     */
+    fun sendNow(
+        buffer: PlatformBuffer,
+        len: Int,
+        target: SendTarget = SendTarget.ConnectedPeer,
+    ): SendOutcome? = null
+
     /** Close the underlying socket. */
     fun close()
 }

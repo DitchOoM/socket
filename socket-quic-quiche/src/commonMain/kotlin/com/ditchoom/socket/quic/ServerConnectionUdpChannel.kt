@@ -97,6 +97,34 @@ internal class ServerConnectionUdpChannel(
      * end in the same options but mean different things, and only one of them is a defect (see
      * [ReplySource]).
      */
+    override fun sendNow(
+        buffer: PlatformBuffer,
+        len: Int,
+        target: SendTarget,
+    ): SendOutcome? {
+        val peer: SocketAddress
+        val options: DatagramSendOptions
+        when (target) {
+            SendTarget.ConnectedPeer -> {
+                peer = fixedPeer
+                options = DatagramSendOptions.Default
+            }
+
+            is SendTarget.ServerReply -> {
+                // An unknown destination is reported by [send]; leave it to the waiting path.
+                peer = (if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to)) ?: return null
+                options =
+                    when (pinning) {
+                        ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress -> optionsFor(target.from)
+                        ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses -> DatagramSendOptions.Default
+                    }
+            }
+        }
+        buffer.position(0)
+        buffer.setLimit(len)
+        return immediateOutcomeOf { sendImmediately(channel, buffer, to = peer, options) }
+    }
+
     private fun optionsFor(source: ReplySource): DatagramSendOptions =
         when (source) {
             // Nothing to pin, and inventing an address would be worse than the platform's own choice.

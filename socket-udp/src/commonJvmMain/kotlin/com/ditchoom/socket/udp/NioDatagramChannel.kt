@@ -362,6 +362,33 @@ internal abstract class NioDatagramChannelCore(
     }
 
     /**
+     * One send attempt that never suspends: [transmit]'s first write, and nothing after it. True when the
+     * socket took the datagram. False when it had no room (or the caller is the Android main thread, where
+     * even a non-blocking `sendto` is a violation): nothing was sent and [payload] is untouched, so the
+     * caller sends it again through [transmit], which waits for room under its own bound. A send that fails
+     * throws the same typed [DatagramSendException] [transmit] would.
+     */
+    protected fun tryTransmit(
+        payload: ReadBuffer,
+        options: DatagramSendOptions,
+        write: (ByteBuffer) -> Int,
+    ): Boolean {
+        if (androidMainThread != null && Thread.currentThread() === androidMainThread) return false
+        val view = stage(payload, options)
+        val length = view.remaining()
+        if (length > maxWritableSize) {
+            throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
+        }
+        val written =
+            try {
+                write(view)
+            } catch (e: IOException) {
+                throw DatagramSendException(jvmSendErrorOf(e, attempted = length, limit = maxWritableSize))
+            }
+        return written > 0
+    }
+
+    /**
      * Park until the kernel says this socket can accept a datagram again, or until [timeout] elapses.
      *
      * The reactive half of the send path: a full output buffer is a readiness condition the
@@ -414,7 +441,14 @@ internal class ConnectedNioDatagramChannel(
     receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     bufferFactory: BufferFactory = BufferFactory.Default,
 ) : NioDatagramChannelCore(channel, receiveBufferSize, bufferFactory),
-    ConnectedDatagramChannel {
+    ConnectedDatagramChannel,
+    NonSuspendingDatagramSend {
+    override fun trySendNow(
+        payload: ReadBuffer,
+        to: SocketAddress?,
+        options: DatagramSendOptions,
+    ): Boolean = tryTransmit(payload, options) { channel.write(it) }
+
     override suspend fun send(
         payload: ReadBuffer,
         options: DatagramSendOptions,
@@ -435,7 +469,17 @@ internal class AddressedNioDatagramChannel(
     receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     bufferFactory: BufferFactory = BufferFactory.Default,
 ) : NioDatagramChannelCore(channel, receiveBufferSize, bufferFactory),
-    AddressedDatagramChannel {
+    AddressedDatagramChannel,
+    NonSuspendingDatagramSend {
+    override fun trySendNow(
+        payload: ReadBuffer,
+        to: SocketAddress?,
+        options: DatagramSendOptions,
+    ): Boolean {
+        val dest = checkNotNull(to) { "an addressed channel sends to a destination" }.toInetSocketAddress()
+        return tryTransmit(payload, options) { channel.send(it, dest) }
+    }
+
     override suspend fun send(
         payload: ReadBuffer,
         to: SocketAddress,

@@ -1578,25 +1578,31 @@ class QuicheDriver(
         keepAlive: Deadline,
         probe: Deadline,
     ): NextWake {
-        fun candidate(
-            deadline: Deadline,
-            wake: (Duration) -> Wake,
-        ): Wake? =
-            when (deadline) {
-                Deadline.NotArmed -> null
-                is Deadline.Due -> wake(deadline.remaining)
-            }
-
-        val soonest =
-            listOfNotNull(
-                candidate(probe, Wake::ProbeAbandon),
-                candidate(keepAlive, Wake::KeepAlive),
-                candidate(connTimeout, Wake::QuicheTimeout),
-                candidate(floorWake(), Wake::SilenceVerdict),
-                candidate(unansweredWake(), Wake::SilenceVerdict),
-            ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
-        return NextWake.Armed(soonest)
+        // The soonest of up to five deadlines, picked as they are met: one object per deadline that is armed
+        // and nothing else (this runs every turn). Ties go to the lower [Wake.priority], and among equals to
+        // the first met, in the order probe, keepalive, quiche, then the two silence deadlines.
+        var soonest: Wake? = null
+        if (probe is Deadline.Due) soonest = Wake.ProbeAbandon(probe.remaining)
+        if (keepAlive is Deadline.Due) soonest = soonerOf(soonest, Wake.KeepAlive(keepAlive.remaining))
+        if (connTimeout is Deadline.Due) soonest = soonerOf(soonest, Wake.QuicheTimeout(connTimeout.remaining))
+        val floor = floorWake()
+        if (floor is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(floor.remaining))
+        val unanswered = unansweredWake()
+        if (unanswered is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(unanswered.remaining))
+        return if (soonest == null) NextWake.NoTimer else NextWake.Armed(soonest)
     }
+
+    /** [candidate] if it is due sooner than [current], or equally soon with a lower [Wake.priority]; else [current]. */
+    private fun soonerOf(
+        current: Wake?,
+        candidate: Wake,
+    ): Wake =
+        when {
+            current == null -> candidate
+            candidate.remaining < current.remaining -> candidate
+            candidate.remaining == current.remaining && candidate.priority < current.priority -> candidate
+            else -> current
+        }
 
     /**
      * How long until the active path's silence meets the threshold's time **floor**, as a [Deadline].
@@ -3403,8 +3409,12 @@ class QuicheDriver(
             // a new outcome a compile error rather than a silent inheritance of whatever this branch
             // happened to do. Letting anything escape would leak an uncaught coroutine failure into
             // the parent scope, the original defect this site was written to fix.
+            // The socket almost always has room, and a send that returns at once needs no bound: it cannot have
+            // stalled, and it has no cancellation point to be mistaken for non-delivery. Only a send that would
+            // have to wait (or a channel with no such attempt) takes the bounded path below, unchanged.
+            flight.record(FlightEvent.SendBegin, written.toLong())
             val outcome =
-                try {
+                channel.sendNow(scratch.buffer, written, sendTarget) ?: try {
                     // Bounded, because the driver loop's liveness must not be an external promise.
                     // `send` is the one call this loop makes into platform code that can suspend
                     // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
@@ -3415,7 +3425,6 @@ class QuicheDriver(
                     // every queued stream command. The connection then cannot die, so nothing
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
-                    flight.record(FlightEvent.SendBegin, written.toLong())
                     loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
