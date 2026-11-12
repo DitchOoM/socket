@@ -9,6 +9,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -21,6 +22,12 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+
+private fun DeadlineQueue.nextDueNanos(): Long =
+    when (val next = nextDue()) {
+        is NextDue.At -> next.nanos
+        NextDue.None -> error("nothing is armed")
+    }
 
 /** [DeadlineQueue]: ordering, disarm and sweep, with the time passed in, so no clock decides anything. */
 class DeadlineQueueTests {
@@ -75,7 +82,7 @@ class DeadlineQueueTests {
         q.armLogging(50, "new")
         q.fireDue(20)
         assertEquals(emptyList(), fired)
-        assertEquals(50L, q.nextDue())
+        assertEquals(50L, q.nextDueNanos())
         q.fireDue(50)
         assertEquals(listOf("new"), fired)
     }
@@ -83,11 +90,11 @@ class DeadlineQueueTests {
     @Test
     fun nextDueSkipsDisarmedDeadlinesAndSaysWhenThereIsNone() {
         val q = DeadlineQueue()
-        assertEquals(DeadlineQueue.NONE, q.nextDue())
+        assertEquals(NextDue.None, q.nextDue())
         val a = q.armLogging(10, "a")
         q.armLogging(40, "b")
         a.dispose()
-        assertEquals(40L, q.nextDue())
+        assertEquals(40L, q.nextDueNanos())
     }
 
     @Test
@@ -114,10 +121,10 @@ class DeadlineQueueTests {
         dead.forEach { it.dispose() }
         // The next arm drains the inbox into the heap, and the sweep runs with the disarmed ones in it.
         q.armLogging(3_000_000, "live2")
-        assertEquals(2_000_000L, q.nextDue())
-        val (size, disarmed) = q.liveAndDisarmed()
-        assertTrue(size <= 3, "the heap holds only what is live, not $size")
-        assertEquals(0, disarmed)
+        assertEquals(2_000_000L, q.nextDueNanos())
+        val census = q.census()
+        assertTrue(census.size <= 3, "the heap holds only what is live, not ${census.size}")
+        assertEquals(0, census.disarmed)
         q.fireDue(10_000_000)
         assertEquals(listOf("live", "live2"), fired)
         live.dispose()
@@ -263,6 +270,117 @@ class NativeDeadlineTimerTests {
                     var extra = 0
                     while (fired.tryReceive().isSuccess) extra++
                     assertEquals(0, extra, "a disarmed deadline fired")
+                } finally {
+                    timer.close()
+                }
+            }
+        }
+
+    @Test
+    fun anExpiredStreamDeadlineCarriesTheBoundThatExpired() =
+        runTest {
+            real {
+                val failure = assertFailsWith<TimeoutCancellationException> { withStreamDeadline(40.milliseconds) { awaitCancellation() } }
+                val bound = failure.suppressedExceptions.filterIsInstance<StreamDeadlineBound>().single()
+                assertEquals(40.milliseconds, bound.bound)
+            }
+        }
+
+    @Test
+    fun anOuterDeadlineThatFiresFirstIsReportedAsTheOuterBoundNotTheInnerOne() =
+        runTest {
+            real {
+                val failure =
+                    assertFailsWith<TimeoutCancellationException> {
+                        withStreamDeadline(60.milliseconds) {
+                            // The inner bound is far off; the outer one expires while the inner is armed.
+                            withStreamDeadline(30.seconds) { awaitCancellation() }
+                        }
+                    }
+                val bound = failure.suppressedExceptions.filterIsInstance<StreamDeadlineBound>().single()
+                assertEquals(60.milliseconds, bound.bound, "the outer bound expired, not the inner")
+            }
+        }
+
+    @Test
+    fun anInnerDeadlineThatFiresFirstIsCaughtByTheOuterCallerAsTheInnerBoundAndTheOuterOneKeepsRunning() =
+        runTest {
+            real {
+                val result =
+                    withStreamDeadline(30.seconds) {
+                        val inner =
+                            try {
+                                withStreamDeadline(40.milliseconds) { awaitCancellation() }
+                                null
+                            } catch (e: TimeoutCancellationException) {
+                                e.suppressedExceptions
+                                    .filterIsInstance<StreamDeadlineBound>()
+                                    .single()
+                                    .bound
+                            }
+                        inner to "outer still running"
+                    }
+                assertEquals(40.milliseconds to "outer still running", result)
+            }
+        }
+
+    @Test
+    fun aCancelledCallerIsNotReportedAsADeadline() =
+        runTest {
+            real {
+                coroutineScope {
+                    val job = launch(Dispatchers.Default) { withStreamDeadline(30.seconds) { awaitCancellation() } }
+                    delay(30.milliseconds)
+                    job.cancel()
+                    job.join()
+                    assertTrue(job.isCancelled)
+                }
+            }
+        }
+
+    @Test
+    fun aDeadlineThatFiresAsTheBlockReturnsGivesEitherTheValueOrTheTimeoutNeverAnythingElse() =
+        runTest {
+            real {
+                var value = 0
+                var timedOut = 0
+                repeat(300) {
+                    try {
+                        // The block does not suspend and spends about the bound, so the expiry lands at the end of it.
+                        val got =
+                            withStreamDeadline(1.milliseconds) {
+                                val end =
+                                    kotlin.time.TimeSource.Monotonic
+                                        .markNow() + 1.milliseconds
+                                while (end.hasNotPassedNow()) Unit
+                                42
+                            }
+                        assertEquals(42, got)
+                        value++
+                    } catch (e: TimeoutCancellationException) {
+                        timedOut++
+                    }
+                }
+                assertEquals(300, value + timedOut)
+            }
+        }
+
+    @Test
+    fun anIdleTimerMakesNoPassesAndOneFarDeadlineDoesNotWakeIt() =
+        runTest {
+            real {
+                val timer = NativeDeadlineTimer()
+                try {
+                    delay(200.milliseconds)
+                    val settled = timer.passes.value
+                    delay(1.seconds)
+                    assertEquals(settled, timer.passes.value, "an idle timer thread woke")
+                    val far = timer.schedule(1.hours) { error("an hour has not passed") }
+                    delay(200.milliseconds)
+                    val armed = timer.passes.value
+                    delay(1.seconds)
+                    assertEquals(armed, timer.passes.value, "a timer with one far deadline woke before it was due")
+                    far.dispose()
                 } finally {
                     timer.close()
                 }

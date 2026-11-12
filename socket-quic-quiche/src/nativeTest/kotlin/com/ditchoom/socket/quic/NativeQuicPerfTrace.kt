@@ -8,6 +8,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.posix.getenv
@@ -21,6 +22,7 @@ import kotlin.time.TimeSource
  *
  * - rr:   64-byte request/echo round trips on one long-lived stream.
  * - bulk: 64 KiB writes on one stream, drained by the server.
+ * - idle: an established connection with nothing to send; prints how often the deadline thread woke (`PERF-IDLE`).
  *
  * Prints `PERF-END` (ops, bytes, rate) and, per side, quiche's own datagram counters
  * (`PERF-STATS client|server sent=.. recv=.. sentBytes=.. recvBytes=..`), so the client/server datagram
@@ -46,7 +48,7 @@ abstract class NativeQuicPerfTrace {
 
     @Test
     fun perfTrace() {
-        val mode = getenv("QUIC_PERF")?.toKString()?.takeIf { it == "rr" || it == "bulk" } ?: return
+        val mode = getenv("QUIC_PERF")?.toKString()?.takeIf { it == "rr" || it == "bulk" || it == "idle" } ?: return
         val secs = getenv("QUIC_PERF_SECONDS")?.toKString()?.toIntOrNull() ?: 30
         runQuicTest(timeout = (secs + 120).seconds) {
             val serverStats = CompletableDeferred<QuicConnStats?>()
@@ -90,9 +92,18 @@ abstract class NativeQuicPerfTrace {
                         val stream = openStream()
                         val buf = bufferFactory.allocate(64 * 1024)
                         println("PERF-START mode=$mode secs=$secs")
+                        val lateness = TimerLatenessProbe()
+                        // The probe arms a deadline every 2 ms, so it would drown out what an idle connection does by itself.
+                        val probe = launch(productionDriverContext) { if (mode != "idle") lateness.run() }
                         val start = TimeSource.Monotonic.markNow()
                         var ops = 0L
                         var bytes = 0L
+                        if (mode == "idle") {
+                            // An established connection with nothing to send: how often does the deadline thread wake?
+                            val before = NativeDeadlineTimer.Shared.passes.value
+                            delay(secs.seconds)
+                            println("PERF-IDLE secs=$secs timer_passes=${NativeDeadlineTimer.Shared.passes.value - before}")
+                        }
                         if (mode == "rr") {
                             while (start.elapsedNow() < secs.seconds) {
                                 buf.resetForWrite()
@@ -126,6 +137,9 @@ abstract class NativeQuicPerfTrace {
                             }
                         }
                         val el = start.elapsedNow()
+                        probe.cancel()
+                        probe.join()
+                        println(lateness.render())
                         stream.shutdownSend()
                         while (true) {
                             when (val r = stream.read(60.seconds)) {
