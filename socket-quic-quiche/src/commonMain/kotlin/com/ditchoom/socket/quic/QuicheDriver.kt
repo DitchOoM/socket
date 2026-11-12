@@ -2656,11 +2656,17 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
-        // Before the flush, not after it: handing a parked read its bytes is what makes quiche owe the
-        // peer flow-control credit, and the flush below then carries that credit with the ACK in one
-        // pass. After the flush it needed a second one. What quiche reports readable depends on what it
-        // received, not on what it sent, so the sweep sees the same streams on either side of the flush.
-        discoverNewStreams()
+        // Once established, the sweep comes before the flush, not after it: handing a parked read its
+        // bytes is what makes quiche owe the peer flow-control credit, and the flush then carries that
+        // credit with the ACK in one pass; after it, the credit needed a second flush. quiche's readable
+        // set grows only inside `quiche_conn_recv` (a received STREAM frame), never in `quiche_conn_send`
+        // (checked in the vendored 0.30.0 source: `insert_readable` is reached from frame processing and
+        // from `stream_recv`), so the sweep sees the same streams on either side of the flush. Before the
+        // handshake is established the old order stays: `quiche_conn_send` runs `do_handshake`, so it can
+        // complete the handshake, and [discoverNewStreams] classifies a stream as early data by whether
+        // the handshake is complete.
+        val swept = _state.value is QuicConnectionState.Established
+        if (swept) discoverNewStreams()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -2668,6 +2674,7 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
+        if (!swept) discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
@@ -2772,7 +2779,7 @@ class QuicheDriver(
             } else {
                 QuicStreamId(nextStreamId).also { nextStreamId += 4 }
             }
-        val slot = StreamSlot(id)
+        val slot = StreamSlot(id, if (unidirectional) StreamReceiveSide.Never else StreamReceiveSide.FromPeer)
         streams[id.id] = slot
         // Make the stream real to quiche now, so that openStream() means what its name says.
         // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
@@ -2907,12 +2914,11 @@ class QuicheDriver(
                 if (result.bytesRead > 0) {
                     // Consuming stream bytes is what makes quiche owe the peer flow-control credit.
                     quicheOwesAFlush = true
-                    // A chunk that filled the request may be followed by more in quiche; the signal that
-                    // wakes this read is consumed by the wake, so say so where the next read will look.
-                    if (result.bytesRead >= size) slot.noteChunkFilledRequest()
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
-                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                    // A chunk that filled the request may be followed by more in quiche: deliverHandedOff
+                    // marks the stream for the next read, because the signal that wakes this one is consumed.
+                    if (!slot.deliverHandedOff(buffer, result.fin, size, result.bytesRead)) buffer.freeNativeMemory()
                 } else {
                     buffer.freeNativeMemory()
                     if (result.fin) slot.latchFin()
@@ -3075,9 +3081,11 @@ class QuicheDriver(
         // conn that cleanup() is about to free.
         latchForClose()
         refreshSessionTicket()
-        // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
-        // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
-        // would skip it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
+        // A close that does not come out of [afterCommand]'s own sequence (a Close command's updateState,
+        // which runs inside execute before the turn's sweep; a cancelled loop; a rejected send during the
+        // handshake, where the sweep still follows the flush) can run before the sweep has looked at the
+        // streams, so a stream that became readable is not in [streams] yet and the drain below would skip
+        // it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
         discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
