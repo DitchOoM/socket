@@ -53,6 +53,7 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
@@ -248,13 +249,25 @@ class QuicheDriver(
     private val sessionOffer: SessionOffer = SessionOffer.None,
 ) {
     /**
+     * Debug-only check that only the loop's turn touches the connection, see [LoopGuard]. [LoopGuard.Unchecked]
+     * unless [DebugLoopGuard] has been switched on by a test, so production pays nothing for it. Not a
+     * constructor parameter: the constructor is part of the published surface and the guard is not.
+     */
+    private val loopGuard: LoopGuard = DebugLoopGuard.newGuard()
+
+    /**
      * The quiche FFI. When [clock] is a virtual-time clock ([DriverTime.Virtual]) the backend api is
      * wrapped in [CallerClockQuicheApi] so every connection call pins libquiche's internal clock first
      * (RFC §6.1 caller-clock — QUIC Tier-A bit-exact). A production [RealDriverClock] reports
      * [DriverTime.Real], so the bare backend api is used unchanged and nothing is injected — zero cost.
      */
     private val api: QuicheApi =
-        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi
+        (if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock, role) else rawApi).let { backend ->
+            when (loopGuard) {
+                LoopGuard.Unchecked -> backend
+                is LoopGuard.Checking -> GuardedQuicheApi(backend, loopGuard)
+            }
+        }
 
     /**
      * The command channel — and the owner of every command in it. A command the channel accepted but
@@ -965,8 +978,12 @@ class QuicheDriver(
 
         /**
          * The driver sends nothing more on this socket. Called after the socket is closed (or, for the
-         * primary at [cleanup], handed back to its owner), so a stalled datagram is freed only once no
-         * platform operation can still read it.
+         * primary at [cleanup], handed back to its owner).
+         *
+         * A stalled datagram is freed when its retry has completed, never before: cancelling a send is a
+         * request, and a platform that has handed the buffer to the kernel (an io_uring submission) ends
+         * the operation only when the kernel does, so the retry may still be reading [PathEgress.Stalled.lent]
+         * after the cancel. [Job.invokeOnCompletion] runs at once when the retry has already ended.
          */
         fun shut() {
             val current = egress
@@ -974,7 +991,7 @@ class QuicheDriver(
             when (current) {
                 is PathEgress.Stalled -> {
                     current.retry.cancel()
-                    current.lent.freeNativeMemory()
+                    current.retry.invokeOnCompletion { current.lent.freeNativeMemory() }
                 }
                 PathEgress.Open, PathEgress.Shut -> Unit
             }
@@ -1876,7 +1893,11 @@ class QuicheDriver(
     /** Every coroutine this driver launches is named after the connection it serves. */
     private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
 
+    /** Set by the first [start], which is the only one there may be: a second loop would share this `conn`. */
+    private val started = AtomicBoolean(false)
+
     fun start(scope: CoroutineScope) {
+        check(started.compareAndSet(false, true)) { "QuicheDriver.start() was already called for $coroutineName" }
         driverScope = scope
         val placed = placeDriver(driverContext)
         placement = placed
@@ -1900,10 +1921,7 @@ class QuicheDriver(
                 // run() starts never enters it, and its hold must end all the same.
                 job.invokeOnCompletion { placed.release() }
             }
-
-        if (ingress is DatagramIngress.DriverReaderLoop) {
-            startReaderLoop(primary)
-        }
+        // The primary reader is launched by run() itself, not here: see [run].
     }
 
     private fun startReaderLoop(entry: PathEntry) {
@@ -2069,7 +2087,14 @@ class QuicheDriver(
      * Timeout is integrated via [select]: no separate timeout coroutine, no polling.
      */
     private suspend fun run() {
+        loopGuard.beginLoop()
         try {
+            // The primary path's reader is launched from inside the loop, as every migration path's is, so
+            // `readerJob` is only ever written by the loop and the `finally` below that joins it cannot run
+            // before it is set. Launched from `start()` it was assigned on the caller's thread after the
+            // loop had been launched: a loop that exited at once found no reader to join, freed the recv
+            // pool, and the reader was launched afterwards into a driver that was already gone.
+            if (ingress is DatagramIngress.DriverReaderLoop) startReaderLoop(primary)
             when (role) {
                 // Before the first send, so every handshake secret is written.
                 QuicRole.Client -> api.nameTrafficSecretsLog(conn, capture, role) { sessionId }
@@ -2114,17 +2139,19 @@ class QuicheDriver(
                     }
                 flight.record(FlightEvent.LoopParked, wait?.inWholeMilliseconds ?: -1L)
                 val cmd =
-                    if (wait == null) {
-                        // No timer pending — block until next command (or channel close)
-                        commands.receiveCatching().getOrNull() ?: break
-                    } else {
-                        select<QuicheCmd?> {
-                            commands.onReceiveCatching { it.getOrNull() }
-                            clock.armTimeout(this, wait)
+                    loopGuard.suspending {
+                        if (wait == null) {
+                            // No timer pending — block until next command (or channel close)
+                            commands.receiveCatching().getOrNull()
+                        } else {
+                            select<QuicheCmd?> {
+                                commands.onReceiveCatching { it.getOrNull() }
+                                clock.armTimeout(this, wait)
+                            }
                         }
                     }
-                // null from onReceiveCatching means channel closed — exit
-                if (cmd == null && commands.isClosedForReceive) break
+                // null from receive/onReceiveCatching means channel closed — exit
+                if (cmd == null && (wait == null || commands.isClosedForReceive)) break
                 // A command the channel accepted but cannot deliver is failed by the channel; a
                 // cancelled loop fails the command in hand — if any — and exits, whether the wake
                 // that observed the cancellation was a dequeued command or a bare timer firing.
@@ -2228,14 +2255,15 @@ class QuicheDriver(
                         reportingStall(
                             "reader ${entry.key} to exit in $coroutineName",
                             { "reader.isActive=${reader.isActive} reader.isCompleted=${reader.isCompleted}" },
-                        ) { reader.join() }
+                        ) { loopGuard.suspending { reader.join() } }
                     }
                 }
                 cleanup()
                 // The trace reaches the application's sink off this loop; let what this connection
                 // recorded arrive before its end is reported (bounded, and a suspension, not a block).
-                capture.record { it.flush() }
+                loopGuard.suspending { capture.record { it.flush() } }
             }
+            loopGuard.endLoop()
         }
     }
 
@@ -2250,9 +2278,11 @@ class QuicheDriver(
     private suspend fun holdFirstFlight(flight: FirstFlight.HeldForEarlyData) {
         while (true) {
             val cmd =
-                select<QuicheCmd?> {
-                    flight.released.onAwait { null }
-                    commands.onReceiveCatching { it.getOrNull() }
+                loopGuard.suspending {
+                    select<QuicheCmd?> {
+                        flight.released.onAwait { null }
+                        commands.onReceiveCatching { it.getOrNull() }
+                    }
                 } ?: return
             if (!currentCoroutineContext().isActive) {
                 failCommand(cmd)
@@ -2348,6 +2378,7 @@ class QuicheDriver(
 
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
     private fun dispatch(cmd: QuicheCmd) {
+        loopGuard.assertOnLoop(LoopSite.Dispatch)
         try {
             when (cmd) {
                 is QuicheCmd.Migrate -> handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
@@ -2591,6 +2622,7 @@ class QuicheDriver(
     }
 
     private suspend fun afterCommand() {
+        loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
@@ -3326,7 +3358,7 @@ class QuicheDriver(
                     // reconnects: measured in the field as 48.6 hours of total silence from a client
                     // that had been echoing at full cadence a moment earlier.
                     flight.record(FlightEvent.SendBegin, written.toLong())
-                    clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) }
+                    loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
                         ?: SendOutcome.Stalled(sendStallBound)
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
@@ -3962,6 +3994,7 @@ class QuicheDriver(
      * in [reservedPorts] until quiche evicts the path, and [releaseReservedPort] frees the rest.
      */
     private fun teardownPath(entry: PathEntry) {
+        loopGuard.assertOnLoop(LoopSite.TeardownPath)
         // quiche routes the active path through this socket; closing it would strand the connection.
         check(entry !== active) { "teardownPath on the active path ${entry.key}" }
         // First, and unconditionally: the path stops holding its destination CID, which retires it
@@ -4124,6 +4157,7 @@ class QuicheDriver(
     }
 
     private fun cleanup() {
+        loopGuard.assertOnLoop(LoopSite.Cleanup)
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
         // Before anything fails a PeerCert read and before conn is freed: see [peerChain].

@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
@@ -176,8 +176,8 @@ internal class SharedQuicheServer(
      */
     private val localSockAddrs = mutableMapOf<SocketAddress, EncodedSockAddr>()
 
-    @Volatile
-    private var closed = false
+    /** Set by the one [close] that frees what this server owns; a second, concurrent one returns. */
+    private val closed = AtomicBoolean(false)
 
     /** Version Negotiation replies sent beside the receive loop and not yet returned; see [answerUnsupportedVersion]. */
     private val versionNegotiationsInFlight = AtomicInt(0)
@@ -266,8 +266,7 @@ internal class SharedQuicheServer(
     }
 
     override suspend fun close() {
-        if (closed) return
-        closed = true
+        if (!closed.compareAndSet(false, true)) return
         // Closing the :socket-udp channel makes any in-flight receive return promptly, so the reader's
         // receive() returns Closed, the loop exits, and receiveJob completes.
         channel.close()
@@ -320,7 +319,7 @@ internal class SharedQuicheServer(
                                 } catch (_: Exception) {
                                     // Transient receive error — retry, unless the server is closing, in
                                     // which case fall through to shut the reader down.
-                                    if (closed) break else continue
+                                    if (closed.load()) break else continue
                                 }
                             inbound.send(r)
                             if (r is DatagramReadResult.Closed) break
@@ -334,7 +333,7 @@ internal class SharedQuicheServer(
             val wake = Any()
             val readerDone = Any()
             try {
-                loop@ while (!closed) {
+                loop@ while (!closed.load()) {
                     val item =
                         select<Any?> {
                             inbound.onReceiveCatching { res -> res.getOrNull() ?: readerDone }
@@ -353,7 +352,7 @@ internal class SharedQuicheServer(
                             is DatagramReadResult.Received -> item.datagram
                             else -> continue@loop
                         }
-                    if (closed) {
+                    if (closed.load()) {
                         datagram.payload.freeNativeMemory()
                         break@loop
                     }
