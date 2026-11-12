@@ -159,17 +159,17 @@ internal fun clientAlpnOffer(options: QuicOptions): List<String> =
  * Run the caller's [QuicResumption.ResumeWithEarlyData] block once for **this connection attempt**,
  * where [offer] says it belongs: before the first flight when quiche took the ticket, so its writes can
  * go as 0-RTT, and after [awaitEstablished] otherwise, as ordinary data. [awaitEstablished] runs exactly
- * once either way.
+ * once either way, and what it returns is returned.
  *
  * A raced connect builds one connection per candidate, so the caller's block runs once per attempt —
  * the requirement that puts on it is on [QuicResumption.ResumeWithEarlyData].
  */
-internal suspend fun runEarlyData(
+internal suspend fun <Established> runEarlyData(
     resumption: QuicResumption,
     offer: SessionOffer,
     scope: QuicEarlyDataScope,
-    awaitEstablished: suspend () -> Unit,
-) {
+    awaitEstablished: suspend () -> Established,
+): Established =
     when (resumption) {
         QuicResumption.None, is QuicResumption.Resume -> awaitEstablished()
         is QuicResumption.ResumeWithEarlyData ->
@@ -185,12 +185,12 @@ internal suspend fun runEarlyData(
                 // quiche refused the ticket, so there is no 0-RTT to send it in: the block's bytes are
                 // ordinary data on an established connection.
                 FirstFlight.Immediate -> {
-                    awaitEstablished()
+                    val established = awaitEstablished()
                     scope.(resumption.write)()
+                    established
                 }
             }
     }
-}
 
 /**
  * Read [conn]'s serialized session as a ticket for [protocol], the connection's negotiated application

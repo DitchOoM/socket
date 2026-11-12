@@ -49,10 +49,25 @@ fun runQuicTest(
     return runTest(timeout = deadline + 15.seconds.scaled) {
         // Dumped just before the deadline cancels the wait, so a timeout names what it was stuck on.
         val stall = armStallDump(deadline - minOf(1.seconds, deadline / 10), "runQuicTest deadline $deadline is due")
+        // The previous test's connections are not this test's timeline.
+        TraceRings.beginTest()
         try {
             withContext(Dispatchers.Default) {
                 withTimeout(deadline) { block() }
             }
+        } catch (t: Throwable) {
+            // A failure, a deadline or a cancel carries the protocol timeline of the connections this
+            // test opened, as a SUPPRESSED exception: the type and message the test (or an
+            // assertFailsWith around this call) sees are untouched, and Gradle's report prints it
+            // under "Suppressed:" without anyone having captured stdout.
+            TraceRings.report()?.let {
+                t.addSuppressed(QuicProtocolTimeline(it))
+                // Kotlin/Native's test report prints a failure's stack and message but NOT its suppressed
+                // exceptions (measured on macosArm64), so there the timeline goes to the test's own output,
+                // which Gradle keeps in the report's system-out.
+                if (isKotlinNative()) println("QUIC-TIMELINE\n$it")
+            }
+            throw t
         } finally {
             stall.disarm()
         }

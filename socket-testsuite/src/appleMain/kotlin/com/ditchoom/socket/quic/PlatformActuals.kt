@@ -9,6 +9,8 @@ import kotlin.time.Duration
 
 actual fun isAppleKNative(): Boolean = true
 
+internal actual fun traceRingRequested(): Boolean = getenv("QUIC_TEST_TRACE_RING")?.toKString() == "1"
+
 actual fun isKotlinNative(): Boolean = true
 
 // macOS K/N is OsFamily.MACOSX (real network stack — always runs the harness). iOS/tvOS/watchOS
