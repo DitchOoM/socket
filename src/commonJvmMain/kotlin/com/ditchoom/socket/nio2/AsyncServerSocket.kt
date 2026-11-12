@@ -6,6 +6,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio2.util.aAccept
 import com.ditchoom.socket.nio2.util.aBind
+import com.ditchoom.socket.nio2.util.bindEphemeralListener
 import com.ditchoom.socket.nio2.util.openAsyncServerSocketChannel
 import com.ditchoom.socket.offTheAndroidMainThread
 import kotlinx.coroutines.flow.Flow
@@ -41,7 +42,14 @@ class AsyncServerSocket(
             }
 
         // Off the Android main thread, like every socket call here: see offTheAndroidMainThread.
-        val server = offTheAndroidMainThread(onAbandoned = { it.close() }) { openAsyncServerSocketChannel().aBind(socketAddress, backlog) }
+        val server =
+            offTheAndroidMainThread(onAbandoned = { it.close() }) {
+                if (socketAddress == null) {
+                    bindEphemeralListener(backlog)
+                } else {
+                    openAsyncServerSocketChannel().aBind(socketAddress, backlog)
+                }
+            }
         this@AsyncServerSocket.server = server
         return flow {
             while (isListening()) {
