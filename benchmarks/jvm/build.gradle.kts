@@ -48,6 +48,11 @@ check(quicheBackend == "ffm" || quicheBackend == "jni") {
 }
 val multiRelease = providers.gradleProperty("benchMultiRelease").map(String::toBooleanStrict).getOrElse(true)
 // With multi-release off nothing can load the FFM loader, whatever the jar holds.
+
+// The JVM the benchmark run tasks launch on, `-PbenchLauncher=25` for JDK 25 (default 21). The build and its
+// toolchain stay on 21; only the JVM that runs the benchmarks (and so its forks) changes. Gradle's toolchain
+// discovery finds the JDK and fails the task when none matches, so a missing JDK cannot fall back to 21.
+val benchLauncherVersion = providers.gradleProperty("benchLauncher").map(String::toInt).getOrElse(21)
 val expectedBackend = if (multiRelease) quicheBackend else "jni"
 
 // The host's quiche natives (libquiche + the JNI shim), staged by :socket-quic-quiche under
@@ -216,7 +221,7 @@ tasks.register<JavaExec>("multiConnectionLoad") {
         val replacement = quicheJniOnlyJar.flatMap { it.archiveFile }
         classpath = files(replacement) + classpath.filter { !it.isQuicheJvmJar() }
     }
-    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
     outputs.upToDateWhen { false }
 }
 
@@ -236,6 +241,7 @@ tasks.withType<JavaExec>().matching { it.name.endsWith("Benchmark") }.configureE
         val replacement = quicheJniOnlyJar.flatMap { it.archiveFile }
         classpath = files(replacement) + classpath.filter { !it.isQuicheJvmJar() }
     }
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(benchLauncherVersion)) })
     // Re-run on every invocation: a benchmark result is a measurement, not a cacheable output.
     outputs.upToDateWhen { false }
 }
