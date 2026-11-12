@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JFR settings for the CI "stall ring": only what explains a stall or a slow test, so the ~60 s
+  ring a failing test dumps stays small (a few MB, not the 100+ MB the stock `profile` settings
+  write). Everything not listed is OFF (JFR ships events disabled unless a .jfc enables them).
+
+  What each group answers:
+    jdk.ThreadDump          who is parked WHERE, every 10 s. The only event that shows a thread that is
+                            STILL blocked: jdk.ThreadPark / JavaMonitorEnter / SocketRead are written when
+                            the wait ENDS, so a true hang produces none of them and its parked stack is
+                            seen only in these periodic dumps.
+    jdk.ThreadPark/Sleep    completed waits >= 20 ms with the stack that parked (LockSupport.park =
+    jdk.JavaMonitor*        every coroutine dispatcher / Mutex / Lock wait; monitors = synchronized)
+    jdk.SocketRead/Write    blocking socket I/O >= 20 ms, with the peer address
+    jdk.GCPhasePause        stop-the-world pauses (a 1 s "stall" that is a GC is not a protocol bug)
+    jdk.ExecutionSample     RUNNABLE Java frames at 20 ms: what was burning CPU
+    jdk.NativeMethodSample  threads inside native code (the JNI / FFM quiche calls) at 20 ms
+    jdk.CPULoad             process vs machine CPU once a second: a starved runner shows here
+    jdk.ThreadStart/End     which threads existed (the driver loops)
+-->
+<configuration version="2.0" label="stall-ring" description="Stall-explaining events only" provider="DitchOoM">
+  <event name="jdk.ThreadDump"><setting name="enabled">true</setting><setting name="period">10 s</setting></event>
+  <event name="jdk.ThreadPark"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.ThreadSleep"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.JavaMonitorEnter"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.JavaMonitorWait"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.SocketRead"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.SocketWrite"><setting name="enabled">true</setting><setting name="stackTrace">true</setting><setting name="threshold">20 ms</setting></event>
+  <event name="jdk.GCPhasePause"><setting name="enabled">true</setting><setting name="threshold">10 ms</setting></event>
+  <event name="jdk.ExecutionSample"><setting name="enabled">true</setting><setting name="period">20 ms</setting></event>
+  <event name="jdk.NativeMethodSample"><setting name="enabled">true</setting><setting name="period">20 ms</setting></event>
+  <event name="jdk.CPULoad"><setting name="enabled">true</setting><setting name="period">1 s</setting></event>
+  <event name="jdk.ThreadStart"><setting name="enabled">true</setting><setting name="stackTrace">false</setting></event>
+  <event name="jdk.ThreadEnd"><setting name="enabled">true</setting></event>
+</configuration>
