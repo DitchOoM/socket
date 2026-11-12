@@ -17,13 +17,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * How much work the client's driver does for one echo on an established, idle connection, counted at the
- * quiche seam with the real native binding.
- *
- * Per echo the client has to send the request and take the reply in (and ACK it). It does not have to ask
- * the loop whether quiche holds bytes for a read that is about to wait for the network: the loop sweeps
- * the readable streams after every datagram and hands the bytes to the parked read. Before that was
- * relied on, each echo cost the client a `StreamRecv` that was always answered "nothing" (an extra loop
- * turn, flush and two thread hand-offs), and a second `quiche_conn_send` pass after the sweep.
+ * quiche seam with the real native binding: about one stream read and five `quiche_conn_send` calls per echo.
+ * A read that waits for the network does not ask the loop first, because the loop announces or hands over
+ * what a received datagram made readable.
  */
 class QuicDriverWorkPerEchoTest {
     private fun certPath(name: String): String {
@@ -140,19 +136,16 @@ class QuicDriverWorkPerEchoTest {
                             val sends = counting.sends.get() - sendsBefore
                             val recvs = counting.streamRecvs.get() - recvsBefore
                             // One stream read per echo: the bytes the loop hands the parked read. A read asks the
-                            // loop only when the reply beats it to the park, which a loaded machine makes
-                            // more likely, so the bound is halfway between one per echo and the two the old
-                            // loop made on every echo, not the exact figure.
+                            // loop only when the reply beats it to the park, which a loaded machine makes more likely.
                             assertTrue(
                                 recvs <= ECHOES * 3 / 2,
-                                "client stream reads for $ECHOES echoes: $recvs (want about $ECHOES, never the 2 per echo the old loop made)",
+                                "client stream reads for $ECHOES echoes: $recvs (want about $ECHOES)",
                             )
                             // Request flush (data + done), the reply's turn (ACK + done) and the turn of the
-                            // server's ACK (done): 5 at best, a little more when a read asks or a datagram
-                            // splits a turn. The old loop made 7 on every echo; the bound is 6.
+                            // server's ACK (done): five, a little more when a read asks or a datagram splits a turn.
                             assertTrue(
                                 sends <= ECHOES * 6,
-                                "quiche_conn_send calls for $ECHOES echoes: $sends (want about ${ECHOES * 5}, never the 7 per echo the old loop made; timer turns not counted)",
+                                "quiche_conn_send calls for $ECHOES echoes: $sends (want about ${ECHOES * 5}; timer turns not counted)",
                             )
                             stream.close()
                         }
