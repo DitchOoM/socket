@@ -16,12 +16,13 @@ import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
 import com.ditchoom.socket.offTheAndroidMainThread
+import com.ditchoom.socket.resumeOffThisThread
 import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -29,6 +30,7 @@ import java.io.IOException
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
 import java.nio.channels.CompletionHandler
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
 abstract class AsyncBaseClientSocket(
@@ -42,38 +44,88 @@ abstract class AsyncBaseClientSocket(
      * *orphaned* read (RFC §3.2): the JDK's timed `AsynchronousSocketChannel.read` is destructive — an
      * elapsed timeout arms `readKilled` and kills the read half. To enforce a deadline **non-destructively**
      * the read is started with **no** JDK timeout ([Duration.INFINITE] semantics: the untimed overload) and
-     * completes a [CompletableDeferred] straight from the JDK's completion handler, while the caller
+     * is completed straight from the JDK's completion handler, while the caller
      * `withTimeout`s only the *wait*. On timeout the wait is abandoned; the read (and the receive buffer it
      * owns) survives to be re-awaited by the next `read()`. Closing the channel completes it exceptionally.
      */
     private var inFlightRead: InFlightRead? = null
 
     /**
-     * An orphaned read: the [deferred] the JDK's completion handler completes, plus the pooled [buffer] it
-     * reads into. The buffer's lifetime **follows the read, not the caller** — it is freed only once
-     * [deferred] completes (fails / EOF), never on a caller timeout, so a caller that gave up waiting
-     * can't free a buffer a live read is still writing into (the QUIC-JNI UAF class, §3.2).
+     * An orphaned read: the pooled [buffer] a read started on the channel fills, and where that read's outcome
+     * waits for whoever awaits it. The buffer's lifetime **follows the read, not the caller** — it is freed only
+     * once the read completes (fails / EOF), never on a caller timeout, so a caller that gave up waiting can't
+     * free a buffer a live read is still writing into (the QUIC-JNI UAF class, §3.2).
+     *
+     * This is the JDK's completion handler itself, and it never resumes a continuation inline: the JDK runs it on
+     * its own pool thread, which must not run a caller's code, so [resumeOffThisThread] resumes the awaiter
+     * through its own dispatcher (one hand-off, the awaiter's) and moves one with no real dispatcher to
+     * `Dispatchers.Default`.
      */
-    private object DetachedReadHandler : CompletionHandler<Int, CompletableDeferred<Int>> {
+    private class InFlightRead(
+        val buffer: PlatformBuffer,
+    ) : CompletionHandler<Int, Unit> {
+        private sealed interface State {
+            /** The read is outstanding and nobody waits for it. */
+            data object Pending : State
+
+            class Waiting(
+                val continuation: CancellableContinuation<Int>,
+            ) : State
+
+            class Done(
+                val outcome: Result<Int>,
+            ) : State
+        }
+
+        private val state = AtomicReference<State>(State.Pending)
+
         override fun completed(
             result: Int,
-            attachment: CompletableDeferred<Int>,
-        ) {
-            attachment.complete(result)
-        }
+            attachment: Unit,
+        ) = finish(Result.success(result))
 
         override fun failed(
             exc: Throwable,
-            attachment: CompletableDeferred<Int>,
-        ) {
-            attachment.completeExceptionally(wrapJvmException(exc))
-        }
-    }
+            attachment: Unit,
+        ) = finish(Result.failure(wrapJvmException(exc)))
 
-    private class InFlightRead(
-        val deferred: Deferred<Int>,
-        val buffer: PlatformBuffer,
-    )
+        private fun finish(outcome: Result<Int>) {
+            val done = State.Done(outcome)
+            while (true) {
+                when (val current = state.get()) {
+                    State.Pending -> if (state.compareAndSet(current, done)) return
+                    is State.Waiting ->
+                        if (state.compareAndSet(current, done)) {
+                            current.continuation.resumeOffThisThread(outcome)
+                            return
+                        }
+                    is State.Done -> return
+                }
+            }
+        }
+
+        /** The bytes read (negative at end of stream), or the failure. Cancelling the wait leaves the read outstanding. */
+        suspend fun await(): Int =
+            suspendCancellableCoroutine { continuation ->
+                while (true) {
+                    when (val current = state.get()) {
+                        State.Pending -> {
+                            val waiting = State.Waiting(continuation)
+                            if (state.compareAndSet(current, waiting)) {
+                                continuation.invokeOnCancellation { state.compareAndSet(waiting, State.Pending) }
+                                return@suspendCancellableCoroutine
+                            }
+                        }
+                        // Already finished: this is the caller's own thread, so resuming here runs nothing foreign.
+                        is State.Done -> {
+                            continuation.resumeWith(current.outcome)
+                            return@suspendCancellableCoroutine
+                        }
+                        is State.Waiting -> error("a second reader awaited an orphaned read: readMutex was bypassed")
+                    }
+                }
+            }
+    }
 
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
@@ -110,9 +162,9 @@ abstract class AsyncBaseClientSocket(
             val bytesRead =
                 try {
                     if (deadline.isInfinite()) {
-                        inFlight.deferred.await()
+                        inFlight.await()
                     } else {
-                        withTimeout(deadline) { inFlight.deferred.await() }
+                        withTimeout(deadline) { inFlight.await() }
                     }
                 } catch (e: TimeoutCancellationException) {
                     // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
@@ -156,17 +208,17 @@ abstract class AsyncBaseClientSocket(
                 throw wrapJvmException(e)
             }
         val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBuffer))
-        val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         // Started right here and completed by the JDK's completion handler: no coroutine is launched for the
-        // read, so there is no dispatch to start it and none to resume it. The one hand-off left is the
-        // waiter's own, from `complete` to the dispatcher of whoever awaits.
-        val result = CompletableDeferred<Int>()
+        // read, so there is no dispatch to start it and none to resume it.
+        val read = InFlightRead(buffer)
         try {
-            socket.read(byteBuffer, result, DetachedReadHandler)
-        } catch (e: IOException) {
-            throw wrapJvmException(e)
+            socket.read((buffer.unwrapFully() as BaseJvmBuffer).byteBuffer, Unit, read)
+        } catch (e: Throwable) {
+            // Nothing is reading into it: the buffer goes back, whatever the throw was.
+            buffer.freeNativeMemory()
+            throw if (e is IOException) wrapJvmException(e) else e
         }
-        return InFlightRead(result, buffer)
+        return read
     }
 
     override suspend fun read(

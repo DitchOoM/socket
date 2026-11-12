@@ -44,8 +44,16 @@ abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
     config: TransportConfig = TransportConfig(),
 ) : ByteBufferClientSocket<SocketChannel>(config) {
-    /** The shared loop's selector this socket's readiness waits go through; none for a blocking socket. */
-    val selector: Selector? = if (!blocking) SelectorLoopGroup.next() else null
+    /** The shared loop this socket's readiness waits go through; none for a blocking socket. */
+    internal val loop: SelectorLoop? = if (!blocking) SelectorLoopGroup.next() else null
+
+    /**
+     * The selector of this socket's loop, null for a blocking socket. It is **shared** by every non-blocking
+     * socket on that loop, so closing it or selecting on it by hand breaks them all; nothing here needs it.
+     * Kept for source and binary compatibility.
+     */
+    @Deprecated("Shared by every non-blocking socket on this loop: closing it or selecting on it affects them all.")
+    val selector: Selector? get() = loop?.selector
 
     private val readMutex = Mutex()
     private val readPacing = ReadPacing()
@@ -195,7 +203,7 @@ abstract class BaseClientSocket(
         val deferred =
             blockingReadScope.async {
                 try {
-                    socket.read(byteBuffer, selector, Duration.INFINITE)
+                    socket.read(byteBuffer, null as Selector?, Duration.INFINITE)
                 } catch (e: IOException) {
                     throw wrapJvmException(e)
                 }
@@ -209,7 +217,7 @@ abstract class BaseClientSocket(
     ): Int {
         val bytesRead =
             try {
-                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, selector, timeout, readPacing) } }
+                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, loop, timeout, readPacing) } }
             } catch (e: IOException) {
                 // Route every platform IOException (ClosedChannelException, Connection reset,
                 // etc.) through the single mapper. Already-wrapped SocketException is passed
@@ -244,7 +252,7 @@ abstract class BaseClientSocket(
         try {
             writeMutex.withLock {
                 while (byteBuffer.hasRemaining()) {
-                    val bytesWritten = socket.write(byteBuffer, selector, timeout)
+                    val bytesWritten = socket.write(byteBuffer, loop, timeout)
                     if (bytesWritten < 0) {
                         throw SocketClosedException.EndOfStream("Received $bytesWritten from server indicating a socket close.")
                     }
@@ -284,7 +292,7 @@ abstract class BaseClientSocket(
                     var total = 0
                     try {
                         while (byteBuffer.hasRemaining()) {
-                            val n = socket.write(byteBuffer, selector, Duration.INFINITE)
+                            val n = socket.write(byteBuffer, null as Selector?, Duration.INFINITE)
                             if (n < 0) {
                                 throw SocketClosedException.EndOfStream("Received $n from server indicating a socket close.")
                             }
@@ -316,6 +324,6 @@ abstract class BaseClientSocket(
         offTheAndroidMainThread { super.close() }
         // After the channel is closed: whoever still waits on it fails instead of waiting on a key that
         // will never fire. The selector is shared, so closing it is not an option.
-        if (selector != null && isSocketInitialized) SelectorLoop.of(selector).release(socket)
+        if (isSocketInitialized) loop?.release(socket)
     }
 }

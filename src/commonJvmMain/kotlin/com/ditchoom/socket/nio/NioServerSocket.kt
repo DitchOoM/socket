@@ -7,8 +7,10 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import com.ditchoom.socket.nio.util.aClose
+import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -24,8 +26,8 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
- * A server socket on plain NIO, for runtimes without NIO2 (Android below API 26) and for the selector-loop
- * path (`useAsyncChannels = false`). Binds through `socket().bind(…)` because `ServerSocketChannel.bind(…)`
+ * A server socket on plain NIO, for runtimes without NIO2 (Android below API 26), where `ServerSocket.allocate`
+ * returns it, and for anyone who constructs it. Binds through `socket().bind(…)` because `ServerSocketChannel.bind(…)`
  * needs API 24.
  *
  * With [nonBlocking] the listener and every accepted connection are non-blocking channels whose readiness
@@ -51,7 +53,7 @@ class NioServerSocket(
     private var listener: Listener = Listener.Unbound
 
     /** The loop the listener's OP_ACCEPT waits run on. */
-    private val loopSelector by lazy { SelectorLoopGroup.next() }
+    private val loop by lazy { SelectorLoopGroup.next() }
 
     override fun port() =
         when (val l = listener) {
@@ -107,31 +109,71 @@ class NioServerSocket(
         }
     }
 
-    /** Accepts without parking a thread: try `accept()`, and when no connection is queued wait for OP_ACCEPT on a loop. */
-    private fun acceptOnLoop(server: ServerSocketChannel): Flow<ClientSocket> {
-        val selector = loopSelector
-        return flow {
+    /**
+     * Accepts without parking a thread: try `accept()`, and when no connection is queued wait for OP_ACCEPT on a
+     * loop. Every socket system call here (`accept`, `configureBlocking`, `close`) goes through
+     * [offTheAndroidMainThread], because the collector may be the Android main thread, and a connection that
+     * is accepted but never reaches the collector is closed.
+     */
+    private fun acceptOnLoop(server: ServerSocketChannel): Flow<ClientSocket> =
+        flow {
             while (isListening()) {
-                val client: SocketChannel =
+                val accepted: SocketChannel? =
                     try {
-                        server.accept()
+                        offTheAndroidMainThread(onAbandoned = { it?.closeQuietly() }) { server.accept() }
                     } catch (e: ClosedChannelException) {
                         break
-                    } ?: try {
-                        SelectorLoop.of(selector).awaitReady(server, SelectionKey.OP_ACCEPT, Duration.INFINITE)
-                        continue
+                    }
+                if (accepted == null) {
+                    try {
+                        loop.awaitReady(server, SelectionKey.OP_ACCEPT, Duration.INFINITE)
                     } catch (e: SocketClosedException) {
                         // A close() ends the flow; a collector cancelled from outside ends it as it always has.
                         currentCoroutineContext().ensureActive()
                         break
                     } catch (e: CancellationException) {
                         // Like the blocking accept, a cancelled collector closes the listener.
-                        runCatching { server.close() }
+                        withContext(NonCancellable) {
+                            offTheAndroidMainThread { server.closeQuietly() }
+                            // A registered channel's descriptor stays open until the loop drops its key.
+                            loop.release(server)
+                        }
                         throw e
                     }
-                client.configureBlocking(false)
-                emit(NioServerToClientSocket(client, config, blocking = false))
+                    continue
+                }
+                val peer =
+                    try {
+                        offTheAndroidMainThread(onAbandoned = { accepted.closeQuietly() }) {
+                            accepted.configureBlocking(false)
+                            NioServerToClientSocket(accepted, config, blocking = false)
+                        }
+                    } catch (t: Throwable) {
+                        accepted.closeQuietly()
+                        throw t
+                    }
+                try {
+                    currentCoroutineContext().ensureActive()
+                } catch (t: Throwable) {
+                    // Cancelled between accepting and handing the connection over: nobody owns it.
+                    accepted.closeQuietly()
+                    throw t
+                }
+                emit(peer)
             }
+        }
+
+    private fun SocketChannel.closeQuietly() {
+        try {
+            close()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun ServerSocketChannel.closeQuietly() {
+        try {
+            close()
+        } catch (_: Throwable) {
         }
     }
 
@@ -140,7 +182,7 @@ class NioServerSocket(
             Listener.Unbound -> Unit
             is Listener.Bound -> {
                 l.channel.aClose()
-                if (nonBlocking) SelectorLoop.of(loopSelector).release(l.channel)
+                if (nonBlocking) loop.release(l.channel)
             }
         }
     }

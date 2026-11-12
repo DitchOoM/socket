@@ -35,10 +35,20 @@ actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToSer
 var useAsyncChannels = true
 var useNioBlocking = false
 
-actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket =
-    // The listener follows the client's choice, so the NIO paths are exercised end to end: with NIO2
-    // disabled (or missing) the server is a plain-NIO one, non-blocking unless `useNioBlocking` asks otherwise.
-    if (nio2Available && useAsyncChannels) AsyncServerSocket(config) else NioServerSocket(config, nonBlocking = !useNioBlocking)
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket = serverSocketFor(config, nio2Available, useNioBlocking)
+
+/**
+ * The listener `allocate` returns. NIO2 wherever the runtime has it, whatever `useAsyncChannels` and
+ * `useNioBlocking` say: those flags choose the *client* implementation, and a listener has always been NIO2
+ * where it exists. Without NIO2 (Android below API 26) it is a plain-NIO listener, non-blocking (accepting
+ * on the shared selector loops, accepted connections on them too) unless `useNioBlocking` asks for the
+ * blocking one (a parked [Dispatchers.IO] thread per listener and per connection read).
+ */
+internal fun serverSocketFor(
+    config: TransportConfig,
+    nio2: Boolean,
+    nioBlocking: Boolean,
+): ServerSocket = if (nio2) AsyncServerSocket(config) else NioServerSocket(config, nonBlocking = !nioBlocking)
 
 /** Whether this runtime has NIO2's asynchronous channels (every JVM; Android from API 26). Probed by name. */
 internal val nio2Available: Boolean by lazy {
