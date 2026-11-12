@@ -1057,6 +1057,67 @@ allprojects {
     }
 }
 
+// ─── -PjvmTestLauncher=<n>: every module's jvmTest runs on a JDK <n> launcher ──────────────────
+//
+// The build and the toolchain stay on JDK 21 (the FFM bindings are compiled with it); only the forked
+// test worker moves. CI uses it to run the suites on the newest LTS, because a consumer of the
+// multi-release jar on JDK 25 runs code no JDK 21 lane has executed there.
+//
+// ONE owner of the property. :socket-quic-quiche's Test task is the one exception to the launcher
+// assignment: its own build script already assigns the launcher, and additionally strips
+// `--enable-native-access` below 21 and refuses the FFM backend below 21, so a second assignment
+// here would be two owners racing on `javaLauncher`. It still gets the two checks below.
+//
+// Two proofs that the property took effect, because a launcher that silently stayed on 21 would
+// leave a green lane that ran nothing on 25:
+//  - at execution, the task fails unless the launcher Gradle resolved for it IS the requested one;
+//  - the worker is told which Java feature release Gradle resolved (`socket.test.expectedJavaFeature`,
+//    asserted from inside the JVM by JvmQuicheBackendIdentityTest), and the log names the launcher.
+allprojects {
+    val requestedLauncher =
+        providers.gradleProperty("jvmTestLauncher").orNull?.let {
+            it.toIntOrNull() ?: error("-PjvmTestLauncher must be a JDK feature release such as 17 or 25, got '$it'")
+        }
+    tasks
+        .withType<org.gradle.api.tasks.testing.Test>()
+        .matching { it.name == "jvmTest" }
+        .configureEach {
+            if (requestedLauncher != null && project.path != ":socket-quic-quiche") {
+                javaLauncher.set(
+                    project.extensions.getByType<JavaToolchainService>().launcherFor {
+                        languageVersion.set(JavaLanguageVersion.of(requestedLauncher))
+                    },
+                )
+            }
+            jvmArgumentProviders.add(
+                CommandLineArgumentProvider {
+                    listOfNotNull(
+                        javaLauncher.orNull?.let { "-Dsocket.test.expectedJavaFeature=${it.metadata.languageVersion.asInt()}" },
+                    )
+                },
+            )
+            doFirst {
+                val launcher = javaLauncher.orNull
+                if (launcher == null) {
+                    check(requestedLauncher == null) {
+                        "$path was asked for a JDK $requestedLauncher launcher (-PjvmTestLauncher) but has none"
+                    }
+                    return@doFirst
+                }
+                val metadata = launcher.metadata
+                logger.lifecycle(
+                    "TEST LAUNCHER $path: JDK ${metadata.jvmVersion} (${metadata.vendor}) at ${metadata.installationPath}",
+                )
+                if (requestedLauncher != null) {
+                    check(metadata.languageVersion.asInt() == requestedLauncher) {
+                        "$path was asked for a JDK $requestedLauncher launcher (-PjvmTestLauncher) but would run on " +
+                            "JDK ${metadata.languageVersion.asInt()} at ${metadata.installationPath}"
+                    }
+                }
+            }
+        }
+}
+
 // ─── KSP: one analysis at a time per build ───────────────────────────────────
 //
 // KSP2 runs inside the Gradle daemon, and every KSP task in a build runs on the SAME Analysis API
