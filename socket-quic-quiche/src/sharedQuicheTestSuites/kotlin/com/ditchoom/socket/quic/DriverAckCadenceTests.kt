@@ -27,10 +27,14 @@ class DriverAckCadenceTests {
         private val stub: StubQuicheApi,
         /** What quiche reports as lost: fixed before the loop starts. */
         private val lost: Long,
+        /** What quiche reports as packets received after a gap: fixed before the loop starts. */
+        private val gaps: Long,
     ) : QuicheApi by stub {
         val calls = Channel<String>(Channel.UNLIMITED)
 
         override fun connLossEvidence(conn: QuicheConn): Long = lost
+
+        override fun connRecvGaps(conn: QuicheConn): Long = gaps
 
         override fun connRecv(
             conn: QuicheConn,
@@ -66,10 +70,11 @@ class DriverAckCadenceTests {
     private suspend fun CoroutineScope.turnOf(
         datagrams: Int,
         lost: Long,
+        gaps: Long = 0,
     ): String {
         val stub = StubQuicheApi()
         stub.pathStats = listOf(pathStats(rtt = RTT))
-        val api = ScriptedApi(stub, lost)
+        val api = ScriptedApi(stub, lost, gaps)
         val driver =
             QuicheDriver(
                 migration = MigrationCapability.BackendCannotMigrate,
@@ -123,6 +128,18 @@ class DriverAckCadenceTests {
     fun aPathThatHasShownNoLossAcksEverySecondDatagram() =
         runQuicTest {
             assertEquals("RRFRRF", turnOf(datagrams = 4, lost = 0))
+        }
+
+    @Test
+    fun aReceiverThatSawGapsInThePacketNumbersAcksEveryDatagramWithoutAnyLossOfItsOwn() =
+        runQuicTest {
+            assertEquals("RFRFRFRF", turnOf(datagrams = 4, lost = 0, gaps = 2))
+        }
+
+    @Test
+    fun aLoneGapInThePacketNumbersIsNotYetEnoughToAckEveryDatagram() =
+        runQuicTest {
+            assertEquals("RRFRRF", turnOf(datagrams = 4, lost = 0, gaps = 1))
         }
 
     @Test

@@ -69,6 +69,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
@@ -731,6 +732,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
         quiche_conn_stream_data_unacknowledged(conn.handle.toCPointer()!!)
+
+    override fun connRecvGaps(conn: QuicheConn): Long = quiche_conn_recv_gaps(conn.handle.toCPointer()!!).toLong()
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = quiche_conn_timeout_as_nanos(conn.handle.toCPointer()!!)
