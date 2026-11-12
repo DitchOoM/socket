@@ -230,6 +230,35 @@ class ServerConnectionRegistryTests {
             )
         }
 
+    /**
+     * "A cleanup outranks a projection" has to hold across drains, not only inside one. The driver that
+     * a handler just closed is still finishing its last turn, and that turn can enqueue a projection
+     * after the receive loop has already drained the cleanup. Applied on its own, that projection finds
+     * no baseline (the cleanup removed it) and would route the dead driver again and forget it was
+     * recently closed.
+     */
+    @Test
+    fun aProjectionEnqueuedAfterTheCleanupWasDrainedDoesNotRouteTheDeadDriverAgain() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
+            val driver = idleDriver()
+            registry.routeDriver(cid(1), driver)
+            registry.enqueueRouteProjection(driver, setOf(cid(2)))
+            registry.drainRoutingQueues()
+            assertSame(driver, registry.driverForDcid(cid(2)), "the projection was never applied, so nothing here was tested")
+
+            registry.enqueueCleanup(driver)
+            registry.drainRoutingQueues()
+            // The driver's last turn: it publishes its SCIDs once more, after the cleanup has been applied.
+            registry.enqueueRouteProjection(driver, setOf(cid(2), cid(3)))
+            registry.drainRoutingQueues()
+
+            assertNull(registry.driverForDcid(cid(2)), "a retired driver was routed again by a late projection")
+            assertNull(registry.driverForDcid(cid(3)), "a retired driver was routed again by a late projection")
+            assertEquals(DcidRoute.RecentlyClosed, registry.routeFor(cid(2)), "the late projection erased the recently-closed record")
+            assertEquals(DcidRoute.RecentlyClosed, registry.routeFor(cid(1)))
+        }
+
     // ── A closed connection's ids are recognised for its draining period (RFC 9000 §10.2) ──
 
     /** A clock the test steps by hand; nothing here arms a timer on it. */

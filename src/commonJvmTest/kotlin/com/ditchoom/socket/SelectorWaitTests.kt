@@ -60,6 +60,28 @@ class SelectorWaitTests {
             }
         }
 
+    /**
+     * A channel that cannot be registered (left in blocking mode) fails its own wait, typed by the JDK, and
+     * does not strand the waiter or take the selector's owner down with it: a later wait still works.
+     */
+    @Test
+    fun aWaitOnAChannelThatCannotBeRegisteredFailsInsteadOfHanging() =
+        withConnectedPair { quiet, busy ->
+            Selector.open().use { selector ->
+                quiet.configureBlocking(true)
+                val ended =
+                    runBlocking {
+                        withTimeoutOrNull(
+                            BOUND,
+                        ) { runCatching { quiet.suspendUntilReady(selector, SelectionKey.OP_READ, Duration.INFINITE) } }
+                    }
+                assertNotNull(ended, "the wait was still running $BOUND after the channel was refused")
+                assertIs<java.nio.channels.IllegalBlockingModeException>(ended.exceptionOrNull(), "the wait ended as: $ended")
+                val later = runBlocking { runCatching { busy.suspendUntilReady(selector, SelectionKey.OP_WRITE, BOUND) } }
+                assertNotNull(later.getOrNull(), "a later wait on the same selector failed: $later")
+            }
+        }
+
     /** Two connected non-blocking loopback channels: [quiet] never receives anything, [busy] can always write. */
     private fun withConnectedPair(block: (quiet: SocketChannel, busy: SocketChannel) -> Unit) {
         ServerSocketChannel.open().use { server ->

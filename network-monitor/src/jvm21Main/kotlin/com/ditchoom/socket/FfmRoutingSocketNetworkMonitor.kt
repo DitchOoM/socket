@@ -3,6 +3,7 @@
 package com.ditchoom.socket
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -22,6 +23,8 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.foreign.ValueLayout.JAVA_SHORT
 import java.lang.invoke.MethodHandle
 import java.net.NetworkInterface
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -29,7 +32,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * FFM (Java 21+ Foreign Function & Memory) bindings to the handful of libc
  * routing-socket calls the reactive desktop-JVM [NetworkMonitor] needs.
  *
- * Only `socket`/`bind`/`recv`/`close` are bound. The actual availability check
+ * Only `socket`/`bind`/`recv`/`poll`/`pipe`/`write`/`close` are bound. The actual availability check
  * is done with the portable JDK [NetworkInterface] API — FFM is used *solely* to
  * block until the kernel signals a routing change (Linux netlink / macOS PF_ROUTE),
  * exactly mirroring the Linux Kotlin/Native [LinuxNetworkMonitor] hybrid approach.
@@ -51,6 +54,47 @@ internal object Libc {
     private val hBind = handle("bind", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT))
     private val hRecv = handle("recv", FunctionDescriptor.of(JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT))
     private val hClose = handle("close", FunctionDescriptor.of(JAVA_INT, JAVA_INT))
+    private val hPipe = handle("pipe", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+    private val hWrite = handle("write", FunctionDescriptor.of(JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG))
+
+    // poll(2) reports EINTR through errno, which a downcall only returns if it is asked to capture it.
+    private val errnoState = Linker.Option.captureStateLayout()
+    private val errnoOffset =
+        errnoState.byteOffset(
+            java.lang.foreign.MemoryLayout.PathElement
+                .groupElement("errno"),
+        )
+    private val hPoll =
+        linker.downcallHandle(
+            lookup.find("poll").orElseThrow { UnsatisfiedLinkError("libc symbol not found: poll") },
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT),
+            Linker.Option.captureCallState("errno"),
+        )
+
+    /** A segment for [poll] to capture `errno` into. */
+    fun allocateErrnoCapture(arena: Arena): MemorySegment = arena.allocate(errnoState)
+
+    /** What the last [poll] on [capture] left in `errno`. */
+    fun errno(capture: MemorySegment): Int = capture.get(JAVA_INT, errnoOffset)
+
+    /** Blocks until one of the `struct pollfd`s in [fds] is ready or [timeoutMillis] passes (-1: never). */
+    fun poll(
+        capture: MemorySegment,
+        fds: MemorySegment,
+        count: Long,
+        timeoutMillis: Int,
+    ): Int = hPoll.invokeExact(capture, fds, count, timeoutMillis) as Int
+
+    /** Creates a pipe into the two ints at [ends] (read end first). */
+    fun pipe(ends: MemorySegment): Int = hPipe.invokeExact(ends) as Int
+
+    fun write(
+        fd: Int,
+        buf: MemorySegment,
+        len: Long,
+    ): Long = hWrite.invokeExact(fd, buf, len) as Long
+
+    const val EINTR = 4
 
     fun socket(
         domain: Int,
@@ -84,11 +128,14 @@ internal object Libc {
  * separate Kotlin module, and a mirrored copy would drift from the original.
  *
  * Lifetime: the recv-loop coroutine owns the native scratch buffer (its own [Arena],
- * closed in `finally` on the coroutine's own thread). [close] merely closes the fd,
- * which unblocks the native `recv` — the only way to interrupt the blocking downcall,
- * since the loop has no suspension point to cancel at. The arena is deliberately NOT
- * closed from [close]: closing an arena while a `recv` downcall is still reading from
- * it throws `IllegalStateException: Session is acquired`.
+ * closed in `finally` on the coroutine's own thread). It cannot be cancelled mid-downcall, and
+ * closing a socket does not wake a thread blocked on it (on Linux a thread parked in `recv` on a
+ * descriptor another thread closes stays parked), and `shutdown(2)` is refused by netlink sockets
+ * (`ENOTSUP`). So the loop waits in `poll(2)` on the routing socket and on the read end of a pipe, and
+ * [close] writes a byte to the pipe: the loop leaves, and the descriptors are closed by whichever of the
+ * loop and [close] leaves last, so no descriptor is closed (and its number reused by another thread's
+ * `socket()`) while the loop may still name it. The arena is deliberately NOT closed from [close]:
+ * closing an arena while a downcall is still using it throws `IllegalStateException: Session is acquired`.
  */
 abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
@@ -115,7 +162,48 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
-    private var fd: Int = -1
+    private var listening: Listening = Listening.None
+
+    /** Whether there is a routing socket to listen on. */
+    private sealed interface Listening {
+        data object None : Listening
+
+        class Open(
+            val descriptors: RoutingDescriptors,
+        ) : Listening
+    }
+
+    /**
+     * The routing socket and the pipe that wakes its reader, closed by whichever of the reader and
+     * [beginClose] leaves last.
+     */
+    private class RoutingDescriptors(
+        val route: Int,
+        val wakeRead: Int,
+        private val wakeWrite: Int,
+    ) {
+        /** The reader, and [beginClose]'s caller. */
+        private val parties = AtomicInteger(2)
+        private val closeBegun = AtomicBoolean(false)
+
+        /** Wakes the reader to end, once however often it is called. */
+        fun beginClose() {
+            if (!closeBegun.compareAndSet(false, true)) return
+            Arena.ofConfined().use { arena ->
+                val wake = arena.allocate(1)
+                wake.set(java.lang.foreign.ValueLayout.JAVA_BYTE, 0, 1)
+                Libc.write(wakeWrite, wake, 1)
+            }
+            leave()
+        }
+
+        fun leave() {
+            if (parties.decrementAndGet() != 0) return
+            Libc.close(route)
+            Libc.close(wakeRead)
+            Libc.close(wakeWrite)
+        }
+    }
 
     /**
      * Opens (and binds, if the protocol requires it) the platform routing socket,
@@ -127,44 +215,73 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     protected fun start() {
         // A synchronous seed, not the network talking: published without advancing the count.
         observationRelay.publish(resolveJvmNetworkState())
-        fd = openRoutingSocket()
-        if (fd < 0) return
-
-        val localFd = fd
-        scope.launch {
-            // The scratch buffer's arena is owned by THIS coroutine and closed on its
-            // own thread once the recv loop ends — never cross-thread from close().
-            // The loop has no suspension point, so the coroutine never hops threads.
+        val route = openRoutingSocket()
+        if (route < 0) return
+        val open =
             Arena.ofConfined().use { arena ->
-                val scratch = arena.allocate(RECV_BUFFER_SIZE.toLong())
-                try {
-                    while (isActive) {
-                        val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
-                        if (n <= 0L) break
-                        // One call publishes and counts, so the observation carries the state this
-                        // delivery resolved to — including a re-resolution that changed nothing.
-                        observationRelay.record(resolveJvmNetworkState())
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                    // Socket torn down out from under the blocking recv, or an FFM
-                    // downcall failure — stop monitoring; last known state is retained.
+                val ends = arena.allocate(2L * JAVA_INT.byteSize())
+                if (Libc.pipe(ends) < 0) {
+                    Libc.close(route)
+                    return
                 }
+                Listening.Open(RoutingDescriptors(route, ends.get(JAVA_INT, 0), ends.get(JAVA_INT, JAVA_INT.byteSize())))
+            }
+        listening = open
+        val descriptors = open.descriptors
+        // ATOMIC: the loop must start even if [close] cancels the scope first, because it is a party to the
+        // descriptors and the last party out closes them.
+        scope.launch(start = CoroutineStart.ATOMIC) {
+            try {
+                // The scratch buffer's arena is owned by THIS coroutine and closed on its
+                // own thread once the recv loop ends — never cross-thread from close().
+                // The loop has no suspension point, so the coroutine never hops threads.
+                Arena.ofConfined().use { arena ->
+                    val scratch = arena.allocate(RECV_BUFFER_SIZE.toLong())
+                    // Two `struct pollfd { int fd; short events; short revents; }`: the routing socket, then the pipe.
+                    val waits = arena.allocate(2 * POLLFD_SIZE)
+                    val errno = Libc.allocateErrnoCapture(arena)
+                    try {
+                        while (isActive) {
+                            waits.set(JAVA_INT, 0, descriptors.route)
+                            waits.set(JAVA_SHORT, 4, POLLIN)
+                            waits.set(JAVA_SHORT, 6, 0)
+                            waits.set(JAVA_INT, POLLFD_SIZE, descriptors.wakeRead)
+                            waits.set(JAVA_SHORT, POLLFD_SIZE + 4, POLLIN)
+                            waits.set(JAVA_SHORT, POLLFD_SIZE + 6, 0)
+                            if (Libc.poll(errno, waits, 2, -1) < 0) {
+                                if (Libc.errno(errno) == Libc.EINTR) continue
+                                break
+                            }
+                            // [close] wrote to the pipe.
+                            if (waits.get(JAVA_SHORT, POLLFD_SIZE + 6).toInt() != 0) break
+                            val n = Libc.recv(descriptors.route, scratch, RECV_BUFFER_SIZE.toLong(), 0)
+                            if (n <= 0L) break
+                            // One call publishes and counts, so the observation carries the state this
+                            // delivery resolved to — including a re-resolution that changed nothing.
+                            observationRelay.record(resolveJvmNetworkState())
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        // Socket torn down out from under the blocking wait, or an FFM
+                        // downcall failure — stop monitoring; last known state is retained.
+                    }
+                }
+            } finally {
+                descriptors.leave()
             }
         }
     }
 
     override fun close() {
+        (listening as? Listening.Open)?.descriptors?.beginClose()
         scope.cancel()
-        if (fd >= 0) {
-            Libc.close(fd)
-            fd = -1
-        }
     }
 
     private companion object {
         private const val RECV_BUFFER_SIZE = 4096
+        private const val POLLFD_SIZE = 8L
+        private const val POLLIN: Short = 1
     }
 }
 

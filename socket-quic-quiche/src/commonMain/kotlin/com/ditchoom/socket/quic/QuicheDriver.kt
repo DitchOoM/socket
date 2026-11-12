@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
@@ -379,7 +380,7 @@ class QuicheDriver(
      */
     internal suspend fun awaitHandshakeConfirmed() {
         when (handshakeSettled.await()) {
-            HandshakeSettled.Confirmed -> Unit
+            is HandshakeSettled.Confirmed -> Unit
             HandshakeSettled.Failed -> throw connectionClosed()
         }
     }
@@ -398,7 +399,7 @@ class QuicheDriver(
     @OptIn(ExperimentalCoroutinesApi::class)
     internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
         val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
-        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() is HandshakeSettled.Confirmed
         return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
     }
 
@@ -678,12 +679,27 @@ class QuicheDriver(
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
     suspend fun awaitEstablished(timeout: Duration) {
+        awaitEstablishedOutcome(timeout)
+    }
+
+    /**
+     * [awaitEstablished], returning the resumption outcome the handshake settled with: the value read at
+     * the moment it completed, which a caller that learns of the completion after the connection has closed
+     * again still needs. A separate function so the published signature of [awaitEstablished] stays as it was.
+     */
+    internal suspend fun awaitEstablishedOutcome(timeout: Duration): QuicResumptionOutcome {
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
+        //
+        // Waits on [handshakeSettled], not on [state]: [state] conflates, so a peer that completes the
+        // handshake and closes in the same breath can show a late collector Closed with the Established
+        // in between never observed, and a connection that did come up would read as a failed handshake.
+        // The value the wait returns is the outcome read at the Established edge: reading it from
+        // [state] afterwards is a read of a connection that may have closed since.
         val settled =
             withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
-                    state.first { it !is QuicConnectionState.Handshaking }
+                    handshakeSettled.await()
                 }
             }
         if (settled == null) {
@@ -697,8 +713,10 @@ class QuicheDriver(
                 attribution = closeAttribution(),
             )
         }
-        if (settled !is QuicConnectionState.Established) {
-            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
+        return when (settled) {
+            is HandshakeSettled.Confirmed -> settled.resumption
+            HandshakeSettled.Failed ->
+                throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
     }
 
@@ -949,8 +967,12 @@ class QuicheDriver(
 
         /**
          * The driver sends nothing more on this socket. Called after the socket is closed (or, for the
-         * primary at [cleanup], handed back to its owner), so a stalled datagram is freed only once no
-         * platform operation can still read it.
+         * primary at [cleanup], handed back to its owner).
+         *
+         * A stalled datagram is freed when its retry has completed, never before: cancelling a send is a
+         * request, and a platform that has handed the buffer to the kernel (an io_uring submission) ends
+         * the operation only when the kernel does, so the retry may still be reading [PathEgress.Stalled.lent]
+         * after the cancel. [Job.invokeOnCompletion] runs at once when the retry has already ended.
          */
         fun shut() {
             val current = egress
@@ -958,7 +980,7 @@ class QuicheDriver(
             when (current) {
                 is PathEgress.Stalled -> {
                     current.retry.cancel()
-                    current.lent.freeNativeMemory()
+                    current.retry.invokeOnCompletion { current.lent.freeNativeMemory() }
                 }
                 PathEgress.Open, PathEgress.Shut -> Unit
             }
@@ -1860,7 +1882,11 @@ class QuicheDriver(
     /** Every coroutine this driver launches is named after the connection it serves. */
     private val coroutineName = "quiche-driver/${role.label}/${conn.handle.toString(16)}"
 
+    /** Set by the first [start], which is the only one there may be: a second loop would share this `conn`. */
+    private val started = AtomicBoolean(false)
+
     fun start(scope: CoroutineScope) {
+        check(started.compareAndSet(false, true)) { "QuicheDriver.start() was already called for $coroutineName" }
         driverScope = scope
         val placed = placeDriver(driverContext)
         placement = placed
@@ -1884,10 +1910,7 @@ class QuicheDriver(
                 // run() starts never enters it, and its hold must end all the same.
                 job.invokeOnCompletion { placed.release() }
             }
-
-        if (ingress is DatagramIngress.DriverReaderLoop) {
-            startReaderLoop(primary)
-        }
+        // The primary reader is launched by run() itself, not here: see [run].
     }
 
     private fun startReaderLoop(entry: PathEntry) {
@@ -2054,6 +2077,12 @@ class QuicheDriver(
      */
     private suspend fun run() {
         try {
+            // The primary path's reader is launched from inside the loop, as every migration path's is, so
+            // `readerJob` is only ever written by the loop and the `finally` below that joins it cannot run
+            // before it is set. Launched from `start()` it was assigned on the caller's thread after the
+            // loop had been launched: a loop that exited at once found no reader to join, freed the recv
+            // pool, and the reader was launched afterwards into a driver that was already gone.
+            if (ingress is DatagramIngress.DriverReaderLoop) startReaderLoop(primary)
             when (role) {
                 // Before the first send, so every handshake secret is written.
                 QuicRole.Client -> api.nameTrafficSecretsLog(conn, capture, role) { sessionId }
@@ -2913,12 +2942,13 @@ class QuicheDriver(
         // was never usable: it goes from Handshaking straight to Closed below, and the caller learns the
         // close reason instead of a stream-limit refusal on its first openStream().
         if (_state.value is QuicConnectionState.Handshaking && api.connIsEstablished(conn) && !api.connIsClosed(conn)) {
-            _state.value =
+            val established =
                 QuicConnectionState.Established(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeSettled.complete(HandshakeSettled.Confirmed)
+            _state.value = established
+            handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
