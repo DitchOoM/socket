@@ -11,7 +11,9 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.TransportConfig
-import com.ditchoom.socket.nio.util.aClose
+import com.ditchoom.socket.nio.util.ReadPacing
+import com.ditchoom.socket.nio.util.SelectorLoop
+import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
@@ -42,9 +44,11 @@ abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
     config: TransportConfig = TransportConfig(),
 ) : ByteBufferClientSocket<SocketChannel>(config) {
-    val selector = if (!blocking) Selector.open()!! else null
+    /** The shared loop's selector this socket's readiness waits go through; none for a blocking socket. */
+    val selector: Selector? = if (!blocking) SelectorLoopGroup.next() else null
 
     private val readMutex = Mutex()
+    private val readPacing = ReadPacing()
     private val writeMutex = Mutex()
 
     /**
@@ -109,12 +113,18 @@ abstract class BaseClientSocket(
      * this side's close ([SocketClosedException.General]), not a raw java.net exception the caller
      * cannot type.
      */
-    private fun receiveBufferSize(): Int =
-        try {
-            socket.socket().receiveBufferSize
+    private fun receiveBufferSize(): Int {
+        // One getsockopt for the connection's life, not one per read: the size only changes if the app
+        // sets it, and it does that through the options applied before the first read.
+        if (cachedReceiveBufferSize > 0) return cachedReceiveBufferSize
+        return try {
+            socket.socket().receiveBufferSize.also { cachedReceiveBufferSize = it }
         } catch (e: IOException) {
             throw wrapJvmException(e)
         }
+    }
+
+    private var cachedReceiveBufferSize = 0
 
     /**
      * The blocking-path read (RFC §3.2 orphaned-read single-flight). Enforces [deadline] by racing
@@ -199,7 +209,7 @@ abstract class BaseClientSocket(
     ): Int {
         val bytesRead =
             try {
-                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, selector, timeout) } }
+                readMutex.withLock { offTheAndroidMainThread { socket.read(buffer.byteBuffer, selector, timeout, readPacing) } }
             } catch (e: IOException) {
                 // Route every platform IOException (ClosedChannelException, Connection reset,
                 // etc.) through the single mapper. Already-wrapped SocketException is passed
@@ -297,7 +307,6 @@ abstract class BaseClientSocket(
         }
 
     override suspend fun close() {
-        selector?.aClose()
         // Closing the channel (in super.close) is what unblocks an orphaned blocking read/write;
         // cancelling their scopes tears down the waiters so nothing leaks past close.
         if (blocking) {
@@ -305,5 +314,8 @@ abstract class BaseClientSocket(
             blockingWriteScope.cancel()
         }
         offTheAndroidMainThread { super.close() }
+        // After the channel is closed: whoever still waits on it fails instead of waiting on a key that
+        // will never fire. The selector is shared, so closing it is not an option.
+        if (selector != null && isSocketInitialized) SelectorLoop.of(selector).release(socket)
     }
 }
