@@ -301,9 +301,10 @@ internal suspend fun buildAppleQuicConnection(
             // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here
             // on owes the channel and the scope, and must not free them a second time.
             progress = ConnectProgress.DriverStarted(udpChannel)
-            runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
-                quicConn.awaitEstablished(timeout)
-            }
+            val resumption =
+                runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConn)) {
+                    quicConn.awaitEstablished(timeout)
+                }
             // Connection owns teardown via onRelease now — hand ownership over before the pin check so
             // the failure `finally` releases nothing; a pin mismatch tears down via quicConn.close().
             progress = ConnectProgress.ConnectionOwnsTeardown
@@ -324,7 +325,7 @@ internal suspend fun buildAppleQuicConnection(
             )
             verifyServerCertificateChain(
                 serverName,
-                quicConn.resumption,
+                resumption,
                 if (usesSecTrust(quicOptions)) appleSystemChainTrust else PlatformChainTrust.InHandshake,
                 quicOptions.serverCertVerifiers,
                 bufferFactory,
@@ -403,7 +404,7 @@ internal class AppleQuicConnection(
         driver.start(scope)
     }
 
-    suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablished(timeout)
+    suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablishedOutcome(timeout)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
 
