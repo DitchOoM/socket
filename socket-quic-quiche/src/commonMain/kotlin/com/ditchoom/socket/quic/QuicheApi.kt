@@ -511,6 +511,16 @@ interface QuicheApi {
     fun connStats(conn: QuicheConn): QuicConnStats? = null
 
     /**
+     * What the loop's ACK cadence reads once per turn ([AckCadenceMemory]): the connection's `lost`
+     * plus `retrans` counters from `quiche_conn_stats`, summed over every path, or 0 on a backend that has
+     * not bound the stats FFI. The same numbers as [connStats], but a backend can answer without
+     * allocating the [QuicConnStats] (JNI and FFM read a per-thread scratch), which matters because
+     * this is read on the receive hot path. The default goes through [connStats] and allocates it.
+     * Same threading contract as [connStats].
+     */
+    fun connLossEvidence(conn: QuicheConn): Long = connStats(conn)?.let { it.lost + it.retrans } ?: 0L
+
+    /**
      * Per-path statistics (`quiche_conn_path_stats`) for the path at [pathIdx]
      * (`0 until` [QuicConnStats.pathsCount]) as a typed [QuicPathStats], or `null` when the backend
      * has not bound the stats FFI **or** quiche reports no path at [pathIdx] (negative return —
