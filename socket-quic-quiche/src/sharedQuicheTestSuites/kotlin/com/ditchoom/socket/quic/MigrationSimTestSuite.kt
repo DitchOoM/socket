@@ -354,6 +354,77 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A reply over a path losing 30 % of its datagrams in both directions must not be lost to the client's
+     * own ACKs. A driver that ACKs only every second datagram however lossy the path sends half the ACKs, so
+     * a burst's ACKs are all lost about four times as often and the server waits out PTOs that back off
+     * (15 s, 27 s, 53 s on this 800 ms path) until its 30 s write bound or the 120 s close linger ends
+     * the connection first. Over seeds 0..1999 that was 34 runs short of the whole reply and its FIN, against 9
+     * with an ACK per datagram and 11 with [AckCadence].
+     *
+     * These seeds each came up short with an ACK every second datagram and arrive whole with the adaptive
+     * cadence. A seed fixes the pipe's loss draws, not which datagrams they land on, so the list belongs to
+     * the cadence and is re-measured when that changes.
+     */
+    @Test
+    fun aReplyOverAVeryLossyPathIsDeliveredWholeBecauseTheClientAcksEveryDatagramOnceItSawLoss() =
+        runTest {
+            wrapTestBody {
+                for (seed in SEEDS_SHORT_WITH_ACKS_EVERY_SECOND_DATAGRAM) {
+                    val read = readAReplyAfterTheServerClosed(seed)
+                    assertEquals(
+                        read.expected,
+                        read.received,
+                        "seed $seed: the client got ${read.received} of ${read.expected} bytes, then ${read.ending}, " +
+                            "traffic ${read.traffic}",
+                    )
+                    assertEquals(ReplyEnding.Fin, read.ending, "seed $seed: the reply arrived whole; it must also end")
+                }
+            }
+        }
+
+    /**
+     * [LossModel.Bursty] loses datagrams in runs, at the rate it was given: over the datagrams the server
+     * sent on a link at 15 % overall loss and a mean burst of 5, the lost fraction is near 15 % and a lost
+     * datagram is followed by another about four times in five. It is what the sweep over bursty paths
+     * behind [AckCadence]'s hold rests on, so the model is checked rather than trusted.
+     */
+    @Test
+    fun aBurstyLinkLosesInRunsAtTheRateItWasGiven() =
+        runTest {
+            wrapTestBody {
+                var sent = 0
+                var lost = 0
+                var runs = 0
+                for (seed in 0L until BURSTY_CHECK_SEEDS) {
+                    val read =
+                        readAReplyAfterTheServerClosed(
+                            seed,
+                            PathImpairment(
+                                latency = 50.milliseconds,
+                                loss = 0.15,
+                                lossModel = LossModel.Bursty(meanBurst = 5, overall = 0.15),
+                            ),
+                        )
+                    var inRun = false
+                    for (entry in read.wire.filter { it.contains("server->client") }) {
+                        sent++
+                        if (entry.endsWith(" lost")) {
+                            lost++
+                            if (!inRun) runs++
+                            inRun = true
+                        } else {
+                            inRun = false
+                        }
+                    }
+                }
+                val rate = lost.toDouble() / sent
+                val meanRun = lost.toDouble() / runs
+                assertTrue(rate in 0.10..0.20, "15 % overall loss was $rate over $sent datagrams")
+                assertTrue(meanRun in 3.5..7.0, "a mean burst of 5 was $meanRun over $runs runs")
+            }
+        }
+
+    /**
      * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
      * the shape of a handler that writes and then closes — quiche could lose it: by counting the send side
      * complete once the data was acknowledged (and collecting the stream with the FIN unsent or lost, while
@@ -1545,11 +1616,14 @@ abstract class MigrationSimTestSuite {
      * long, closes the stream and returns; its connection then closes as [SharedQuicheServer] closes it.
      * The client reads the reply only after the connection has closed.
      */
-    private suspend fun readAReplyAfterTheServerClosed(seed: Long): ReplyRead =
+    private suspend fun readAReplyAfterTheServerClosed(
+        seed: Long,
+        impairment: PathImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+    ): ReplyRead =
         withMigrationSim(
             simEnv(),
             seed = seed,
-            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+            primaryImpairment = impairment,
         ) {
             val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
             client.launch {
@@ -3723,7 +3797,7 @@ abstract class MigrationSimTestSuite {
                         // How many samples the handshake and one echo leave is not this test's to fix. It
                         // is the peers' ACK cadence: quiche samples once per ACK that newly acknowledges
                         // its largest packet, and a driver that flushes after every second received
-                        // datagram (QuicheDriver.RECEIVES_PER_FLUSH) sends fewer ACKs than one that
+                        // datagram (AckCadence.Relaxed) sends fewer ACKs than one that
                         // flushed after each. With that cadence this point is reached with three samples
                         // (rttvar 33.75ms, PTO 280ms), and with the whole queue read before one flush it
                         // was two (PTO 325ms); either way the ceiling fired at three expiries, which is
@@ -5027,18 +5101,25 @@ abstract class MigrationSimTestSuite {
         const val DETERMINISM_SEED = 671_101L
 
         /**
+         * Measured: seeds among 0..1999 of the 800 ms, 30 %-loss reply scenario that read less than the whole
+         * reply (or not its FIN) when the loop ACKed every second datagram on every path, and read all of it with
+         * [AckCadence]'s two cadences. First five of 32.
+         */
+        val SEEDS_SHORT_WITH_ACKS_EVERY_SECOND_DATAGRAM = listOf(61L, 97L, 461L, 470L, 503L)
+
+        /**
          * Measured: the seeds among 0..1999 whose reply arrives whole and loses its FIN when quiche is built
          * without `patchQuicheFinIsSentUntilAcknowledged`, every run; with the patch each ends with the FIN.
          *
          * A seed fixes the sim's loss draws, not which datagrams they land on: the pipe draws once per
          * datagram in the order they are offered, so the set belongs to the driver's send cadence and is
-         * re-measured when that changes. Flushing after every second received datagram instead of every
-         * one ([QuicheDriver.RECEIVES_PER_FLUSH]) sends fewer ACKs and moved every later draw: of the
-         * previous set (30, 71, 107, 124) none loses its FIN unpatched any more (on the per-command loop it
-         * had already drifted to 12 and 17, so the test had stopped proving the patch). Seven seeds qualify
-         * now; these are the first four.
+         * re-measured when that changes. It has moved with each change of ACK cadence: on the
+         * per-command loop it was 12 and 17, with an ACK every second datagram 173, 271, 1009 and 1028 (and
+         * 1972 and others), and with the adaptive cadence none of those loses its FIN unpatched any more,
+         * so the test would have stopped proving the patch. 53 seeds of 0..1999 qualify now; these are the
+         * first four.
          */
-        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(173L, 271L, 1009L, 1028L)
+        val FIN_LOST_WITHOUT_THE_PATCH_SEEDS = listOf(15L, 38L, 94L, 232L)
 
         /**
          * PTOs from the first unanswered send to the [SILENT_PATH_EXPIRY_THRESHOLD]-th expiry: `2^4 - 1`, each
@@ -5051,6 +5132,9 @@ abstract class MigrationSimTestSuite {
 
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
+
+        /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
+        const val BURSTY_CHECK_SEEDS = 40L
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
