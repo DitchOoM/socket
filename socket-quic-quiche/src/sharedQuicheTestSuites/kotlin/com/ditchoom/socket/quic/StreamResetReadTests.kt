@@ -63,7 +63,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val result = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Reset>(
                     result,
@@ -83,7 +83,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val adapter = DriverStreamAdapter(driver, slot)
                 adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertEquals(
@@ -112,7 +112,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val adapter = DriverStreamAdapter(driver, slot)
                 assertIs<ReadResult.Reset>(adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds))
                 assertIs<ReadResult.Reset>(
@@ -138,7 +138,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val buffered = bufferFactory.allocate(4)
                 repeat(4) { buffered.writeByte(7) }
                 buffered.resetForRead()
@@ -167,14 +167,27 @@ class StreamResetReadTests {
     @Test
     fun aZeroByteChunkWithoutAFinIsAWaitNotAnEnd() =
         runQuicTest {
-            val api = StubQuicheApi()
-            api.streamRecvSequence.addLast(StreamRecvResult.Data(0, fin = false))
-            api.streamRecvSequence.addLast(StreamRecvResult.Data(3, fin = true))
+            val stub = StubQuicheApi()
+            stub.streamRecvSequence.addLast(StreamRecvResult.Data(0, fin = false))
+            stub.streamRecvSequence.addLast(StreamRecvResult.Data(3, fin = true))
+            val slot = announcedSlot()
+            val api =
+                object : QuicheApi by stub {
+                    override fun connStreamRecv(
+                        conn: QuicheConn,
+                        streamId: QuicStreamId,
+                        buf: Long,
+                        bufLen: Int,
+                    ): StreamRecvResult {
+                        // The sweep after the turn that answers this recv finds the stream readable again and
+                        // leaves its signal: the one the read parks on after the empty answer.
+                        slot.dataSignal.trySend(Unit)
+                        return stub.connStreamRecv(conn, streamId, buf, bufLen)
+                    }
+                }
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
-                slot.dataSignal.trySend(Unit)
                 val adapter = DriverStreamAdapter(driver, slot)
                 val result = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Data>(
@@ -200,7 +213,7 @@ class StreamResetReadTests {
     fun aPureFinStillDeliversBytesDrainedInTheSameWake() =
         runQuicTest {
             val stub = StubQuicheApi()
-            val slot = StreamSlot(QuicStreamId(0L))
+            val slot = announcedSlot()
             val api =
                 object : QuicheApi by stub {
                     override fun connStreamRecv(
@@ -258,7 +271,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val thrown =
                     assertFailsWith<QuicStreamReadException>(
                         "a quiche stream error must not read as a clean end-of-stream",
@@ -279,7 +292,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val thrown =
                     assertFailsWith<QuicStreamReadException> {
                         adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
@@ -303,7 +316,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val buffered = bufferFactory.allocate(4)
                 repeat(4) { buffered.writeByte(9) }
                 buffered.resetForRead()

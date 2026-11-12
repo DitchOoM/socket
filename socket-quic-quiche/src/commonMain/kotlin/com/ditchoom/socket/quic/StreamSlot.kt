@@ -104,9 +104,45 @@ class StreamSlot(
         advertiseWaitingRead(size)
         try {
             dataSignal.receive()
+        } catch (t: Throwable) {
+            // A receive that was cancelled can swallow the signal it was woken by (a channel gives no
+            // guarantee otherwise), and the bytes that signal announced stay in quiche. The next read
+            // asks quiche rather than trusting the absence of a signal.
+            quicheMayHoldBytes.store(1)
+            throw t
         } finally {
             withdrawWaitingRead()
         }
+    }
+
+    /**
+     * Set when quiche may hold bytes of this stream that no signal in [dataSignal] still announces: a
+     * read parked in [awaitData] was cancelled, or the loop handed a parked read a chunk that filled the
+     * size it asked for ([QuicheDriver] `handToWaitingRead`), so more may follow it. Read-and-cleared by
+     * [readNeedsQuicheAnswer].
+     */
+    private val quicheMayHoldBytes = AtomicInt(0)
+
+    /** The loop handed a read a chunk that filled its request: quiche may hold more, and no signal says so. */
+    internal fun noteChunkFilledRequest() = quicheMayHoldBytes.store(1)
+
+    /**
+     * Whether a read that found nothing queued must put a `StreamRecv` to the loop before it parks.
+     *
+     * quiche only ever holds bytes of this stream because a datagram arrived, and the loop sweeps the
+     * readable streams after every datagram: it hands the bytes to a read parked in [awaitData], or, when
+     * none is, leaves a signal in [dataSignal]. So a read that takes no signal here, and has no
+     * [quicheMayHoldBytes] mark, can park at once: whatever arrives later reaches it through the same
+     * sweep. Asking anyway cost a loop turn, a flush and two thread hand-offs per read that had to wait
+     * for the network, to be answered `Done` every time.
+     *
+     * Both reads are always made (no short circuit): a signal left behind would make the next read ask
+     * for nothing.
+     */
+    internal fun readNeedsQuicheAnswer(): Boolean {
+        val signalled = dataSignal.tryReceive().isSuccess
+        val marked = quicheMayHoldBytes.exchange(0) == 1
+        return signalled || marked
     }
 
     /** [awaitData]'s advert, apart from its wait: the hand-off model checks these two around the driver. */

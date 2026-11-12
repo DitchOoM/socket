@@ -92,6 +92,8 @@ class QuicReadPoolingTests {
                     val slot = openStream(driver)
                     val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
                     repeat(300) {
+                        // quiche holds bytes for every read (the stub answers Data each time): the sweep's signal.
+                        slot.dataSignal.trySend(Unit)
                         val result = withTimeout(2.seconds) { stream.read(2.seconds) }
                         assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
                         // The consumer hands ownership back after consuming — recycles to the pool.

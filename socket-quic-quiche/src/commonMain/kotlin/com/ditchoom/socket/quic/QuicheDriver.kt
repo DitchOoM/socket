@@ -2656,6 +2656,11 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
+        // Before the flush, not after it: handing a parked read its bytes is what makes quiche owe the
+        // peer flow-control credit, and the flush below then carries that credit with the ACK in one
+        // pass. After the flush it needed a second one. What quiche reports readable depends on what it
+        // received, not on what it sent, so the sweep sees the same streams on either side of the flush.
+        discoverNewStreams()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -2663,7 +2668,6 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
-        discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
@@ -2903,6 +2907,9 @@ class QuicheDriver(
                 if (result.bytesRead > 0) {
                     // Consuming stream bytes is what makes quiche owe the peer flow-control credit.
                     quicheOwesAFlush = true
+                    // A chunk that filled the request may be followed by more in quiche; the signal that
+                    // wakes this read is consumed by the wake, so say so where the next read will look.
+                    if (result.bytesRead >= size) slot.noteChunkFilledRequest()
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
                     if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
@@ -5083,7 +5090,14 @@ class DriverStreamAdapter(
                     if (slot.end != StreamEnd.Open) {
                         slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
                     }
+                    // Nothing signalled and nothing marked: quiche holds nothing for this stream, so park
+                    // without a StreamRecv round trip through the loop. See [StreamSlot.readNeedsQuicheAnswer].
+                    var parkFirst = !slot.readNeedsQuicheAnswer()
                     while (true) {
+                        if (parkFirst) {
+                            parkFirst = false
+                            awaitDataThenQueued()?.let { return@withStreamDeadline it }
+                        }
                         val deferred = CompletableDeferred<StreamRecvResult>()
                         // trySend, not send: on the UNLIMITED command channel it always succeeds unless
                         // the channel is closed (getOrThrow then rethrows the close cause, exactly like

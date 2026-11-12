@@ -105,6 +105,12 @@ class ReadHandOffAtCloseTests {
             }
             try {
                 runCurrent() // the block opens its stream and enters the reader's dispatcher
+                // quiche holds the stream's bytes (the stub's queued answer): one turn of the loop sweeps
+                // the readable streams and leaves the signal that tells the read to ask for them.
+                api.readableStreams.addLast(0L)
+                driver.commands.trySend(QuicheCmd.Stats(CompletableDeferred()))
+                runCurrent()
+                api.readableStreams.clear()
                 reader.release() // the read enqueues its StreamRecv and awaits it
                 runCurrent() // the driver answers with the bytes: the hand-off
                 assertTrue(api.streamRecvSequence.isEmpty(), "the driver never answered the read, so nothing was handed off")
@@ -170,6 +176,11 @@ class ReadHandOffAtCloseTests {
             }
             try {
                 runCurrent()
+                // The signal the loop's sweep leaves when quiche holds the stream's bytes; see the test above.
+                api.readableStreams.addLast(0L)
+                driver.commands.trySend(QuicheCmd.Stats(CompletableDeferred()))
+                runCurrent()
+                api.readableStreams.clear()
                 reader.release()
                 runCurrent()
                 assertTrue(reader.hasParked, "the reader must be parked between the hand-off and its resumption")
