@@ -18,7 +18,8 @@ import kotlin.time.Duration.Companion.seconds
 class SendNowTests {
     private class CountingChannel(
         private val now: SendOutcome?,
-    ) : UdpChannel {
+    ) : UdpChannel,
+        ImmediateUdpSend {
         @Volatile
         var nowCount = 0
 

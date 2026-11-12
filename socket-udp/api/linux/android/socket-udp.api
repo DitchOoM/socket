@@ -382,6 +382,10 @@ public final class com/ditchoom/socket/udp/MultiplexedUdpSocketKt {
 	public static synthetic fun demultiplex-D8Jn--E$default (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lkotlinx/coroutines/CoroutineScope;Ljava/util/Set;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;
 }
 
+public abstract interface class com/ditchoom/socket/udp/NonSuspendingDatagramSend {
+	public abstract fun trySendNow (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;)Z
+}
+
 public final class com/ditchoom/socket/udp/SockAddrLayout {
 	public fun <init> (ZII)V
 	public final fun component1 ()Z

@@ -48,7 +48,8 @@ internal class ServerConnectionUdpChannel(
     private val peerFor: (PathKey) -> SocketAddress?,
     private val localFor: (PathKey) -> SocketAddress?,
     private val pinning: ReplySourcePinning,
-) : UdpChannel {
+) : UdpChannel,
+    ImmediateUdpSend {
     override suspend fun receive(buffer: PlatformBuffer): Int =
         throw UnsupportedOperationException("server egress channel does not receive")
 

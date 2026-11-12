@@ -38,7 +38,8 @@ import kotlinx.coroutines.awaitCancellation
  */
 internal class DatagramChannelUdpChannel(
     private val channel: ConnectedDatagramChannel,
-) : UdpChannel {
+) : UdpChannel,
+    ImmediateUdpSend {
     override val ownsReceiveBuffer: Boolean = true
 
     override suspend fun receiveOwned(): OwnedDatagram =

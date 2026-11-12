@@ -3414,7 +3414,7 @@ class QuicheDriver(
             // have to wait (or a channel with no such attempt) takes the bounded path below, unchanged.
             flight.record(FlightEvent.SendBegin, written.toLong())
             val outcome =
-                channel.sendNow(scratch.buffer, written, sendTarget) ?: try {
+                (channel as? ImmediateUdpSend)?.sendNow(scratch.buffer, written, sendTarget) ?: try {
                     // Bounded, because the driver loop's liveness must not be an external promise.
                     // `send` is the one call this loop makes into platform code that can suspend
                     // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
