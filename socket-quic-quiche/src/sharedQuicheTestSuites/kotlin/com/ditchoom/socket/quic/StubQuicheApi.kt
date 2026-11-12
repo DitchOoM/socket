@@ -348,11 +348,22 @@ internal class StubQuicheApi : QuicheApi {
     /** When set, [connDgramSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
     @Volatile var connDgramSendResult: Int? = null
 
+    /**
+     * Like quiche's `dgram_send`: `INVALID_STATE` (-6) when the peer never advertised datagram support,
+     * `BUFFER_TOO_SHORT` (-2) when the datagram is larger than [dgramMaxWritableLen] *now*, otherwise
+     * its length. [connDgramSendResult] overrides all of it.
+     */
     override fun connDgramSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ) = connDgramSendResult ?: bufLen
+    ): Int {
+        connDgramSendResult?.let { return it }
+        return when (val max = dgramMaxWritableLen) {
+            MaxDatagramSize.Unavailable -> -6
+            is MaxDatagramSize.Bytes -> if (bufLen > max.bytes) -2 else bufLen
+        }
+    }
 
     /** Drained first by [connDgramRecv]; falls back to [dgramRecvResult] when empty. */
     val dgramRecvSequence: ArrayDeque<StreamRecvResult> = ArrayDeque()

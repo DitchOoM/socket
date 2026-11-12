@@ -290,9 +290,10 @@ internal suspend fun buildJvmQuicConnection(
         // The driver's cleanup now frees the sockaddr encodings on any exit; a failure from here on
         // owes the channel, the config and the scope, and must not free them a second time.
         progress = ConnectProgress.DriverStarted(udpChannel)
-        runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConnection)) {
-            quicConnection.awaitEstablished(timeout)
-        }
+        val resumption =
+            runEarlyData(quicOptions.resumption, sessionOffer, ConnectionEarlyDataScope(quicConnection)) {
+                quicConnection.awaitEstablished(timeout)
+            }
         // The connection now owns its full teardown (config + scopes + the UDP channel) via onRelease,
         // so the `finally` below must release nothing. A verification failure past this point tears the
         // connection down via quicConnection.close() instead (inside verifyServerCertificateHashes).
@@ -309,7 +310,7 @@ internal suspend fun buildJvmQuicConnection(
         )
         verifyServerCertificateChain(
             serverName,
-            quicConnection.resumption,
+            resumption,
             PlatformChainTrust.InHandshake,
             quicOptions.serverCertVerifiers,
             bufferFactory,

@@ -63,7 +63,7 @@ internal class JvmQuicConnection(
         driver.start(scope)
     }
 
-    internal suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablished(timeout)
+    internal suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablishedOutcome(timeout)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
 

@@ -14,7 +14,13 @@ internal sealed interface EarlyDataAcceptance {
 
 /** How a connection's handshake ended. */
 internal sealed interface HandshakeSettled {
-    data object Confirmed : HandshakeSettled
+    /**
+     * The handshake completed. [resumption] is how it used a session ticket, read at that moment, so a
+     * caller that learns of the completion after the connection has closed again still has it.
+     */
+    class Confirmed(
+        val resumption: QuicResumptionOutcome,
+    ) : HandshakeSettled
 
     /** The connection closed, or its driver was torn down, before the handshake completed. */
     data object Failed : HandshakeSettled
