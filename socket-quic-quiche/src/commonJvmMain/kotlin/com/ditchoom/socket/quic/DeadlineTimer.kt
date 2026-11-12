@@ -7,9 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Runnable
-import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ThreadFactory
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -32,8 +33,8 @@ import kotlin.coroutines.resume
  *
  * This timer's thread is started once, at establishment, where a failure is a typed refusal
  * ([DeadlineTimerUnavailableException]) rather than a connection whose timers cannot fire. After that
- * it never starts another: the executor's single core thread does not time out, and a task that throws
- * is captured by its future without killing the thread. A start that fails leaves nothing behind, so
+ * it never starts another: the thread does not time out, and an action that throws is handed to the
+ * thread's uncaught-exception handler without ending it. A start that fails leaves nothing behind, so
  * the next [start] tries again.
  *
  * The start is eager because a lazy one fails the same way kotlinx's does: the first deadline armed
@@ -41,17 +42,48 @@ import kotlin.coroutines.resume
  * thread that will never exist. A timer nobody [start]ed — a driver a test builds directly — still
  * starts its thread on the first deadline armed on it.
  *
+ * Also the timer of every bound on a stream read or write ([withStreamDeadline]): a deadline armed and
+ * disarmed on each operation of a busy stream must not wake the thread, see [schedule].
+ *
  * [threadFactory] is a seam for a test that needs the thread start to fail.
  */
 internal class DeadlineTimer(
-    threadFactory: ThreadFactory = DaemonTimerThreads,
+    private val threadFactory: ThreadFactory = DaemonTimerThreads,
+    /** Monotonic nanoseconds; a seam for a test that needs a pass on the timer thread to fail. */
+    private val clock: () -> Long = System::nanoTime,
 ) {
-    private val executor =
-        ScheduledThreadPoolExecutor(1, threadFactory).apply {
-            // Most deadlines are disarmed long before they are due (the driver re-arms its wake on every
-            // command); removal on cancel keeps them from accumulating in the queue until then.
-            removeOnCancelPolicy = true
-        }
+    /** What the timer thread is doing, for the arming side to decide whether it has to wake it. */
+    private sealed interface TimerThread {
+        /** Running a pass over the queue: it sees anything armed before its next sleep, so arming need not wake it. */
+        object Awake : TimerThread
+
+        /** Parked until [dueNanos] (on [origin]'s clock) unless woken. */
+        class Sleeping(
+            val dueNanos: Long,
+        ) : TimerThread
+
+        /** Parked with nothing armed, until woken. */
+        object Idle : TimerThread
+    }
+
+    private val queue = DeadlineQueue()
+    private val origin = clock()
+    private val state = AtomicReference<TimerThread>(TimerThread.Awake)
+
+    @Volatile
+    private var thread: Thread? = null
+
+    /** Nanoseconds since this timer was made; a monotonic clock that cannot wrap in any process's life. */
+    private fun now(): Long = clock() - origin
+
+    /** Passes the timer thread has made over the queue: one per wake-up, so a test can see an idle timer does not wake. */
+    internal val passes = AtomicInteger(0)
+
+    /** Deadlines held, disarmed ones not yet dropped included, so a test can see the queue stays bounded. */
+    internal val queued: Int get() = queue.size
+
+    /** Whether the timer thread is parked (until a deadline, or with nothing armed) and so will not pass until woken. */
+    internal val isParked: Boolean get() = state.get() !== TimerThread.Awake
 
     /**
      * Starts the timer thread if it is not already running.
@@ -59,24 +91,125 @@ internal class DeadlineTimer(
      * @throws DeadlineTimerUnavailableException when the thread cannot be started.
      */
     fun start() {
-        try {
-            executor.prestartCoreThread()
-        } catch (failure: Throwable) {
-            throw DeadlineTimerUnavailableException(failure)
+        if (thread != null) return
+        synchronized(this) {
+            if (thread != null) return
+            try {
+                val started = threadFactory.newThread(::run)
+                started.start()
+                thread = started
+            } catch (failure: Throwable) {
+                throw DeadlineTimerUnavailableException(failure)
+            }
         }
     }
 
     /** [dispatcher], with every `delay`, `withTimeout` and `onTimeout` inside it firing on this timer. */
     fun over(dispatcher: CoroutineDispatcher): CoroutineDispatcher = TimedDispatcher(dispatcher, this)
 
-    /** Runs [block] on the timer thread after [timeMillis], unless the returned handle is disposed first. */
+    /**
+     * Runs [block] on the timer thread after [timeMillis], unless the returned handle is disposed first.
+     *
+     * Arming is a lock-free push of one node; disposing is one compare-and-set on it. The thread is woken
+     * only when this deadline is earlier than the one it is sleeping towards (or it has nothing to sleep
+     * towards), which a bound re-armed on every read and write of a stream, each a little later than the
+     * stale one it replaces, never is: such a bound costs no wake-up, however many are armed and disarmed.
+     * A disarmed deadline stays in the queue: the thread drops it when it falls due, or a sweep does once
+     * [DeadlineQueue.COMPACT_MIN] of them are most of the queue (the arming that makes it so wakes the thread
+     * for that), so a stale bound costs one pass at its own due time and the queue stays bounded.
+     */
     fun schedule(
         timeMillis: Long,
         block: Runnable,
-    ): DisposableHandle {
+    ): DeadlineQueue.Node {
         if (timeMillis >= NEVER_MILLIS) return NothingScheduled
-        val due = executor.schedule(block, timeMillis, TimeUnit.MILLISECONDS)
-        return DisposableHandle { due.cancel(false) }
+        // A timer nobody started (a driver a test builds directly) starts its thread on the first deadline.
+        start()
+        val due = now() + maxOf(timeMillis, 0L) * NANOS_PER_MILLI
+        val node = queue.arm(due, block)
+        if (queue.needsSweep()) wakeToSweep() else wakeIfEarlier(due)
+        return node
+    }
+
+    /** Wakes the thread, whatever it sleeps towards, to drop the disarmed deadlines that have piled up. */
+    private fun wakeToSweep() {
+        while (true) {
+            when (val current = state.get()) {
+                TimerThread.Awake -> return
+                is TimerThread.Sleeping, TimerThread.Idle ->
+                    if (state.compareAndSet(current, TimerThread.Awake)) {
+                        LockSupport.unpark(thread)
+                        return
+                    }
+            }
+        }
+    }
+
+    private fun wakeIfEarlier(due: Long) {
+        while (true) {
+            when (val current = state.get()) {
+                TimerThread.Awake -> return
+                is TimerThread.Sleeping ->
+                    if (due >= current.dueNanos) {
+                        return
+                    } else if (state.compareAndSet(current, TimerThread.Awake)) {
+                        LockSupport.unpark(thread)
+                        return
+                    }
+                TimerThread.Idle ->
+                    if (state.compareAndSet(TimerThread.Idle, TimerThread.Awake)) {
+                        LockSupport.unpark(thread)
+                        return
+                    }
+            }
+        }
+    }
+
+    /**
+     * The timer thread's life: passes over the queue, for as long as the process runs. A pass that throws
+     * anything (an `OutOfMemoryError` growing the heap, a clock that fails) is reported to the thread's
+     * uncaught-exception handler and followed by another after a short pause: the thread must not die,
+     * because every bound in the process depends on it and a dead one never fires again, so each read and
+     * write would wait forever. The queue keeps what a failed pass had taken off its inbox ([DeadlineQueue]).
+     */
+    private fun run() {
+        while (true) {
+            try {
+                pass()
+            } catch (failure: Throwable) {
+                state.set(TimerThread.Awake)
+                reportOnThisThread(failure)
+                LockSupport.parkNanos(FAILED_PASS_PAUSE_NANOS)
+            }
+        }
+    }
+
+    private fun pass() {
+        // A stray interrupt (a cancellation handler that re-asserts one runs on this thread) would make every
+        // park return at once and the loop spin; nothing here is interruptible, so it is cleared and ignored.
+        Thread.interrupted()
+        state.set(TimerThread.Awake)
+        passes.incrementAndGet()
+        queue.fireDue(now())
+        val sleeping =
+            when (val next = queue.nextDue()) {
+                is NextDue.At -> {
+                    if (next.nanos <= now()) return
+                    TimerThread.Sleeping(next.nanos)
+                }
+                NextDue.None -> TimerThread.Idle
+            }
+        if (!state.compareAndSet(TimerThread.Awake, sleeping)) return
+        // An arm that raced the compare-and-set above saw Awake and did not wake us; it pushed first.
+        if (queue.hasInbox()) {
+            state.compareAndSet(sleeping, TimerThread.Awake)
+            return
+        }
+        when (sleeping) {
+            TimerThread.Idle -> LockSupport.park(this)
+            is TimerThread.Sleeping -> LockSupport.parkNanos(this, sleeping.dueNanos - now())
+            TimerThread.Awake -> Unit
+        }
     }
 
     companion object {
@@ -88,6 +221,14 @@ internal class DeadlineTimer(
          * (`Duration.INFINITE` arrives as `Long.MAX_VALUE`).
          */
         private const val NEVER_MILLIS = Long.MAX_VALUE / 2_000_000L
+
+        private const val NANOS_PER_MILLI = 1_000_000L
+
+        private const val FAILED_PASS_PAUSE_NANOS = 50_000_000L
+
+        /** What [schedule] returns for a wait it does not schedule: a deadline that is already disarmed, on no timer's queue. */
+        private val NothingScheduled: DeadlineQueue.Node =
+            DeadlineQueue().arm(Long.MAX_VALUE) { }.also { it.disarm() }
     }
 }
 
@@ -177,11 +318,6 @@ internal fun applicationScopeDispatcher(driverContext: CoroutineContext): Corout
                 else -> Dispatchers.IO
             }
     }
-
-/** What [DeadlineTimer.schedule] returns for a wait it does not schedule. */
-private object NothingScheduled : DisposableHandle {
-    override fun dispose() = Unit
-}
 
 private object DaemonTimerThreads : ThreadFactory {
     override fun newThread(task: java.lang.Runnable): Thread = Thread(task, "quic-deadline-timer").apply { isDaemon = true }
