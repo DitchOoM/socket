@@ -51,15 +51,15 @@ class ServerSocketAllocateTests {
                 useAsyncChannels = async
                 useNioBlocking = blocking
                 assertIs<AsyncServerSocket>(ServerSocket.allocate(), "async=$async blocking=$blocking")
-                assertIs<AsyncServerSocket>(serverSocketFor(TransportConfig(), nio2 = true, nioBlocking = blocking))
+                assertIs<AsyncServerSocket>(serverSocketFor(TransportConfig(), ServerBacking.Nio2))
             }
         }
     }
 
     @Test
     fun withoutNio2TheListenerIsPlainNio() {
-        assertIs<SelectorServerSocket>(serverSocketFor(TransportConfig(), nio2 = false, nioBlocking = false))
-        assertIs<NioServerSocket>(serverSocketFor(TransportConfig(), nio2 = false, nioBlocking = true))
+        assertIs<SelectorServerSocket>(serverSocketFor(TransportConfig(), ServerBacking.NioSelector))
+        assertIs<NioServerSocket>(serverSocketFor(TransportConfig(), ServerBacking.NioBlocking))
     }
 
     @Test

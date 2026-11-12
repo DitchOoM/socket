@@ -27,7 +27,7 @@ abstract class LoopMailboxHarness(
 
     @Operation(nonParallelGroup = LOOP)
     fun loopTurn() {
-        while (mailbox.poll() != null) Unit
+        mailbox.drain { }
         if (mailbox.prepareToSleep()) sleep.updateAndGet { if (it == PERMIT) IDLE else SLEEPING }
     }
 

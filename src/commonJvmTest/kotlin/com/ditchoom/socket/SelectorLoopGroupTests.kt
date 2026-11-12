@@ -11,6 +11,7 @@ import com.ditchoom.socket.nio.BaseClientSocket
 import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
+import com.ditchoom.socket.nio.util.read
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -70,7 +71,7 @@ class SelectorLoopGroupTests {
 
     private fun listener() = SelectorServerSocket()
 
-    private fun parkedOn(socket: ClientSocket) = (socket as BaseClientSocket).parkedWaiters()
+    private suspend fun parkedOn(socket: ClientSocket) = (socket as BaseClientSocket).parkedWaiters()
 
     private fun parkedChannels() = SelectorLoopGroup.shared.running().sumOf { it.parkedChannelCount }
 
@@ -243,15 +244,13 @@ class SelectorLoopGroupTests {
         val selector = Selector.open()
         try {
             val failure =
-                assertFailsWith<SocketIOException> {
-                    SelectorLoop.of(
-                        selector,
-                    ) { throw OutOfMemoryError("unable to create native thread") }
+                assertFailsWith<SocketConnectionException.Other> {
+                    SelectorLoop.of(selector) { throw OutOfMemoryError("unable to create native thread") }
                 }
-            assertTrue("Could not start" in failure.message, failure.message)
+            assertEquals(ConnectionFailureReason.OutOfMemory, failure.reason)
             assertTrue(SelectorLoop.of(selector).isRunning)
             val group = SelectorLoopGroup(1) { throw OutOfMemoryError("unable to create native thread") }
-            assertFailsWith<SocketIOException> { group.next() }
+            assertFailsWith<SocketConnectionException.Other> { group.next() }
             assertTrue(group.running().isEmpty())
         } finally {
             selector.close()
@@ -481,7 +480,53 @@ class SelectorLoopGroupTests {
             }
         }
 
-    private fun withRawPair(block: (quiet: SocketChannel, busy: SocketChannel, feed: () -> Unit) -> Unit) {
+    /** A wait that outlives its deadline fails with the typed context of what it waited for, not a message to parse. */
+    @Test
+    fun aWaitThatTimesOutSaysWhatItWaitedFor() =
+        runBlocking {
+            withRawPair { quiet, _, _ ->
+                val loop = SelectorLoopGroup.shared.next()
+                val read = assertFailsWith<SocketTimeoutException> { loop.awaitReady(quiet, SelectionKey.OP_READ, 50.milliseconds) }
+                assertEquals(TimeoutContext.Read(50.milliseconds), read.context)
+                // An established channel never becomes connectable, so this wait reaches its deadline.
+                val connect = assertFailsWith<SocketTimeoutException> { loop.awaitReady(quiet, SelectionKey.OP_CONNECT, 50.milliseconds) }
+                assertEquals(TimeoutContext.Connect(50.milliseconds, host = null, port = -1), connect.context)
+            }
+        }
+
+    /** Callers racing to start a loop on one selector all get the same running loop. */
+    @Test
+    fun concurrentCallersShareOneLoopPerSelector() {
+        val selector = Selector.open()
+        try {
+            val pool =
+                java.util.concurrent.Executors
+                    .newFixedThreadPool(8)
+            try {
+                val loops = (1..8).map { pool.submit<SelectorLoop> { SelectorLoop.of(selector) } }.map { it.get() }
+                assertEquals(1, loops.distinct().size)
+                assertTrue(loops.first().isRunning)
+            } finally {
+                pool.shutdownNow()
+            }
+        } finally {
+            selector.close()
+        }
+    }
+
+    /** A non-blocking channel read with no selector of the caller's waits on the shared loops. */
+    @Test
+    fun aReadWithoutASelectorWaitsOnTheSharedLoops() =
+        runBlocking {
+            withRawPair { quiet, _, feed ->
+                val buffer = java.nio.ByteBuffer.allocate(8)
+                val read = async(Dispatchers.IO) { quiet.read(buffer, null as Selector?, 5.seconds) }
+                feed()
+                assertEquals(1, withTimeout(5.seconds) { read.await() })
+            }
+        }
+
+    private inline fun withRawPair(block: (quiet: SocketChannel, busy: SocketChannel, feed: () -> Unit) -> Unit) {
         ServerSocketChannel.open().use { server ->
             server.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
             SocketChannel.open(server.localAddress).use { quiet ->
@@ -502,8 +547,8 @@ class SelectorLoopGroupTests {
     /** Waits for [condition]; if it never holds, fails with [state] (what the test saw) instead of a bare timeout. */
     private suspend fun awaitUntil(
         bound: Duration = 5.seconds,
-        state: () -> String = { "" },
-        condition: () -> Boolean,
+        state: suspend () -> String = { "" },
+        condition: suspend () -> Boolean,
     ) {
         try {
             withTimeout(bound) { while (!condition()) delay(10) }

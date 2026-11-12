@@ -188,16 +188,15 @@ private suspend fun AbstractSelectableChannel.awaitReadiness(
     if (!isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
 }
 
-/** The selector a non-blocking channel's waits run on is the caller's to name; a blocking channel needs none. */
-private fun Selector?.loopOrRefuse(): SelectorLoop =
-    SelectorLoop.of(this ?: throw IllegalArgumentException("Selector must be provided if it is a non-blocking channel"))
+/** The loop a non-blocking channel's waits run on: the one that owns the caller's [Selector], else a shared one. */
+private fun Selector?.loopOrShared(): SelectorLoop = if (this == null) SelectorLoopGroup.shared.next() else SelectorLoop.of(this)
 
 suspend fun <T> T.read(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
-    if (isBlocking) readBlocking(buffer) else read(buffer, selector.loopOrRefuse(), timeout, ReadPacing())
+    if (isBlocking) readBlocking(buffer) else read(buffer, selector.loopOrShared(), timeout, ReadPacing())
 
 internal suspend fun <T> T.readBlocking(buffer: ByteBuffer): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
     withContext(Dispatchers.IO) { suspendRead(buffer) }
@@ -216,10 +215,7 @@ internal class ReadPacing {
 
     fun next(): ReadStep = step.get()
 
-    fun learn(
-        waited: Boolean,
-        filledBuffer: Boolean,
-    ) = step.set(if (waited && !filledBuffer) ReadStep.RegisterFirst else ReadStep.ReadFirst)
+    fun then(step: ReadStep) = this.step.set(step)
 }
 
 internal suspend fun <T> T.read(
@@ -234,7 +230,7 @@ internal suspend fun <T> T.read(
     while (true) {
         val read = read(buffer)
         if (read != 0 || capacity == 0) {
-            pacing.learn(waited, filledBuffer = read >= capacity)
+            pacing.then(if (waited && read < capacity) ReadStep.RegisterFirst else ReadStep.ReadFirst)
             return read
         }
         waited = true
@@ -247,7 +243,7 @@ suspend fun <T> T.write(
     selector: Selector?,
     timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : WritableByteChannel =
-    if (isBlocking) writeBlocking(buffer) else write(buffer, selector.loopOrRefuse(), timeout)
+    if (isBlocking) writeBlocking(buffer) else write(buffer, selector.loopOrShared(), timeout)
 
 internal suspend fun <T> T.writeBlocking(buffer: ByteBuffer): Int where T : AbstractSelectableChannel, T : WritableByteChannel =
     withContext(Dispatchers.IO) { suspendWrite(buffer) }

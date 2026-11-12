@@ -8,7 +8,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.data.freeIfData
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.TransportConfig
@@ -137,7 +136,15 @@ abstract class AsyncBaseClientSocket(
                             continuation.resumeWith(current.outcome)
                             return@suspendCancellableCoroutine
                         }
-                        is State.Waiting -> throw SocketIOException("A second reader awaited an orphaned read that already has a waiter")
+                        // The read mutex admits one awaiter at a time; were another to arrive, it takes over the wait.
+                        is State.Waiting -> {
+                            val takeover = State.Waiting(continuation)
+                            if (state.compareAndSet(current, takeover)) {
+                                continuation.invokeOnCancellation { state.compareAndSet(takeover, State.Pending) }
+                                current.continuation.cancel()
+                                return@suspendCancellableCoroutine
+                            }
+                        }
                     }
                 }
             }
