@@ -63,14 +63,13 @@ class SelectorLoopGroupTests {
     fun restore() {
         useAsyncChannels = savedAsync
         useNioBlocking = savedBlocking
-        SelectorLoop.threadStarter = { it.start() }
     }
 
     private fun loopThreads() = Thread.getAllStackTraces().keys.count { it.name.startsWith("socket-nio") }
 
     private fun listener() = SelectorServerSocket()
 
-    private fun parkedChannels() = SelectorLoopGroup.running().sumOf { it.parkedChannelCount }
+    private fun parkedChannels() = SelectorLoopGroup.shared.running().sumOf { it.parkedChannelCount }
 
     /** Runs [block] with a connected pair: the accepted side and a client. */
     private suspend fun usingPair(block: suspend CoroutineScope.(server: ClientSocket, client: ClientSocket) -> Unit) =
@@ -235,16 +234,22 @@ class SelectorLoopGroupTests {
             }
         }
 
-    /** A loop whose thread cannot start is not left reachable: the caller gets a typed error and a retry works. */
+    /** A loop whose thread cannot start is not left reachable: the caller gets a typed error, and the next call starts a loop. */
     @Test
     fun aLoopThatFailsToStartIsNotLeftBehind() {
         val selector = Selector.open()
         try {
-            SelectorLoop.threadStarter = { throw OutOfMemoryError("unable to create native thread") }
-            val failure = assertFailsWith<SocketIOException> { SelectorLoop.of(selector) }
+            val failure =
+                assertFailsWith<SocketIOException> {
+                    SelectorLoop.of(
+                        selector,
+                    ) { throw OutOfMemoryError("unable to create native thread") }
+                }
             assertTrue("Could not start" in failure.message, failure.message)
-            SelectorLoop.threadStarter = { it.start() }
             assertTrue(SelectorLoop.of(selector).isRunning)
+            val group = SelectorLoopGroup(1) { throw OutOfMemoryError("unable to create native thread") }
+            assertFailsWith<SocketIOException> { group.next() }
+            assertTrue(group.running().isEmpty())
         } finally {
             selector.close()
         }
@@ -339,7 +344,7 @@ class SelectorLoopGroupTests {
     fun theLoopsReturnToNothingParkedAfterManyOpenCloseCycles() =
         runBlocking(Dispatchers.IO) {
             withTimeout(120.seconds) {
-                val before = SelectorLoopGroup.running().sumOf { it.registeredKeyCount }
+                val before = SelectorLoopGroup.shared.running().sumOf { it.registeredKeyCount }
                 repeat(60) {
                     val listener = listener()
                     val flow = listener.bind(0, "127.0.0.1")
@@ -359,8 +364,8 @@ class SelectorLoopGroupTests {
                     pendingClient?.await()
                 }
                 awaitUntil(10.seconds) {
-                    SelectorLoopGroup.running().all { it.parkedChannelCount == 0 } &&
-                        SelectorLoopGroup.running().sumOf { it.registeredKeyCount } <= before
+                    SelectorLoopGroup.shared.running().all { it.parkedChannelCount == 0 } &&
+                        SelectorLoopGroup.shared.running().sumOf { it.registeredKeyCount } <= before
                 }
             }
         }

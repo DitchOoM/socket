@@ -15,6 +15,9 @@ import kotlin.test.Test
  * globals and leaking them silently changes other tests' I/O paths.
  */
 class SimpleNioNonBlockingSocketTests {
+    @get:org.junit.Rule
+    val diagnostics = TcpFailureDiagnostics()
+
     private var savedAsync = true
     private var savedBlocking = false
 

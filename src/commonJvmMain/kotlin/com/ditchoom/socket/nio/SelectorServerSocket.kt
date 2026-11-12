@@ -51,7 +51,7 @@ class SelectorServerSocket(
     }
 
     private val listener = AtomicReference<Listener>(Listener.Unbound)
-    private val loop by lazy { SelectorLoopGroup.next() }
+    private val loop by lazy { SelectorLoopGroup.shared.next() }
 
     override fun port() =
         when (val l = listener.get()) {

@@ -56,7 +56,7 @@ abstract class BaseClientSocket(
         ) : Readiness
     }
 
-    private val readiness: Readiness = if (blocking) Readiness.Blocking else Readiness.OnLoop(SelectorLoopGroup.next())
+    private val readiness: Readiness = if (blocking) Readiness.Blocking else Readiness.OnLoop(SelectorLoopGroup.shared.next())
 
     /**
      * The selector of this socket's loop, null for a blocking socket. It is shared by every non-blocking
@@ -71,6 +71,10 @@ abstract class BaseClientSocket(
             }
 
     private val readMutex = Mutex()
+
+    override fun toString() =
+        "${super.toString()} readiness=${readiness::class.simpleName} blockingReadPending=${inFlightBlockingRead != null}"
+
     private val readPacing = ReadPacing()
     private val writeMutex = Mutex()
 

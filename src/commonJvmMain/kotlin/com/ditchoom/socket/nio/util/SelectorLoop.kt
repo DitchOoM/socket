@@ -358,18 +358,18 @@ internal class SelectorLoop private constructor(
         private val loops = ConcurrentHashMap<Selector, SelectorLoop>()
         private val loopCount = AtomicInteger()
 
-        /** How a loop's thread is started; a test replaces it to make starting fail. */
-        @Volatile internal var threadStarter: (Thread) -> Unit = { it.start() }
-
         /**
          * The loop that owns [selector], started on first use; a closed selector has none. A loop whose thread cannot
          * be started is never reachable: the failure is the caller's.
          */
-        fun of(selector: Selector): SelectorLoop {
+        fun of(
+            selector: Selector,
+            startThread: (Thread) -> Unit = { it.start() },
+        ): SelectorLoop {
             if (!selector.isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
             return try {
                 loops.compute(selector) { _, existing ->
-                    if (existing != null && existing.isRunning) existing else SelectorLoop(selector).also { threadStarter(it.thread) }
+                    if (existing != null && existing.isRunning) existing else SelectorLoop(selector).also { startThread(it.thread) }
                 }!!
             } catch (e: Throwable) {
                 throw SocketIOException("Could not start the selector loop: ${e.message}", cause = e)
@@ -377,24 +377,24 @@ internal class SelectorLoop private constructor(
         }
 
         /** A new loop on a selector of its own, for [SelectorLoopGroup]. */
-        fun open(): SelectorLoop = of(Selector.open())
+        fun open(startThread: (Thread) -> Unit): SelectorLoop = of(Selector.open(), startThread)
     }
 }
 
 /**
- * The loops every non-blocking NIO socket shares: a small fixed set, each owned by one daemon platform thread,
- * handed out round-robin. A socket's cost is a registration, not a thread and a selector. The threads start on
- * first use and are daemons, so they cost nothing until used and never keep a process alive. A loop that has
- * ended (its selector failed or was closed by a caller) is replaced the next time its slot is handed out.
+ * [size] loops, each owned by one daemon platform thread, handed out round-robin. A socket's cost is a
+ * registration, not a thread and a selector. The threads start on first use through [startThread] and are
+ * daemons, so they cost nothing until used and never keep a process alive. A loop that has ended (its selector
+ * failed or was closed by a caller) is replaced the next time its slot is handed out.
  *
- * The count is `availableProcessors / 2` between 1 and [DEFAULT_MAX_LOOPS]: a loop only waits for readiness and
- * resumes continuations, so a handful serves thousands of sockets. `-Dsocket.nio.loops=N` overrides it, clamped
- * to 1..[MAX_LOOPS].
+ * Every non-blocking NIO socket shares [shared]: `availableProcessors / 2` loops between 1 and
+ * [DEFAULT_MAX_LOOPS], because a loop only waits for readiness and resumes continuations, so a handful serves
+ * thousands of sockets. `-Dsocket.nio.loops=N` overrides it, clamped to 1..[MAX_LOOPS].
  */
-internal object SelectorLoopGroup {
-    private const val DEFAULT_MAX_LOOPS = 4
-    private const val MAX_LOOPS = 16
-
+internal class SelectorLoopGroup(
+    size: Int,
+    private val startThread: (Thread) -> Unit,
+) {
     private sealed interface Slot {
         data object Empty : Slot
 
@@ -403,17 +403,7 @@ internal object SelectorLoopGroup {
         ) : Slot
     }
 
-    internal fun defaultLoopCount(processors: Int): Int = (processors / 2).coerceAtMost(DEFAULT_MAX_LOOPS)
-
-    /** [requested] loops, clamped to the supported range. */
-    internal fun loopCount(requested: Int): Int = requested.coerceIn(1, MAX_LOOPS)
-
-    private val slots: AtomicReferenceArray<Slot> by lazy {
-        val requested =
-            System.getProperty("socket.nio.loops")?.toIntOrNull() ?: defaultLoopCount(Runtime.getRuntime().availableProcessors())
-        val count = loopCount(requested)
-        AtomicReferenceArray<Slot>(count).also { for (i in 0 until count) it.set(i, Slot.Empty) }
-    }
+    private val slots = AtomicReferenceArray<Slot>(loopCount(size)).also { for (i in 0 until it.length()) it.set(i, Slot.Empty) }
     private val next = AtomicInteger()
 
     fun next(): SelectorLoop {
@@ -422,7 +412,7 @@ internal object SelectorLoopGroup {
         while (true) {
             val current = slots.get(index)
             if (current is Slot.Started && current.loop.isRunning) return current.loop
-            val fresh = SelectorLoop.open()
+            val fresh = SelectorLoop.open(startThread)
             if (slots.compareAndSet(index, current, Slot.Started(fresh))) return fresh
             // Lost the race for the slot: the winner's loop is used, and this one has no sockets yet.
             fresh.selector.close()
@@ -431,4 +421,21 @@ internal object SelectorLoopGroup {
 
     /** The loops started so far, for tests. */
     internal fun running(): List<SelectorLoop> = (0 until slots.length()).mapNotNull { (slots.get(it) as? Slot.Started)?.loop }
+
+    companion object {
+        private const val DEFAULT_MAX_LOOPS = 4
+        private const val MAX_LOOPS = 16
+
+        internal fun defaultLoopCount(processors: Int): Int = (processors / 2).coerceAtMost(DEFAULT_MAX_LOOPS)
+
+        /** [requested] loops, clamped to the supported range. */
+        internal fun loopCount(requested: Int): Int = requested.coerceIn(1, MAX_LOOPS)
+
+        /** The loops every non-blocking NIO socket shares. */
+        val shared: SelectorLoopGroup by lazy {
+            val requested =
+                System.getProperty("socket.nio.loops")?.toIntOrNull() ?: defaultLoopCount(Runtime.getRuntime().availableProcessors())
+            SelectorLoopGroup(requested) { it.start() }
+        }
+    }
 }

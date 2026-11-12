@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.data.freeIfData
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.TransportConfig
@@ -37,6 +38,9 @@ abstract class AsyncBaseClientSocket(
     config: TransportConfig = TransportConfig(),
 ) : ByteBufferClientSocket<AsynchronousSocketChannel>(config) {
     private val readMutex = Mutex()
+
+    override fun toString() = "${super.toString()} orphanedReadPending=${inFlightRead != null}"
+
     private val writeMutex = Mutex()
 
     /**
@@ -78,9 +82,6 @@ abstract class AsyncBaseClientSocket(
         }
 
         private val state = AtomicReference<State>(State.Pending)
-
-        /** Thrown if a second reader awaits while one already waits: readers are serialized by the read mutex, so it cannot happen. */
-        class ConcurrentOrphanedReadAwait : IllegalStateException()
 
         override fun completed(
             result: Int,
@@ -124,7 +125,7 @@ abstract class AsyncBaseClientSocket(
                             continuation.resumeWith(current.outcome)
                             return@suspendCancellableCoroutine
                         }
-                        is State.Waiting -> throw ConcurrentOrphanedReadAwait()
+                        is State.Waiting -> throw SocketIOException("A second reader awaited an orphaned read that already has a waiter")
                     }
                 }
             }
