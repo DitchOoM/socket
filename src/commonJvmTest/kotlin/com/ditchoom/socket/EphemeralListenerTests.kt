@@ -4,13 +4,16 @@ import com.ditchoom.socket.nio2.AsyncServerSocket
 import com.ditchoom.socket.nio2.util.LoopbackReach
 import com.ditchoom.socket.nio2.util.bindEphemeralListener
 import com.ditchoom.socket.nio2.util.loopbackReach
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.nio.channels.AsynchronousServerSocketChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
@@ -77,6 +80,26 @@ class EphemeralListenerTests {
                 } finally {
                     chosen.close()
                 }
+            }
+        }
+
+    @Test
+    fun aCallerTimeoutShorterThanTheProofPropagatesAndLeaksNoCandidate() =
+        runBlocking {
+            ServerSocket(0, 1, loopback).use { stranger ->
+                val candidates = mutableListOf<AsynchronousServerSocketChannel>()
+                // The proof stalls (a stranger takes it), so the caller's 100 ms bound expires first.
+                assertFailsWith<TimeoutCancellationException> {
+                    withTimeout(100) {
+                        bindEphemeralListener(
+                            backlog = 1,
+                            bind = { AsynchronousServerSocketChannel.open().bind(null, 1).also { candidates += it } },
+                            dial = { InetSocketAddress(loopback, stranger.localPort) },
+                        )
+                    }
+                }
+                assertEquals(1, candidates.size, "a cancelled caller must not cause another draw")
+                assertFalse(candidates.single().isOpen, "the candidate leaked")
             }
         }
 

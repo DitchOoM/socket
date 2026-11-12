@@ -3,6 +3,8 @@ package com.ditchoom.socket.nio2.util
 import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.SocketIOException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -38,6 +40,10 @@ internal sealed interface LoopbackReach {
  * [bind] opens one candidate and [dial] names the address the proof connects to; both are parameters so a
  * test can stand a stranger in front of a candidate.
  *
+ * Closing a refused candidate is a blocking close, so call this off the caller's thread (as
+ * `AsyncServerSocket.bind` does, inside `offTheAndroidMainThread`). A cancellation or timeout belonging to
+ * the caller propagates and closes the candidate; only the proof's own bound is interpreted.
+ *
  * @throws SocketIOException when [MAX_EPHEMERAL_ATTEMPTS] candidates were all intercepted.
  */
 internal suspend fun bindEphemeralListener(
@@ -47,7 +53,15 @@ internal suspend fun bindEphemeralListener(
 ): AsynchronousServerSocketChannel {
     repeat(MAX_EPHEMERAL_ATTEMPTS) {
         val candidate = bind()
-        when (candidate.loopbackReach(dial(candidate))) {
+        val reach =
+            try {
+                candidate.loopbackReach(dial(candidate))
+            } catch (e: Throwable) {
+                // A cancelled caller must not be handed, or leak, a candidate.
+                candidate.blockingClose()
+                throw e
+            }
+        when (reach) {
             LoopbackReach.Reaches, LoopbackReach.Unverifiable -> return candidate
             LoopbackReach.Intercepted -> candidate.blockingClose()
         }
@@ -63,12 +77,14 @@ internal suspend fun AsynchronousServerSocketChannel.loopbackReach(dial: InetSoc
         } catch (e: SocketException) {
             return LoopbackReach.Unverifiable
         } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive() // a timeout that is the caller's propagates
             return LoopbackReach.Unverifiable
         }
         return try {
             withTimeout(LOOPBACK_PROOF_TIMEOUT) { aAccept() }.blockingClose()
             LoopbackReach.Reaches
         } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive() // a timeout that is the caller's propagates
             LoopbackReach.Intercepted
         }
     } finally {
