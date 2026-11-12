@@ -59,7 +59,7 @@ abstract class QuicPassiveMigrationTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             idleTimeout = 10.seconds,
-        )
+        ).withTraceRing("passive-migration")
 
     private suspend fun QuicByteStream.echoOnce(
         payload: String,

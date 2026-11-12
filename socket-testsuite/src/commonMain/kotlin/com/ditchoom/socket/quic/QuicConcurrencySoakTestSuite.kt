@@ -81,7 +81,7 @@ abstract class QuicConcurrencySoakTestSuite {
             // Scaled so it stays above the (also-scaled) runQuicTest cap on a loaded runner — a soak run
             // that legitimately takes longer under load must not trip an idle-timeout mid-transfer.
             idleTimeout = 30.seconds.scaled,
-        )
+        ).withTraceRing("soak")
 
     // ---- tests -------------------------------------------------------------------------------------
 

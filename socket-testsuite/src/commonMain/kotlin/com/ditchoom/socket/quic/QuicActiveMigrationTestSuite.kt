@@ -69,7 +69,7 @@ abstract class QuicActiveMigrationTestSuite {
             // migrations it has to perform on real sockets stays bounded. The defect it guards (#395) is
             // "a migrated-from path is never released", which is a mechanism, not a pool size.
             activeConnectionIdLimit = PINNED_CID_LIMIT,
-        )
+        ).withTraceRing("active-migration")
 
     /**
      * Options for the two byte-continuity tests below, which are transfers rather than single echoes and
@@ -89,7 +89,7 @@ abstract class QuicActiveMigrationTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             idleTimeout = 30.seconds.scaled,
-        )
+        ).withTraceRing("active-migration-transfer")
 
     private suspend fun QuicByteStream.echoOnce(
         payload: String,
