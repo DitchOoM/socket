@@ -1,0 +1,104 @@
+// Flight Recorder "stall ring" for every Gradle Test worker JVM — CI only.
+//
+// WHY: on 2026-11-11 the Linux soak stall, the iOS handshake stalls and the macOS segfault each
+// needed a throwaway probe PR to learn what the threads were doing, because a test report only
+// says "timed out". JFR kept as a bounded ring costs one disk chunk set and, written only when a
+// test fails or hangs, nothing on a green run. See .github/actions/jvm-flight-recorder/action.yml.
+//
+// WHY an init script and not a build-file edit: Test tasks are configured in a dozen modules
+// (some of which reassign `jvmArgs` outright, quiche's JDK-17 launcher branch among them), and a
+// published build must not grow a CI knob. An init script reaches every Test task, and with no
+// `ciJfrRing` property it does nothing at all, so local builds and consumers are untouched. It
+// hooks Test tasks through a CommandLineArgumentProvider, which survives a later `jvmArgs = ...`
+// and is @Internal so enabling JFR never changes a task's up-to-date or build-cache key.
+//
+//   -PciJfrRing=<dir>        enable; dumps land in <dir>
+//   -PciJfrRingHome=<.github> where jfr/stall-ring.jfc and scripts/jfr-ring.sh live
+//   -PciJfrRingBash=<bash>    the bash that runs jfr-ring.sh (Git's, on Windows)
+//
+// The failure path: a worker JVM that survives a failed test keeps running, so the recording is
+// dumped from OUTSIDE by `jcmd JFR.dump` the moment Gradle reports the failure (dumponexit would
+// only fire when the worker ends, long after the interesting minute, and never if it is killed).
+// The hang path is the watchdog in jfr-ring.sh. `lincheckTest` is left untouched: Lincheck fails
+// open under another JVM agent and must run on a clean JVM (see the root build.gradle.kts).
+
+import org.gradle.process.CommandLineArgumentProvider
+import java.util.concurrent.atomic.AtomicInteger
+
+class JfrRingArgs implements CommandLineArgumentProvider {
+    @org.gradle.api.tasks.Internal
+    List<String> jvmFlags
+    @Override
+    Iterable<String> asArguments() { return jvmFlags }
+}
+
+allprojects { proj ->
+    def ringDir = proj.findProperty('ciJfrRing')
+    if (ringDir == null || ringDir.toString().isEmpty()) return
+    def home = proj.findProperty('ciJfrRingHome')?.toString()
+    if (home == null) return
+    def settings = "${home}/jfr/stall-ring.jfc"
+    def script = "${home}/scripts/jfr-ring.sh"
+    // A bare `bash` on a Windows runner is System32\bash.exe, the WSL launcher ("Windows Subsystem for
+    // Linux has no installed distributions", measured on windows-latest): the action passes Git's bash.
+    def bash = proj.findProperty('ciJfrRingBash')?.toString() ?: 'bash'
+
+    def pending = "${ringDir}/pending"
+    // A recording whose filename cannot be written does not warn: it ABORTS the JVM at startup
+    // ("Could not start recording, not able to write to file"; measured), which would fail every test
+    // task because of a diagnostic. So the directory is created here, at configuration, always.
+    new File(pending.toString()).mkdirs()
+
+    proj.tasks.withType(Test).configureEach { t ->
+        if (t.name == 'lincheckTest') return
+        def tag = (proj.path == ':' ? 'root' : proj.path.substring(1).replace(':', '_')) + '-' + t.name
+        t.jvmArgumentProviders.add(new JfrRingArgs(jvmFlags: [
+            // disk=true: the ring lives in chunk files, so memory stays flat; maxage/maxsize bound
+            // it to about the last minute and 20 MB. dumponexit writes <ringDir>/pending/<task>-<pid>.jfr
+            // when the worker ends — the only way to catch a failing LAST test, because a worker with
+            // nothing left to run is gone before Gradle has even delivered the failure event (measured:
+            // the afterTest dump below found no live worker for a one-test run). afterSuite keeps that
+            // file only if the task failed and deletes it otherwise, and only <ringDir>/*.jfr is ever
+            // uploaded, so a green run uploads nothing.
+            "-XX:StartFlightRecording=name=ci-ring,settings=${settings},disk=true,maxage=60s,maxsize=20m,dumponexit=true,filename=${pending}/${tag}-%p.jfr",
+            "-XX:FlightRecorderOptions=stackdepth=64",
+        ]))
+        def dumps = new AtomicInteger()
+        t.afterSuite { desc, result ->
+            if (desc.parent != null) return
+            def dir = new File(pending.toString())
+            def mine = { dir.listFiles()?.findAll { it.name.startsWith(tag + '-') && it.name.endsWith('.jfr') } ?: [] }
+            if (result.resultType == TestResult.ResultType.FAILURE) {
+                // The exit dump is written after the worker is told to stop, i.e. around now: wait for it.
+                for (int i = 0; i < 40 && mine().isEmpty(); i++) Thread.sleep(500)
+                Thread.sleep(1500)
+                mine().each { f ->
+                    def dest = new File(ringDir.toString(), "exit-${f.name}")
+                    new File(ringDir.toString()).mkdirs()
+                    f.renameTo(dest)
+                    new File(dest.path + '.txt').text = "reason: ${t.path} failed; the worker's last ~60 s, written when it exited\n"
+                    t.logger.lifecycle("jfr-ring: kept ${dest.name} (${dest.length()} bytes) for failed ${t.path}")
+                }
+            } else {
+                mine().each { it.delete() }
+            }
+        }
+        t.afterTest { desc, result ->
+            if (result.resultType == TestResult.ResultType.FAILURE && dumps.incrementAndGet() <= 3) {
+                try {
+                    def pb = new ProcessBuilder(bash, script, 'dump', ringDir.toString(),
+                        "failed: ${desc.className}.${desc.name}".toString()).redirectErrorStream(true)
+                    // On Windows the runner is ours alone and `ps -o ppid` does not exist.
+                    if (!System.getProperty('os.name').toLowerCase().contains('windows')) {
+                        pb.environment().put('JFR_RING_OWNER', ProcessHandle.current().pid().toString())
+                    }
+                    def p = pb.start()
+                    p.inputStream.eachLine { t.logger.lifecycle("jfr-ring: ${it}") }
+                    if (!p.waitFor(90, java.util.concurrent.TimeUnit.SECONDS)) p.destroyForcibly()
+                } catch (Throwable e) {
+                    t.logger.lifecycle("jfr-ring: dump skipped (${e})")
+                }
+            }
+        }
+    }
+}

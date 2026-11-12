@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -201,6 +202,19 @@ open class NodeSocket(
             cleanSocket(socket)
             netSocket = null
             throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+        } catch (e: CancellationException) {
+            // An outer cancel (not the deadline above) while the chunk is still queued: Node holds a
+            // view of the caller's own ArrayBuffer, not a copy, and the caller owns the buffer again
+            // the moment this throws. Left alone, Node flushes the queued tail later from memory the
+            // caller has since reused, and the peer receives the new bytes inside the old message.
+            // Destroying the socket drops the queue before this returns, exactly as the bounded
+            // timeout does and as every JVM cancelled write does (closeOnCancel). A flush that already
+            // completed has nothing queued, so a cancel racing that completion leaves the socket alone.
+            if (!flushed.isCompleted) {
+                cleanSocket(socket)
+                netSocket = null
+            }
+            throw e
         }
         return BytesWritten(bytesToWrite)
     }

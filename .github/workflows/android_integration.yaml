@@ -288,6 +288,12 @@ jobs:
         # dead time. The create-AVD step above must NOT inherit this — see the job-level note.
         env:
           ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+          # A Perfetto ring of the device (scheduling, process stats, ss/am/network atrace for the
+          # test APKs), written out only if the run fails or hangs: scripts/android-perfetto-ring.sh.
+          # Traced: 29 and 35. UNTRACED: 36 (an instrument has hidden the race it was built to catch
+          # on this project, so the matrix always has an uninstrumented lane) and 24, which has no
+          # Perfetto at all and keeps logcat only.
+          PERFETTO_RING: ${{ contains(fromJSON('[29, 35]'), matrix.api-level) && '1' || '0' }}
         with:
           api-level: ${{ matrix.api-level }}
           target: default
@@ -379,6 +385,18 @@ jobs:
             emulator-diagnostics/**
           if-no-files-found: warn
           retention-days: 7
+
+      # The Perfetto ring, pulled from the device by the test script only when the run failed or hung.
+      # Its own artifact, 14 days: a scheduling trace is read well after the logcat of the same run.
+      - name: Upload Perfetto ring on failure
+        if: ${{ (failure() || cancelled()) && hashFiles('perfetto-ring/perfetto-ring-api*.gz') != '' }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: perfetto-ring-api${{ matrix.api-level }}
+          path: perfetto-ring/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # A shutdown wedge after green tests leaves the job green (it is a host-side fault, reported
       # as a ::warning::), so the failure upload above never carries its capture; this one does.

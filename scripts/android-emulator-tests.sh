@@ -99,6 +99,15 @@ if ! await_default_network "$NETWORK_BUDGET_S"; then
 fi
 echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectivity 2>/dev/null | grep -E '^Active default network' || echo 'unknown')"
 
+# A scheduling timeline of the device for the test run, in a RING: written out only if the run fails
+# or hangs (see scripts/android-perfetto-ring.sh). API 29+ and PERFETTO_RING=1 only.
+# shellcheck source=scripts/android-perfetto-ring.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-perfetto-ring.sh"
+PERFETTO_OUT_DIR="perfetto-ring"
+if [ "$NETWORK_READY" = "1" ]; then
+  perfetto_ring_start "$API_LEVEL" "$PERFETTO_OUT_DIR"
+fi
+
 # WATCHDOG: A HANG IS RECORDED AND ENDED HERE, NOT BY THE STEP TIMEOUT
 # ------------------------------------------------------------------------
 # When the step's own timeout ends a hung run, the runner kills this script with it, and nothing
@@ -236,6 +245,8 @@ watch_test_run() {
     if [ -n "$why" ]; then
       TEST_RUN_HUNG=1
       capture_hang "$why"
+      # While the device still answers: the ring up to the moment the run was declared hung.
+      perfetto_ring_collect "$API_LEVEL" "$PERFETTO_OUT_DIR"
       echo "::group::Hung test run capture (API ${API_LEVEL}) -> ${HANG_FILE}"
       cat "$HANG_FILE"
       echo "::endgroup::"
@@ -472,6 +483,15 @@ $(grep -m1 '^=> the device received\|^all .* blocks match' "$stall")
 $(grep -m1 '^RESULT: ' "$stall")
 Capture: $stall (artifact install-stall-${API_LEVEL})")"
 done
+
+# The ring: written and pulled only for a run that failed or hung (a hang already collected it above;
+# a second collect is a no-op), thrown away for a green one. The emulator is shut down below, so
+# this is the last moment the device can be read.
+if [ "$TEST_EXIT" != "0" ]; then
+  perfetto_ring_collect "$API_LEVEL" "$PERFETTO_OUT_DIR"
+else
+  perfetto_ring_discard "$API_LEVEL"
+fi
 
 # Stop the streamer and let it flush before anything reads the file.
 kill "$LOGCAT_PID" 2>/dev/null || true
