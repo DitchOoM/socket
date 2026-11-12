@@ -131,9 +131,15 @@ class DriverAckCadenceTests {
         }
 
     @Test
-    fun aReceiverThatSawAGapInThePacketNumbersAcksEveryDatagramWithoutAnyLossOfItsOwn() =
+    fun aReceiverThatSawGapsInThePacketNumbersAcksEveryDatagramWithoutAnyLossOfItsOwn() =
         runQuicTest {
-            assertEquals("RFRFRFRF", turnOf(datagrams = 4, lost = 0, gaps = 1))
+            assertEquals("RFRFRFRF", turnOf(datagrams = 4, lost = 0, gaps = 2))
+        }
+
+    @Test
+    fun aLoneGapInThePacketNumbersIsNotYetEnoughToAckEveryDatagram() =
+        runQuicTest {
+            assertEquals("RRFRRF", turnOf(datagrams = 4, lost = 0, gaps = 1))
         }
 
     @Test

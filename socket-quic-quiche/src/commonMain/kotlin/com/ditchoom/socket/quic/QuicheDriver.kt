@@ -2380,11 +2380,13 @@ class QuicheDriver(
         source: EvidenceSource,
         counter: Long,
     ) {
-        when (ackMemory.observe(source, counter)) {
+        when (val evidence = ackMemory.observe(source, counter)) {
             LossEvidence.Unchanged -> Unit
             // Rare, so the allocating read of the path's RTT is fine here.
-            LossEvidence.Grew ->
+            is LossEvidence.Grew ->
                 ackMemory.remember(
+                    source,
+                    evidence,
                     clock.markNow(),
                     when (val active = api.readActivePath(conn)) {
                         is ActivePath.Read -> active.stats.rtt

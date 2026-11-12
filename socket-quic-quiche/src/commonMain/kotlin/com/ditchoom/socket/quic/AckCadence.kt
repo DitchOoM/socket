@@ -40,8 +40,10 @@ internal sealed interface LossEvidence {
     /** The counters did not grow. */
     data object Unchanged : LossEvidence
 
-    /** The counter grew since the last reading: a loss, a probe, or a gap, depending on the source. */
-    data object Grew : LossEvidence
+    /** The counter grew by [by] since the last reading: losses, probes, or gaps, depending on the source. */
+    class Grew(
+        val by: Long,
+    ) : LossEvidence
 }
 
 /**
@@ -57,7 +59,11 @@ internal sealed interface LossEvidence {
  *    loss of two or more in a row, or a reorder by two or more places, is evidence.
  *
  * Once evidence grows, the path counts as lossy for [LOSS_MEMORY_RTTS] round trips ([remember]); after
- * that long without new evidence the cadence relaxes again. The memory is in round trips, not turns,
+ * that long without new evidence the cadence relaxes again. Sent-packet evidence counts at once. A receive
+ * gap has to repeat first: one gap alone only makes the path a suspect for the same time, and a second gap
+ * inside it (or two in one reading) makes it lossy. A lone gap is what a burst of drops at a socket buffer
+ * leaves on a loopback bulk transfer, which an ACK per datagram cannot help; measured, entering on the
+ * first gap held the cadence in its careful mode on a fifth of a bulk receive's turns. The memory is in round trips, not turns,
  * because how many turns a round trip takes depends on how the peer's datagrams arrive. Four was the
  * smallest of 1, 2, 4, 8 and 16 that recovered the sim's misses on the 800 ms, 30 %-loss path (see
  * [QuicheDriver.dispatchQueued]); at 20 and 100 ms and on iid loss 2, 4 and 8 recover alike, and on bursty
@@ -68,6 +74,12 @@ internal sealed interface LossEvidence {
 internal class AckCadenceMemory {
     private sealed interface Memory {
         data object Clean : Memory
+
+        /** One receive gap seen at [since]; a second inside [holdFor] makes the path [Lossy]. */
+        class Suspect(
+            val since: TimeMark,
+            val holdFor: Duration,
+        ) : Memory
 
         class Lossy(
             val since: TimeMark,
@@ -93,21 +105,41 @@ internal class AckCadenceMemory {
             EvidenceSource.PacketsLost -> seenLost = counter
             EvidenceSource.ReceiveGap -> seenGaps = counter
         }
-        return if (counter > seen) LossEvidence.Grew else LossEvidence.Unchanged
+        return if (counter > seen) LossEvidence.Grew(counter - seen) else LossEvidence.Unchanged
     }
 
-    /** New loss evidence at [now]: lossy for [LOSS_MEMORY_RTTS] of [rtt], never less than one timer granularity's worth. */
+    /**
+     * Evidence from [source] grew by [grew] at [now]: lossy for [LOSS_MEMORY_RTTS] of [rtt], never less
+     * than one timer granularity's worth. A receive gap alone only makes the path a suspect.
+     */
     fun remember(
+        source: EvidenceSource,
+        grew: LossEvidence.Grew,
         now: TimeMark,
         rtt: Duration,
     ) {
-        memory = Memory.Lossy(now, rtt.coerceAtLeast(TIMER_GRANULARITY) * LOSS_MEMORY_RTTS)
+        val holdFor = rtt.coerceAtLeast(TIMER_GRANULARITY) * LOSS_MEMORY_RTTS
+        memory =
+            when (source) {
+                EvidenceSource.PacketsLost -> Memory.Lossy(now, holdFor)
+                EvidenceSource.ReceiveGap ->
+                    when (val m = memory) {
+                        is Memory.Lossy -> Memory.Lossy(now, holdFor)
+                        is Memory.Suspect ->
+                            if (m.since.elapsedNow() < m.holdFor) Memory.Lossy(now, holdFor) else Memory.Suspect(now, holdFor)
+                        Memory.Clean -> if (grew.by >= REPEATED_GAPS) Memory.Lossy(now, holdFor) else Memory.Suspect(now, holdFor)
+                    }
+            }
     }
 
     /** The cadence for this turn. */
     fun cadence(): AckCadence =
         when (val m = memory) {
             Memory.Clean -> AckCadence.Relaxed
+            is Memory.Suspect -> {
+                if (m.since.elapsedNow() >= m.holdFor) memory = Memory.Clean
+                AckCadence.Relaxed
+            }
             is Memory.Lossy ->
                 if (m.since.elapsedNow() < m.holdFor) {
                     AckCadence.EveryDatagram
@@ -120,6 +152,9 @@ internal class AckCadenceMemory {
     internal companion object {
         /** Round trips a path stays lossy after the last loss evidence. */
         const val LOSS_MEMORY_RTTS = 4
+
+        /** Receive gaps in one reading that already count as repeated. */
+        const val REPEATED_GAPS = 2L
 
         /** RFC 9002 §6.1.2 `kGranularity`: no timer is finer, so no round trip counts as shorter. */
         val TIMER_GRANULARITY = 1.milliseconds
