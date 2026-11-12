@@ -5314,6 +5314,11 @@ class DriverStreamAdapter(
         // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
         // and the lifetime contract must hold symmetrically.)
         var inFlight: CompletableDeferred<StreamSendResult>? = null
+        // What quiche accepted, recorded on the line before the block returns it. The deadline can land
+        // between that return and the scope completing (the same window [streamRead]'s `delivered` covers):
+        // `inFlight` is already null by then, so without this the catch below would find nothing in flight
+        // and throw the timeout for bytes that are on the stream. See the catch.
+        var acceptedBytes = 0
         return try {
             withStreamDeadline(timeout) {
                 while (true) {
@@ -5337,6 +5342,7 @@ class DriverStreamAdapter(
                         // is untouched (zero-copy); the caller advances by it and re-enters for the remainder.
                         else ->
                             if (written > 0) {
+                                acceptedBytes = written
                                 return@withStreamDeadline written
                             } else if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED ||
                                 written == QuicheDriver.QUICHE_ERR_STREAM_RESET
@@ -5379,6 +5385,8 @@ class DriverStreamAdapter(
             // The deadline can land while the driver is inside connStreamSend. If quiche took bytes
             // there, they are on the stream: report them, or the caller re-sends or drops a record
             // whose head is already out — a torn stream it can never realign.
+            // Bytes already accepted outrank the deadline, as on the read side.
+            if (acceptedBytes > 0) return acceptedBytes
             val pending = inFlight ?: throw deadline
             withContext(NonCancellable) { pending.join() }
             inFlight = null

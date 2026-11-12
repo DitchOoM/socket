@@ -493,13 +493,20 @@ jobs:
             lib=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
             [ -n "$lib" ] || { echo "cargo reported success but no libquiche.a under $QUICHE_DIR/target/x86_64-pc-windows-gnu/release"; return 1; }
             mkdir -p "${WIN_DLL%/*}"
+            # -lsynchronization: since Rust 1.100 the standard library's locks on windows-gnu call
+            # WakeByAddressSingle / WakeByAddressAll, which MinGW resolves from that import library
+            # (api-ms-win-core-synch). cargo links it itself for a Rust binary; libquiche.a is a static
+            # archive linked here by gcc, so the list of system libraries is ours to keep. The toolchain
+            # is `stable` (see "Install Rust toolchain"), so a new std dependency arrives unannounced:
+            # the day 1.100 reached the runners this link failed on every PR with
+            # "undefined reference to `WakeByAddressSingle'".
             x86_64-w64-mingw32-gcc -shared -Wall \
               -static-libgcc -static-libstdc++ \
               -o "$WIN_DLL" "$JNI_SRC" \
               -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/linux" \
               -I"$QUICHE_H" \
               -Wl,--whole-archive "$lib" -Wl,--no-whole-archive \
-              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lm \
+              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lsynchronization -lm \
               -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic || return $?
             x86_64-w64-mingw32-strip --strip-all "$WIN_DLL" || return $?
           }
