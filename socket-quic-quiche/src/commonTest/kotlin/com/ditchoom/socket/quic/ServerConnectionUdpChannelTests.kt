@@ -16,6 +16,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 
@@ -108,19 +109,24 @@ class ServerConnectionUdpChannelTests {
         }
 
     /**
-     * A destination the receive loop never saw falls back to the connection's own peer rather than
-     * being dropped — the pre-existing contract, kept explicit so a future change has to break a test.
+     * A destination the receive loop no longer knows is not the connection's original peer. quiche only
+     * names addresses the receive loop gave it, so a key that resolves to nothing is an address whose
+     * entry was evicted while its path was still live: a migrated client. Answering that at the
+     * connection's *pre-migration* address sends the datagram to a host the client has left, and the
+     * miss is invisible. The datagram is not sent; quiche's loss recovery owns it, and the client's next
+     * packet restores the entry.
      */
     @Test
-    fun anUnknownDestinationFallsBackToTheConnectionsOwnPeer() =
+    fun anUnknownDestinationIsNotAnsweredAtTheConnectionsOldPeer() =
         runTest {
             val socket = RecordingSocket()
             val channel = channel(socket)
 
-            channel.send(payload(), LEN, SendTarget.ServerReply(to = key(4, 1, 200), from = ReplySource.Recorded(aliasKey)))
+            val outcome =
+                channel.send(payload(), LEN, SendTarget.ServerReply(to = key(4, 1, 200), from = ReplySource.Recorded(aliasKey)))
 
-            val (to, _) = socket.sent.single()
-            assertSame(peer, to, "an unresolvable destination falls back to the fixed peer")
+            assertEquals(emptyList(), socket.sent, "an unresolvable destination must not be answered at the fixed peer")
+            assertIs<SendOutcome.Failed>(outcome)
         }
 
     /**
