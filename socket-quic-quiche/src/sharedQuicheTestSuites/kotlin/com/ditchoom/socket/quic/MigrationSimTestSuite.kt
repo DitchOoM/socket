@@ -1766,6 +1766,72 @@ abstract class MigrationSimTestSuite {
         }
     }
 
+    /**
+     * A reply larger than the read buffer is read to its FIN, live, over a path that loses and reorders
+     * datagrams. The client's reads park without asking the loop (nothing but a signal, a hand-off or a mark
+     * says quiche holds bytes), so this is the shape where a read left parked with bytes in quiche would
+     * hang: the first chunk fills the 64 KiB read buffer while later bytes are still arriving out of order
+     * or being retransmitted. Every read is bounded by the idle timeout, so a stranded read fails the run.
+     * (The public stream fixes the read buffer at 64 KiB; a reply of three times that makes every read after
+     * the first a continuation of the one before.)
+     */
+    @Test
+    fun aReplyLargerThanTheReadBufferIsReadLiveOverALossyReorderingPath() =
+        runTest {
+            wrapTestBody {
+                for (seed in 0L..LIVE_READ_SEEDS) {
+                    var received = 0
+                    var ending: ReplyEnding = ReplyEnding.Reset
+                    withMigrationSim(
+                        simEnv(),
+                        seed = seed,
+                        primaryImpairment =
+                            PathImpairment(
+                                latency = SLOW_PATH_ONE_WAY,
+                                jitter = SLOW_PATH_ONE_WAY / 2,
+                                loss = LIVE_READ_LOSS,
+                            ),
+                    ) {
+                        val reply = "reply;".repeat(LIVE_READ_REPLY_BYTES / 6)
+                        client.launch {
+                            val stream = server.acceptStream()
+                            while (stream
+                                    .read(
+                                        IDLE_TIMEOUT_IN_THE_FIELD,
+                                    ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                            ) {
+                                Unit
+                            }
+                            val out = BufferFactory.network().allocate(reply.length)
+                            out.writeString(reply, Charset.UTF8)
+                            out.resetForRead()
+                            stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                            out.freeNativeMemory()
+                            stream.close()
+                            serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                            server.close()
+                        }
+                        try {
+                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                                val stream = openStream()
+                                stream.writeText("request")
+                                stream.shutdownSend()
+                                ending = stream.readToItsEnding { received += it }
+                            }
+                        } catch (e: QuicCloseException) {
+                            ending = ReplyEnding.Failed(e)
+                        }
+                        assertEquals(
+                            reply.length,
+                            received,
+                            "seed $seed: the live read got $received of ${reply.length} bytes, then $ending, traffic ${pipeTraffic()}",
+                        )
+                        assertEquals(ReplyEnding.Fin, ending, "seed $seed: the reply arrived whole; it must also end")
+                    }
+                }
+            }
+        }
+
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
         runTest {
@@ -5301,6 +5367,9 @@ abstract class MigrationSimTestSuite {
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
+        const val LIVE_READ_REPLY_BYTES = 3 * 64 * 1024
+        const val LIVE_READ_SEEDS = 9L
+        const val LIVE_READ_LOSS = 0.1
 
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000

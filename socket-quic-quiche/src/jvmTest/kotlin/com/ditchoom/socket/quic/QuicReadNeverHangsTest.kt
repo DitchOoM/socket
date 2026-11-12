@@ -8,7 +8,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout

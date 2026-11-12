@@ -95,10 +95,13 @@ class QuicDriverWorkPerEchoTest {
                             val recvs = counting.streamRecvs.get() - recvsBefore
                             // One stream read per echo: the bytes the loop hands the parked read. Any more is
                             // a read that asked the loop first (or an echo split in two).
-                            assertTrue(recvs <= ECHOES + SLACK, "client stream reads for $ECHOES echoes: $recvs (want about $ECHOES)")
+                            assertTrue(recvs <= ECHOES, "client stream reads for $ECHOES echoes: $recvs (want exactly $ECHOES)")
                             // Request flush (data + done), the reply's turn (ACK + done) and the turn of the
                             // server's ACK (done): 5 at best. The old loop made 7.
-                            assertTrue(sends <= ECHOES * 5 + SLACK, "quiche_conn_send calls for $ECHOES echoes: $sends (want at most ${ECHOES * 5})")
+                            assertTrue(
+                                sends <= ECHOES * 5 + TIMER_FLUSHES,
+                                "quiche_conn_send calls for $ECHOES echoes: $sends (want at most ${ECHOES * 5 + TIMER_FLUSHES})",
+                            )
                             stream.close()
                         }
                     } finally {
@@ -132,6 +135,11 @@ class QuicDriverWorkPerEchoTest {
     private companion object {
         const val WARMUP = 200
         const val ECHOES = 500
-        const val SLACK = 25
+
+        /**
+         * `quiche_conn_send` passes a timer wake adds beyond the five an echo costs (the ACK and loss timers
+         * firing mid-run, each one a flush that finds nothing or one ACK): measured 2,545 for 2,500 on JNI.
+         */
+        const val TIMER_FLUSHES = 50
     }
 }

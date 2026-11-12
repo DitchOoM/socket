@@ -26,8 +26,8 @@ import kotlin.test.assertFailsWith
  * what is queued, else decide whether to ask (`readNeedsQuicheAnswer`); asking drains up to a chunk under
  * the loop lock and the loop's sweep after that command signals when bytes remain; otherwise it parks as
  * `StreamSlot.awaitData` does (advertise, wake if signalled, withdraw) and looks at the queue. A read that
- * wakes with nothing queued asks. The read reports whether it ended **stranded**: parked, not woken, nothing
- * handed to it, while quiche holds bytes no later sweep will announce. Parking with quiche empty is legal.
+ * wakes with nothing queued asks. The read reports whether it ended **stranded**: parked, not woken, with
+ * nothing queued or signalled, while quiche holds bytes no one has announced. Parking with quiche empty is legal.
  *
  * One chunk is one byte and a datagram carries two, so the chunk that fills the request leaves a byte in
  * quiche and nothing but the mark says so: [WithoutTheMarkLincheckTest] drops `deliverHandedOff`'s mark and
@@ -78,7 +78,20 @@ abstract class NoStrandedBytesModel(
             val woke = slot.dataSignal.tryReceive().isSuccess
             slot.withdrawWaitingRead()
             if (take()) return false
-            if (!woke) return synchronized(loop) { holds > 0 }
+            if (!woke) {
+                // The read waits. It is stranded only if nothing announces what quiche holds: a signal or a
+                // chunk that arrives now is what wakes it (and a woken read asks, below).
+                val verdict =
+                    synchronized(loop) {
+                        when {
+                            holds == 0 -> LEGIT_WAIT
+                            slot.dataSignal.tryReceive().isSuccess || !slot.pendingData.isEmpty -> WOKEN
+                            else -> STRANDED
+                        }
+                    }
+                if (verdict == LEGIT_WAIT) return false
+                if (verdict == STRANDED) return true
+            }
             ask = true // woken with nothing queued: ask, as readNext does
         }
         return false
@@ -95,6 +108,9 @@ abstract class NoStrandedBytesModel(
         const val DRIVER = "driver"
         const val READER = "reader"
         private const val SIZE = 1
+        private const val LEGIT_WAIT = 0
+        private const val WOKEN = 1
+        private const val STRANDED = 2
     }
 }
 
