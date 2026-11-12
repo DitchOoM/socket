@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -81,7 +82,7 @@ abstract class FinishedStreamReleaseTestSuite {
                     read.buffer.freeIfNeeded()
                 }
                 ReadResult.End -> break
-                ReadResult.Reset -> error("the stream was reset")
+                ReadResult.Reset -> fail("the stream was reset")
             }
         }
         assertTrue(bytes == REQUEST_BYTES, "the whole message arrives before the FIN")
