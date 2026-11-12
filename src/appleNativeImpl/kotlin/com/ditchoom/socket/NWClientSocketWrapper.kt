@@ -97,6 +97,12 @@ class NWClientSocketWrapper(
             if (e !is kotlinx.coroutines.CancellationException) e.addSuppressed(NwStateTimeline(trace.render()))
             throw e
         }
+        // The connect's handler captures its continuation, which reaches this socket. Network.framework
+        // keeps the handler for the connection's life, so a ready connection gets one that holds the trace
+        // only; otherwise a socket the caller drops is never collectable and its connection never released.
+        nw_helper_set_state_handler(conn) { state, errorDomain, errorCode, errorDesc, nwEntryNs ->
+            trace.connectionState("client", state, errorDomain, errorCode, errorDesc, nwEntryNs.toLong())
+        }
         return conn
     }
 
