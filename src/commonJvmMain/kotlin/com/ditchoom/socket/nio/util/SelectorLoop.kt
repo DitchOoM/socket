@@ -14,7 +14,9 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.IdentityHashMap
 import java.util.TreeSet
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicReferenceArray
@@ -53,6 +55,12 @@ internal class SelectorLoop private constructor(
         /** The channel was closed: fail whoever still waits on it and forget it. */
         class Release(
             val channel: SelectableChannel,
+        ) : Command
+
+        /** Asks how many waiters are parked on [channel], answered from the loop thread. */
+        class CountWaiters(
+            val channel: SelectableChannel,
+            val answer: CompletableFuture<Int>,
         ) : Command
     }
 
@@ -148,6 +156,13 @@ internal class SelectorLoop private constructor(
         submit(Command.Arm(channel, waiter))
     }
 
+    /** How many waiters are parked on [channel] right now; blocks until the loop thread has answered. For tests. */
+    internal fun parkedWaiters(channel: SelectableChannel): Int {
+        val answer = CompletableFuture<Int>()
+        submit(Command.CountWaiters(channel, answer))
+        return answer.get(5, TimeUnit.SECONDS)
+    }
+
     /** Call after [channel] has been closed: its waiters fail instead of waiting on a key that will never fire. */
     fun release(channel: SelectableChannel) = submit(Command.Release(channel))
 
@@ -235,6 +250,7 @@ internal class SelectorLoop private constructor(
                 is Command.Arm -> arm(command)
                 is Command.Disarm -> disarm(command.waiter)
                 is Command.Release -> release(command)
+                is Command.CountWaiters -> command.answer.complete(parked[command.channel]?.waiters?.size ?: 0)
             }
         }
     }
@@ -244,6 +260,7 @@ internal class SelectorLoop private constructor(
         while (true) {
             when (val command = inbox.poll() ?: return) {
                 is Command.Arm -> resumeFailure(command.waiter, reason)
+                is Command.CountWaiters -> command.answer.complete(0)
                 is Command.Disarm, is Command.Release -> Unit
             }
         }
