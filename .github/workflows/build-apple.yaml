@@ -845,6 +845,12 @@ jobs:
     needs: link
     runs-on: macos-26
     timeout-minutes: 30
+    # The shared QUIC suites keep the last events of every connection they open in a ring and attach
+    # them to a failing test's report (socket-testsuite TraceRing.kt). Off by default because turning
+    # the trace on wraps the connection's UDP channels, i.e. changes the code under test: on in THIS
+    # K/N lane (macOS arm64), off in the macOS x64, simulator, Linux native and JVM-FFM lanes.
+    env:
+      QUIC_TEST_TRACE_RING: "1"
     steps:
       # Checkout supplies the committed <module>/testcerts/ the loopback suites fall back to.
       - uses: actions/checkout@v7

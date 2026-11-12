@@ -1297,6 +1297,12 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
       QUIC_MIGRATION_REQUIRE_RUN: "1"
+      # Protocol ring (socket-testsuite TraceRing.kt): the last events of every connection the shared
+      # QUIC suites open, attached to a failing test's report. On for the JNI leg only; the FFM leg
+      # carries the JFR ring instead and the JDK 17 leg stays uninstrumented, so no lane has both and
+      # no recorder is the only configuration. Job-level on purpose: a daemon started by an earlier
+      # step would not see a step-level variable.
+      QUIC_TEST_TRACE_RING: ${{ matrix.leg.ring }}
     strategy:
       # One leg's failure must not cancel the others — with fail-fast the first red backend hides
       # whether the rest would have passed, which is the single most useful thing to know when
@@ -1318,6 +1324,7 @@ jobs:
             jdk17: "false"
             core-dump: "true"
             audit: "false"
+            ring: "1"
             jfr: "false"
           # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
           # (FFM) output so its loader shadows the base JNI one, then loads the
@@ -1330,6 +1337,7 @@ jobs:
             jdk17: "false"
             core-dump: "false"
             audit: "false"
+            ring: "0"
             jfr: "true"
           # JNI backend on a JDK 17 launcher (the runtime Android / legacy-JVM
           # consumers actually use). The build/toolchain stays on 21; only this Test
@@ -1351,6 +1359,7 @@ jobs:
             jdk17: "true"
             core-dump: "false"
             audit: "true"
+            ring: "0"
             jfr: "false"
     steps:
       - uses: actions/checkout@v7
