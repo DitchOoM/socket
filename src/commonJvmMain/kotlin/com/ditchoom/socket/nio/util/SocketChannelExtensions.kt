@@ -179,24 +179,33 @@ suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
     }
 
 private suspend fun AbstractSelectableChannel.suspendNonBlockingSelector(
-    selector: Selector?,
+    loop: SelectorLoop?,
     op: Int,
     timeout: Duration,
 ) {
     if (isBlocking) {
         return
     }
-    val selectorNonNull =
-        selector
+    val owner =
+        loop
             ?: throw IllegalArgumentException("Selector must be provided if it is a non-blocking channel")
-    suspendUntilReady(selectorNonNull, op, timeout)
+    owner.awaitReady(this, op, timeout)
+    if (!isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
 }
 
 suspend fun <T> T.read(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
-): Int where T : AbstractSelectableChannel, T : ReadableByteChannel = read(buffer, selector, timeout, ReadPacing())
+): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
+    read(
+        buffer,
+        selector?.let {
+            SelectorLoop.of(it)
+        },
+        timeout,
+        ReadPacing(),
+    )
 
 /**
  * Whether the next read on a connection should register for readiness before it reads. A request/response
@@ -204,6 +213,9 @@ suspend fun <T> T.read(
  * call; a streaming one finds data every time, so registering first is a wasted wake-up. The connection
  * learns which it is from its own reads: one that had to wait registers first next time, until a read
  * fills the whole buffer (the sender is ahead of us), which makes the next one read first again.
+ *
+ * One mutable bit per connection, touched only under the connection's read mutex: it is a hint that may be
+ * wrong without being incorrect, so it is not modelled as state that needs a transition type.
  */
 internal class ReadPacing {
     var waitFirst = false
@@ -211,7 +223,7 @@ internal class ReadPacing {
 
 internal suspend fun <T> T.read(
     buffer: ByteBuffer,
-    selector: Selector?,
+    loop: SelectorLoop?,
     timeout: Duration,
     pacing: ReadPacing,
 ): Int where T : AbstractSelectableChannel, T : ReadableByteChannel {
@@ -220,7 +232,7 @@ internal suspend fun <T> T.read(
     }
     val capacity = buffer.remaining()
     var waited = pacing.waitFirst
-    if (waited) suspendNonBlockingSelector(selector, SelectionKey.OP_READ, timeout)
+    if (waited) suspendNonBlockingSelector(loop, SelectionKey.OP_READ, timeout)
     while (true) {
         val read = read(buffer)
         if (read != 0 || capacity == 0) {
@@ -228,13 +240,19 @@ internal suspend fun <T> T.read(
             return read
         }
         waited = true
-        suspendNonBlockingSelector(selector, SelectionKey.OP_READ, timeout)
+        suspendNonBlockingSelector(loop, SelectionKey.OP_READ, timeout)
     }
 }
 
 suspend fun <T> T.write(
     buffer: ByteBuffer,
     selector: Selector?,
+    timeout: Duration,
+): Int where T : AbstractSelectableChannel, T : WritableByteChannel = write(buffer, selector?.let { SelectorLoop.of(it) }, timeout)
+
+internal suspend fun <T> T.write(
+    buffer: ByteBuffer,
+    loop: SelectorLoop?,
     timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : WritableByteChannel {
     if (isBlocking) {
@@ -244,7 +262,7 @@ suspend fun <T> T.write(
     while (true) {
         val written = write(buffer)
         if (written != 0 || !buffer.hasRemaining()) return written
-        suspendNonBlockingSelector(selector, SelectionKey.OP_WRITE, timeout)
+        suspendNonBlockingSelector(loop, SelectionKey.OP_WRITE, timeout)
     }
 }
 
