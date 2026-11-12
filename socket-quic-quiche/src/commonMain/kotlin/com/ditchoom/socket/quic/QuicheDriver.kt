@@ -379,7 +379,7 @@ class QuicheDriver(
      */
     internal suspend fun awaitHandshakeConfirmed() {
         when (handshakeSettled.await()) {
-            HandshakeSettled.Confirmed -> Unit
+            is HandshakeSettled.Confirmed -> Unit
             HandshakeSettled.Failed -> throw connectionClosed()
         }
     }
@@ -398,7 +398,7 @@ class QuicheDriver(
     @OptIn(ExperimentalCoroutinesApi::class)
     internal suspend fun awaitHandlerStart(): HandlerStart.Decided {
         val start = combine(state, earlyData, HandlerStart::of).filterIsInstance<HandlerStart.Decided>().first()
-        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() == HandshakeSettled.Confirmed
+        val confirmed = handshakeSettled.isCompleted && handshakeSettled.getCompleted() is HandshakeSettled.Confirmed
         return if (start == HandlerStart.Never && confirmed) HandlerStart.Now else start
     }
 
@@ -678,12 +678,27 @@ class QuicheDriver(
      * never at the idle timeout — and when quiche's idle timer is the shorter of the two it wins.
      */
     suspend fun awaitEstablished(timeout: Duration) {
+        awaitEstablishedOutcome(timeout)
+    }
+
+    /**
+     * [awaitEstablished], returning the resumption outcome the handshake settled with: the value read at
+     * the moment it completed, which a caller that learns of the completion after the connection has closed
+     * again still needs. A separate function so the published signature of [awaitEstablished] stays as it was.
+     */
+    internal suspend fun awaitEstablishedOutcome(timeout: Duration): QuicResumptionOutcome {
         // Armed in the driver's context, so the bound fires on the timer the driver's own wakes fire on
         // rather than on whatever the caller's dispatcher resolves timeouts against.
+        //
+        // Waits on [handshakeSettled], not on [state]: [state] conflates, so a peer that completes the
+        // handshake and closes in the same breath can show a late collector Closed with the Established
+        // in between never observed, and a connection that did come up would read as a failed handshake.
+        // The value the wait returns is the outcome read at the Established edge: reading it from
+        // [state] afterwards is a read of a connection that may have closed since.
         val settled =
             withContext(loopContext) {
                 withTimeoutOrNull(timeout) {
-                    state.first { it !is QuicConnectionState.Handshaking }
+                    handshakeSettled.await()
                 }
             }
         if (settled == null) {
@@ -697,8 +712,10 @@ class QuicheDriver(
                 attribution = closeAttribution(),
             )
         }
-        if (settled !is QuicConnectionState.Established) {
-            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
+        return when (settled) {
+            is HandshakeSettled.Confirmed -> settled.resumption
+            HandshakeSettled.Failed ->
+                throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
     }
 
@@ -2577,6 +2594,9 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         receivedSinceFlush = 0
         flushOutgoing()
+        // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
+        // the sweeps below queue is owed again, and is flushed once they are done.
+        quicheOwesAFlush = false
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
@@ -2585,7 +2605,21 @@ class QuicheDriver(
         signalWritableStreams()
         signalDatagrams()
         updateState()
+        // Flush last for whatever the sweeps queued. The first flush stays first because the writer
+        // signals above read quiche's state *after* it (capacity, datagram queue room); this one covers
+        // what only the sweeps can queue, none of which arms a quiche timer, so it would otherwise wait
+        // for the next command or timer, however far off: credit for bytes the loop consumed for a parked
+        // read (MAX_STREAM_DATA / MAX_DATA), NEW_CONNECTION_ID for a CID just issued, a path switch's
+        // frames. Costs nothing on a turn whose sweeps queued nothing. Not after a close: the connection
+        // has said everything it will.
+        if (quicheOwesAFlush && _state.value !is QuicConnectionState.Closed) flushOutgoing()
     }
+
+    /**
+     * True from the moment a sweep after [afterCommand]'s first flush has done something that makes quiche
+     * owe the peer a frame, until the flush that sends it. Loop only.
+     */
+    private var quicheOwesAFlush = false
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
@@ -2606,13 +2640,25 @@ class QuicheDriver(
      * Datagram-path mirror of [discoverNewStreams] / [signalWritableStreams]. Refreshes the cached
      * max writable size (read by `maxDatagramSize()`), wakes a parked receiver when quiche has a
      * datagram queued, and — since [flushOutgoing] just drained the datagram send queue — releases
-     * any send backpressure. All signals are CONFLATED, so tickling with no parked waiter is a no-op.
+     * any send backpressure *when it did*: see below. All signals are CONFLATED, so tickling with no
+     * parked waiter is a no-op.
      */
     private fun signalDatagrams() {
         lastMaxDatagramSize = api.connDgramMaxWritableLen(conn)
         if (api.hasReadableDgram(conn)) dgramSignal.trySend(Unit)
-        dgramWritableSignal.trySend(Unit)
+        // A sender is parked only after quiche refused its datagram for a full send queue, and the queue
+        // drains only when a flush sends a packet. Waking it for any other reason sends it straight back
+        // into quiche, which refuses it again in the same state: a spin of commands for as long as the
+        // congestion window stays closed. The refusal is a command, so this runs after the flush that
+        // could have drained the queue, and a drain is never missed.
+        if (datagramsOutSinceWritableSignal > 0) {
+            datagramsOutSinceWritableSignal = 0
+            dgramWritableSignal.trySend(Unit)
+        }
     }
+
+    /** Packets quiche has handed the flush since [signalDatagrams] last ran: the only thing that drains its datagram queue. */
+    private var datagramsOutSinceWritableSignal = 0
 
     /**
      * Serve opens waiting at the peer's stream limit, if the peer has raised it. The open-side mirror of
@@ -2792,6 +2838,8 @@ class QuicheDriver(
         when (val result = api.connStreamRecv(conn, slot.id, addr(buffer), size)) {
             is StreamRecvResult.Data -> {
                 if (result.bytesRead > 0) {
+                    // Consuming stream bytes is what makes quiche owe the peer flow-control credit.
+                    quicheOwesAFlush = true
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
                     if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
@@ -2850,12 +2898,13 @@ class QuicheDriver(
         // was never usable: it goes from Handshaking straight to Closed below, and the caller learns the
         // close reason instead of a stream-limit refusal on its first openStream().
         if (_state.value is QuicConnectionState.Handshaking && api.connIsEstablished(conn) && !api.connIsClosed(conn)) {
-            _state.value =
+            val established =
                 QuicConnectionState.Established(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeSettled.complete(HandshakeSettled.Confirmed)
+            _state.value = established
+            handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()
             // Baseline the liveness sampler here, where the path is known good — the handshake it has
             // just completed *is* the proof. Deliberately NOT gated on a collector like the loop's
@@ -2956,6 +3005,10 @@ class QuicheDriver(
         // conn that cleanup() is about to free.
         latchForClose()
         refreshSessionTicket()
+        // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
+        // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
+        // would skip it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
+        discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
         // The reason is settled BEFORE the channel closes and travels with the close ([closing]), so a
@@ -3194,6 +3247,7 @@ class QuicheDriver(
                     is QuicheSendStop.Rejected -> DrainEnd.Rejected(stop)
                 }
             }
+            datagramsOutSinceWritableSignal++
             // Route by the local egress address quiche chose. Until the first probe ever opens
             // ([routingLive]) this is dormant — send straight to primary, no decode — so the
             // never-migrating common case is byte-for-byte unchanged. Once a probe has existed,
@@ -3762,6 +3816,8 @@ class QuicheDriver(
         val wiring = migrationWiring ?: return
         while (true) {
             val type = api.connPathEventNext(conn, addr(peLocalOut), addr(peLocalLenOut), addr(pePeerOut), addr(pePeerLenOut)) ?: break
+            // A switch, a retired path, a failed probe: each can leave frames queued behind this turn's flush.
+            quicheOwesAFlush = true
             when (type) {
                 QuichePathEventType.Validated -> {
                     val key = api.decodePathKey(addr(peLocalOut))
@@ -3967,6 +4023,7 @@ class QuicheDriver(
             token.freeNativeMemory()
             if (rc < 0) break
             count++
+            quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
         }
         return count
     }
