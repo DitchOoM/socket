@@ -58,7 +58,29 @@ internal data class PathImpairment(
     val reach: LinkReach = LinkReach.Open,
     val mtu: LinkMtu = LinkMtu.Unbounded,
     val sendReturn: SendReturn = SendReturn.Immediately,
+    /** How [loss] is drawn: independently per datagram, or in bursts. */
+    val lossModel: LossModel = LossModel.Independent,
 )
+
+/**
+ * How a link's datagram loss is distributed over time.
+ *
+ * [Independent] drops each datagram with [PathImpairment.loss], from the pipe's one seeded stream, exactly
+ * as every scenario written before [Bursty] was. [Bursty] is a two-state (Gilbert-Elliott) channel: a
+ * "bad" run drops every datagram, a "good" one none, and the runs are geometric, so losses arrive in
+ * bursts of [meanBurst] datagrams on average and [overall] of all datagrams are lost in the long run.
+ * Its state changes are drawn from a second seeded stream, so a scenario that never uses it draws what it
+ * always drew. The state belongs to the link and direction, so a burst on the downlink says nothing
+ * about the uplink.
+ */
+internal sealed interface LossModel {
+    data object Independent : LossModel
+
+    data class Bursty(
+        val meanBurst: Int,
+        val overall: Double,
+    ) : LossModel
+}
 
 /** Which way a datagram crosses a path, from the client's side: [Uplink] is client→server. */
 internal enum class LinkDirection { Uplink, Downlink }
@@ -207,6 +229,12 @@ internal class MultiPathPipe(
     private val now: () -> Duration,
 ) {
     private val rng = Random(seed)
+
+    /** The stream [LossModel.Bursty] draws its state changes from, apart from [rng] so iid scenarios keep their draws. */
+    private val burstRng = Random(seed xor 0x425552535459L) // "BURSTY"
+
+    /** Whether each (path, direction) link is in a bad run right now. */
+    private val inBadRun = HashMap<Pair<PathKey, LinkDirection>, Boolean>()
     private val lock = SynchronizedObject()
 
     /**
@@ -441,7 +469,20 @@ internal class MultiPathPipe(
             }
             val lossRoll = rng.nextDouble()
             val jitterFraction = rng.nextDouble()
-            if (lossRoll < impairment.loss) {
+            val lost =
+                when (val model = impairment.lossModel) {
+                    LossModel.Independent -> lossRoll < impairment.loss
+                    is LossModel.Bursty -> {
+                        val link = path.key to direction
+                        val bad = inBadRun[link] ?: false
+                        val leave = 1.0 / model.meanBurst
+                        val enter = model.overall * leave / (1.0 - model.overall)
+                        val nowBad = if (bad) burstRng.nextDouble() >= leave else burstRng.nextDouble() < enter
+                        inBadRun[link] = nowBad
+                        nowBad
+                    }
+                }
+            if (lost) {
                 wire += "${now().inWholeMicroseconds} $origin $len lost"
                 path.stats.dropped++
                 return

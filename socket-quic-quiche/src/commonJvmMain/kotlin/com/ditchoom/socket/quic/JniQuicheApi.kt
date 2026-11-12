@@ -415,6 +415,18 @@ object JniQuicheApi : QuicheApi {
         )
     }
 
+    /** [connLossEvidence]'s out-array, one per thread: refilled by every call and read back before anything else runs. */
+    private val connStatsScratch: ThreadLocal<LongArray> =
+        object : ThreadLocal<LongArray>() {
+            override fun initialValue(): LongArray = LongArray(CONN_STATS_SLOTS)
+        }
+
+    override fun connLossEvidence(conn: QuicheConn): Long {
+        val out = connStatsScratch.get()
+        nConnStats(conn.handle, out)
+        return out[CONN_STATS_LOST_SLOT] + out[CONN_STATS_RETRANS_SLOT]
+    }
+
     /**
      * [connPathStats]'s out-array, one per thread. An anonymous subclass rather than
      * `ThreadLocal.withInitial`, which needs Android API 26 (minSdk is 24). The shim writes all 18 slots on
@@ -728,6 +740,9 @@ object JniQuicheApi : QuicheApi {
     override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
 
     private const val QUICHE_ERR_DONE = -1L
+    private const val CONN_STATS_SLOTS = 13 // quiche_jni.c nConnStats slot count
+    private const val CONN_STATS_LOST_SLOT = 2
+    private const val CONN_STATS_RETRANS_SLOT = 4
     private const val PATH_STATS_SLOTS = 18 // quiche_jni.c nConnPathStats slot count
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---

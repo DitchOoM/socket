@@ -262,6 +262,11 @@ internal class GuardedQuicheApi(
         return delegate.connStats(conn)
     }
 
+    override fun connLossEvidence(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connLossEvidence(conn)
+    }
+
     override fun connPathStats(
         conn: QuicheConn,
         pathIdx: Long,
