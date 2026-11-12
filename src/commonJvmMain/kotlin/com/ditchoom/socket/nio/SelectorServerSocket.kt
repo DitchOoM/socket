@@ -4,6 +4,7 @@ import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.offTheAndroidMainThread
@@ -36,8 +37,10 @@ class SelectorServerSocket(
     private sealed interface Listener {
         data object Unbound : Listener
 
+        /** A listening [channel] whose accepts wait on [loop]. */
         class Bound(
             val channel: ServerSocketChannel,
+            val loop: SelectorLoop,
         ) : Listener
     }
 
@@ -51,7 +54,6 @@ class SelectorServerSocket(
     }
 
     private val listener = AtomicReference<Listener>(Listener.Unbound)
-    private val loop by lazy { SelectorLoopGroup.shared.next() }
 
     override fun port() =
         when (val l = listener.get()) {
@@ -88,12 +90,13 @@ class SelectorServerSocket(
                     throw wrapJvmException(e, host, port)
                 }
             }
-        listener.set(Listener.Bound(server))
+        val bound = Listener.Bound(server, SelectorLoopGroup.shared.next())
+        listener.set(bound)
         return flow {
             while (isListening()) {
                 val connection =
                     try {
-                        acceptOrWait(server)
+                        acceptOrWait(bound)
                     } catch (e: ClosedChannelException) {
                         break
                     } catch (e: SocketClosedException) {
@@ -104,7 +107,7 @@ class SelectorServerSocket(
                         // A cancelled collector closes the listener; its key is dropped too, or the port stays open.
                         withContext(NonCancellable) {
                             offTheAndroidMainThread { server.closeQuietly() }
-                            loop.release(server)
+                            bound.loop.release(server)
                         }
                         throw e
                     }
@@ -116,13 +119,14 @@ class SelectorServerSocket(
         }
     }
 
-    private suspend fun acceptOrWait(server: ServerSocketChannel): Accepted {
+    private suspend fun acceptOrWait(bound: Listener.Bound): Accepted {
+        val server = bound.channel
         val accepted =
             offTheAndroidMainThread(onAbandoned = { if (it is Accepted.Connection) it.channel.closeQuietly() }) {
                 server.accept()?.let { Accepted.Connection(it) } ?: Accepted.NoneQueued
             }
         when (accepted) {
-            Accepted.NoneQueued -> loop.awaitReady(server, SelectionKey.OP_ACCEPT, Duration.INFINITE)
+            Accepted.NoneQueued -> bound.loop.awaitReady(server, SelectionKey.OP_ACCEPT, Duration.INFINITE)
             is Accepted.Connection -> Unit
         }
         return accepted
@@ -146,7 +150,7 @@ class SelectorServerSocket(
             Listener.Unbound -> Unit
             is Listener.Bound -> {
                 l.channel.aClose()
-                loop.release(l.channel)
+                l.loop.release(l.channel)
             }
         }
     }

@@ -1,7 +1,7 @@
 package com.ditchoom.socket.nio.util
 
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * How other threads hand work to a loop thread that sleeps in a blocking call, with at most one wake-up per
@@ -16,13 +16,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class LoopMailbox<T : Any>(
     private val wake: () -> Unit,
 ) {
-    private val queue = ConcurrentLinkedQueue<T>()
-    private val wakeupSent = AtomicBoolean(false)
+    @PublishedApi
+    internal val queue = ConcurrentLinkedQueue<T>()
+    private val wakeup = AtomicReference(Wakeup.Needed)
 
     /** From any thread but the loop's. */
     fun post(item: T) {
         queue.add(item)
-        if (wakeupSent.compareAndSet(false, true)) wake()
+        if (wakeup.compareAndSet(Wakeup.Needed, Wakeup.Sent)) wake()
     }
 
     /** From the loop thread, which looks at the queue again before it sleeps. */
@@ -30,13 +31,23 @@ internal class LoopMailbox<T : Any>(
         queue.add(item)
     }
 
-    fun poll(): T? = queue.poll()
+    /** From the loop thread: hands every queued item to [handle], including those it posts meanwhile, until none is left. */
+    inline fun drain(handle: (T) -> Unit) {
+        var item = queue.poll()
+        while (item != null) {
+            handle(item)
+            item = queue.poll()
+        }
+    }
 
     fun isEmpty(): Boolean = queue.isEmpty()
 
     /** Loop thread, before sleeping: later posters must wake it again. True when nothing is queued, so it may sleep. */
     fun prepareToSleep(): Boolean {
-        wakeupSent.set(false)
+        wakeup.set(Wakeup.Needed)
         return queue.isEmpty()
     }
 }
+
+/** Whether the next poster must wake the loop: not once an earlier poster's wake-up is in flight. */
+private enum class Wakeup { Needed, Sent }

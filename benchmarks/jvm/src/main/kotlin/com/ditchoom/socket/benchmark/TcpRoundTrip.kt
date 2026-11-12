@@ -48,7 +48,7 @@ open class TcpRoundTrip {
     @Param("nio2")
     var backend: String = "nio2"
 
-    /** The deadline passed to every read and write: `30s` as this benchmark always did, or `infinite`, the default policy. */
+    /** The deadline passed to every read and write: `30s`, or `infinite`, the default policy. */
     @Param("30s")
     var deadline: String = "30s"
 

@@ -1,10 +1,12 @@
 package com.ditchoom.socket.nio.util
 
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.SocketTimeoutException
+import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.resumeOffThisThread
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedChannelException
@@ -14,9 +16,7 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.IdentityHashMap
 import java.util.TreeSet
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicReferenceArray
@@ -60,7 +60,7 @@ internal class SelectorLoop private constructor(
         /** Asks how many waiters are parked on [channel], answered from the loop thread. */
         class CountWaiters(
             val channel: SelectableChannel,
-            val answer: CompletableFuture<Int>,
+            val answer: CompletableDeferred<Int>,
         ) : Command
     }
 
@@ -156,11 +156,11 @@ internal class SelectorLoop private constructor(
         submit(Command.Arm(channel, waiter))
     }
 
-    /** How many waiters are parked on [channel] right now; blocks until the loop thread has answered. For tests. */
-    internal fun parkedWaiters(channel: SelectableChannel): Int {
-        val answer = CompletableFuture<Int>()
+    /** How many waiters are parked on [channel] right now, as the loop thread counts them; 0 once the loop has ended. */
+    internal suspend fun parkedWaiters(channel: SelectableChannel): Int {
+        val answer = CompletableDeferred<Int>()
         submit(Command.CountWaiters(channel, answer))
-        return answer.get(5, TimeUnit.SECONDS)
+        return answer.await()
     }
 
     /** Call after [channel] has been closed: its waiters fail instead of waiting on a key that will never fire. */
@@ -182,7 +182,7 @@ internal class SelectorLoop private constructor(
             } catch (_: ClosedSelectorException) {
                 closedFailure()
             } catch (e: Throwable) {
-                SocketIOException("The selector loop failed: ${e.message}", cause = e)
+                wrapJvmException(e)
             }
         // Unreachable first, ended second: nobody may be handed a loop that has made its last drain.
         loops.remove(selector, this)
@@ -240,31 +240,29 @@ internal class SelectorLoop private constructor(
         while (timersDue()) {
             val first = timers.first()
             unpark(first)
-            resumeFailure(first, SocketTimeoutException("Selector timed out after waiting ${first.timeout} for interest ops ${first.ops}"))
+            resumeFailure(first, SocketTimeoutException(timeoutContext(first.ops, first.timeout)))
         }
     }
 
-    private fun applyInbox() {
-        while (true) {
-            when (val command = inbox.poll() ?: return) {
+    private fun applyInbox() =
+        inbox.drain { command ->
+            when (command) {
                 is Command.Arm -> arm(command)
                 is Command.Disarm -> disarm(command.waiter)
                 is Command.Release -> release(command)
                 is Command.CountWaiters -> command.answer.complete(parked[command.channel]?.waiters?.size ?: 0)
             }
         }
-    }
 
     /** The loop is over: every queued wait fails with [reason]; a queued disarm or release has nothing left to undo. */
-    private fun failInbox(reason: Throwable) {
-        while (true) {
-            when (val command = inbox.poll() ?: return) {
+    private fun failInbox(reason: Throwable) =
+        inbox.drain { command ->
+            when (command) {
                 is Command.Arm -> resumeFailure(command.waiter, reason)
                 is Command.CountWaiters -> command.answer.complete(0)
                 is Command.Disarm, is Command.Release -> Unit
             }
         }
-    }
 
     private fun arm(command: Command.Arm) {
         val waiter = command.waiter
@@ -377,21 +375,47 @@ internal class SelectorLoop private constructor(
 
         /**
          * The loop that owns [selector], started on first use; a closed selector has none. A loop whose thread cannot
-         * be started is never reachable: the failure is the caller's.
+         * be started is never reachable: the failure is the caller's, mapped like any platform failure.
          */
         fun of(
             selector: Selector,
             startThread: (Thread) -> Unit = { it.start() },
         ): SelectorLoop {
             if (!selector.isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
-            return try {
-                loops.compute(selector) { _, existing ->
-                    if (existing != null && existing.isRunning) existing else SelectorLoop(selector).also { startThread(it.thread) }
-                }!!
-            } catch (e: Throwable) {
-                throw SocketIOException("Could not start the selector loop: ${e.message}", cause = e)
+            while (true) {
+                val existing = loops[selector]
+                if (existing != null) {
+                    if (existing.isRunning) return existing
+                    loops.remove(selector, existing)
+                    continue
+                }
+                val fresh = SelectorLoop(selector)
+                if (loops.putIfAbsent(selector, fresh) != null) continue
+                try {
+                    startThread(fresh.thread)
+                } catch (e: Throwable) {
+                    // Whoever was already handed it fails with the cause instead of waiting on a loop without a thread.
+                    val failure = wrapJvmException(e)
+                    loops.remove(selector, fresh)
+                    fresh.state.set(LoopState.Ended(failure))
+                    fresh.failInbox(failure)
+                    throw failure
+                }
+                return fresh
             }
         }
+
+        /** What a wait on [ops] that outlived [timeout] timed out doing. */
+        private fun timeoutContext(
+            ops: Int,
+            timeout: Duration,
+        ): TimeoutContext =
+            when {
+                ops and SelectionKey.OP_CONNECT != 0 -> TimeoutContext.Connect(timeout, host = null, port = -1)
+                ops and SelectionKey.OP_WRITE != 0 -> TimeoutContext.Write(timeout)
+                ops and SelectionKey.OP_READ != 0 -> TimeoutContext.Read(timeout)
+                else -> TimeoutContext.Platform("Selector wait for interest ops $ops timed out after $timeout")
+            }
 
         /** A new loop on a selector of its own, for [SelectorLoopGroup]. */
         fun open(startThread: (Thread) -> Unit): SelectorLoop = of(Selector.open(), startThread)
@@ -448,8 +472,8 @@ internal class SelectorLoopGroup(
         /** [requested] loops, clamped to the supported range. */
         internal fun loopCount(requested: Int): Int = requested.coerceIn(1, MAX_LOOPS)
 
-        /** The loops every non-blocking NIO socket shares. */
-        val shared: SelectorLoopGroup by lazy {
+        /** The loops every non-blocking NIO socket shares. A group holds no thread until a loop is handed out, so a duplicate construction is discarded for free. */
+        val shared: SelectorLoopGroup by lazy(LazyThreadSafetyMode.PUBLICATION) {
             val requested =
                 System.getProperty("socket.nio.loops")?.toIntOrNull() ?: defaultLoopCount(Runtime.getRuntime().availableProcessors())
             SelectorLoopGroup(requested) { it.start() }
