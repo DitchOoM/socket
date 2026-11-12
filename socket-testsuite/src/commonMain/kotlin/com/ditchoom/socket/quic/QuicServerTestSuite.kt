@@ -99,7 +99,7 @@ abstract class QuicServerTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             idleTimeout = 10.seconds,
-        )
+        ).withTraceRing("server-suite")
 
     @Test
     fun serverBindsAndReportsPort() =

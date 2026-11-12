@@ -14,11 +14,12 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 
 /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
 private const val MAX_UDP_PAYLOAD = 65507
@@ -145,23 +146,28 @@ internal abstract class NodeDatagramChannelCore(
         // the same condition reports the same typed reason on every backend.
         if (length > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         val msg = payload.asUint8ArrayForSend()
-        suspendCancellableCoroutine { cont ->
-            val callback: (Any?) -> Unit = { error ->
-                if (!cont.isCompleted) {
-                    if (error != null) {
-                        cont.resumeWithException(DatagramSendException(nodeSendError(error, length)))
-                    } else {
-                        cont.resume(Unit)
-                    }
-                }
-            }
-            if (target != null) {
-                socket.send(msg, 0, length, target.port, target.host, callback)
-            } else {
-                // Connected wrapper only, by construction — the base type cannot reach this path.
-                socket.send(msg, 0, length, callback)
-            }
+        // Node keeps `msg` (a view of the caller's own ArrayBuffer, not a copy) until this callback fires:
+        // inline when the kernel takes the datagram at once, later when the socket was full. A send
+        // cancelled from outside must therefore not return before the callback does, or the caller
+        // reuses the payload while Node still reads it and the wire carries the new bytes. The wait
+        // after a cancel is the same "free only in the completion" rule the native backends follow; it
+        // is short because it ends when the socket drains or fails (closing the socket completes it).
+        val completion = CompletableDeferred<Any?>()
+        val callback: (Any?) -> Unit = { error -> completion.complete(error) }
+        if (target != null) {
+            socket.send(msg, 0, length, target.port, target.host, callback)
+        } else {
+            // Connected wrapper only, by construction — the base type cannot reach this path.
+            socket.send(msg, 0, length, callback)
         }
+        val error =
+            try {
+                completion.await()
+            } catch (cancelled: CancellationException) {
+                withContext(NonCancellable) { completion.await() }
+                throw cancelled
+            }
+        if (error != null) throw DatagramSendException(nodeSendError(error, length))
     }
 
     override fun close() {

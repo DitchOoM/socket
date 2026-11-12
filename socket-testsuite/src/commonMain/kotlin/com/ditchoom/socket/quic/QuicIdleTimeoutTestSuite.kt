@@ -44,7 +44,8 @@ abstract class QuicIdleTimeoutTestSuite {
     /** Platform hook for skip-on-missing-native-lib (JVM converts `UnsatisfiedLinkError` to a skip). */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
-    private fun options(idleTimeout: Duration) = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = idleTimeout)
+    private fun options(idleTimeout: Duration) =
+        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = idleTimeout).withTraceRing("idle-timeout")
 
     // ---- tests -------------------------------------------------------------------------------------
 
