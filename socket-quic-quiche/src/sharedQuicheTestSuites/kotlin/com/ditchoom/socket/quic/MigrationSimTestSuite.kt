@@ -390,7 +390,7 @@ abstract class MigrationSimTestSuite {
      * gaps in the packet numbers it receives (`quiche_conn_recv_gaps`, [EvidenceSource.ReceiveGap]).
      *
      * Over seeds 0..299 on an 800 ms path: 110 runs short of the whole reply with an ACK every second
-     * datagram, 98 with the sent-packet evidence alone, 77 with the gap evidence added, 55 with an ACK per
+     * datagram, 98 with the sent-packet evidence alone, 75 with the gap evidence added, 55 with an ACK per
      * datagram. These seeds are short of it without the gap evidence and whole with it; a seed fixes the
      * pipe's loss draws, not which datagrams they land on, so the list belongs to the cadence.
      */
@@ -5224,8 +5224,8 @@ abstract class MigrationSimTestSuite {
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
 
-        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 50. */
-        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(1L, 17L, 22L, 24L, 28L)
+        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 46. */
+        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(4L, 17L, 22L, 24L, 28L)
 
         /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
         const val BURSTY_CHECK_SEEDS = 40L
