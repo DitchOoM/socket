@@ -15,30 +15,27 @@ import java.nio.channels.Selector
 import java.util.IdentityHashMap
 import java.util.TreeSet
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.time.Duration
 
 /**
- * The one owner of a [Selector]: a dedicated platform thread that is the only code to register
- * channels, change interest sets, run `select()` and consume the selected keys. Many sockets share one
- * loop (see [SelectorLoopGroup]), so a connection costs a key, not a thread.
+ * The one owner of a [Selector]: a dedicated platform thread that is the only code to register channels,
+ * change interest sets, run `select()` and consume the selected keys. Many sockets share one loop (see
+ * [SelectorLoopGroup]), so a connection costs a key, not a thread.
  *
- * A non-blocking client socket reads and writes the same channel, so a read's OP_READ wait and a
- * write's OP_WRITE wait share one [SelectionKey]. Waiters therefore only post a command and suspend; the
- * loop ORs each waiter's operation into the key's interest, and on readiness resumes exactly the waiters
- * whose operation is ready and drops exactly those bits.
+ * A client socket reads and writes one channel, so a read's OP_READ wait and a write's OP_WRITE wait share one
+ * [SelectionKey]. Waiters post a command and suspend; the loop ORs each waiter's operation into the key's
+ * interest, and on readiness resumes exactly the waiters whose operation is ready and drops exactly those bits.
  *
- * The loop also owns the deadlines of the waits it holds. A wait's timeout is a node in a loop-confined
- * ordered set and the next `select` is bounded by the earliest one, so arming and disarming a deadline
- * costs no timer thread, no wake-up of one, and no coroutine `withTimeout`. Readiness wins a tie with a
- * deadline: a wait whose deadline has passed is timed out only after one more non-blocking poll found its
- * channel not ready.
+ * The loop owns the deadlines of the waits it holds: each is a node in a loop-confined ordered set, and the next
+ * `select` is bounded by the earliest. Readiness wins a tie with a deadline: a wait whose deadline has passed
+ * times out only after one more non-blocking poll found its channel not ready.
  *
- * Nothing but [inbox] (a lock-free queue) crosses threads. The loop never runs user code (see
- * [resumeOffThisThread]), and a failure of one waiter's resume stays that waiter's: only a failure of the
- * selector itself ends the loop, and then every waiter learns the real cause.
+ * Only [inbox] crosses threads. The loop never runs user code (see [resumeOffThisThread]); a failure resuming
+ * one waiter stays that waiter's, and only a failure of the selector itself ends the loop, with the real cause
+ * given to every waiter.
  */
 internal class SelectorLoop private constructor(
     internal val selector: Selector,
@@ -59,20 +56,18 @@ internal class SelectorLoop private constructor(
         ) : Command
     }
 
-    /**
-     * One wait. A wait without a deadline is a different class from one with a deadline, so no sentinel
-     * stands for "never" and only the timed ones are ever in [timers].
-     */
+    /** Where a waiter is parked: nowhere until armed and again once woken, timed out or failed; or on a channel's [Parked] entry. */
+    private sealed interface Placement {
+        data object Unplaced : Placement
+    }
+
+    /** One wait. A wait without a deadline is a different type from one with a deadline, so only the timed ones are in [timers]. */
     private sealed class Waiter(
         val ops: Int,
         val continuation: CancellableContinuation<Unit>,
     ) {
-        /**
-         * Loop-confined: the channel this waiter is parked on, null while it is not armed (not yet, or already woken,
-         * timed out or failed). A nullable field rather than a sealed state because arming allocates nothing this way,
-         * and a wait is armed on every request/response round trip.
-         */
-        var parkedOn: SelectableChannel? = null
+        /** Loop-confined. */
+        var placement: Placement = Placement.Unplaced
 
         class Untimed(
             ops: Int,
@@ -82,7 +77,7 @@ internal class SelectorLoop private constructor(
         class Timed(
             ops: Int,
             continuation: CancellableContinuation<Unit>,
-            /** [System.nanoTime] at which the wait times out; compared by subtraction, never directly (it wraps). */
+            /** [System.nanoTime] at which the wait times out; ordered by subtraction, as nanoTime wraps. */
             val deadline: Long,
             val timeout: Duration,
             val id: Long,
@@ -91,11 +86,20 @@ internal class SelectorLoop private constructor(
 
     /** Loop-confined: the parked waiters of one channel, and the key that carries their interest. */
     private class Parked(
+        val channel: SelectableChannel,
         val key: SelectionKey,
-    ) {
+    ) : Placement {
         val waiters = ArrayList<Waiter>(2)
 
         fun interest() = waiters.fold(0) { acc, waiter -> acc or waiter.ops }
+    }
+
+    private sealed interface LoopState {
+        data object Running : LoopState
+
+        class Ended(
+            val reason: Throwable,
+        ) : LoopState
     }
 
     private val inbox =
@@ -105,8 +109,7 @@ internal class SelectorLoop private constructor(
             } catch (_: ClosedSelectorException) {
             }
         }
-    private val ended = AtomicBoolean(false)
-
+    private val state = AtomicReference<LoopState>(LoopState.Running)
     private val thread = Thread(this, "socket-nio-loop-${loopCount.incrementAndGet()}").apply { isDaemon = true }
     private val nextId = AtomicInteger()
 
@@ -118,15 +121,14 @@ internal class SelectorLoop private constructor(
         }
 
     /** False once the loop has ended; a group stops handing it out. */
-    val isRunning: Boolean get() = !ended.get()
+    val isRunning: Boolean get() = state.get() === LoopState.Running
 
-    /** Counts for tests: channels with a parked waiter (kept by the loop thread), and keys registered with the selector. */
+    /** Channels with a parked waiter, kept by the loop thread. */
     @Volatile internal var parkedChannelCount: Int = 0
         private set
-    internal val registeredKeyCount: Int get() = if (selector.isOpen) selector.keys().size else 0
 
-    /** Why the loop ended, for a command that arrives after its last drain. */
-    @Volatile private var endReason: Throwable? = null
+    /** Keys registered with the selector. */
+    internal val registeredKeyCount: Int get() = if (selector.isOpen) selector.keys().size else 0
 
     /** Suspends until [channel] is ready for any of [ops] on this loop's selector, or [timeout] passes. */
     suspend fun awaitReady(
@@ -138,7 +140,7 @@ internal class SelectorLoop private constructor(
             if (timeout.isInfinite()) {
                 Waiter.Untimed(ops, continuation)
             } else {
-                // Clamped so that now + timeout cannot wrap past the point where subtraction still orders them.
+                // Clamped so that now + timeout cannot wrap past the range in which subtraction still orders deadlines.
                 val nanos = timeout.inWholeNanoseconds.coerceAtMost(MAX_TIMEOUT_NANOS)
                 Waiter.Timed(ops, continuation, System.nanoTime() + nanos, timeout, nextId.incrementAndGet().toLong())
             }
@@ -150,53 +152,63 @@ internal class SelectorLoop private constructor(
     fun release(channel: SelectableChannel) = submit(Command.Release(channel))
 
     private fun submit(command: Command) {
-        inbox.post(command, onLoopThread = Thread.currentThread() === thread)
-        // Checked after posting: a loop that ended between the post and here has made its final drain, so
-        // nobody else will see this command. (One that ends after this check drains it itself.)
-        if (ended.get()) drainInbox(endReason ?: closedFailure())
+        if (Thread.currentThread() === thread) inbox.postFromLoopThread(command) else inbox.post(command)
+        // Checked after posting: a loop that ended in between has made its final drain, so this command is ours to fail.
+        when (val current = state.get()) {
+            LoopState.Running -> Unit
+            is LoopState.Ended -> failInbox(current.reason)
+        }
     }
 
     override fun run() {
-        var failure: Throwable? = null
-        try {
-            while (true) {
-                drainInbox(null)
-                // A command that raced in after the drain must not be slept through.
-                val wait = if (inbox.prepareToSleep()) millisToNextDeadline() else 0L
-                when {
-                    wait == 0L -> selector.selectNow()
-                    wait < 0L -> selector.select()
-                    else -> selector.select(wait)
-                }
-                dispatchSelected()
-                if (timersDue()) {
-                    // Readiness that arrived with the deadline wins: look once more before timing anything out.
-                    selector.selectNow()
-                    dispatchSelected()
-                    expireTimers()
-                }
+        val reason: Throwable =
+            try {
+                turns()
+            } catch (_: ClosedSelectorException) {
+                closedFailure()
+            } catch (e: Throwable) {
+                SocketIOException("The selector loop failed: ${e.message}", cause = e)
             }
-        } catch (_: ClosedSelectorException) {
-            failure = closedFailure()
-        } catch (e: Throwable) {
-            // The selector itself failed (select threw, or the loop's own bookkeeping did): the real cause
-            // reaches every waiter, not a "closed" that never happened.
-            failure = SocketIOException("The selector loop failed: ${e.message}", cause = e)
-        } finally {
-            // Unreachable first, ended second: nobody may be handed a loop that has made its last drain.
-            loops.remove(selector, this)
-            ended.set(true)
-            val reason = failure ?: closedFailure()
-            endReason = reason
-            for (entry in parked.values) entry.waiters.forEach { resumeFailure(it, reason) }
-            parked.clear()
-            parkedChannelCount = 0
-            timers.clear()
-            drainInbox(reason)
+        // Unreachable first, ended second: nobody may be handed a loop that has made its last drain.
+        loops.remove(selector, this)
+        state.set(LoopState.Ended(reason))
+        for (entry in parked.values) entry.waiters.forEach { resumeFailure(it, reason) }
+        parked.clear()
+        parkedChannelCount = 0
+        timers.clear()
+        failInbox(reason)
+    }
+
+    private fun turns(): Nothing {
+        while (true) {
+            applyInbox()
+            sleepUntilReadyOrDue()
+            dispatchSelected()
+            if (timersDue()) {
+                // Readiness that arrived with the deadline wins: look once more before timing anything out.
+                selector.selectNow()
+                dispatchSelected()
+                expireTimers()
+            }
         }
     }
 
     private fun closedFailure() = SocketClosedException.General("Socket closed while waiting for it to be ready")
+
+    /** Blocks until a channel is ready, a command is posted, or the earliest deadline; never past a pending command or due deadline. */
+    private fun sleepUntilReadyOrDue() {
+        // A command that raced in after the drain must not be slept through.
+        if (!inbox.prepareToSleep()) {
+            selector.selectNow()
+            return
+        }
+        if (timers.isEmpty()) {
+            selector.select()
+            return
+        }
+        val remaining = timers.first().deadline - System.nanoTime()
+        if (remaining <= 0L) selector.selectNow() else selector.select((remaining + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI)
+    }
 
     private fun dispatchSelected() {
         val selected = selector.selectedKeys().iterator()
@@ -207,17 +219,7 @@ internal class SelectorLoop private constructor(
         }
     }
 
-    /** Milliseconds to the earliest deadline (at least 1 when one is pending), 0 when one is due, -1 for none. */
-    private fun millisToNextDeadline(): Long {
-        val first = timers.firstOrNull() ?: return -1L
-        val remaining = first.deadline - System.nanoTime()
-        return if (remaining <= 0L) 0L else (remaining + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI
-    }
-
-    private fun timersDue(): Boolean {
-        val first = timers.firstOrNull() ?: return false
-        return first.deadline - System.nanoTime() <= 0L
-    }
+    private fun timersDue(): Boolean = timers.isNotEmpty() && timers.first().deadline - System.nanoTime() <= 0L
 
     private fun expireTimers() {
         while (timersDue()) {
@@ -227,13 +229,22 @@ internal class SelectorLoop private constructor(
         }
     }
 
-    /** Applies queued commands; with a [failure] (the loop is over) every Arm fails instead. */
-    private fun drainInbox(failure: Throwable?) {
+    private fun applyInbox() {
         while (true) {
             when (val command = inbox.poll() ?: return) {
-                is Command.Arm -> if (failure != null) resumeFailure(command.waiter, failure) else arm(command)
-                is Command.Disarm -> if (failure == null) disarm(command.waiter)
-                is Command.Release -> if (failure == null) release(command)
+                is Command.Arm -> arm(command)
+                is Command.Disarm -> disarm(command.waiter)
+                is Command.Release -> release(command)
+            }
+        }
+    }
+
+    /** The loop is over: every queued wait fails with [reason]; a queued disarm or release has nothing left to undo. */
+    private fun failInbox(reason: Throwable) {
+        while (true) {
+            when (val command = inbox.poll() ?: return) {
+                is Command.Arm -> resumeFailure(command.waiter, reason)
+                is Command.Disarm, is Command.Release -> Unit
             }
         }
     }
@@ -246,13 +257,13 @@ internal class SelectorLoop private constructor(
                 parked[command.channel] ?: run {
                     // keyFor first: register() on a registered channel REPLACES the key's interest set.
                     val key = command.channel.keyFor(selector) ?: command.channel.register(selector, 0)
-                    Parked(key).also {
+                    Parked(command.channel, key).also {
                         parked[command.channel] = it
                         parkedChannelCount = parked.size
                     }
                 }
             entry.waiters.add(waiter)
-            waiter.parkedOn = command.channel
+            waiter.placement = entry
             entry.key.interestOps(entry.interest())
             if (waiter is Waiter.Timed) timers.add(waiter)
         } catch (closed: ClosedChannelException) {
@@ -275,21 +286,20 @@ internal class SelectorLoop private constructor(
         resumeFailure(waiter, failure)
     }
 
-    private fun disarm(waiter: Waiter) {
-        // Not armed (it was already woken, timed out or failed): nothing to undo.
-        if (waiter.parkedOn == null) return
-        unpark(waiter)
-    }
+    private fun disarm(waiter: Waiter) = unpark(waiter)
 
-    /** Takes [waiter] off its channel's key and off the timers; the caller resumes it. */
+    /** Takes [waiter] off its channel's key and off the timers; the caller resumes it. A waiter that is not parked is left as it is. */
     private fun unpark(waiter: Waiter) {
         if (waiter is Waiter.Timed) timers.remove(waiter)
-        val channel = waiter.parkedOn ?: return
-        waiter.parkedOn = null
-        val entry = parked[channel] ?: return
+        val entry =
+            when (val placement = waiter.placement) {
+                Placement.Unplaced -> return
+                is Parked -> placement
+            }
+        waiter.placement = Placement.Unplaced
         entry.waiters.remove(waiter)
         if (entry.waiters.isEmpty()) {
-            parked.remove(channel)
+            parked.remove(entry.channel)
             parkedChannelCount = parked.size
         }
         try {
@@ -301,16 +311,21 @@ internal class SelectorLoop private constructor(
     private fun release(command: Command.Release) {
         val entry = parked.remove(command.channel)
         parkedChannelCount = parked.size
-        if (entry != null) {
-            for (waiter in entry.waiters) {
-                waiter.parkedOn = null
-                if (waiter is Waiter.Timed) timers.remove(waiter)
-                fail(waiter, SocketClosedException.General("Socket closed while waiting for it to be ready"))
-            }
-        }
-        // The key of a closed channel is already cancelled; cancelling again is a no-op, and a channel that
-        // never had a parked waiter may still hold a key that only the next select would drop.
+        if (entry != null) failParked(entry, SocketClosedException.General("Socket closed while waiting for it to be ready"))
+        // The key of a closed channel is already cancelled; a channel that never had a waiter may still hold one
+        // that only the next select would drop.
         command.channel.keyFor(selector)?.cancel()
+    }
+
+    private fun failParked(
+        entry: Parked,
+        failure: Throwable,
+    ) {
+        for (waiter in entry.waiters) {
+            waiter.placement = Placement.Unplaced
+            if (waiter is Waiter.Timed) timers.remove(waiter)
+            resumeFailure(waiter, failure)
+        }
     }
 
     private fun dispatch(key: SelectionKey) {
@@ -323,18 +338,9 @@ internal class SelectorLoop private constructor(
         } catch (closed: CancelledKeyException) {
             parked.remove(key.channel())
             parkedChannelCount = parked.size
-            for (waiter in entry.waiters) {
-                waiter.parkedOn = null
-                if (waiter is Waiter.Timed) timers.remove(waiter)
-                fail(waiter, SocketClosedException.General("Socket closed while waiting for it to be ready", closed))
-            }
+            failParked(entry, SocketClosedException.General("Socket closed while waiting for it to be ready", closed))
         }
     }
-
-    private fun fail(
-        waiter: Waiter,
-        failure: SocketClosedException,
-    ) = resumeFailure(waiter, failure)
 
     private fun resumeSuccess(waiter: Waiter) = waiter.continuation.resumeOffThisThread(Result.success(Unit))
 
@@ -350,18 +356,17 @@ internal class SelectorLoop private constructor(
         private const val MAX_TIMEOUT_NANOS = 1L shl 62
 
         private val loops = ConcurrentHashMap<Selector, SelectorLoop>()
+        private val loopCount = AtomicInteger()
 
         /** How a loop's thread is started; a test replaces it to make starting fail. */
         @Volatile internal var threadStarter: (Thread) -> Unit = { it.start() }
-        private val loopCount = AtomicInteger()
 
         /**
-         * The loop that owns [selector], started on first use; a closed selector has none. A loop whose thread
-         * cannot be started is never reachable: the failure is the caller's, typed.
+         * The loop that owns [selector], started on first use; a closed selector has none. A loop whose thread cannot
+         * be started is never reachable: the failure is the caller's.
          */
         fun of(selector: Selector): SelectorLoop {
             if (!selector.isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
-            loops[selector]?.let { if (it.isRunning) return it }
             return try {
                 loops.compute(selector) { _, existing ->
                     if (existing != null && existing.isRunning) existing else SelectorLoop(selector).also { threadStarter(it.thread) }
@@ -377,45 +382,53 @@ internal class SelectorLoop private constructor(
 }
 
 /**
- * The loops every non-blocking NIO socket shares: a small fixed set, each owned by one daemon platform
- * thread, handed out round-robin. A socket's cost is a registration, not a thread and a selector. The
- * threads are daemons and start on first use, so a process that never opens a non-blocking socket pays
- * nothing and one that has finished with them is not kept alive by them. A loop that has ended (its
- * selector failed or was closed by a caller) is replaced the next time its slot is handed out.
+ * The loops every non-blocking NIO socket shares: a small fixed set, each owned by one daemon platform thread,
+ * handed out round-robin. A socket's cost is a registration, not a thread and a selector. The threads start on
+ * first use and are daemons, so they cost nothing until used and never keep a process alive. A loop that has
+ * ended (its selector failed or was closed by a caller) is replaced the next time its slot is handed out.
  *
- * The count is `availableProcessors / 2`, between 1 and [DEFAULT_MAX_LOOPS]: a loop only waits for readiness
- * and resumes continuations, so a handful serves thousands of sockets and more would only add threads.
- * `-Dsocket.nio.loops=N` overrides it, clamped to 1..[MAX_LOOPS].
+ * The count is `availableProcessors / 2` between 1 and [DEFAULT_MAX_LOOPS]: a loop only waits for readiness and
+ * resumes continuations, so a handful serves thousands of sockets. `-Dsocket.nio.loops=N` overrides it, clamped
+ * to 1..[MAX_LOOPS].
  */
 internal object SelectorLoopGroup {
     private const val DEFAULT_MAX_LOOPS = 4
     private const val MAX_LOOPS = 16
 
-    /** The loop count for [configured] (the property, if it parsed) on a machine with [processors] cores. */
-    internal fun loopCount(
-        configured: Int?,
-        processors: Int,
-    ): Int = (configured ?: (processors / 2).coerceAtMost(DEFAULT_MAX_LOOPS)).coerceIn(1, MAX_LOOPS)
+    private sealed interface Slot {
+        data object Empty : Slot
 
-    private val slots: AtomicReferenceArray<SelectorLoop?> by lazy {
-        AtomicReferenceArray(loopCount(System.getProperty("socket.nio.loops")?.toIntOrNull(), Runtime.getRuntime().availableProcessors()))
+        class Started(
+            val loop: SelectorLoop,
+        ) : Slot
     }
 
-    /** The loops started so far, for tests. */
-    internal fun running(): List<SelectorLoop> = (0 until slots.length()).mapNotNull { slots.get(it) }
+    internal fun defaultLoopCount(processors: Int): Int = (processors / 2).coerceAtMost(DEFAULT_MAX_LOOPS)
 
+    /** [requested] loops, clamped to the supported range. */
+    internal fun loopCount(requested: Int): Int = requested.coerceIn(1, MAX_LOOPS)
+
+    private val slots: AtomicReferenceArray<Slot> by lazy {
+        val requested =
+            System.getProperty("socket.nio.loops")?.toIntOrNull() ?: defaultLoopCount(Runtime.getRuntime().availableProcessors())
+        val count = loopCount(requested)
+        AtomicReferenceArray<Slot>(count).also { for (i in 0 until count) it.set(i, Slot.Empty) }
+    }
     private val next = AtomicInteger()
 
     fun next(): SelectorLoop {
         // Masked, not floorMod: Math.floorMod(int, int) arrived in Android API 24.
-        val slot = (next.getAndIncrement() and Int.MAX_VALUE) % slots.length()
+        val index = (next.getAndIncrement() and Int.MAX_VALUE) % slots.length()
         while (true) {
-            val current = slots.get(slot)
-            if (current != null && current.isRunning) return current
+            val current = slots.get(index)
+            if (current is Slot.Started && current.loop.isRunning) return current.loop
             val fresh = SelectorLoop.open()
-            if (slots.compareAndSet(slot, current, fresh)) return fresh
-            // Lost a race for the slot: the winner's loop is the one to use, and this one has no sockets yet.
+            if (slots.compareAndSet(index, current, Slot.Started(fresh))) return fresh
+            // Lost the race for the slot: the winner's loop is used, and this one has no sockets yet.
             fresh.selector.close()
         }
     }
+
+    /** The loops started so far, for tests. */
+    internal fun running(): List<SelectorLoop> = (0 until slots.length()).mapNotNull { (slots.get(it) as? Slot.Started)?.loop }
 }

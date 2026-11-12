@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
 import com.ditchoom.socket.nio.NioServerSocket
+import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +58,7 @@ class ServerSocketAllocateTests {
 
     @Test
     fun withoutNio2TheListenerIsPlainNio() {
-        assertIs<NioServerSocket>(serverSocketFor(TransportConfig(), nio2 = false, nioBlocking = false))
+        assertIs<SelectorServerSocket>(serverSocketFor(TransportConfig(), nio2 = false, nioBlocking = false))
         assertIs<NioServerSocket>(serverSocketFor(TransportConfig(), nio2 = false, nioBlocking = true))
     }
 
@@ -65,7 +66,7 @@ class ServerSocketAllocateTests {
     fun aNonBlockingListenerRoundTripsThroughTheLoops() =
         runBlocking(Dispatchers.IO) {
             withTimeout(15.seconds) {
-                val server = NioServerSocket(TransportConfig(), nonBlocking = true)
+                val server = SelectorServerSocket()
                 val accepted = server.bind(0, "127.0.0.1")
                 val echo =
                     launch {
@@ -92,7 +93,7 @@ class ServerSocketAllocateTests {
     fun closingAListenerEndsItsAcceptFlow() =
         runBlocking(Dispatchers.IO) {
             withTimeout(15.seconds) {
-                val server = NioServerSocket(TransportConfig(), nonBlocking = true)
+                val server = SelectorServerSocket()
                 val flow = server.bind(0, "127.0.0.1")
                 val ended = CompletableDeferred<Unit>()
                 val collector =
@@ -112,7 +113,7 @@ class ServerSocketAllocateTests {
     fun aCancelledCollectorClosesTheListener() =
         runBlocking(Dispatchers.IO) {
             withTimeout(15.seconds) {
-                val server = NioServerSocket(TransportConfig(), nonBlocking = true)
+                val server = SelectorServerSocket()
                 val flow = server.bind(0, "127.0.0.1")
                 val port = server.port()
                 val collector = launch { flow.collect { } }
