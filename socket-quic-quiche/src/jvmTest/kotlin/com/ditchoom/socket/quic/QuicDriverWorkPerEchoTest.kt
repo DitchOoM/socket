@@ -98,7 +98,10 @@ class QuicDriverWorkPerEchoTest {
                             assertTrue(recvs <= ECHOES + SLACK, "client stream reads for $ECHOES echoes: $recvs (want about $ECHOES)")
                             // Request flush (data + done), the reply's turn (ACK + done) and the turn of the
                             // server's ACK (done): 5 at best. The old loop made 7.
-                            assertTrue(sends <= ECHOES * 5 + SLACK, "quiche_conn_send calls for $ECHOES echoes: $sends (want at most ${ECHOES * 5})")
+                            assertTrue(
+                                sends <= ECHOES * 5 + SLACK,
+                                "quiche_conn_send calls for $ECHOES echoes: $sends (want at most ${ECHOES * 5})",
+                            )
                             stream.close()
                         }
                     } finally {

@@ -27,7 +27,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -303,214 +304,212 @@ internal class SharedQuicheServer(
             val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
             val tokenLenBuf = bufferFactory.allocate(8)
 
-            // The loop owns what it takes; a datagram the reader offered and the loop never took — the
-            // reader cancelled mid-hand-off as the server closes — is freed by the channel, never by
-            // the reader, whose cancelled `send` cannot say whether the hand-off happened.
-            val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS, onUndeliveredElement = ::freeUndeliveredDatagram)
-            val reader =
-                launch(receiveContext + CoroutineName("quic-server/receive/$port/reader")) {
-                    try {
-                        while (true) {
-                            val r =
-                                try {
-                                    channel.receive()
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    // Transient receive error — retry, unless the server is closing, in
-                                    // which case fall through to shut the reader down.
-                                    if (closed.load()) break else continue
-                                }
-                            inbound.send(r)
-                            if (r is DatagramReadResult.Closed) break
+            // One turn at a time: a datagram's routing, and the drain of the routing queues that must
+            // precede it. The loop below is the only caller of `channel.receive()` (the buffer-flow
+            // single-consumer contract) and does each datagram's turn itself, as it received it; the
+            // drainer applies a routing change promptly when no datagram is arriving. Both take the
+            // turn, so the routing table and the header scratch buffers have one user at a time on
+            // any dispatcher. A separate reader coroutine feeding this loop through a channel cost two
+            // dispatches per datagram (the reader's hand-off resuming this loop's select, and this
+            // loop's resumption of the driver), on the loop thread, for no concurrency gain: the
+            // reader could not receive the next datagram until this one had been taken anyway.
+            val turn = Mutex()
+            val drainer =
+                launch(receiveContext + CoroutineName("quic-server/receive/$port/routing")) {
+                    for (ignored in wakeups) {
+                        turn.withLock {
+                            for (key in registry.drainRoutingQueues()) {
+                                serverCapture.record { it.error(ServerDatagramDrop.ContestedConnectionId(key)) }
+                            }
                         }
-                    } catch (_: CancellationException) {
-                    } finally {
-                        inbound.close()
                     }
                 }
-
-            val wake = Any()
-            val readerDone = Any()
             try {
                 loop@ while (!closed.load()) {
-                    val item =
-                        select<Any?> {
-                            inbound.onReceiveCatching { res -> res.getOrNull() ?: readerDone }
-                            wakeups.onReceive { wake }
+                    val item: DatagramReadResult =
+                        try {
+                            channel.receive()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // Transient receive error — retry, unless the server is closing.
+                            if (closed.load()) break@loop else continue@loop
                         }
-                    // Register spare SCIDs / drop closed drivers BEFORE routing anything. Receive-loop only.
-                    for (key in registry.drainRoutingQueues()) {
-                        serverCapture.record { it.error(ServerDatagramDrop.ContestedConnectionId(key)) }
-                    }
-
-                    val datagram =
-                        when (item) {
-                            wake -> continue@loop // woke only to drain the routing queues
-                            readerDone -> break@loop // reader saw Closed / error → shut down
-                            is DatagramReadResult.Closed -> break@loop
-                            is DatagramReadResult.Received -> item.datagram
-                            else -> continue@loop
+                    turn.lock()
+                    try {
+                        // Register spare SCIDs / drop closed drivers BEFORE routing anything.
+                        for (key in registry.drainRoutingQueues()) {
+                            serverCapture.record { it.error(ServerDatagramDrop.ContestedConnectionId(key)) }
                         }
-                    if (closed.load()) {
-                        datagram.payload.freeNativeMemory()
-                        break@loop
-                    }
 
-                    val peer = datagram.peer
-                    // The local address this datagram actually arrived on — the value quiche must be
-                    // given as recv_info.to, and which it echoes back as send_info.from when it replies.
-                    //
-                    // A channel without DatagramCapabilities.localAddressReceive reports
-                    // LocalAddress.Unknown; the server's bound address is then the only answer available.
-                    // That fallback is exact for a channel bound to one address and WRONG for a wildcard
-                    // bind (it yields 0.0.0.0) — so reply-source pinning is only as good as the
-                    // platform's receive path reporting the arrival address. Where it does not, this
-                    // falls back to the bound address rather than inventing one.
-                    val localAddr = datagram.localAddress.orNull() ?: localAddress
-                    // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
-                    // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
-                    // the driver, which frees it back to the pool after quiche_conn_recv.
-                    val recvBuf = datagram.payload
-                    val received = recvBuf.remaining()
-                    if (received <= 0) {
-                        recvBuf.freeNativeMemory()
-                        continue@loop
-                    }
-                    val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+                        val datagram =
+                            when (item) {
+                                is DatagramReadResult.Closed -> break@loop
+                                is DatagramReadResult.Received -> item.datagram
+                                else -> continue@loop
+                            }
+                        if (closed.load()) {
+                            datagram.payload.freeNativeMemory()
+                            break@loop
+                        }
 
-                    // A version this server does not speak is never routed to a connection (RFC 9000
-                    // §5.2.2), and must be decided on the version-invariant header alone, before
-                    // quiche_header_info applies version 1's rules to it.
-                    val versioned = VersionInvariantHeader.of(recvBuf, received)
-                    if (versioned is VersionInvariantHeader.UnsupportedVersion) {
-                        answerUnsupportedVersion(versioned, recvBuf, received, peer, datagram.localAddress)
-                        recvBuf.freeNativeMemory()
-                        continue@loop
-                    }
+                        val peer = datagram.peer
+                        // The local address this datagram actually arrived on — the value quiche must be
+                        // given as recv_info.to, and which it echoes back as send_info.from when it replies.
+                        //
+                        // A channel without DatagramCapabilities.localAddressReceive reports
+                        // LocalAddress.Unknown; the server's bound address is then the only answer available.
+                        // That fallback is exact for a channel bound to one address and WRONG for a wildcard
+                        // bind (it yields 0.0.0.0) — so reply-source pinning is only as good as the
+                        // platform's receive path reporting the arrival address. Where it does not, this
+                        // falls back to the bound address rather than inventing one.
+                        val localAddr = datagram.localAddress.orNull() ?: localAddress
+                        // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
+                        // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
+                        // the driver, which frees it back to the pool after quiche_conn_recv.
+                        val recvBuf = datagram.payload
+                        val received = recvBuf.remaining()
+                        if (received <= 0) {
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
+                        val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-                    // The id buffers' capacity: a long header carries ids the PEER chose, up to the
-                    // RFC 9000 maximum.
-                    writeNativeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
-                    writeNativeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
-                    writeNativeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
+                        // A version this server does not speak is never routed to a connection (RFC 9000
+                        // §5.2.2), and must be decided on the version-invariant header alone, before
+                        // quiche_header_info applies version 1's rules to it.
+                        val versioned = VersionInvariantHeader.of(recvBuf, received)
+                        if (versioned is VersionInvariantHeader.UnsupportedVersion) {
+                            answerUnsupportedVersion(versioned, recvBuf, received, peer, datagram.localAddress)
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
 
-                    val rc =
-                        api.headerInfo(
-                            recvAddr,
-                            received,
-                            // A short header does not encode its DCID's length: the DCID is an id this
-                            // server issued, so it is exactly the issued length.
-                            QUIC_ISSUED_CONN_ID_LEN,
-                            versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            scidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            dcidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            dcidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            tokenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                            tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        )
-                    if (rc < 0) {
-                        serverCapture.record { it.error(ServerDatagramDrop.Unparseable(received, peer)) }
-                        recvBuf.freeNativeMemory()
-                        continue@loop
-                    }
+                        // The id buffers' capacity: a long header carries ids the PEER chose, up to the
+                        // RFC 9000 maximum.
+                        writeNativeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                        writeNativeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                        writeNativeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
 
-                    val dcidLen = readNativeSizeT(dcidLenBuf)
-                    val dcidKey = ConnectionIdKey.from(dcidBuf, offset = 0, length = dcidLen)
+                        val rc =
+                            api.headerInfo(
+                                recvAddr,
+                                received,
+                                // A short header does not encode its DCID's length: the DCID is an id this
+                                // server issued, so it is exactly the issued length.
+                                QUIC_ISSUED_CONN_ID_LEN,
+                                versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                scidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                dcidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                dcidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                tokenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            )
+                        if (rc < 0) {
+                            serverCapture.record { it.error(ServerDatagramDrop.Unparseable(received, peer)) }
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
 
-                    val route = registry.routeFor(dcidKey)
-                    if (route is DcidRoute.RecentlyClosed) {
-                        serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
-                        recvBuf.freeNativeMemory()
-                        continue@loop
-                    }
-                    if (route is DcidRoute.Live) {
-                        val existingDriver = route.driver
-                        // The per-source recv_info lets quiche see the real datagram origin so a migrated
-                        // client's new source is recognised as a new path (passive migration). Hold an
-                        // in-flight ref so the cache can't evict+free it while the driver has it queued.
-                        // Keyed by (peer, local), not by peer alone: the same client addressing two of
-                        // this host's local addresses is two paths to quiche, and one cache entry for
-                        // both would hand the second path the first one's `to` — a wrong reply source
-                        // from inside the cache even when the platform reports arrival addresses correctly.
-                        val recvKey = ServerPathPair(peer = peer, local = localAddr)
-                        val cached =
-                            registry.lookupRecvInfo(recvKey) ?: run {
-                                // Cache miss: build a recv_info with from = the datagram's source and
-                                // to = the address it arrived on (encoded once per local address).
-                                val local =
-                                    localSockAddrs.getOrPut(localAddr) { codec.encodeToNative(localAddr, bufferFactory) }
-                                val from = codec.encodeToNative(peer, bufferFactory)
-                                val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
-                                // Record this source's PathKey→peer so a reply quiche routes here
-                                // (sendInfo.to) resolves to the real send target; removed on cache free.
-                                val fromKey = api.decodePathKey(from.address)
-                                peers.put(fromKey, peer)
-                                // And the mirror: PathKey→local, so the same reply's sendInfo.from
-                                // resolves to the address it must leave from. Not removed with
-                                // the recv_info — a local address outlives any one peer's cache entry,
-                                // and re-adding it on every miss would be the only effect.
-                                locals.put(api.decodePathKey(local.address), localAddr)
-                                registry.putRecvInfo(recvKey, info) {
-                                    from.free()
-                                    peers.remove(fromKey)
+                        val dcidLen = readNativeSizeT(dcidLenBuf)
+                        val dcidKey = ConnectionIdKey.from(dcidBuf, offset = 0, length = dcidLen)
+
+                        val route = registry.routeFor(dcidKey)
+                        if (route is DcidRoute.RecentlyClosed) {
+                            serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
+                            recvBuf.freeNativeMemory()
+                            continue@loop
+                        }
+                        if (route is DcidRoute.Live) {
+                            val existingDriver = route.driver
+                            // The per-source recv_info lets quiche see the real datagram origin so a migrated
+                            // client's new source is recognised as a new path (passive migration). Hold an
+                            // in-flight ref so the cache can't evict+free it while the driver has it queued.
+                            // Keyed by (peer, local), not by peer alone: the same client addressing two of
+                            // this host's local addresses is two paths to quiche, and one cache entry for
+                            // both would hand the second path the first one's `to` — a wrong reply source
+                            // from inside the cache even when the platform reports arrival addresses correctly.
+                            val recvKey = ServerPathPair(peer = peer, local = localAddr)
+                            val cached =
+                                registry.lookupRecvInfo(recvKey) ?: run {
+                                    // Cache miss: build a recv_info with from = the datagram's source and
+                                    // to = the address it arrived on (encoded once per local address).
+                                    val local =
+                                        localSockAddrs.getOrPut(localAddr) { codec.encodeToNative(localAddr, bufferFactory) }
+                                    val from = codec.encodeToNative(peer, bufferFactory)
+                                    val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
+                                    // Record this source's PathKey→peer so a reply quiche routes here
+                                    // (sendInfo.to) resolves to the real send target; removed on cache free.
+                                    val fromKey = api.decodePathKey(from.address)
+                                    peers.put(fromKey, peer)
+                                    // And the mirror: PathKey→local, so the same reply's sendInfo.from
+                                    // resolves to the address it must leave from. Not removed with
+                                    // the recv_info — a local address outlives any one peer's cache entry,
+                                    // and re-adding it on every miss would be the only effect.
+                                    locals.put(api.decodePathKey(local.address), localAddr)
+                                    registry.putRecvInfo(recvKey, info) {
+                                        from.free()
+                                        peers.remove(fromKey)
+                                    }
+                                }
+                            cached.inFlight.incrementAndGet()
+                            // The packet owns the buffer and the in-flight ref from here: accepted, the
+                            // driver releases both; refused, this loop does, through the same door.
+                            val packet =
+                                QuicheCmd.RecvPacket(
+                                    recvBuf,
+                                    received,
+                                    PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
+                                )
+                            if (existingDriver.commands.trySend(packet).isFailure) {
+                                // The connection closed before the handler's cleanup unrouted it: the same
+                                // late datagram RecentlyClosed names, one hop earlier.
+                                serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
+                                packet.release(QuicheCmd.ReleaseDoor.Refused)
+                                // Retire ALL entries for this closed driver, not just the one we hit.
+                                registry.deRouteDriver(existingDriver)
+                            }
+                        } else {
+                            // Nothing routes this DCID, so the only packet that may create a connection is
+                            // a fully conforming Initial (RFC 9000 §5.2.2: "Servers MUST drop incoming
+                            // packets under all other circumstances") carried in a datagram of at least
+                            // 1200 bytes (§14.1: "A server MUST discard an Initial packet that is carried
+                            // in a UDP datagram with a payload that is smaller"). quiche_accept checks
+                            // neither, so without this a stray short-header packet, a stale 1-RTT packet
+                            // after its connection closed, a Handshake packet or a runt Initial would each
+                            // become a server connection and a driver that lives until the idle timeout —
+                            // a cost the §14.1 floor exists to deny an attacker, and a spurious
+                            // PROTOCOL_VIOLATION close in every trace someone reads to diagnose a real
+                            // failure.
+                            val packetType = QuicPacketType.fromQuiche(typeBuf[0].toInt() and 0xFF)
+                            if (packetType !is QuicPacketType.Initial) {
+                                serverCapture.record { it.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType)) }
+                                recvBuf.freeNativeMemory()
+                                continue@loop
+                            }
+                            if (received < MIN_INITIAL_DATAGRAM_SIZE) {
+                                serverCapture.record { it.error(ServerDatagramDrop.RuntInitial(received, peer)) }
+                                recvBuf.freeNativeMemory()
+                                continue@loop
+                            }
+                            // Accept new connection — recvBuf ownership transfers inside.
+                            when (val outcome = acceptNewConnection(recvBuf, received, peer, localAddr)) {
+                                is AcceptOutcome.Refused -> serverCapture.record { it.error(outcome.drop) }
+                                is AcceptOutcome.Accepted -> {
+                                    registry.routeDriver(outcome.serverScidKey, outcome.driver)
+                                    registry.routeDriver(dcidKey, outcome.driver)
+                                    registry.acceptedDrivers.trySend(AcceptedConnection(outcome.driver, peer))
                                 }
                             }
-                        cached.inFlight.incrementAndGet()
-                        // The packet owns the buffer and the in-flight ref from here: accepted, the
-                        // driver releases both; refused, this loop does, through the same door.
-                        val packet =
-                            QuicheCmd.RecvPacket(
-                                recvBuf,
-                                received,
-                                PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
-                            )
-                        if (existingDriver.commands.trySend(packet).isFailure) {
-                            // The connection closed before the handler's cleanup unrouted it: the same
-                            // late datagram RecentlyClosed names, one hop earlier.
-                            serverCapture.record { it.drop(ServerDatagramDrop.ForClosedConnection(received, peer)) }
-                            packet.release(QuicheCmd.ReleaseDoor.Refused)
-                            // Retire ALL entries for this closed driver, not just the one we hit.
-                            registry.deRouteDriver(existingDriver)
                         }
-                    } else {
-                        // Nothing routes this DCID, so the only packet that may create a connection is
-                        // a fully conforming Initial (RFC 9000 §5.2.2: "Servers MUST drop incoming
-                        // packets under all other circumstances") carried in a datagram of at least
-                        // 1200 bytes (§14.1: "A server MUST discard an Initial packet that is carried
-                        // in a UDP datagram with a payload that is smaller"). quiche_accept checks
-                        // neither, so without this a stray short-header packet, a stale 1-RTT packet
-                        // after its connection closed, a Handshake packet or a runt Initial would each
-                        // become a server connection and a driver that lives until the idle timeout —
-                        // a cost the §14.1 floor exists to deny an attacker, and a spurious
-                        // PROTOCOL_VIOLATION close in every trace someone reads to diagnose a real
-                        // failure.
-                        val packetType = QuicPacketType.fromQuiche(typeBuf[0].toInt() and 0xFF)
-                        if (packetType !is QuicPacketType.Initial) {
-                            serverCapture.record { it.error(ServerDatagramDrop.NotAnInitial(received, peer, packetType)) }
-                            recvBuf.freeNativeMemory()
-                            continue@loop
-                        }
-                        if (received < MIN_INITIAL_DATAGRAM_SIZE) {
-                            serverCapture.record { it.error(ServerDatagramDrop.RuntInitial(received, peer)) }
-                            recvBuf.freeNativeMemory()
-                            continue@loop
-                        }
-                        // Accept new connection — recvBuf ownership transfers inside.
-                        when (val outcome = acceptNewConnection(recvBuf, received, peer, localAddr)) {
-                            is AcceptOutcome.Refused -> serverCapture.record { it.error(outcome.drop) }
-                            is AcceptOutcome.Accepted -> {
-                                registry.routeDriver(outcome.serverScidKey, outcome.driver)
-                                registry.routeDriver(dcidKey, outcome.driver)
-                                registry.acceptedDrivers.trySend(AcceptedConnection(outcome.driver, peer))
-                            }
-                        }
+                    } finally {
+                        turn.unlock()
                     }
                 }
             } finally {
-                reader.cancel()
+                drainer.cancel()
                 versionBuf.freeNativeMemory()
                 typeBuf.freeNativeMemory()
                 scidBuf.freeNativeMemory()
