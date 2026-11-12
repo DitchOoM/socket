@@ -4,9 +4,12 @@
 # .github/actions/apple-failure-capture; tests/apple-failure-capture.test.sh exercises it against a
 # real crash and a real hang.
 #
-#   start   <dir> <budget-minutes> <kill:0|1>   drop the marker, arm the hang watchdog
+#   start   <dir> <budget-minutes> <kill:0|1> [ring: none|sample|xctrace]
+#                                               drop the marker, arm the hang watchdog and, for a ring
+#                                               mode, the timeline recorder
 #   collect <dir> <out-dir> [simulator-udid]     gather everything since the marker
 #   watch   <dir> <budget-minutes> <kill:0|1>   (internal) the detached watchdog
+#   ring    <dir> <mode>                         (internal) the detached timeline recorder
 #   summarize-ips <file.ips>                     (internal) print the crashed thread
 #
 # WHY: on 2026-11-11 a macOS test binary died with "Segmentation fault: 11" and nothing else, and it
@@ -27,6 +30,12 @@ FILE_CAP_BYTES="${CAPTURE_FILE_CAP_BYTES:-5242880}"    # any single crash report
 TOTAL_CAP_KB="${CAPTURE_TOTAL_CAP_KB:-46080}"          # 45 MB: the whole artifact stays under ~50 MB
 SAMPLE_SECONDS="${CAPTURE_SAMPLE_SECONDS:-5}"
 MAX_PIDS=6
+RING_CAP_BYTES="${CAPTURE_RING_CAP_BYTES:-20971520}"          # 20 MB of ring per job, compressed, newest kept
+RING_SAMPLE_INTERVAL="${CAPTURE_RING_SAMPLE_INTERVAL:-5}"     # seconds between `sample <pid> 1` snapshots
+RING_SAMPLE_KEEP="${CAPTURE_RING_SAMPLE_KEEP:-10}"            # the last ~50 s of snapshots
+RING_XCTRACE_WINDOW="${CAPTURE_RING_XCTRACE_WINDOW:-30}"      # seconds per Time Profiler recording
+RING_XCTRACE_KEEP="${CAPTURE_RING_XCTRACE_KEEP:-2}"           # recordings kept (the last ~60 s)
+RING_XCTRACE_SAVE_WAIT="${CAPTURE_RING_XCTRACE_SAVE_WAIT:-45}" # xctrace needs this long to save a stopped recording
 NATIVE_NAME="${CAPTURE_NATIVE_NAME:-test.kexe}"        # exact process name of a K/N test binary
 JVM_PATTERN="${CAPTURE_JVM_PATTERN:-GradleWorkerMain}" # command-line match for a Gradle test worker
 KILL_PATTERNS="${CAPTURE_KILL_PATTERNS:-$JVM_PATTERN GradleDaemon}"
@@ -192,8 +201,103 @@ watch() { # <dir> <budget-minutes> <kill>
   fi
 }
 
-start() { # <dir> <budget-minutes> <kill>
-  local dir="$1" budget="$2" kill="$3"
+
+# ── timeline ring ────────────────────────────────────────────────────────────────────────────────
+# The hang watchdog above takes stacks of ONE instant. The ring is the minute before it: where each
+# thread of a test process was, over time, kept on disk and uploaded only if the job fails.
+#
+#   sample   `sample <pid> 1` every few seconds into a ring of the last RING_SAMPLE_KEEP text files.
+#            No privilege, ~8 KB per snapshot of a small process (a few hundred KB all told).
+#   xctrace  `xctrace record --template 'Time Profiler' --attach <pid>` in RING_XCTRACE_WINDOW-second
+#            recordings, the last RING_XCTRACE_KEEP kept. Measured on a hosted macos-26 runner
+#            (Xcode 26.6): attaching to one's own process needs no sudo and no GUI session, a 10 s
+#            recording of a one-thread busy loop is a 3 MB bundle (1 MB zstd), and saving it takes
+#            ~12 s, during which nothing is recorded: the ring has a blind spot after each window.
+#
+# Both attach to the exact-name K/N test binary ($NATIVE_NAME); a JVM test worker has JFR instead.
+ring_pid_loop() { # <ringdir> <pid> <mode>
+  local d="$1/pid-$2" pid="$2" mode="$3" seq=0 f
+  mkdir -p "$d"
+  while kill -0 "$pid" 2>/dev/null; do
+    [ -e "$1/stop" ] && return 0
+    seq=$((seq + 1))
+    f=$(printf '%s/%s-%06d' "$d" "$mode" "$seq")
+    case "$mode" in
+      sample)
+        bounded 20 sample "$pid" 1 -file "$f.txt" >/dev/null 2>&1 || rm -f "$f.txt"
+        ls -t "$d"/sample-*.txt 2>/dev/null | tail -n +$((RING_SAMPLE_KEEP + 1)) | while IFS= read -r old; do rm -f "$old"; done
+        sleep "$RING_SAMPLE_INTERVAL" ;;
+      xctrace)
+        # --no-prompt: never ask. A window that ends because the process died saves a final partial one.
+        xcrun xctrace record --template 'Time Profiler' --attach "$pid" --time-limit "${RING_XCTRACE_WINDOW}s" \
+          --output "$f.trace" --no-prompt >"$f.log" 2>&1 </dev/null &
+        echo $! >"$d/xctrace.pid"
+        wait $! 2>/dev/null
+        ls -td "$d"/xctrace-*.trace 2>/dev/null | tail -n +$((RING_XCTRACE_KEEP + 1)) | while IFS= read -r old; do rm -rf "$old" "${old%.trace}.log"; done ;;
+    esac
+  done
+}
+
+ring() { # <dir> <mode>
+  local dir="$1" mode="$2" rd="$1/ring" pid
+  mkdir -p "$rd"
+  while sleep 2; do
+    [ -e "$rd/stop" ] && exit 0
+    for pid in $(pgrep -x "$NATIVE_NAME" 2>/dev/null | head -"$MAX_PIDS"); do
+      [ -d "$rd/pid-$pid" ] && continue
+      ring_pid_loop "$rd" "$pid" "$mode" </dev/null >>"$rd/ring.log" 2>&1 &
+    done
+  done
+}
+
+# Stop the recorders (a recording being saved needs RING_XCTRACE_SAVE_WAIT s), then compress what is
+# there into <out>/ring, newest first, under RING_CAP_BYTES; the log says what was cut.
+collect_ring() { # <dir> <out>
+  local dir="$1" out="$2/ring" rd="$1/ring" total=0 kept=0 cut=0 f size name waited=0 t
+  [ -d "$rd" ] || return 0
+  touch "$rd/stop"
+  for f in "$rd"/pid-*/xctrace.pid; do
+    [ -f "$f" ] || continue
+    kill -INT "$(cat "$f")" 2>/dev/null
+  done
+  # xctrace saves on SIGINT; wait for every recorder to finish writing.
+  while pgrep -f "xctrace record --template" >/dev/null 2>&1 && [ "$waited" -lt "$RING_XCTRACE_SAVE_WAIT" ]; do sleep 2; waited=$((waited + 2)); done
+  pkill -f "xctrace record --template" 2>/dev/null
+  mkdir -p "$out"
+  for t in $(ls -td "$rd"/pid-*/xctrace-*.trace "$rd"/pid-*/sample-*.txt 2>/dev/null); do
+    name="$(basename "$(dirname "$t")")-$(basename "$t")"
+    case "$t" in
+      *.trace)
+        [ -d "$t/Trace1.run" ] || { echo "ring: $name is not a finished recording (the save was cut short), skipped"; continue; }
+        if command -v zstd >/dev/null 2>&1; then
+          tar -cf - -C "$(dirname "$t")" "$(basename "$t")" 2>/dev/null | zstd -q -19 -T0 -o "$out/$name.tar.zst" 2>/dev/null
+          f="$out/$name.tar.zst"
+        else
+          tar -czf "$out/$name.tgz" -C "$(dirname "$t")" "$(basename "$t")" 2>/dev/null
+          f="$out/$name.tgz"
+        fi ;;
+      *) gzip -9 -c "$t" >"$out/$name.gz" 2>/dev/null; f="$out/$name.gz" ;;
+    esac
+    size=$(wc -c <"$f" | tr -d ' ')
+    if [ $((total + size)) -gt "$RING_CAP_BYTES" ]; then
+      rm -f "$f"; cut=$((cut + 1)); echo "ring: TRUNCATED, dropped $(basename "$f") ($size bytes) to stay under $RING_CAP_BYTES"; continue
+    fi
+    total=$((total + size)); kept=$((kept + 1))
+  done
+  if [ "$kept" -gt 0 ]; then
+    cat >"$out/README.txt" <<'TXT'
+Timeline ring of a test process (the minutes before the job failed).
+  pid-*-xctrace-*.tar.zst  Time Profiler recordings: `zstd -dc x.tar.zst | tar -xf -` then `open x.trace` (Instruments),
+                     or `xcrun xctrace export --input x.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]'`
+  pid-*-sample-*.txt.gz    `sample <pid> 1` snapshots, oldest first by the number in the name: gunzip -c, then read "Call graph:"
+A hot frame in every snapshot, or a thread parked in the same frame across all of them, is the stall.
+TXT
+  fi
+  echo "ring: $kept file(s), $total bytes compressed, $cut dropped"
+}
+
+start() { # <dir> <budget-minutes> <kill> [ring-mode]
+  local dir="$1" budget="$2" kill="$3" ringmode="${4:-none}"
   rm -rf "$dir"
   mkdir -p "$dir"
   date +%s >"$dir/start.epoch"
@@ -204,7 +308,15 @@ start() { # <dir> <budget-minutes> <kill>
     echo $! >"$dir/watchdog.pid"
     disown 2>/dev/null || true
   fi
-  echo "capture marker set at $(date -u) (hang watchdog: ${budget} min, kill=${kill})"
+  case "$ringmode" in
+    sample|xctrace)
+      nohup "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ring "$dir" "$ringmode" </dev/null >/dev/null 2>&1 &
+      echo $! >"$dir/ring.pid"
+      disown 2>/dev/null || true ;;
+    none) ;;
+    *) echo "unknown ring mode '$ringmode' (none|sample|xctrace): no ring" ;;
+  esac
+  echo "capture marker set at $(date -u) (hang watchdog: ${budget} min, kill=${kill}, timeline ring: ${ringmode})"
 }
 
 # ── collect ──────────────────────────────────────────────────────────────────────────────────────
@@ -245,6 +357,10 @@ collect() { # <dir> <out> [udid]
     echo "test processes still alive at failure; sampling them"
     dump_stacks "$out/hang/at-failure" >/dev/null
   fi
+
+  # The timeline ring, stopped and compressed (it can take up to RING_XCTRACE_SAVE_WAIT s).
+  [ -f "$dir/ring.pid" ] && kill "$(cat "$dir/ring.pid")" 2>/dev/null
+  collect_ring "$dir" "$out"
 
   # Unified log: started in the background now, collected while the crash reporter is awaited.
   local log_pids=""
@@ -360,7 +476,8 @@ collect() { # <dir> <out> [udid]
 }
 
 case "${1:-}" in
-  start) start "${2:?dir}" "${3:-0}" "${4:-0}" ;;
+  start) start "${2:?dir}" "${3:-0}" "${4:-0}" "${5:-none}" ;;
+  ring) ring "${2:?dir}" "${3:?mode}" ;;
   watch) watch "${2:?dir}" "${3:?budget}" "${4:-0}" ;;
   collect) collect "${2:?dir}" "${3:?out}" "${4:-}" ;;
   summarize-ips) summarize_ips "${2:?file}" ;;

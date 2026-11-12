@@ -341,7 +341,9 @@ internal class SharedQuicheServer(
                             wakeups.onReceive { wake }
                         }
                     // Register spare SCIDs / drop closed drivers BEFORE routing anything. Receive-loop only.
-                    registry.drainRoutingQueues()
+                    for (key in registry.drainRoutingQueues()) {
+                        serverCapture.record { it.error(ServerDatagramDrop.ContestedConnectionId(key)) }
+                    }
 
                     val datagram =
                         when (item) {
@@ -811,6 +813,16 @@ internal sealed class ServerDatagramDrop(
         len: Int,
         peer: SocketAddress,
     ) : ServerDatagramDrop("$len B from $peer: quiche_header_info rejected the packet")
+
+    /**
+     * A connection's driver announced a source id that another live connection already routes, so the
+     * route stays with the first and the second's claim is ignored. Not a datagram: no packet was
+     * involved, but a trace that shows a connection stalling before its handshake completes needs this
+     * line to say why its datagrams went elsewhere.
+     */
+    class ContestedConnectionId(
+        id: ConnectionIdKey,
+    ) : ServerDatagramDrop("source id $id is routed to another connection; the later claim was ignored")
 
     /** No connection routes the DCID and `quiche_accept` would not create one for it. */
     class AcceptRefused(

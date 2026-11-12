@@ -538,7 +538,15 @@ jobs:
           fi
 
   build-windows:
-    name: "Windows JVM Tests"
+    # Two legs of the same suite: `jfr: false` is the plain run, `jfr: true` records a Flight Recorder
+    # ring on the test worker. Windows has ONE JVM lane, so tracing it outright would leave no
+    # untraced Windows run; the recorder must never be the only configuration (instrumentation has
+    # hidden the race it was built to catch on this project).
+    name: "Windows JVM Tests${{ matrix.jfr == 'true' && ' (JFR ring)' || '' }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        jfr: ["false", "true"]
     runs-on: windows-latest
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
@@ -611,6 +619,10 @@ jobs:
       # JniQuicheApi: this is the JNI backend against the DLL above, on every JDK, NOT FFM. There is
       # no Windows FFM lane (no plain quiche.dll is published for windows-x64 — nativeLibsByPlatform
       # lists quiche_jni.dll alone), so JNI is the only Windows path there is to exercise.
+      - uses: ./.github/actions/jvm-flight-recorder
+        with:
+          mode: start
+          enabled: ${{ matrix.jfr }}
       - name: Run JVM tests
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache
       # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
@@ -619,11 +631,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-jvm-test-results
+          name: windows-jvm-test-results${{ matrix.jfr == 'true' && '-jfr' || '' }}
           path: |
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest
           if-no-files-found: warn
+      - name: Flight recorder ring (on failure)
+        if: ${{ (failure() || cancelled()) && matrix.jfr == 'true' }}
+        continue-on-error: true
+        uses: ./.github/actions/jvm-flight-recorder
+        with:
+          mode: collect
+          artifact-name: jfr-ring-windows-jvm
 
   docs:
     name: "Validate Docs Generation"

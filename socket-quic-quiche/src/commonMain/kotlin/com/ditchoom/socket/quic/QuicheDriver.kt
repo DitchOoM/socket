@@ -127,10 +127,10 @@ class QuicheDriver(
     private val sendStallBound: Duration = DEFAULT_SEND_STALL_BOUND,
     /**
      * Entropy for the stateless-reset tokens minted by [issueSpareCids]. Defaults to
-     * [Random.Default]; the simulation harness injects a seeded instance so every token (and, via
+     * [connectionIdRandom]; the simulation harness injects a seeded instance so every token (and, via
      * [generateScid]'s matching parameter, every connection ID) is reproducible per seed.
      */
-    private val random: Random = Random.Default,
+    private val random: Random = connectionIdRandom,
     /**
      * Opt-in trace capture (RFC_DETERMINISTIC_SIMULATION.md §5, W3). When non-null the driver:
      *  - wraps every path's [UdpChannel] in the recorder's decorator (DGRAM_OUT/DGRAM_IN + typed
@@ -568,6 +568,39 @@ class QuicheDriver(
         }
     }
 
+    @Volatile
+    private var closing: Closing = Closing.NotYet
+
+    private sealed interface Closing {
+        data object NotYet : Closing
+
+        /** The loop has settled why the connection is ending; set before [commands] closes. */
+        class Reason(
+            val reason: QuicCloseReason,
+        ) : Closing
+    }
+
+    /**
+     * Everything a caller may read *after* it has seen [commands] refuse a command, latched in one place
+     * so that "the channel is closed" implies "these are settled": the identity, the draining period and
+     * the peer's certificate chain. Loop only, with `conn` alive, and called before [commands] closes on
+     * every path ([transitionToClosed], [cleanup]). Adding a value an outside reader needs after close
+     * means adding it here; a latch written anywhere else can land after the channel closes, which is the
+     * window the certificate chain used to sit in. Idempotent.
+     */
+    private fun latchForClose() {
+        latchIdentity()
+        retainPeerCertificatesOnce()
+        measureDrainingPeriod()
+    }
+
+    private fun retainPeerCertificatesOnce() {
+        when (peerChain) {
+            PeerChain.Live -> peerChain = PeerChain.Retained(retainPeerCertificates())
+            is PeerChain.Retained -> Unit
+        }
+    }
+
     /**
      * This connection's identity and network correlation, as a value snapshot for a
      * [QuicCloseException].
@@ -594,7 +627,18 @@ class QuicheDriver(
      * tells a locally raised `PROTOCOL_VIOLATION` from one the peer sent us.
      */
     fun closeReasonOr(fallback: QuicError): QuicCloseReason {
-        val recorded = (state.value as? QuicConnectionState.Closed)?.reason
+        // The published state, or, in the gap before it, the reason the close settled before it closed the
+        // channel. A [destroy] that closes the channel from a caller's thread has no reason to give yet:
+        // that window reads as Unspecified until the loop publishes.
+        val recorded =
+            when (val published = state.value) {
+                is QuicConnectionState.Closed -> published.reason
+                else ->
+                    when (val c = closing) {
+                        Closing.NotYet -> null
+                        is Closing.Reason -> c.reason
+                    }
+            }
         // A recorded side is the most specific answer there is; nothing the caller passes beats it.
         if (recorded is QuicCloseReason.ByPeer || recorded is QuicCloseReason.ByLocal) return recorded
         // No recorded failure. A NoError fallback names none either, so the recorded shape stands
@@ -1325,11 +1369,23 @@ class QuicheDriver(
      * tears down, so it outlives `conn`. A server may close the moment its handshake completes; the client
      * then still has to check the certificate it was shown (`serverCertificateHashes`, the chain
      * verifiers) and report that verdict, typed, not a closed command channel or "no certificate". Empty
-     * for a server, before teardown, and for a connection that never received a certificate. Written once
-     * on the loop in [cleanup], before any read is refused; read from any thread.
+     * for a server, while the connection is [PeerChain.Live], and for a connection that never received a
+     * certificate. Retained once on the loop by [latchForClose], which runs before [commands] closes on
+     * every path, so a caller that has seen the channel refuse a command finds the chain; read from any
+     * thread.
      */
     @Volatile
-    private var retainedPeerCertificates: List<PlatformBuffer> = emptyList()
+    private var peerChain: PeerChain = PeerChain.Live
+
+    private sealed interface PeerChain {
+        /** The connection is still open: nothing has been copied out, and a read goes to quiche. */
+        data object Live : PeerChain
+
+        /** The connection is closing or closed: this is its chain, leaf first, for good. */
+        class Retained(
+            val chain: List<PlatformBuffer>,
+        ) : PeerChain
+    }
 
     /** The context every coroutine of this driver is launched in, and [awaitEstablished] arms its bound in. */
     private val loopContext: CoroutineContext get() = placement?.context ?: driverContext
@@ -2929,8 +2985,7 @@ class QuicheDriver(
         networkObservation.freeze()
         // Before Closed is published: an observer of Closed reads identity from here, never from a
         // conn that cleanup() is about to free.
-        latchIdentity()
-        measureDrainingPeriod()
+        latchForClose()
         refreshSessionTicket()
         // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
         // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
@@ -2938,8 +2993,13 @@ class QuicheDriver(
         discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
+        // The reason is settled BEFORE the channel closes and travels with the close ([closing]), so a
+        // caller that hits the closed channel reads it from there rather than from a state published a
+        // moment later: "the channel is closed" implies "the reason is known", by construction.
+        val reason = resolveCloseReason()
+        closing = Closing.Reason(reason)
         commands.close()
-        _state.value = QuicConnectionState.Closed(resolveCloseReason())
+        _state.value = QuicConnectionState.Closed(reason)
         handshakeSettled.complete(HandshakeSettled.Failed)
     }
 
@@ -3930,7 +3990,7 @@ class QuicheDriver(
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
             val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
             val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
-            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(random.nextInt(256).toByte()) }
+            repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
             token.resetForRead()
             val rc =
                 api.connNewScid(
@@ -4049,10 +4109,8 @@ class QuicheDriver(
     private fun cleanup() {
         // A driver torn down without ever closing (cancelled, destroyed) latches here, before the
         // api.*Free calls below; one that closed latched in transitionToClosed. See identitySource.
-        latchIdentity()
-        // Before anything fails a PeerCert read and before conn is freed: see [retainedPeerCertificates].
-        retainedPeerCertificates = retainPeerCertificates()
-        measureDrainingPeriod()
+        // Before anything fails a PeerCert read and before conn is freed: see [peerChain].
+        latchForClose()
         wireIdScratch.freeNativeMemory()
         commands.close()
         // A driver torn down mid-handshake never confirms it: release whatever waits for that.
@@ -4453,7 +4511,7 @@ class QuicheDriver(
     }
 
     /**
-     * Answers a peer-certificate read from [retainedPeerCertificates], once the connection is gone, with
+     * Answers a peer-certificate read from the chain [latchForClose] retained, once the connection is gone, with
      * quiche's snprintf-style result: the DER length, copied into [der] at 0 only when it fits within
      * [capacity]; 0 past the end of the chain or when nothing was retained.
      */
@@ -4467,7 +4525,11 @@ class QuicheDriver(
                 PeerCertPosition.Leaf -> 0
                 is PeerCertPosition.InChain -> position.index
             }
-        val retained = retainedPeerCertificates.getOrNull(index) ?: return 0
+        val retained =
+            when (val latched = peerChain) {
+                PeerChain.Live -> return 0
+                is PeerChain.Retained -> latched.chain.getOrNull(index) ?: return 0
+            }
         val view = retained.slice()
         val len = view.remaining()
         if (len <= capacity) {

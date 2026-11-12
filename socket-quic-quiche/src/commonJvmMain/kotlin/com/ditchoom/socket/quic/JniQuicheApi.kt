@@ -701,11 +701,11 @@ object JniQuicheApi : QuicheApi {
         fromAddrLen: Int,
         toAddr: Long,
         toAddrLen: Int,
-    ): QuicheRecvInfo = QuicheRecvInfo(nRecvInfoNew(fromAddr, fromAddrLen, toAddr, toAddrLen))
+    ): QuicheRecvInfo = QuicheRecvInfo(allocatedOrOutOfMemory(nRecvInfoNew(fromAddr, fromAddrLen, toAddr, toAddrLen), "quiche_recv_info"))
 
     override fun recvInfoFree(info: QuicheRecvInfo) = nRecvInfoFree(info.handle)
 
-    override fun sendInfoNew(): QuicheSendInfo = QuicheSendInfo(nSendInfoNew())
+    override fun sendInfoNew(): QuicheSendInfo = QuicheSendInfo(allocatedOrOutOfMemory(nSendInfoNew(), "quiche_send_info"))
 
     override fun sendInfoFree(info: QuicheSendInfo) = nSendInfoFree(info.handle)
 
@@ -1267,4 +1267,18 @@ object JniQuicheApi : QuicheApi {
     private external fun nStreamIterNext(iter: Long): Long
 
     @JvmStatic private external fun nStreamIterFree(iter: Long)
+}
+
+/**
+ * The JNI `n*InfoNew` allocators return 0 when `calloc` fails, where the FFM backend throws
+ * [OutOfMemoryError] (`FfmQuicheApi.callocOrThrow`). Without this, the 0 reached the handle's `init`
+ * and surfaced as an `IllegalArgumentException("... handle must not be null")`: the same failure
+ * under a different type per backend, and one a caller handling allocation failure would not catch.
+ */
+internal fun allocatedOrOutOfMemory(
+    handle: Long,
+    what: String,
+): Long {
+    if (handle == 0L) throw OutOfMemoryError("calloc for a $what struct returned NULL")
+    return handle
 }

@@ -25,6 +25,16 @@ description: >-
 # Neither lengthens any timeout; `kill-after-dump` shortens only the last minutes of a job that
 # the job-level timeout would have cancelled anyway.
 #
+# TIMELINE RING (`trace-ring`): the watchdog's stacks are one instant; a ring is the minutes before.
+# `sample` keeps `sample <pid> 1` snapshots of the K/N test binary every few seconds (last 10 files,
+# no privilege, a few hundred KB); `xctrace` keeps Time Profiler recordings of it (30 s windows, last 2,
+# zstd-compressed). Both are written to the runner's temp dir and uploaded only by `mode: collect`,
+# which the callers gate on failure()/cancelled(), so a green run uploads no ring. Measured on a hosted
+# macos-26 runner (Xcode 26.6): `xctrace record --attach` of the runner's own process works with no sudo
+# and no GUI session; a 10 s recording of a one-thread loop is a 3 MB bundle (1 MB compressed) and
+# saving it takes ~12 s with nothing recorded meanwhile. Off by default, and a lane that must stay
+# uninstrumented leaves it off: a sampling profiler perturbs timing.
+#
 # Never changes the job's result (the caller sets continue-on-error: true) and never retries.
 
 inputs:
@@ -39,6 +49,10 @@ inputs:
     description: "start: `true` ends the test processes once their stacks are written"
     required: false
     default: "false"
+  trace-ring:
+    description: "start: timeline recorder for the K/N test binary: `none`, `sample` or `xctrace`"
+    required: false
+    default: "none"
   simulator-udid:
     description: "collect: the booted simulator's UDID (its own unified log and CoreSimulator logs are added)"
     required: false
@@ -57,7 +71,7 @@ runs:
       run: |
         "${{ github.action_path }}/../../scripts/apple-failure-capture.sh" start \
           "${{ runner.temp }}/apple-failure-capture" "${{ inputs.hang-budget-minutes }}" \
-          "$([ "${{ inputs.kill-after-dump }}" = "true" ] && echo 1 || echo 0)"
+          "$([ "${{ inputs.kill-after-dump }}" = "true" ] && echo 1 || echo 0)" "${{ inputs.trace-ring }}"
 
     # `|| true`: this step must never fail the job even if the script itself is broken.
     - name: Collect crash reports, logs, stacks and network state
