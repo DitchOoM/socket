@@ -91,12 +91,10 @@ internal class DriverDatagramAdapter(
         options: DatagramSendOptions,
     ) {
         val remaining = payload.remaining()
-        when (val max = driver.lastMaxDatagramSize) {
-            is MaxDatagramSize.Unavailable ->
-                throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
-            is MaxDatagramSize.Bytes ->
-                require(remaining <= max.bytes) { "datagram too large: $remaining > ${max.bytes} bytes" }
-        }
+        // Whether it fits is quiche's answer at the moment of the send, below. [QuicheDriver.lastMaxDatagramSize]
+        // is a copy taken once per loop turn: a path change between that turn and this send (a migration, a
+        // path-MTU update) made a check here refuse a datagram that fits, or admit one that no longer does and
+        // report quiche's refusal of it as the death of an open connection.
         // A zero-length datagram is valid (RFC 9221); a 0-remaining buffer may not expose a native
         // address, so pass a null pointer in that case (the backends send NULL/len 0). Otherwise this is
         // a caller-fed buffer: a heap payload is rejected by type before anything is enqueued —
@@ -130,6 +128,12 @@ internal class DriverDatagramAdapter(
                     written >= 0 -> return
                     // Send queue full — backpressure. Park until flushOutgoing drains it, then retry.
                     written == QuicheDriver.QUICHE_ERR_DONE -> driver.dgramWritableSignal.receive()
+                    // quiche's own verdict on this datagram, which says nothing about the connection:
+                    // the caller's argument is wrong for the path as it is now.
+                    written == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT ->
+                        throw IllegalArgumentException("datagram too large for the connection's current path: $remaining bytes")
+                    written == QUICHE_ERR_INVALID_STATE ->
+                        throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
                     else ->
                         throw QuicCloseException(
                             closedReason(QuicError.InternalError("quiche datagram send error: $written")),

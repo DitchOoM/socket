@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.DatagramSendError
 
 /**
  * Server egress over the shared `:socket-udp` [AddressedDatagramChannel] (Phase 6, adapter-first).
@@ -25,7 +26,8 @@ import com.ditchoom.buffer.flow.SocketAddress
  *   non-migrating case, zero map lookup and zero alloc (the owned peer is reused as the send target); and
  * - [peerFor], a lookup into the server's shared PathKey→peer map (populated by the receive loop from
  *   each datagram's `Datagram.peer`) for a *migrated* client whose source address changed (RFC 9000 §9).
- * A lookup miss falls back to [fixedPeer].
+ * A lookup miss is not sent: the datagram is reported [SendOutcome.Failed] rather than answered at the
+ * connection's original [fixedPeer], which a migrated client has left.
  *
  * ## Pinning the reply's source address
  * [localFor] is the same trick for the *local* side: a lookup into the server's PathKey→local map,
@@ -64,7 +66,17 @@ internal class ServerConnectionUdpChannel(
             }
 
             is SendTarget.ServerReply -> {
-                peer = if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to) ?: fixedPeer
+                peer =
+                    if (target.to == fixedPeerKey) {
+                        fixedPeer
+                    } else {
+                        // quiche only names addresses the receive loop gave it, so a key that resolves to
+                        // nothing is an entry the loop has since dropped from a path that is still live: a
+                        // migrated client. Its old address is not where it is now; answering there sends the
+                        // datagram to a host the client has left and hides the miss. Not sent: loss recovery
+                        // owns it, and the client's next packet restores the entry.
+                        peerFor(target.to) ?: return SendOutcome.Failed(DatagramSendError.Transport(UnknownReplyDestination()))
+                    }
                 options =
                     when (pinning) {
                         ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress -> optionsFor(target.from)
@@ -105,3 +117,6 @@ internal class ServerConnectionUdpChannel(
     /** The shared server socket is owned and closed by the platform server, never per-connection. */
     override fun close() = Unit
 }
+
+/** quiche named a reply destination this server no longer has an address for. See [ServerConnectionUdpChannel.send]. */
+internal class UnknownReplyDestination : IllegalStateException("a server reply names a path whose address is no longer known")
