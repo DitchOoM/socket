@@ -1,15 +1,27 @@
 # RFC — The execution model: who runs what, on which thread, and what a hand-off costs
 
-**Status:** **Draft, for the owner's decision.** A design study with prototypes and measurements; no product code changes in this PR. Written against `main` at 843ef080 plus the diff of #888; #886 (merged while this was being written) and #887 are not in the measured tree, and their effects below are taken from their PR bodies unless stated.
+**Status:** **Draft, for the owner's decision.** A design study with prototypes and measurements; no product code changes in this PR. Revision 2 is written against `main` at f8adf8ab (which contains #886, the timers) plus the diff of #888 (still open); #887 (TCP) is measured separately on its own branch (§5.7). Revision 1 had been measured before #886 merged; its 10.0 wake-ups per echo are now 6.0 (§3.2).
 **Builds on:** `RFC_READ_TIMEOUT_CONTRACT.md` and `RFC_WRITE_TIMEOUT_CONTRACT.md` (the deadline contracts this model must keep), `RFC_DETERMINISTIC_SIMULATION.md` (the sim used for §6.5), and the owner's standing rules quoted in §1.2.
 **Companion data:** the prototypes are local branches `proto/ack-hold` (everything: the lab, option E, option B on the real QUIC driver; based on `main` + #888) and `proto/exec-lab` (the earlier lab-only state). They are not part of this PR. §12 lists what each contains.
 
 ## 0. Summary
 
+### 0.1 What revision 2 changed (read this first)
+
+Headline changes, stated plainly:
+
+1. **The baseline moved.** #886 (timers) merged. The real library's echo is **6.0 wake-ups, not 10.0**; with the handler on the loop (B) **2.0** (Netty: 1.0 on the loop, 3.0 on an `EventExecutorGroup`); with B and the ACK hold (E) 2.0 wake-ups and, on the laptop, p50 42 us and CPU 51 us against Netty's on-loop 40 us and 47 us (§5.4). **Revision 1's headline that the prototype "trails Netty's on-loop form by 43 % in CPU" is withdrawn as a statement about the tree after #886**; on this laptop the two are within about 10 % of each other. The quiet-machine rows that should decide it are in §5.8 where they were obtained; until a row there says otherwise, treat the near-parity as unconfirmed.
+2. **The by-construction path was measured on the real library** (§6.10, answer to the owner's question c): `main` + #886 + #888 + E + four owned handler threads, handler off the loop: **3.0 wake-ups, equal to Netty's `EventExecutorGroup` form**, p50 about 15 % above it and CPU about 50 % above it (the spin burns CPU). It cannot approach Netty's on-loop form, and two of the options it was thought to include (D, I) do not apply to QUIC without a copy.
+3. **The ACK-hold formula `min(200 us, srtt/8)` is withdrawn** (§6.5, question a). The measured 300 us hold was really one loop timer tick (about 1 ms: the loop rounds timeouts up to milliseconds), so the formula would have "worked" on loopback only by that accident. Replacement: no timer when the handler is on the loop, one tick with hit-rate gating off the loop. The inference that quiche reports the real ack delay is **now verified** in the deterministic sim (peer RTT sample unchanged by a 2 ms hold).
+4. **The watchdog's invariant was restated** (§7.3, question b): "at most one thread inside a connection's turn, and a library turn is never handed off", with the hand-off specified for the real driver and an expected neighbour stall per handler-hour for a handler that blocks once in a thousand resumes.
+5. **TCP** (§5.7.1, question d): #887's selector-loops path cuts threads 5x and server CPU per operation 4x at 1024 connections; its default NIO2 path does not. This argues for shipping the loops backend as the first TCP step and for flipping the default only after the conformance, TLS and tail-latency checks listed there.
+6. **Decision D2 is larger than revision 1 said**: queued writes need a copy or buffer ownership on QUIC (§6.10).
+
+
 1. A consumer measures a library by what one operation costs them: wake-ups, CPU, bytes, threads, tail latency, and what happens to everyone else when their own handler misbehaves. Netty's advantage on a 64 B echo is not QUIC or quiche (both wrap the same library); it is that its handler runs **inside the read, on the event loop**, so one request costs one wake-up and one datagram carries the reply and the ACK. This library pays a hand-off in each direction, an extra loop wake, and an ACK-only datagram.
 2. The gap is **not server-only**. A client pays the same two resumes (the write's result, the read's bytes) through its caller's dispatcher; on Android's main thread one of them is irreducible, the other is a design choice (§4).
-3. Measured on this laptop with the real QUIC library (main + #888): wake-ups per 64 B echo 10.0 -> **4.0** when the handler runs on the connection's loop (option B), CPU per echo 133 -> **62 us** together with the ACK hold (option E), p50 69 -> **41 us**; Netty QUIC in the same round: 1.0 wake-up, **43 us, p50 38 us** on the event loop and 63 us, p50 43 us on an `EventExecutorGroup` (§5.4). So the prototype **matches Netty's off-loop form and still trails its on-loop form** by 9 % in p50 and 43 % in CPU. The four wake-ups that remain are two timers (#886 removes them) and the caller's two resumes (a non-suspending write, option I, removes one).
-4. Running the handler on the loop is only acceptable if a handler that blocks cannot stall the others. Measured with a 100 ms blocking handler (§5.6): Netty's on-loop handler stalls its neighbour **106 ms**, and the real QUIC driver with handlers moved onto its loop turns a 5 ms blocking handler into a **6.5 ms** round trip for a neighbour stream (140 us before); the prototype loop that **hands the selector to a successor thread when a unit of work overruns 1 ms** stalls its neighbour **1.8 ms** and the off-loop paths 0.3 to 3.4 ms. That is a change to the letter of "the transport never runs user code on its loop" that keeps its purpose with a bounded (about 1 to 2 ms) rather than zero worst case. **It is the owner's decision (§10, D1).**
+3. Measured on this laptop with the real QUIC library (`main` with #886, + #888): wake-ups per 64 B echo **6.0 -> 2.0** when the handler runs on the connection's loop (option B); with the ACK hold (E) p50 42 us and CPU 51 us (from 62 us and 102 us), against Netty QUIC's 40 us and 47 us on its event loop and 43 us and 63 us on an `EventExecutorGroup` (§5.4; timings indicative until §5.8). The two wake-ups that remain are the caller's two resumes (a non-suspending write, option I, removes one; on QUIC that needs a copy of the caller's buffer, §6.10).
+4. Running the handler on the loop is only acceptable if a handler that blocks cannot stall the others. Measured with a 100 ms blocking handler (§5.6): Netty's on-loop handler stalls its neighbour **106 ms**, and the real QUIC driver with handlers moved onto its loop turns a 5 ms blocking handler into a **6.5 ms** round trip for a neighbour stream (140 us before; §5.6, §5.8); the prototype loop that **hands the selector to a successor thread when a unit of work overruns 1 ms** stalls its neighbour **1.8 ms** and the off-loop paths 0.3 to 3.4 ms. That is a change to the letter of "the transport never runs user code on its loop" that keeps its purpose with a bounded (about 1 to 2 ms) rather than zero worst case. **It is the owner's decision (§10, D1).**
 5. Recommended design (§8): keep selectors on dedicated platform loops and the public API suspend-only; run a handler **off the loop by default**, promote it to **on the loop automatically once its measured time-per-resume proves it short**, demote it on the first overrun, with the **hand-off watchdog** bounding any stall; per-route override in both directions; **ACK hold (E)** automatic on a clean path; **queued writes (I)** as the write contract if the owner accepts "returns when accepted"; **lean continuations (H)** everywhere; **caller-runs (D) and batched resumes (F) only on threads the library owns**; kernel batching (G) on Linux and Apple as a later, separately gated step.
 6. Honest rows (§9): a suspend-based, main-safe API **cannot** beat an on-loop callback API on the write-and-wait round trip by more than the caller's own resume, and it pays for coroutine state in allocation (13 KB per QUIC echo today against Netty's 2.3 KB; the lab floor for the coroutine machinery alone is 45 B). What the consumer gets in exchange is that blocking in a handler is survivable by construction and the main thread is never asked to block.
 7. Not obtained: quiet-machine timings (§5.8), Native and Android numbers, Netty QUIC at many connections, kernel batching. They are marked unknown where they matter.
@@ -56,19 +68,17 @@ Instruments:
 
 ### 3.2 What an echo is here, with the real library
 
-[PR] before #886/#888: 13 wake-ups, 3 hand-offs to the pool, 4 timers armed, 8 loop turns, 14 `quiche_conn_send`, 4 datagrams, 23 KB. [M] on `main` + #888: **10.0 wake-ups, 2.0 pool dispatches, 20 KB** (§5.4); 4 datagrams [PR]. The ten, attributed by call stack [M]:
+[PR] before #886/#888: 13 wake-ups, 3 hand-offs to the pool, 4 timers armed, 8 loop turns, 14 `quiche_conn_send`, 4 datagrams, 23 KB. [M] on `main` (with #886) + #888: **6.0 wake-ups, 2.0 pool dispatches, 1.7 selector wake-ups, 19.9 KB**; 4 datagrams [PR]. The six wake-ups, attributed by call stack [M, JFR method tracing of `LockSupport.unpark`, `runBlocking` caller]:
 
 | wake-ups per echo | cause (call stack) | removed by |
 |---|---|---|
-| 2.0 | the benchmark caller's two `withTimeout` bounds arm kotlinx's `DefaultExecutor` (`Delay.invokeOnTimeout`) | #886 |
 | 2.0 | the loop resumes the caller (`EventLoopImplBase.dispatch`): the write's result and the read's bytes | the write's result by option I; the read's bytes cannot go |
-| 2.0 | the loop hands the handler's read to `Dispatchers.IO` (`signalBlockingWork`) | option B |
-| 2.0 | pool workers waking other workers while the handler runs (`signalCpuWork`) | option B |
-| 2.0 | the handler's own bounds arm the `ScheduledThreadPoolExecutor` queue | option B removed it incidentally (not traced to why); #886 removes it by design |
+| 2.0 | the loop hands the handler's read to `Dispatchers.IO` (`signalBlockingWork`) | option B (handler on the loop) or an owned handler executor |
+| 2.0 | pool workers waking other workers while the handler runs (`signalCpuWork`) | option B or an owned handler executor |
 
-With B alone the count is 4.0 (the first two rows), measured; with #886 on top it would be 2 [I], and with option I 1, which is Netty's one. The traces are of the benchmark's `runBlocking` caller; a caller on another dispatcher moves the first two rows to that dispatcher's own wake and changes no count.
+#886 removed the other four, as designed: revision 1's tree showed two more rows, the caller's two `withTimeout` bounds arming kotlinx's `DefaultExecutor` and the handler's bounds arming the timer queue (10.0 wake-ups). With B the count is **2.0** (the first row), measured; with option I as well 1.0, which is Netty's one. The trace is of the benchmark's `runBlocking` caller; a caller on another dispatcher moves the first row to that dispatcher's own wake and changes no count.
 
-What does not go away with any of this is the real library's per-operation allocation: 13 to 20 KB against Netty's 2.3 KB, mostly coroutine state, `CompletableDeferred`s and per-operation commands [M for the totals, I for the split]. The lab's coroutine machinery on the loop allocates 45 B per echo with lean continuations (§6.8), so most of the 13 KB is the driver's command objects and the buffer handling, not coroutines as such. That is a different work item (§11, PR 1) and the RFC does not pretend the execution model fixes it.
+What does not go away with any of this is the real library's per-operation allocation: 13 to 20 KB against Netty's 2.2 KB, mostly coroutine state, `CompletableDeferred`s and per-operation commands [M for the totals, I for the split]. The lab's coroutine machinery on the loop allocates 45 B per echo with lean continuations (§6.8), so most of the 13 KB is the driver's command objects and the buffer handling, not coroutines as such. That is a different work item (§11, PR 1) and the RFC does not pretend the execution model fixes it.
 
 ## 4. Question 1 — is the gap server-only?
 
@@ -161,22 +171,19 @@ The handler awaits a one-thread "service" that completes it from another thread.
 
 See §4 for the table.
 
-### 5.4 The real QUIC library, and Netty QUIC, same harness, same laptop
+### 5.4 The real QUIC library, and Netty QUIC, same harness
 
-| row (laptop, 64 B stream echo, blocking caller) | wake-ups | selector wake-ups | pool dispatches | p50 us | p99 us | CPU us/op | bytes allocated/op | threads |
-|---|---|---|---|---|---|---|---|---|
-| this library, main + #888 | 10.0 | 1.8 | 2.0 | 69 | 125 | 133 | 19463 | 20 |
-| + E (ACK hold 300 us) | 10.0 | 2.0 | 2.0 | 55 | 108 | 91 | 13220 | 19 |
-| + B (handler on the loop) | 4.0 | 0.9 | 0.0 | 52 | 88 | 82 | 18907 | 16 |
-| + B + E | 4.0 | 1.0 | 0.0 | 41 | 92 | 62 | 13226 | 16 |
-| Netty QUIC, handler on the event loop | 1.0 | 1.3 | 0.0 | 38 | 75 | 43 | 2247 | 8 |
-| Netty QUIC, handler on an `EventExecutorGroup` | 3.0 | 2.6 | 0.0 | 43 | 80 | 63 | 3027 | 9 |
+| row (laptop, load 6 to 8, one run each; counts are load-proof, timings are not) | wake-ups | selector wake-ups | pool dispatches | p50 us | p99 us | CPU us/op | bytes/op |
+|---|---|---|---|---|---|---|---|
+| this library, `main` (with #886) + #888 | 6.0 | 1.7 | 2.0 | 62 | 94 | 102 | 19945 |
+| + E (ACK hold) | 6.0 | 2.0 | 2.0 | 52 | 104 | 73 | 13879 |
+| + B (handler on the loop) | 2.0 | 0.9 | 0.0 | 50 | 105 | 72 | 19827 |
+| + B + E | 2.0 | 1.0 | 0.0 | 42 | 100 | 51 | 13815 |
+| + E + 4 owned handler threads (no B): the by-construction path | 3.0 | 2.0 | 0.0 | 49 | 111 | 95 | 13686 |
+| Netty QUIC, handler on the event loop | 1.0 | 1.6 | 0.0 | 40 | 118 | 47 | 2235 |
+| Netty QUIC, handler on an `EventExecutorGroup` | 3.0 | 2.4 | 0.0 | 43 | 85 | 63 | 3300 |
 
-[M] counts; timings indicative. **B** is a prototype change in `SharedQuicheServer.connections` that launches the handler on the connection's loop (`ExecPrototype.handlersOnLoop`); nothing else changed, so the handler's stream writes still reach the driver through its command channel and are served on its next turn. **E** is the ACK hold of §6.5 (300 us, clean path only). Both run the unmodified QUIC echo of the comparison benchmarks.
-
-Three rounds were run back to back; round 1 ran at a 1-minute load of 2.5 to 2.8 and is the one shown; rounds 2 and 3 ran at 4 to 13 and are too noisy to rank (they show the same order for the counts and a 2x swing in time). In round 1, B + E reaches **p50 41 us against Netty's 38 us and CPU 62 us against 43 us**, and equals Netty's `EventExecutorGroup` form (43 us, 63 us), which is the like-for-like of the loop rule as it stands. The 13 KB against 2.3 KB of allocation (5.7x) is a large part of the remaining CPU gap [I]. The two remaining caller resumes and the two timers are enumerated in §3.2.
-
-Across callers (`blocking`, `default`, `main`) the counts are the same to the unit (the caller's own dispatch adds 0 to 2 pool dispatches); the full rows are in the prototype outputs.
+[M] counts (laptop, JFR); timings and CPU as the table's header says. **B** is a prototype change in `SharedQuicheServer.connections` that launches the handler on the connection's loop (`ExecPrototype.handlersOnLoop`); the handler's stream writes still reach the driver through its command channel and are served on its next turn. **E** is the ACK hold of §6.5 (a fixed 300 us setting; see §6.5 for what that setting really is). **E + owned executor** is the purely by-construction path of §6.10: the handler stays off the loop, on four owned spin-then-park threads (round-robin per connection), with E. Counts per echo are the same for every caller (`blocking`, `default`, `main`) to within 0 to 2 pool dispatches.
 
 ### 5.5 (c) Many connections
 
@@ -252,9 +259,29 @@ Across callers (`blocking`, `default`, `main`) the counts are the same to the un
 
 [M]. RSS includes heap growth and is a delta from before the server started. This library's TCP on `main` holds **195 threads and 572 KB per idle connection**; the lab and Netty hold 8 to 12 threads and 21 to 44 KB. The cost is not the handler model (a coroutine parked in a read is a few hundred bytes); it is the NIO2 path's per-connection buffers and groups, and #887 addresses part of it [PR]. The idle QUIC case (N connections) was not measured [U].
 
+#### 5.7.1 The TCP backends (this library, `main` against #887)
+
+| this library TCP (laptop) | threads, 1000 idle | RSS per idle connection | threads, 1024 busy | server CPU us/op, 1024 busy | ops/s, 1024 busy | p50 us, 1 connection | CPU us/op, 1 connection |
+|---|---|---|---|---|---|---|---|
+| `main` (NIO2, default) | 203 | 578 KB | 549 | 227.7 | 66277 | 76 | 220 |
+| #887, default NIO2 path | 176 | 568 KB | 616 | 191.6 | 72286 | 56 | 118 |
+| #887, selector loops | 92 | 554 KB | 108 | 57.0 | 154739 | 31 | 46 |
+
+[M]. `main` is the default NIO2 backend. #887 is `perf/tcp-fewer-handoffs` at the time of writing; "887 nio2" is its default path, "887 loops" is its selector-loops path (`useAsyncChannels = false`). Thread counts and RSS are load-independent; the CPU and throughput columns carry the machine's noise (§5.8 has quiet-machine rows where obtained).
+
+What it says. The default NIO2 path is the largest gap in this document and #887's *default* path does not close it: threads 203 -> 176 at 1000 idle connections, CPU per operation at scale about the same (213 and 192 us against 164 and 228). **The loops path does**: threads 549 -> 108 at 1024 connections, server CPU per operation 228 -> 57 us, throughput 66k -> 155k ops/s, single-connection p50 76 -> 31 us. It is still about 13x Netty's on-loop server CPU (4.3 us) and its idle memory is unchanged (about 550 KB per connection in every backend, 20 to 40 KB in Netty and the lab), so the memory is not the backend: heap in use is 15 to 23 MB for 1000 connections, so it is native memory (direct buffers) per connection. [I: cause not isolated; `NativeMemoryTracking` would show it.]
+
+**Does this argue for changing the default JVM TCP backend?** The evidence argues for it on CPU, threads and latency; it does not yet argue for it on safety of the change. What would have to be shown first: (1) the three timeout contracts (`RFC_READ_TIMEOUT_CONTRACT`, `RFC_WRITE_TIMEOUT_CONTRACT`) and the TCP conformance suites green on the loops path for the platforms that would switch (JVM 11 to 25), not only the platforms that already use it (Android below API 26); (2) TLS (`SSLClientSocket` over non-blocking channels), half-close and close races, IPv6 and Happy Eyeballs on it; (3) tail behaviour (p99 and p99.9 with 1000 connections and a slow consumer: one slow connection must not stall a loop, which is the handler-placement question again for TCP); (4) the per-connection native memory explained and, if it is the read buffer, bounded; (5) no regression for the 1-connection and 2-connection cases that NIO2 serves today. Until (1) and (3) are shown, recommendation: **keep NIO2 the default and make the loops backend the first thing the TCP execution-model work ships**, then flip the default in a release of its own.
+
 ### 5.8 Quiet-machine timings
 
-A run of the same rows on a quiet Linux x86_64 machine was queued behind that machine's benchmark lock, which another job held for the whole of this study; no quiet-machine row was obtained. Every p50, p99 and CPU figure in this document is therefore from the loaded laptop and is indicative only. [U]
+**Status at the time of writing: no quiet-machine rows yet.** What was done, so the rows can be produced without redoing it:
+- The stale lock from revision 1 was removed by the machine's owner. The job now in place (a script that takes `~/socket-bench.lock` per step, installs a trap that releases it on exit, interrupt and termination, and is stopped by pid, never by pattern) was verified: a dummy run holding a lock was stopped by pid and the lock was gone; the job was also stopped twice mid-step during this work and left no lock behind.
+- `libquiche` for linux-x86_64 was built from source in the job's own directory, from `main` at f8adf8ab (the quiche 0.30.0 clone with the repository's patches); no library from another session's directory is used.
+- The prototypes were re-applied on current `main` (`proto/v2`); the reduced set (§5.4 six rows in five interleaved rounds with `jdk.CPUTimeSample` runs, hold settings, bulk including Netty, the real-driver blocking-neighbour row, the 1024-connection rows, idle, and #887's two TCP paths) is the queued script.
+- The machine was not quiet: its 1-minute load stayed between 5 and 16 during this study because of other jobs (CI containers and another measurement job), so the script's gate (load under 2 at the start of each round, and no foreign load before each step) did not open. Running anyway would have produced the numbers revision 1 already has.
+
+Consequently **every p50, p99 and CPU figure in this document is from the loaded laptop and is indicative**; the wake-up counts, thread counts, memory per connection, bytes per operation and the deterministic-sim results are not affected by load.
 
 ## 6. The options
 
@@ -264,11 +291,11 @@ Each option is stated, then measured in the lab or the real driver, then given a
 
 | option | what it does | measured effect (echo, wake-ups; lab unless noted) | cost / risk | does not apply | safety property |
 |---|---|---|---|---|---|
-| A | status quo after #886/#888 | 4.0 (lab); 10.0 real library | none | | by construction |
-| B | handler as a coroutine on the connection's loop | 4.0 -> 2.0 lab; **10.0 -> 4.0 real QUIC** | a blocking handler stalls the loop (real QUIC: neighbour round trip 140 us -> 6.5 ms) | Native: lane is per connection, no loss | **not at all** alone; **by detection** with the hand-off watchdog (1.8 ms bound) |
+| A | status quo after #886/#888 | 4.0 (lab); 6.0 real library (after #886) | none | | by construction |
+| B | handler as a coroutine on the connection's loop | 4.0 -> 2.0 lab; **6.0 -> 2.0 real QUIC** | a blocking handler stalls the loop (real QUIC: neighbour round trip 140 us -> 6.5 ms) | Native: lane is per connection, no loss | **not at all** alone; **by detection** with the hand-off watchdog (1.8 ms bound) |
 | C | resume inline on the loop to the next suspension, then pool | 2.0 for an echo; 4.0 once the handler suspends | after the first suspension nothing is enforced | | not at all (the first run segment stalls the loop: 109.5 ms) |
 | D | write executes on the caller's thread by CAS ownership | 4.0 -> 3.0, one selector wake and one dispatch fewer | a syscall on the caller's thread | any caller we do not own (Android main) | by construction **only on library-owned threads** |
-| E | hold the ACK-only flush a short bounded time so the reply shares its datagram | **real: CPU 133 -> 91 us, p50 69 -> 55 us; sim: datagrams per echo 4.5 -> 3.6** | tail risk on lossy paths (measured: none beyond noise) | | by construction (bounded by the hold; clean path only) |
+| E | hold the ACK-only flush a short bounded time so the reply shares its datagram | **real (laptop, after #886): CPU 102 -> 73 us, p50 62 -> 52 us; sim: datagrams per echo 4.5 -> 3.6** | tail risk on lossy paths (measured: none beyond noise) | | by construction (bounded by the hold; clean path only) |
 | F | owned handler threads, spin-then-park, one batched resume per loop turn | worse than the pool at low rate; 6.8 us/op and 72 B at 1024 connections | a lone owned thread stalls neighbours (109 ms) | | by construction only with several threads |
 | G | kernel batching (`sendmmsg`/GSO/`recvmmsg`, `nw_connection_batch`) | not measured [U] | platform code | Linux io_uring and Apple only | n/a |
 | H | lean continuations: no `select`, no `CompletableDeferred`, inline fast path | server alloc 341 -> 261 B/op at scale, 45 B on the loop | invariants at the cancellation edge | | by construction |
@@ -276,11 +303,11 @@ Each option is stated, then measured in the lab or the real driver, then given a
 
 ### 6.1 A — the status quo (baseline)
 
-After #886 (timers) and #888 (turns) the real library is at 10.0 wake-ups here and, by the owner's figure, about 6 with #886 [PR/I]. The ten are attributed in §3.2. A is main-safe and loop-safe by construction and loses on every hand-off row.
+After #886 (timers) and #888 (turns) the real library is at 6.0 wake-ups, 2.0 pool dispatches and 19.9 KB per echo [M]; before #886 it was 10.0 [M, revision 1]. The six are attributed in §3.2. A is main-safe and loop-safe by construction and loses on every hand-off row.
 
 ### 6.2 B — the handler runs on the connection's loop, with enforcement
 
-Measured twice. In the lab (TCP): 4.0 -> 2.0 wake-ups, p50 44 -> 25 us, 62 -> 25 us CPU. In the real QUIC driver (prototype: one line at `SharedQuicheServer.connections` plus an accessor): **10.0 -> 4.0 wake-ups, 2.0 -> 0 pool dispatches, CPU 133 -> 82 us, p50 69 -> 52 us**, nothing else changed. The remaining difference to Netty is the allocation and the caller's two resumes.
+Measured twice. In the lab (TCP): 4.0 -> 2.0 wake-ups, p50 44 -> 25 us, 62 -> 25 us CPU. In the real QUIC driver (prototype: one line at `SharedQuicheServer.connections` plus an accessor): **6.0 -> 2.0 wake-ups, 2.0 -> 0 pool dispatches, laptop CPU 102 -> 72 us, p50 62 -> 50 us**, nothing else changed (revision 1, before #886: 10.0 -> 4.0). The remaining difference to Netty is the allocation and the caller's second resume.
 
 The loop already is a dispatcher in this codebase (the driver is a coroutine on it), so B is not a new mechanism; it is a different `launch` context. What it breaks is the loop rule, so it needs enforcement, ordered by strength:
 
@@ -299,13 +326,42 @@ The caller takes write ownership of the connection by CAS and performs the write
 
 ### 6.5 E — the piggybacked ACK
 
-Mechanism (prototype, `proto/ack-hold`): on a turn that only received datagrams, handed bytes to a waiting reader, on an established, non-migrating connection whose `AckCadence` is `Relaxed` (no loss evidence), skip that turn's flush and arm a loop wake `holdUs` later; any command that arrives meanwhile (the handler's `StreamSend`) flushes, so the ACK, the flow-control credit and the reply leave in one datagram; at expiry the loop flushes. quiche has no ACK timer, so no other component is involved; the hold must stay below the advertised `max_ack_delay` (default 25 ms; RFC 9000 13.2.1) and RFC 9002 requires the receiver to report the real delay so the sender can subtract it from its RTT sample (quiche timestamps receipt, so the reported ack_delay includes the hold [I, not verified by a qlog capture]).
+**Mechanism** (prototype, `proto/v2`): on a turn that only received datagrams, handed bytes to a waiting reader, on an established, non-migrating connection whose `AckCadence` is `Relaxed` (no loss evidence), skip that turn's flush and arm a loop wake; any command that arrives meanwhile (the handler's `StreamSend`) flushes, so the ACK, the flow-control credit and the reply leave in one datagram; at expiry the loop flushes. quiche has no ACK timer; the cadence is ours.
 
-Real loopback [M], round 1: CPU per echo 133 -> 91 us, p50 69 -> 55 us, bytes 19.5 -> 13.2 KB (an ACK-only datagram's whole send path is gone) with the handler on the pool; CPU 82 -> 62 us and p50 52 -> 41 us with the handler on the loop. A hold of 100 us, 300 us, 1 ms and 3 ms gave 123, 101, 125 and 92 us p50 under heavy load (noise dominated; the machine could not rank them; see §5.8). **Bulk** [M, laptop, load 14 falling]: 16 MiB per stream in 64 KiB writes, median of 10 streams: 113 MiB/s and 29.4 ms CPU per MiB without the hold, 120 MiB/s and 25.1 with it; with the handler on the loop 105 MiB/s and 16.8, and with both 242 MiB/s and 9.0. No bulk regression from the hold in this prototype. A prototype caveat that the design must close: in bulk every turn is a pure-receive turn that hands bytes to a reader, so the prototype's hold (whose expiry is fixed by the first held turn) thins ACKs to one per hold interval; the production rule must hold only the first datagram of a flight (when no further datagram is queued) and the gate includes the bulk rows.
+**What the 300 us setting really was (correction of revision 1).** The hold's expiry is a loop wake armed through `select(timeout)`, whose timeout the loop rounds **up to whole milliseconds** (`ceilMillis` in `DatagramEventLoop`). Holds of 100, 200, 300 us and of `srtt/8` therefore all behaved as roughly 1 ms [I from the code, consistent with M: hit rates and results are identical across them]. The measured gain was real, but it was never a gain of a 200 us hold. The consequence for the formula `min(200 us, srtt/8)` of revision 1: on loopback and a LAN it would have worked **only because of the rounding**, which is an accident to design around, not on.
 
-Deterministic sim [M], `withMigrationSim`, 100 seeds x 30 echoes per row, 64 B echoes on one stream, a handler that replies instantly (hd=0) or after 1 virtual ms (hd=1; the sim's `delay` cannot express less):
+**Real loopback, hold settings** (laptop, load 6 to 8, two rounds; counts of holds that ended by a command (hits) against by the timer (expired), 80 000 holds per row):
 
-| path | hold | handler delay | datagrams per echo (handshake and close included) | echo p50 | echo p99 | runs that failed |
+| hold setting (real library, laptop, 2 rounds) | p50 us | CPU us/op | holds | hits | expired |
+|---|---|---|---|---|---|
+| hold0 | 62 | 113 | 0 | 0 | 0 |
+| fixed100 | 57 | 84 | 79990 | 79988 | 2 |
+| fixed200 | 59 | 88 | 79996 | 79994 | 2 |
+| fixed300 | 66 | 95 | 79994 | 79992 | 2 |
+| fixed1000 | 82 | 110 | 79965 | 79963 | 2 |
+| rttdiv8cap200 | 68 | 91 | 79987 | 79754 | 233 |
+| adaptive300 | 57 | 85 | 79933 | 79931 | 2 |
+| E300+owned4 | 50 | 95 | 79995 | 79993 | 2 |
+| owned4only | 60 | 125 | 0 | 0 | 0 |
+| E300+B | 42 | 52 | 79984 | 79982 | 2 |
+| netty-on | 41 | 50 | 0 | 0 | 0 |
+| netty-off | 43 | 62 | 0 | 0 | 0 |
+
+Hit rate is 99.99 % for every fixed setting and 99.6 to 99.9 % for `srtt/8` capped at 200 us, i.e. on this path the handler always replied inside one timer tick. The throughput and CPU differences between settings in the table are inside the machine's noise (the round-2 rows were slower for every setting).
+
+**What bounds the cost when the handler does not reply.** A held ACK costs, per held turn that the timer ends: one loop wake (the timer), and an ACK delayed by the hold. Three bounds, in increasing strength:
+1. *The delay is small against the protocol's allowance and the sender corrects for it.* The hold is at most one timer tick (1 ms), against `max_ack_delay` 25 ms (RFC 9000 13.2.1) and a PTO that already includes it (RFC 9002). **Verified in the sim** (virtual time, 20 ms one way, handler replying after 5 ms so every hold expired, 39 expiries): the client's smoothed RTT, min RTT and RTT variation are identical with and without a 2 ms hold (40 ms, 40 ms, 112 ns), so quiche reports the real ack delay and the sender subtracts it; the hold does not inflate the peer's RTT sample [M, sim]. This replaces revision 1's "inferred".
+2. *The hold stops when it stops paying* (prototype `adaptive`): after two consecutive expiries the connection stops holding for 256 eligible turns, doubling to 4096, and any hit resets it. In the sim above (handler slower than the hold) this caps the wasted wakes at the first two per backoff window instead of one per request.
+3. *Pure upload.* In a bulk upload the receiver's turns are pure-receive turns that hand bytes to a parked reader, so the prototype holds on every one and its expiry is fixed by the first held turn. Measured: no regression (113 -> 120 MiB/s, CPU per MiB down); the production rule is stricter: hold only when no further datagram is queued in this pass, so a flight is ACKed on its last datagram, never delayed behind its own successors.
+
+**A formula that works at low RTT.** `srtt/8` is the wrong shape: the handler's turnaround is set by the application and the scheduler, not by the path. The proposal, in the order it should be built:
+- *With the handler on the loop (B):* **no timer at all.** Flush at the end of the loop pass in which the bytes were handed over, after the queued handler tasks have run (Netty's rule: one `connectionSend` after the read batch). The ACK waits for no clock, only for the handler's turn in the same pass; an overrunning handler is bounded by the watchdog, not by a timer.
+- *With the handler off the loop:* a timer hold of **one loop timer tick (about 1 ms), gated by the hit rate** (item 2). `clamp(2 x EWMA of the observed hold-to-reply time, 100 us, 1 ms)` is the refinement once the loop has a sub-millisecond timer; the JDK selector cannot wait less than a millisecond, so below it the choice is a spin, which the design does not want.
+- Never while loss evidence is present (the existing `AckCadence` memory), never with migration enabled, never in the handshake.
+
+**Sim sweep** (unchanged from revision 1; `withMigrationSim`, 100 seeds x 30 echoes per row, handler replying instantly or after 1 virtual ms; a hold of 200 us and of 2 ms; in the sim the timer is exact, there is no millisecond rounding):
+
+| path | hold | handler delay | datagrams per echo (handshake and close included) | echo p50 | echo p99 | failed runs |
 |---|---|---|---|---|---|---|
 | clean, 20 ms one way | 0 | 0 | 4.53 | 40 ms | 40 ms | 0 |
 | clean | 200 us | 0 | **3.57** | 40 ms | 40 ms | 0 |
@@ -315,7 +371,9 @@ Deterministic sim [M], `withMigrationSim`, 100 seeds x 30 echoes per row, 64 B e
 | 30 % loss, 50 ms | 0 / 200 us | 0 | 7.51 / 7.35 | 226 / 228 ms | 6994 / 8034 ms | 1 / 1 |
 | bursty 15 % x 5, 50 ms | 0 / 200 us | 0 | 5.63 / **4.80** | 100 / 100 ms | 2611 / 2511 ms | 0 / 0 |
 
-Reading it: the hold removes about one datagram per echo on clean and bursty paths and nothing when the handler is slower than the hold (it then costs nothing but the wake). On the 30 % loss path `AckCadence` leaves `Relaxed` almost at once so the hold rarely applies (397 holds in 3000 echoes) and p99 moved from 6994 to 8034 ms, which is within what 3000 samples (30 in the tail) and a different draw per datagram can produce; the failed run is the same seed in every row. **No sweep showed a loss of delivery or a worse tail that the hold can be blamed for, and the previous finding that fewer ACKs cost under loss is respected because the hold is only taken while the cadence memory says the path is clean.** What this does not test: a real path with asymmetric delay, ACK compression, or a peer that is not quiche. [U]
+The hold removes about one datagram per echo on clean and bursty paths and nothing when the handler is slower than the hold. On the 30 % loss path `AckCadence` leaves `Relaxed` almost at once, so the hold rarely applies (397 holds in 3000 echoes); the p99 movement there is within what 30 tail samples can produce, and the failed run is the same seed in every row. Not tested: a real asymmetric path, ACK compression, a peer that is not quiche. [U]
+
+**Bulk** [M, laptop, noisy]: 16 MiB per stream in 64 KiB writes, median of 10 streams: see §5.8 for the quiet-machine rows.
 
 ### 6.6 F — a cheaper hand-off rather than fewer
 
@@ -333,6 +391,26 @@ Lab, per echo on the loop: **45 B** (B + H, identical to the callback floor), an
 
 The write is queued into the connection's send queue and returns immediately unless the queue is full (backpressure suspends it). Measured: the status-quo pool path 4.0 -> 3.0 wake-ups; the client 2.0 -> 1.0, with the same single loop wake Netty's `writeAndFlush` pays. It removes the second hand-off for every caller, including the Android main thread, and costs no syscall on the caller's thread. **It changes a contract**: `RFC_WRITE_TIMEOUT_CONTRACT.md` defines `write(deadline)` as bounded until the bytes are accepted by the transport; "accepted into the send queue" is a weaker point on the same line, as it is for Ktor and for a Netty `write` without a listener. A failure surfaces on the next operation or at close. This is the owner's decision (D2).
 
+### 6.10 What the off-loop path reaches on the real library, without B
+
+The owner's question before deciding D1 (the by-construction design: the handler never runs on a thread that serves others). On the real QUIC library, `main` (with #886) + #888 + E + an owned handler executor, no B [M, laptop counts; §5.4 has the timings]:
+
+| real library, handler off the loop | wake-ups | pool dispatches | what it is |
+|---|---|---|---|
+| `main` + #888 (`Dispatchers.IO`) | 6.0 | 2.0 | the baseline |
+| + E | 6.0 | 2.0 | the ACK hold alone |
+| + E + 4 owned spin-then-park handler threads | **3.0** | 0.0 | **equals Netty's `EventExecutorGroup` form (3.0)** |
+| + B + E (handler on the loop) | 2.0 | 0.0 | the on-loop design |
+| Netty, `EventExecutorGroup` / on the loop | 3.0 / 1.0 | 0 | |
+
+What this path **cannot** include on the real library, and why:
+- **D (caller-runs writes) does not apply to QUIC**: quiche is single-threaded and every stream send is a command the loop executes (§6.4).
+- **I (queued writes) does not apply without a copy.** The QUIC write is zero-copy: `streamWrite` hands the caller's native buffer to the driver, and its own comment says the caller frees the buffer the instant the call returns, which is why cancellation must wait for the in-flight send. A write that returns before the loop has read the buffer would need the library to copy the bytes (into library-owned native memory) or to take ownership of the buffer; either is a contract change beyond D2, and the copy has a cost the lab's queued write (which reuses the buffer) did not pay. On TCP the same applies to the lab's numbers. So D2 is a bigger decision than revision 1 said.
+- **H (lean continuations)** is not implemented on the real driver; its effect there is [I].
+- **Batched resumes** (F's per-loop-turn release) are not wired into the real server; wake-ups would not change for one connection, and the allocation effect appears only at many connections.
+
+Result on the real library at one stream: the by-construction path gets to Netty's off-loop **wake-up count** (3.0) and, in the laptop run, to its p50 within about 15 % (49 vs 43 us) but **not its CPU** (95 vs 63 us): the owned threads' spin burns CPU the pool's parking does not (the lab said so, §6.6). Without the owned executor (pool + E) it is 6.0 wake-ups, p50 52, CPU 73 us on the same laptop. So *the by-construction design reaches Netty's off-loop form on wake-ups and roughly on p50, and trails it on CPU until the spin is made adaptive*; it cannot approach Netty's on-loop form (1.0 wake-up, 47 us CPU) because that form puts the handler on the loop.
+
 ## 7. Safety: the letter, the purpose, and the enforcement ladder
 
 ### 7.1 The rule, by its purpose
@@ -343,9 +421,21 @@ The write is queued into the connection's send queue and returns immediately unl
 
 By construction: A, a pool, an `EventExecutorGroup` of several threads, this library's TCP on `main`. Not at all: B, C, a lone owned thread, Netty's on-loop handler. By detection with a bound: B with the hand-off watchdog: the first overrun stalls others for about the watchdog's threshold (1 ms threshold, 1.8 ms measured neighbour worst case), then never again for that handler if it is demoted.
 
-### 7.3 The hand-off watchdog, honestly
+### 7.3 The hand-off watchdog on the real QUIC driver
 
-What it is: a loop whose state (selector, queue) is not confined to one thread for life, only to one thread per *generation*; the watchdog starts the next generation when a unit overruns. The existing `LoopGuard` already models ownership per turn, not per thread for life ("a coroutine may resume on another thread after every suspension"), so the confinement argument survives. What it costs: a second generation's thread for the duration of one overrun, and two volatile stores per unit. What it does not do: preempt the blocking thread (it cannot; the 100 ms block still takes 100 ms for *that connection*), or help when a handler blocks *every* thread it is moved to (each overrun spawns a successor: bound the number of generations per loop and demote the handler on the first). It is an invariant that **at most one thread selects at a time** and that a connection's QUIC state is only touched by the thread that owns the current turn; both must be model-checked (the repository has Lincheck lanes: `:lincheckTest`) before this ships, and the failure of that check is a reason to stay on the pool. Not tested on the real QUIC driver [U].
+Revision 1 said "at most one thread selects". That is not the invariant that matters. The invariant is: **at most one thread is inside a connection's turn, and a library turn is never interrupted by a hand-off.** What follows is from reading the driver and the loop (`QuicheDriver.run`, `DatagramEventLoop.dispatch`, `LoopGuard`); it is a design, not a measurement, and the lab's watchdog (TCP) does not exercise any of it.
+
+**Where a handler actually runs.** Under B the handler is a *separate coroutine task* launched on the loop, not code inside the driver's turn. The driver is one coroutine; its turn (`afterCommand` and the commands it dispatches) is atomic with respect to every other task on the loop, because the loop runs one task at a time, and `DatagramEventLoop.dispatch` always queues (it never runs a resume inline), so a handler is never entered from inside a driver turn. A handler touches connection state only through channels and commands (`driver.commands.trySend`, a slot's signals), which are thread-safe and are what handlers on `Dispatchers.IO` use today. So the handler task is the only thing a watchdog needs to preempt, and library code inside the handler's call tree (`DriverStreamAdapter`) is already thread-agnostic.
+
+**The hand-off.** The watchdog times *handler tasks only* (the dispatcher wrapper that launches handlers on the loop brackets each task with a start stamp). When a handler task has run longer than the threshold:
+1. A successor thread becomes the loop's owner (new generation): it owns the selector, the task queue and the timer heap from now on. The queue and heap are shared across generations, not per thread; the loop's `isLoopThread()` identity is re-pointed to the successor.
+2. **Which thread may touch the quiche connection, the stream slots and the driver's turn state?** Only the loop's current owner thread, running a driver turn. The blocked old thread is inside a *handler* task, so it holds none of that state. It may call thread-safe channel operations and nothing else; if it submits a task (`dispatch`), the loop sees a thread that is not the owner, takes the off-loop path and wakes the successor (correct, as for any off-loop caller).
+3. **When the blocked handler returns on the old thread.** Its coroutine suspends at its next library call (a `read`), control returns to the old thread's loop run method, which checks its generation against the loop's, finds it stale and **exits without running any task**. It never "resumes into library code that believes it owns the turn", because the old thread owns nothing and the only code it runs after the handler is the handler's own continuation up to the next suspension (which resumes through the dispatcher, i.e. through the queue and the new owner).
+4. **A library turn that overruns is not handed off.** If the overrunning task is the driver's own (a bug: library code blocked), a successor would run another task of the same connection while the old thread is still inside its turn, which violates the invariant; `LoopGuard` already reports that class as a violation. The watchdog does not act on library tasks; it reports.
+
+**What still has to be proved** (before D1 can be answered yes): (a) the dispatcher wrapper cannot be bypassed (a handler that launches `Dispatchers.Unconfined` children or uses `withContext(loop)` re-entry); (b) generation hand-over is race-free against a handler that unblocks at the same instant (a Lincheck model of {owner, successor, blocked thread}, in `:lincheckTest`); (c) bounded generations per loop and a handler that blocks again on every thread it is moved to; (d) the timer heap and `LoopLifecycle` (a loop whose thread "exits a second after its last connection ends") under a stale generation. The lab implements (1) to (3) for TCP and passed one scenario (neighbour 1.8 ms); that is not a proof.
+
+**A handler that is fast a thousand times and then blocks once** (a cache miss). By promotion-by-history it is on the loop; the first slow resume stalls every neighbour for the threshold (1 ms configured, 1.8 ms measured) and demotes it. After the probation it is promoted again and, if the cache miss recurs, stalls the neighbours again. Expected stall frequency: with probation doubling from `P0` to a cap `Pmax`, a handler that blocks on a fraction of its resumes causes at most `log2(Pmax/P0) + T/Pmax` stalls per hour, i.e. with `P0` = 30 s and `Pmax` = 15 min about 6 stalls in the first half hour and 4 per hour after, each costing every neighbour about 2 ms once: **roughly 10 ms of neighbour stall per handler-hour**, against 100 ms for each occurrence with no watchdog. [I, arithmetic from the proposed constants, not measured.] Whether demotion should be permanent: **permanent for the connection's handler instance is too harsh** (a connection lives for hours and the first slow call may be a start-up miss) and **never permanent is wasteful for a route that always misses**. Recommendation: demote per handler instance with the doubling probation above, and demote *per route* (every new instance of that route starts off the loop) once three of its instances have been demoted within the process's lifetime; a route override (`OffLoop`) is how a consumer states it earlier. The thresholds (budget, ceiling, `P0`, `Pmax`, three instances) are constants to tune from the resume-span telemetry the library keeps, not consumer knobs.
 
 ## 8. The recommended design
 
@@ -361,7 +451,7 @@ One design, built in an order (§11). Names are proposals.
 3. **The handler executor** is owned by the loop group: **several** threads (never one), adaptive spin, one batched resume per loop turn (F), caller-runs writes on its own threads (D). A consumer may pass their own `CoroutineDispatcher`; then nothing is promoted: a coroutine the consumer placed on their dispatcher stays there (`Pooled(dispatcher)`).
 4. **Writes** are queued (I) *if the owner accepts the contract change*; otherwise they stay suspending, and the library issues the result resume only when it must.
 5. **Reads** use lean continuations and an inline fast path (H).
-6. **ACK hold (E)** is automatic and bounded: `min(200 us, srtt / 8)` on a clean path only, never on a connection that has shown loss, never with migration enabled; no knob.
+6. **ACK hold (E)** is automatic and bounded, with no knob, on a clean path only (never while loss evidence is present, never with migration, never in the handshake): with the handler on the loop **no timer at all** (flush at the end of the loop pass, after the handler's task has run); with the handler off the loop a timer hold of one loop timer tick (about 1 ms), gated by its hit rate (two consecutive expiries stop it, with doubling backoff). Revision 1's `min(200 us, srtt/8)` is withdrawn (§6.5): it worked on loopback only through the loop's millisecond rounding.
 7. **Kernel batching (G)** on Linux io_uring and Apple after the rest, gated on the bulk and many-connection rows.
 8. **Clients** keep resuming on the caller's dispatcher (one resume per awaited event); the client request/response helpers inside the library run on the loop.
 
@@ -384,8 +474,9 @@ Expected, given the design, marked by evidence. "Beat/match/trail" is against Ne
 
 | row | expectation | evidence and reason |
 |---|---|---|
-| (a) echo, wake-ups | **match** after #886 + B + I (1.0 vs 1.0); 2.0 without I (4.0 measured with B alone) | [M] 4.0 now with B; two caller resumes + two timers explained [M]; the rest [I] |
-| (a) echo, CPU, p50 | **trail Netty's on-loop form by about 9 % p50 and 43 % CPU; match its `EventExecutorGroup` form** | [M] round 1, load 2.5: p50 41 vs 38 us, CPU 62 vs 43 us; against the executor group 43 and 63 us. The gap is the allocation (13 KB vs 2.3 KB) and, [I], the caller's two resumes and #886's timers |
+| (a) echo, wake-ups | **match after B + I (1.0 vs 1.0); trail by one without I (2.0 measured with B, after #886)** | [M] 4.0 now with B; two caller resumes + two timers explained [M]; the rest [I] |
+| (a) echo, CPU, p50 (design with B + E) | **match both Netty forms within the laptop's noise; to be confirmed on the quiet machine (§5.8)** | [M] laptop, load 6 to 8: p50 42 vs 40 us (on loop) and 43 us (executor group), CPU 51 vs 47 and 63 us. The remaining gap is allocation (13 KB vs 2.2 KB) and the caller's second resume |
+| (a) echo (the by-construction design, no B: E + owned executor) | **match Netty's `EventExecutorGroup` form on wake-ups (3.0 vs 3.0), trail it on p50 (49 vs 43 us) and CPU (95 vs 63 us); trail the on-loop form** | [M] laptop, §6.10; the owned threads' spin costs CPU |
 | (a) echo, bytes allocated | **trail** (13 KB vs 2.3 KB) | [M] the execution model does not fix it; §3.2 |
 | (b) waiting handler | **beat Netty's off-loop form**, match its callback form | [M] lab: coroutine on loop 3.0 wake-ups p50 35 vs Netty callback 2.0, p50 48; vs `EventExecutorGroup` blocking 5.0, p50 110 |
 | (b) blocking handler, safety | **beat the on-loop form (110 ms stall -> 1.8 ms), match the `EventExecutorGroup` form (0.3-3.4 ms)** | [M] §5.6, with the watchdog prototype only in the lab |
@@ -406,11 +497,11 @@ Expected, given the design, marked by evidence. "Beat/match/trail" is against Ne
 
 ## 10. Open decisions for the owner
 
-**D1. May a handler run on the loop, with the watchdog bounding the stall? (the letter of the rule)** Recommendation: yes, only under `Auto` (measured, promoted/demoted) or an explicit `OnLoop`, only with the hand-off watchdog, and only after the model check of §7.3 passes. Evidence: the real driver goes 10.0 -> 4.0 wake-ups and 133 -> 82 us CPU with this change alone (§5.4), **and without a watchdog it turns a 5 ms blocking handler into a 6.5 ms round trip for a neighbour stream (140 us before)**, so B alone is not shippable; the watchdog bounds the neighbour's worst case to 1.8 ms against 110 ms in the lab (§5.6), and has not been built on the real driver. If the answer is no, keep A with F + D + H + I; the lab says it reaches Netty's executor-group form but not its on-loop form.
+**D1. May a handler run on the loop, with the watchdog bounding the stall? (the letter of the rule)** Recommendation: yes, only under `Auto` (measured, promoted/demoted) or an explicit `OnLoop`, only with the hand-off watchdog, and only after the model check of §7.3 passes. Evidence: the real driver goes 6.0 -> 2.0 wake-ups and, on the laptop, 102 -> 72 us CPU with this change alone (§5.4), **and without a watchdog it turns a 5 ms blocking handler into a 6.5 ms round trip for a neighbour stream (140 us before)**, so B alone is not shippable; the watchdog bounds the neighbour's worst case to 1.8 ms against 110 ms in the lab (§5.6), and has not been built on the real driver. If the answer is no, keep A with F + D + H + I; the lab says it reaches Netty's executor-group form but not its on-loop form.
 
-**D2. Is "write returns when accepted into the send queue" acceptable as the write contract?** Recommendation: yes, with errors surfacing on the next operation and at close, and a `flush`/`sync`-style suspend for callers that need "sent"; Evidence: removes one caller resume everywhere including the Android main thread (client 2.0 -> 1.0 wake-ups) and one hop on the server. Cost: `RFC_WRITE_TIMEOUT_CONTRACT.md`'s statement of "bounded until accepted by the transport" is reinterpreted, not violated, but the timeout and error vocabulary should be restated.
+**D2. Is "write returns when accepted into the send queue" acceptable as the write contract?** (Larger than revision 1 said: on QUIC and on zero-copy TCP it needs the library to copy or own the caller's buffer, §6.10.) Recommendation: yes, with errors surfacing on the next operation and at close, and a `flush`/`sync`-style suspend for callers that need "sent"; Evidence: removes one caller resume everywhere including the Android main thread (client 2.0 -> 1.0 wake-ups) and one hop on the server. Cost: `RFC_WRITE_TIMEOUT_CONTRACT.md`'s statement of "bounded until accepted by the transport" is reinterpreted, not violated, but the timeout and error vocabulary should be restated.
 
-**D3. Is the ACK hold on by default, with no knob?** Recommendation: yes, `min(200 us, srtt/8)`, clean path only. Evidence: sim datagrams per echo 4.53 -> 3.57 on a clean path with no failure or tail effect on any of the four paths; real loopback CPU -32 % (§6.5). The unknown is a real asymmetric path; stage it behind the nightly sim sweeps first.
+**D3. Is the ACK hold on by default, with no knob?** Recommendation: yes, in the form of §6.5 (no timer under B; one tick with hit-rate gating off the loop). Evidence: sim datagrams per echo 4.53 -> 3.57 on a clean path with no failure or tail effect on any of the four paths; the peer's RTT sample is unaffected by the hold (sim: 40 ms with and without a 2 ms hold); real loopback CPU about -25 to -30 % at the quiet-machine rows of §5.8. Unknowns: a real asymmetric path and a non-quiche peer; stage it behind the nightly sim sweeps first.
 
 **D4. Does the library own a handler executor, and how many threads?** Recommendation: yes, a small adaptive pool owned by the loop group, not a lone thread (§5.6), default a function of cores, replaceable per server by `HandlerPlacement.Pooled`. Evidence: §5.5, §5.6.
 
@@ -428,7 +519,7 @@ Each PR is gated by a measurement that must be committed as a test or a benchmar
 |---|---|---|
 | 0 | measurement infrastructure: the benchmark shapes of this study as `benchmarks/` rows (Netty off-loop handler, waiting/blocking handler, many-connection, idle, client callers incl. a single-threaded main-like one) and a **hop-budget test** (wake-ups, dispatches, datagrams, `quiche_conn_send` per echo, extending `QuicDriverWorkPerEchoTest`) | the table in §5 reproduces; the budget test fails on a regression |
 | 1 | allocation: lean continuations (H), no `CompletableDeferred`/`select` per stream operation, inline fast paths | bytes per echo (13 KB today) halved without new wake-ups; allocation row of the scoreboard |
-| 2 | **E**, the ACK hold | sim sweep (clean, 10 %, 30 %, bursty): datagrams/echo down, p99 and failed runs unchanged; loopback CPU/echo; qlog check that reported ack delay includes the hold |
+| 2 | **E**, the ACK hold | sim sweep (clean, 10 %, 30 %, bursty): datagrams/echo down, p99 and failed runs unchanged; loopback CPU/echo; the sim's RTT-sample check (done, §6.5) kept as a test; the bulk rows |
 | 3 | **B + measured promotion/demotion** on the QUIC server and TCP loops, without the watchdog but `OffLoop` default and `OnLoop` explicit only | echo wake-ups 4.0 or fewer; handler-blocks-100-ms test shows no regression for `OffLoop` |
 | 4 | **the hand-off watchdog** + model check (Lincheck) + the blocking-handler safety test | neighbour max latency <= 2 ms during a 100 ms block on the real QUIC driver and TCP loops; no violation of "one selecting thread" under the checker |
 | 5 | handler executor (F + D, several threads, adaptive spin), `Auto` becomes the default | many-connection rows: server CPU/op and bytes within 1.5x of the on-loop row at 1024 connections; safety row unchanged |
@@ -442,10 +533,10 @@ Rationale for the order: 0 first because every later gate needs it; 1 and 2 are 
 
 **Measured** here: all counts in §3.2 and §5 (laptop, JFR); the safety, many-connection and idle tables (laptop); the real-library effect of B and E (laptop); the sim sweeps for E; Netty QUIC and TCP in the same harness.
 
-**Taken from PR bodies, not re-measured:** the 13 -> 10 -> about 6 wake-up arc of #886/#887/#888, the 211 vs 65 us CPU and 251 vs 186 us p50 Linux numbers, #887's TCP counts.
+**Taken from PR bodies, not re-measured:** the 13 -> 10 wake-up arc to the state before #886 (the 6.0 after it is measured here), the 211 vs 65 us CPU and 251 vs 186 us p50 Linux numbers, #887's TCP counts (re-measured here in §5.7.1).
 
 **Inferred:** the ten-to-one wake-up path once #886 and I are applied; Netty's behaviour on Linux (epoll, GSO); Native and Apple behaviour from reading `DriverPlacement.native.kt` and `NWSocketWrapper`; quiche's reported ACK delay.
 
-**Unknown:** quiet-machine p50/p99 and CPU (see §5.8); Netty QUIC at many connections; idle QUIC; Android StrictMode behaviour of a non-blocking socket write; Native numbers; the cost of the watchdog on the real QUIC driver; whether the Lincheck model of §7.3 holds; kernel batching.
+**Unknown:** whatever §5.8 does not report from the quiet machine; Netty QUIC at many connections; idle QUIC; Android StrictMode behaviour of a non-blocking socket write; Native numbers; the cost of the watchdog on the real QUIC driver; whether the Lincheck model of §7.3 holds; kernel batching.
 
-**Prototypes** (local branches in the main checkout's repository, not pushed, not part of this PR): `proto/ack-hold` contains the lab (`benchmarks/jvm/src/main/kotlin/com/ditchoom/socket/benchmark/lab/`, run through `LabMain`), the Netty off-loop hook in `NettyQuicBenchmarks.kt`, option E in `QuicheDriver` (`AckHoldPrototype`, a hold in `afterCommand` and the loop wait), option B on the real driver (`ExecPrototype.handlersOnLoop` in `SharedQuicheServer`), the sim sweep `AckHoldSimSweepTest`, on top of `main` + the diff of #888; `proto/exec-lab` is the lab alone at its first state. A git bundle of both was kept with the study's scratch outputs (the counts, the JFR files and the sweeps' raw rows).
+**Prototypes** (local branches in the repository of the main checkout, not pushed, not part of this PR): `proto/v2` is current (`main` at f8adf8ab + the diff of #888): the lab (`benchmarks/jvm/src/main/kotlin/com/ditchoom/socket/benchmark/lab/`, run through `LabMain`), the Netty off-loop hook in `NettyQuicBenchmarks.kt`, option E (`AckHoldPrototype`: fixed, `srtt`-divisor and adaptive modes; a hold in `afterCommand` and the loop wait), option B on the real driver (`ExecPrototype.handlersOnLoop`) and an owned handler executor on the real server (`ExecPrototype.handlerDispatcherFactory`), the sim sweeps `AckHoldSimSweepTest` (`sweep`, `ackDelayReport`), and the real-QUIC scenarios `qbulk`, `qsafety`, `nbulk`. `proto/v887` is #887's branch with the lab overlaid (backend chosen by `-Dlab.tcpbackend=nio2|nio`). `proto/ack-hold` and `proto/exec-lab` are revision 1's states (before #886). The raw rows, counts and JFR files of the study are kept with its scratch outputs.
