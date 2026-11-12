@@ -125,6 +125,9 @@ abstract class ByteBufferClientSocket<T : NetworkChannel>(
             CloseState.Closing, CloseState.Closed -> SocketClosedException.General("Socket closed during read")
         }
 
+    /** The socket's state, for a test failure that needs to say what this side was doing. */
+    override fun toString() = "${this::class.simpleName}(close=${closeState.get()}, open=$isOpen, tls=${tlsHandler != null})"
+
     override suspend fun close() {
         closeState.compareAndSet(CloseState.Open, CloseState.Closing)
         tlsHandler?.let {

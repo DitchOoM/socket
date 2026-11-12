@@ -37,7 +37,7 @@ internal class AcceptLog {
     /** Registers this test's own client, after its `open()`. */
     suspend fun client(socket: ClientSocket) {
         val port = socket.localPort()
-        lock.withLock { lines += "${at()} this test's client connected from local port $port to ${socket.remotePort()}" }
+        lock.withLock { lines += "${at()} this test's client connected from local port $port to ${socket.remotePort()}; $socket" }
         clientPort.complete(port)
     }
 
@@ -56,7 +56,7 @@ internal class AcceptLog {
             lock.withLock {
                 (++accepted).also {
                     lines +=
-                        "${at()} server accepted #$it from remote port $remote on ${socket.localPort()}"
+                        "${at()} server accepted #$it from remote port $remote on ${socket.localPort()}; $socket"
                 }
             }
         try {
