@@ -8,8 +8,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.posix.getenv
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.seconds
@@ -141,7 +141,9 @@ abstract class NativeQuicPerfTrace {
                         println("PERF-STATS client ${client?.render()}")
                         println("PERF-STATS server ${server?.render()}")
                         val s = el.inWholeMicroseconds / 1e6
-                        println("PERF-END mode=$mode ops=$ops bytes=$bytes seconds=$s ops_per_s=${ops / s} MiB_per_s=${bytes / s / 1048576.0}")
+                        println(
+                            "PERF-END mode=$mode ops=$ops bytes=$bytes seconds=$s ops_per_s=${ops / s} MiB_per_s=${bytes / s / 1048576.0}",
+                        )
                     }
                 } finally {
                     serverJob.cancel()
@@ -152,4 +154,5 @@ abstract class NativeQuicPerfTrace {
 }
 
 private fun QuicConnStats.render() = "sent=$sent recv=$recv sentBytes=$sentBytes recvBytes=$recvBytes lost=$lost"
+
 private fun QuicScope.driverOf(): QuicheDriver = (this as QuicheBackedConnection).quicheDriver
