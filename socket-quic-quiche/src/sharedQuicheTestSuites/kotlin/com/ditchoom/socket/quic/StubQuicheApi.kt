@@ -825,6 +825,9 @@ internal class StubQuicheApi : QuicheApi {
             )
         }
 
+    /** The scripted path stats' counters, summed (0 when none are scripted, like an unbound stats FFI). */
+    override fun connLossEvidence(conn: QuicheConn): Long = pathStats.sumOf { it.lost + it.retrans }
+
     override fun connPathStats(
         conn: QuicheConn,
         pathIdx: Long,
