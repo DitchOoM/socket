@@ -538,15 +538,28 @@ jobs:
           fi
 
   build-windows:
-    # Two legs of the same suite: `jfr: false` is the plain run, `jfr: true` records a Flight Recorder
-    # ring on the test worker. Windows has ONE JVM lane, so tracing it outright would leave no
-    # untraced Windows run; the recorder must never be the only configuration (instrumentation has
-    # hidden the race it was built to catch on this project).
-    name: "Windows JVM Tests${{ matrix.jfr == 'true' && ' (JFR ring)' || '' }}"
+    # Three legs of the same suite. `jfr: true` records a Flight Recorder ring on the test worker:
+    # Windows has ONE JVM lane, so tracing it outright would leave no untraced Windows run, and the
+    # recorder must never be the only configuration (instrumentation has hidden the race it was built
+    # to catch on this project). `launcher: 25` runs the suite on a JDK 25 test launcher while Gradle
+    # and the toolchain stay on 21, because the published jar's JDK 21+ tier is selected by every
+    # newer JDK; it is untraced, like the plain leg. JNI on all three: there is no Windows FFM lane.
+    # `args` is what a leg adds to the Gradle call, spelled out per leg so the pair of properties a
+    # 25 launcher needs cannot be given half.
+    name: "Windows JVM Tests${{ matrix.jfr == 'true' && ' (JFR ring)' || '' }}${{ matrix.launcher == '25' && ' (JDK 25)' || '' }}"
     strategy:
       fail-fast: false
       matrix:
-        jfr: ["false", "true"]
+        include:
+          - jfr: "false"
+            launcher: ""
+            args: ""
+          - jfr: "true"
+            launcher: ""
+            args: ""
+          - jfr: "false"
+            launcher: "25"
+            args: "-PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME"
     runs-on: windows-latest
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
@@ -573,11 +586,25 @@ jobs:
       # a Windows runner is a cross-platform mix, which is exactly why setup-java's own key carries
       # the OS. This lane is continue-on-error and far off the critical path; a cold dependency
       # download here is cheaper than the eviction it was causing everywhere else.
+      # The launcher JDK goes in FIRST, so the 21 install below is the last one to repoint JAVA_HOME
+      # and Gradle stays on 21. Its home reaches Gradle as TEST_LAUNCHER_JDK_HOME, taken from the
+      # step's output: the runner's JAVA_HOME_25_X64 is architecture-coupled.
+      - name: Set up JDK 25 (test launcher)
+        id: launcher_jdk
+        if: matrix.launcher == '25'
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '25'
       - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
           java-version: '21'
+      - name: Name the test-launcher JDK for Gradle
+        if: matrix.launcher == '25'
+        shell: bash
+        run: echo "TEST_LAUNCHER_JDK_HOME=${{ steps.launcher_jdk.outputs.path }}" >> "$GITHUB_ENV"
       # The Windows quiche JNI shim is cross-compiled on the Linux job and
       # handed over as the quiche-windows-natives artifact. Drop it where
       # stageQuicheNativeResources expects it (libs/quiche/windows-x64/lib/)
@@ -624,14 +651,14 @@ jobs:
           mode: start
           enabled: ${{ matrix.jfr }}
       - name: Run JVM tests
-        run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache
+        run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache ${{ matrix.args }}
       # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
       # diagnostics live in the XML's system-out, which is otherwise lost with the runner.
       - name: Upload Windows test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-jvm-test-results${{ matrix.jfr == 'true' && '-jfr' || '' }}
+          name: windows-jvm-test-results${{ matrix.jfr == 'true' && '-jfr' || '' }}${{ matrix.launcher == '25' && '-jdk25' || '' }}
           path: |
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest

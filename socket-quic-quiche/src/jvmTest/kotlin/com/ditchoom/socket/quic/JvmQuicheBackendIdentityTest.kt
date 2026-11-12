@@ -47,6 +47,29 @@ class JvmQuicheBackendIdentityTest {
     }
 
     /**
+     * The JDK twin of the test above: `-PjvmTestLauncher=25` moves only this forked worker, and a
+     * launcher property that silently stayed on 21 would leave the `JDK 25 / FFM` lane green having
+     * run on 21. The build declares the Java feature release Gradle resolved for this Test task
+     * (`socket.test.expectedJavaFeature`, set for every module's jvmTest by the root build script);
+     * the worker states the one it is running on.
+     */
+    @Test
+    fun theWorkerRunsOnTheJdkTheBuildResolved() {
+        val expected = System.getProperty(EXPECTED_JAVA_PROPERTY)
+        assertNotNull(
+            expected,
+            "$EXPECTED_JAVA_PROPERTY was not set. The build must declare which JDK it resolved for the test " +
+                "worker — an undeclared launcher is the unobservable state this test exists to remove.",
+        )
+        assertEquals(
+            expected,
+            System.getProperty("java.specification.version"),
+            "test worker JDK mismatch: Gradle resolved JDK $expected for this Test task but the worker " +
+                "runs on ${System.getProperty("java.version")} (${System.getProperty("java.home")}).",
+        )
+    }
+
+    /**
      * Names the concrete backend, seeing through [RecvInfoGuardQuicheApi] when the recv_info guard
      * is enabled. `FfmQuicheApi` lives in `jvm21Main` and is not on this source set's compile
      * classpath, so it is matched by simple name rather than by type.
@@ -62,5 +85,6 @@ class JvmQuicheBackendIdentityTest {
 
     private companion object {
         const val EXPECTED_PROPERTY = "quiche.expectedJvmBackend"
+        const val EXPECTED_JAVA_PROPERTY = "socket.test.expectedJavaFeature"
     }
 }

@@ -1,7 +1,8 @@
 name: "Apple quiche build environment"
 description: >-
   JDK + Konan/Gradle cache restore + the prebuilt Apple quiche natives, for every job that fans out
-  of build-apple.yaml's `natives` job. Exists so the six consumer jobs cannot drift apart in how
+  of build-apple.yaml's `natives` job. The macOS twin of .github/actions/linux-quiche-env; keep the two
+  in step when either changes. Exists so the six consumer jobs cannot drift apart in how
   they restore state — the failure mode of copy-pasting this block six times is one shard silently
   rebuilding quiche from source for ~15 minutes while the others don't.
 
@@ -21,6 +22,16 @@ inputs:
     description: "Token for a cross-run artifact download. Only read when `natives-run-id` is set."
     required: false
     default: ""
+  test-launcher-jdk:
+    description: >-
+      A second JDK to install alongside 21, for a lane whose Test task runs on another launcher: `25`
+      for `JDK 25 / FFM`. Empty (the default) installs 21 alone. Gradle itself always runs on 21. The
+      installed JDK's home is exported as TEST_LAUNCHER_JDK_HOME, which a lane hands to Gradle as
+      `-Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME`: the runner's own
+      JAVA_HOME_25_<ARCH> variable is architecture-coupled and is deliberately not used. The Linux twin
+      takes the same input (it also accepts 17, which has no macOS lane).
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -38,11 +49,36 @@ runs:
 
     # No `cache: gradle` — the caches are restored explicitly below, and setup-java's gradle cache
     # points at the same ~/.gradle/caches directory. See the build-apple.yaml cache steps.
+    #
+    # The test-launcher JDK goes in FIRST, as its own step with an id: each setup-java call repoints
+    # JAVA_HOME at what it installed, so installing 21 afterwards is what leaves Gradle on 21 (a
+    # multi-line java-version would work too, but only the step's `path` output is arch-independent,
+    # and that output names the LAST entry only).
+    - name: Refuse a test-launcher JDK this action does not know
+      if: inputs.test-launcher-jdk != '' && inputs.test-launcher-jdk != '25'
+      shell: bash
+      run: |
+        echo "::error::test-launcher-jdk must be empty or 25; got '${{ inputs.test-launcher-jdk }}'"
+        exit 1
+
+    - name: Set up JDK ${{ inputs.test-launcher-jdk }} (test launcher)
+      id: launcher_jdk
+      if: inputs.test-launcher-jdk != ''
+      uses: actions/setup-java@v5
+      with:
+        distribution: 'zulu'
+        java-version: ${{ inputs.test-launcher-jdk }}
+
     - name: Set up JDK 21
       uses: actions/setup-java@v5
       with:
         distribution: 'zulu'
         java-version: '21'
+
+    - name: Name the test-launcher JDK for Gradle
+      if: inputs.test-launcher-jdk != ''
+      shell: bash
+      run: echo "TEST_LAUNCHER_JDK_HOME=${{ steps.launcher_jdk.outputs.path }}" >> "$GITHUB_ENV"
 
     # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
     # The full action also SAVES at post-step, so with six parallel consumers a cache miss would have
