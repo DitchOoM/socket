@@ -2,7 +2,10 @@ package com.ditchoom.socket.nio
 
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ServerSocket
+import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.nio.util.SelectorLoop
+import com.ditchoom.socket.nio.util.SelectorLoopGroup
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.Dispatchers
@@ -14,15 +17,24 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.nio.channels.ClosedChannelException
+import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration
 
 /**
- * A server socket on plain NIO (blocking accept on [Dispatchers.IO]) for runtimes without NIO2: Android
- * below API 26. Binds through `socket().bind(…)` because `ServerSocketChannel.bind(…)` needs API 24.
+ * A server socket on plain NIO, for runtimes without NIO2 (Android below API 26) and for the selector-loop
+ * path (`useAsyncChannels = false`). Binds through `socket().bind(…)` because `ServerSocketChannel.bind(…)`
+ * needs API 24.
+ *
+ * With [nonBlocking] the listener and every accepted connection are non-blocking channels whose readiness
+ * waits run on the shared [SelectorLoop]s: no thread is parked in `accept()` or in a read. Without it, accept
+ * blocks a [Dispatchers.IO] thread and the accepted connections are blocking channels.
  */
 class NioServerSocket(
     private val config: TransportConfig = TransportConfig(),
+    private val nonBlocking: Boolean = false,
 ) : ServerSocket {
     private sealed interface Listener {
         data object Unbound : Listener
@@ -34,6 +46,9 @@ class NioServerSocket(
 
     @Volatile
     private var listener: Listener = Listener.Unbound
+
+    /** The loop the listener's OP_ACCEPT waits run on. */
+    private val loopSelector by lazy { SelectorLoopGroup.next() }
 
     override fun port() =
         when (val l = listener) {
@@ -64,6 +79,7 @@ class NioServerSocket(
                 val channel = ServerSocketChannel.open()
                 try {
                     channel.socket().bind(socketAddress, backlog)
+                    if (nonBlocking) channel.configureBlocking(false)
                     channel
                 } catch (e: Throwable) {
                     runCatching { channel.close() }
@@ -71,6 +87,7 @@ class NioServerSocket(
                 }
             }
         listener = Listener.Bound(server)
+        if (nonBlocking) return acceptOnLoop(server)
         return flow {
             while (isListening()) {
                 val client: SocketChannel =
@@ -87,10 +104,41 @@ class NioServerSocket(
         }
     }
 
+    /** Accepts without parking a thread: try `accept()`, and when no connection is queued wait for OP_ACCEPT on a loop. */
+    private fun acceptOnLoop(server: ServerSocketChannel): Flow<ClientSocket> {
+        val selector = loopSelector
+        return flow {
+            while (isListening()) {
+                val client: SocketChannel =
+                    try {
+                        server.accept()
+                    } catch (e: ClosedChannelException) {
+                        break
+                    } ?: try {
+                        SelectorLoop.of(selector).awaitReady(server, SelectionKey.OP_ACCEPT, Duration.INFINITE)
+                        continue
+                    } catch (e: SocketClosedException) {
+                        // A close() ends the flow; a collector cancelled from outside ends it as it always has.
+                        currentCoroutineContext().ensureActive()
+                        break
+                    } catch (e: CancellationException) {
+                        // Like the blocking accept, a cancelled collector closes the listener.
+                        runCatching { server.close() }
+                        throw e
+                    }
+                client.configureBlocking(false)
+                emit(NioServerToClientSocket(client, config, blocking = false))
+            }
+        }
+    }
+
     override suspend fun close() {
         when (val l = listener) {
             Listener.Unbound -> Unit
-            is Listener.Bound -> l.channel.aClose()
+            is Listener.Bound -> {
+                l.channel.aClose()
+                if (nonBlocking) SelectorLoop.of(loopSelector).release(l.channel)
+            }
         }
     }
 }
@@ -99,7 +147,8 @@ class NioServerSocket(
 class NioServerToClientSocket(
     channel: SocketChannel,
     config: TransportConfig = TransportConfig(),
-) : BaseClientSocket(blocking = true, config) {
+    blocking: Boolean = true,
+) : BaseClientSocket(blocking, config) {
     init {
         this.socket = channel
     }

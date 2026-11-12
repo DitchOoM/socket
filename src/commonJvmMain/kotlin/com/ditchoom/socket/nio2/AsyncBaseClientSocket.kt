@@ -19,21 +19,16 @@ import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
+import java.nio.channels.CompletionHandler
 import kotlin.time.Duration
 
 abstract class AsyncBaseClientSocket(
@@ -43,25 +38,38 @@ abstract class AsyncBaseClientSocket(
     private val writeMutex = Mutex()
 
     /**
-     * The socket-scoped home for the *orphaned* read (RFC §3.2). The JDK's timed
-     * `AsynchronousSocketChannel.read` is destructive — an elapsed timeout arms `readKilled` and kills
-     * the read half. To enforce a deadline **non-destructively** the read itself runs here — decoupled
-     * from the caller's coroutine and with **no** JDK timeout ([Duration.INFINITE]) — while the caller
-     * `withTimeout`s only the *wait*. On timeout the wait is abandoned; the read (and the receive
-     * buffer it owns) survives to be re-awaited by the next `read()`. Cancelled in [close] so an
-     * outstanding read unwinds when the socket closes.
+     * The single outstanding read, if one is in flight — enforces single-flight (§3.2), and is the
+     * *orphaned* read (RFC §3.2): the JDK's timed `AsynchronousSocketChannel.read` is destructive — an
+     * elapsed timeout arms `readKilled` and kills the read half. To enforce a deadline **non-destructively**
+     * the read is started with **no** JDK timeout ([Duration.INFINITE] semantics: the untimed overload) and
+     * completes a [CompletableDeferred] straight from the JDK's completion handler, while the caller
+     * `withTimeout`s only the *wait*. On timeout the wait is abandoned; the read (and the receive buffer it
+     * owns) survives to be re-awaited by the next `read()`. Closing the channel completes it exceptionally.
      */
-    private val orphanedReadScope by lazy { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
-
-    /** The single outstanding read, if one is in flight — enforces single-flight (§3.2). */
     private var inFlightRead: InFlightRead? = null
 
     /**
-     * An orphaned read: the background [deferred] doing the actual `aRead`, plus the pooled [buffer] it
+     * An orphaned read: the [deferred] the JDK's completion handler completes, plus the pooled [buffer] it
      * reads into. The buffer's lifetime **follows the read, not the caller** — it is freed only once
      * [deferred] completes (fails / EOF), never on a caller timeout, so a caller that gave up waiting
      * can't free a buffer a live read is still writing into (the QUIC-JNI UAF class, §3.2).
      */
+    private object DetachedReadHandler : CompletionHandler<Int, CompletableDeferred<Int>> {
+        override fun completed(
+            result: Int,
+            attachment: CompletableDeferred<Int>,
+        ) {
+            attachment.complete(result)
+        }
+
+        override fun failed(
+            exc: Throwable,
+            attachment: CompletableDeferred<Int>,
+        ) {
+            attachment.completeExceptionally(wrapJvmException(exc))
+        }
+    }
+
     private class InFlightRead(
         val deferred: Deferred<Int>,
         val buffer: PlatformBuffer,
@@ -82,13 +90,13 @@ abstract class AsyncBaseClientSocket(
 
     /**
      * The non-destructive read (RFC §3.2 orphaned-read single-flight). Enforces [deadline] by racing a
-     * `withTimeout` against a background `aRead` that owns its receive buffer and carries **no** JDK
+     * `withTimeout` against a read that owns its receive buffer and carries **no** JDK
      * timeout (so `readKilled` is never armed):
      *
      *  - **Enforced (Axis 1):** the caller waits at most [deadline] for the background read; on expiry
      *    it throws [SocketTimeoutException] rather than blocking forever.
      *  - **Non-destructive (Axis 2):** the timeout abandons only the *wait*. The background read keeps
-     *    running on [orphanedReadScope] with its buffer intact, left in [inFlightRead] for the next
+     *    still pending in the channel with its buffer intact, left in [inFlightRead] for the next
      *    `read()` to re-await — so no bytes are lost and the connection stays usable.
      *  - **Buffer safety (§3.2):** the pooled buffer is freed only when the read itself completes
      *    (fails / EOF), never on a caller timeout, so a gave-up caller can't free a buffer a live read
@@ -111,16 +119,9 @@ abstract class AsyncBaseClientSocket(
                     // abandon only the wait. The next read() re-awaits this same background read.
                     throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
-                    // close() cancels the background read's scope; the waiter itself was not cancelled.
-                    // Passing that CancellationException on would end the caller's coroutine silently,
-                    // as if *it* had been cancelled — report this side's close instead. The buffer stays
-                    // with the cancelled read, which the channel's close ends.
-                    if (inFlight.deferred.isCancelled && currentCoroutineContext().isActive) {
-                        inFlightRead = null
-                        throw SocketClosedException.General("Socket closed during read", e)
-                    }
-                    // The waiter was cancelled from outside; the background read still owns the buffer,
-                    // so leave it orphaned for the next read() and let the cancellation propagate.
+                    // The waiter was cancelled from outside; the read still owns the buffer, so leave it
+                    // orphaned for the next read() and let the cancellation propagate. (A close() is not a
+                    // cancellation here: it fails the read itself, below.)
                     throw e
                 } catch (e: Throwable) {
                     // The read itself failed (deferred completed exceptionally) — it no longer touches
@@ -139,7 +140,7 @@ abstract class AsyncBaseClientSocket(
         }
 
     /**
-     * Launches the background read that backs [orphanedReadRaw]. The `aRead` runs with a
+     * Starts the read that backs [orphanedReadRaw]. It runs with the untimed overload, i.e. a
      * [Duration.INFINITE] deadline on purpose: enforcement is the caller's `withTimeout`, never the
      * JDK's destructive timeout — the read must genuinely stay outstanding so it survives a caller
      * timeout (RFC §3.2).
@@ -156,15 +157,16 @@ abstract class AsyncBaseClientSocket(
             }
         val buffer = readBufferSource.acquire(effectiveReadBufferSize(receiveBuffer))
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
-        val deferred =
-            orphanedReadScope.async {
-                try {
-                    socket.aRead(byteBuffer, Duration.INFINITE)
-                } catch (e: IOException) {
-                    throw wrapJvmException(e)
-                }
-            }
-        return InFlightRead(deferred, buffer)
+        // Started right here and completed by the JDK's completion handler: no coroutine is launched for the
+        // read, so there is no dispatch to start it and none to resume it. The one hand-off left is the
+        // waiter's own, from `complete` to the dispatcher of whoever awaits.
+        val result = CompletableDeferred<Int>()
+        try {
+            socket.read(byteBuffer, result, DetachedReadHandler)
+        } catch (e: IOException) {
+            throw wrapJvmException(e)
+        }
+        return InFlightRead(result, buffer)
     }
 
     override suspend fun read(
@@ -232,9 +234,8 @@ abstract class AsyncBaseClientSocket(
     }
 
     override suspend fun close() {
-        // Tear down the waiter for any orphaned read; closing the channel (in super.close) is what
-        // actually completes the outstanding JDK read, so no read leaks past close.
-        orphanedReadScope.cancel()
+        // Closing the channel (in super.close) is what completes the outstanding JDK read, exceptionally,
+        // so no read leaks past close.
         offTheAndroidMainThread { super.close() }
     }
 }
