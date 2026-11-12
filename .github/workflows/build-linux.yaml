@@ -3,7 +3,8 @@ name: "Build & Test (Linux)"
 # FAN-OUT SHAPE (was one ~28-31 minute serial `build` job plus a 6-7 minute fuzz tail):
 #
 #   natives ──┬── checks-tests   (the big JVM/JS/Android/K-N suite + the netns + Docker-harness lanes)
-#             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI)
+#             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI | JDK 25 / FFM)
+#             ├── jvm-jdk25      (every other module's jvmTest on a JDK 25 launcher)
 #             ├── link ──┬── integration-linux-x64
 #             │          └── integration-linux-arm64
 #             ├── abi-linux      (checkKotlinAbi against the api/linux/ dumps)
@@ -36,6 +37,9 @@ name: "Build & Test (Linux)"
 #     WebTransportDockerInteropTests / QpackDifferentialInteropTests run inside its gradle call.
 #   - quiche-jvm owns its OWN copy of the certs + CA trust, because :socket-quic-quiche:jvmTest
 #     dependsOn(harnessUp) (root build.gradle.kts) and brings the stack up inside that job.
+#   - jvm-jdk25 owns a THIRD copy of the certs + CA trust, plus its own aioquic server and ls-qpack
+#     oracle, for the same reason as checks-tests: it runs :socket-http3:jvmTest and the other
+#     harness-backed suites inside one gradle call.
 #   - integration-linux-{x64,arm64} already brought the harness up at the YAML level, unchanged.
 #
 # ⚠️ Shard balance is a first cut, not a measured optimum. Every extra ubuntu job re-pays checkout +
@@ -745,7 +749,7 @@ jobs:
 
       # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 21): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:
-      # this one and the quiche-jvm FFM leg; the quiche-jvm JNI and JDK 17 legs stay UNTRACED.
+      # this one and the quiche-jvm FFM leg; the quiche-jvm JNI, JDK 17 and JDK 25 legs stay UNTRACED.
       - uses: ./.github/actions/jvm-flight-recorder
         with:
           mode: start
@@ -1299,7 +1303,7 @@ jobs:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
       # Protocol ring (socket-testsuite TraceRing.kt): the last events of every connection the shared
       # QUIC suites open, attached to a failing test's report. On for the JNI leg only; the FFM leg
-      # carries the JFR ring instead and the JDK 17 leg stays uninstrumented, so no lane has both and
+      # carries the JFR ring instead and the JDK 17 and JDK 25 legs stay uninstrumented, so no lane has both and
       # no recorder is the only configuration. Job-level on purpose: a daemon started by an earlier
       # step would not see a step-level variable.
       QUIC_TEST_TRACE_RING: ${{ matrix.leg.ring }}
@@ -1321,7 +1325,7 @@ jobs:
           - name: "JNI"
             args: ""
             sim-fuzz: "2000"
-            jdk17: "false"
+            test-launcher-jdk: ""
             core-dump: "true"
             audit: "false"
             ring: "1"
@@ -1334,7 +1338,7 @@ jobs:
           - name: "FFM"
             args: "-PquicheJvmBackend=ffm"
             sim-fuzz: "2000"
-            jdk17: "false"
+            test-launcher-jdk: ""
             core-dump: "false"
             audit: "false"
             ring: "0"
@@ -1356,20 +1360,37 @@ jobs:
           - name: "JDK 17 / JNI"
             args: "-PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64"
             sim-fuzz: ""
-            jdk17: "true"
+            test-launcher-jdk: "17"
             core-dump: "false"
             audit: "true"
+            ring: "0"
+            jfr: "false"
+          # FFM backend on a JDK 25 launcher, the newest LTS. The multi-release jar's
+          # META-INF/versions/21 tier (the FFM bindings) is compiled by jvmToolchain(21) but selected
+          # at runtime by every JDK >= 21, so a consumer on 25 runs code no other lane has run on that
+          # JDK: the link check in `publish` resolves every reference against JDK 25, and this leg is
+          # the one that executes them. The build/toolchain stays on 21; only this Test task runs on
+          # 25, found via the JAVA_HOME_25_X64 install from setup-java.
+          #
+          # No deep-fuzz seeds, ring, recorder or audit here, as on the JDK 17 leg: those ride the
+          # JDK 21 legs, and this one answers a single question, whether the suite passes on 25.
+          - name: "JDK 25 / FFM"
+            args: "-PquicheJvmBackend=ffm -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
+            sim-fuzz: ""
+            test-launcher-jdk: "25"
+            core-dump: "false"
+            audit: "false"
             ring: "0"
             jfr: "false"
     steps:
       - uses: actions/checkout@v7
       # konan: false — this lane is JVM-only (see -PlinuxTargets=false on the test step), so restoring
-      # the ~450MB Kotlin/Native toolchain would be download cost for nothing. jdk17 only on the leg
-      # that needs a 17 launcher.
+      # the ~450MB Kotlin/Native toolchain would be download cost for nothing. A second JDK only on
+      # the legs whose Test task runs on a 17 or 25 launcher.
       - uses: ./.github/actions/linux-quiche-env
         with:
           konan: "false"
-          jdk17: ${{ matrix.leg.jdk17 }}
+          test-launcher-jdk: ${{ matrix.leg.test-launcher-jdk }}
 
       # Harness-backed tests use the in-repo Docker stack (`docker compose up`
       # is wired via Gradle's harnessUp/harnessDown tasks). The TLS server
@@ -1386,7 +1407,8 @@ jobs:
           sudo update-ca-certificates
 
       # Imports into $JAVA_HOME (21) only, exactly as the monolith did — including on the JDK-17
-      # leg, whose Test launcher is JAVA_HOME_17_X64 and therefore does NOT see this alias. Left
+      # and JDK-25 legs, whose Test launchers are JAVA_HOME_17_X64 / JAVA_HOME_25_X64 and therefore do
+      # NOT see this alias. Left
       # as-is on purpose: changing it would change which harness TLS tests that leg exercises.
       - name: Trust harness CA in JVM keystore (Linux)
         run: |
@@ -1399,8 +1421,8 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
-      # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI and
-      # JDK 17 legs are not, so the recorder is never the only configuration this lane has run. JNI is
+      # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI,
+      # JDK 17 and JDK 25 legs are not, so the recorder is never the only configuration this lane has run. JNI is
       # traced in checks-tests (above) and FFM here, which is what covers both backends.
       - uses: ./.github/actions/jvm-flight-recorder
         with:
@@ -1450,9 +1472,9 @@ jobs:
           # virtual time). Without this the deep lane never runs anywhere and only the
           # 25-seed commonTest smoke guards the fuzzer. Forwarded into the test worker
           # by the quiche build script (daemon env is not step env). Empty on the JDK-17
-          # leg, which is how the monolith had it.
+          # leg, which is how the monolith had it, and on the JDK-25 leg.
           SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
-          # All three legs build their own natives and inventoried zero skips.
+          # Every leg builds its own natives and inventoried zero skips.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           # A run still going at 20 of its 24 minutes is hung (a healthy one takes under 10): print every
@@ -1653,6 +1675,135 @@ jobs:
             /tmp/cores/core.*
             /tmp/cores/bt/*.txt
             socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
+          retention-days: 90
+          if-no-files-found: ignore
+
+  # ── Stage 2b'': every other module's JVM suite, on a JDK 25 launcher ─────────────────────────────
+  # checks-tests runs these same jvmTest tasks on JDK 21, and quiche-jvm's `JDK 25 / FFM` leg runs
+  # :socket-quic-quiche on 25. This job is the rest: the root module (TCP) and every other module that
+  # has a JVM suite, so a consumer of the published jars on JDK 25 is not the first thing to execute
+  # them there. Gradle and the toolchain stay on 21; `-PjvmTestLauncher=25` (root build.gradle.kts)
+  # moves only each module's forked test worker, and fails the task if the launcher it resolved is not
+  # 25, which is what keeps this job from reporting green on a launcher that silently stayed on 21.
+  #
+  # It brings up the SAME peers as checks-tests and runs under the same SOCKET_REQUIRE_ALL_TESTS=1, so
+  # nothing here may skip: the harness certs + CA trust (in the 25 launcher's keystore too, which
+  # quiche-jvm's 17/25 legs deliberately lack), the aioquic HTTP/3 + WebTransport server and the
+  # ls-qpack oracle. A test that would have self-skipped for want of one of them fails instead.
+  #
+  # NOT covered on 25 by this job, and why: :socket-quic-quiche:jvmTest (its own leg, FFM backend; its
+  # JNI backend is not run on 25 anywhere), :lincheckTest and :mainThreadSafetyTest (they need a JVM
+  # with no other agent, and are not the question), the JS, Wasm, Android and native tasks (no JVM
+  # launcher), and the netns route-resolution lanes. These modules resolve loadQuicheApi() to the JNI
+  # backend, as on 21, so the FFM tier is exercised on 25 only by the quiche-jvm leg.
+  jvm-jdk25:
+    name: "JVM tests (JDK 25)"
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+    steps:
+      - uses: actions/checkout@v7
+      # konan: false — JVM-only (-PlinuxTargets=false on the test step, see quiche-jvm's note).
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          konan: "false"
+          test-launcher-jdk: "25"
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (Linux)
+        run: |
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      # BOTH JDKs: $JAVA_HOME (21) runs Gradle, JAVA_HOME_25_X64 runs the tests, and JSSE reads the
+      # trust store of the JVM it runs in, so the alias must be in the 25 one for tlsDefault() to
+      # accept the harness chain. Without it the harness TLS tests fail on 25 and not on 21.
+      - name: Trust harness CA in JVM keystores (Linux)
+        run: |
+          for home in "$JAVA_HOME" "$JAVA_HOME_25_X64"; do
+            sudo keytool -delete -alias harness-root \
+                -keystore "$home/lib/security/cacerts" \
+                -storepass changeit 2>/dev/null || true
+            sudo keytool -importcert -trustcacerts \
+                -file test-harness/tls/certs/ca.crt \
+                -alias harness-root \
+                -keystore "$home/lib/security/cacerts" \
+                -storepass changeit -noprompt
+          done
+
+      # See checks-tests: the foreign-stack peers that Http3DockerInteropTests,
+      # WebTransportDockerInteropTests and QpackDifferentialInteropTests (in :socket-http3:jvmTest)
+      # talk to. A build/start failure fails the job on purpose; the alternative is a silent skip.
+      - name: Start HTTP/3 + WebTransport interop server (aioquic)
+        run: socket-http3/docker-interop/run-server.sh start
+
+      - name: Start QPACK differential oracle (ls-qpack)
+        run: socket-http3/qpack-diff/run-qpack-diff.sh start
+
+      # -PquicEchoAllArches=true: harnessUp dependsOn quicEchoJar, which stages both Linux arches into
+      # the quic-echo image, exactly as in checks-tests. -PlinuxTargets=false: JVM-only, as in
+      # quiche-jvm. :socket-quic-quiche is absent from the list on purpose (see the job header).
+      #
+      # A run still going at 35 of its 38 minutes is hung (a healthy one is well under that): print every
+      # test worker's threads into this log before the step lid kills them without a trace.
+      - name: Run JVM tests on JDK 25
+        timeout-minutes: 38
+        env:
+          SOCKET_REQUIRE_ALL_TESTS: "1"
+        run: |
+          ( sleep 2100
+            for p in $(pgrep -f GradleWorkerMain); do echo "===== HANG: jstack pid=$p ====="; jstack -l "$p" || true; done
+          ) &
+          HANG_DUMP=$!
+          trap 'kill "$HANG_DUMP" 2>/dev/null || true' EXIT
+          .github/scripts/gradle-retry.sh \
+            :jvmTest :network-monitor:jvmTest :socket-quic:jvmTest :socket-quic-default:jvmTest \
+            :socket-trace:jvmTest :socket-testkit:jvmTest :socket-testsuite:jvmTest \
+            :socket-http3:jvmTest :socket-webtransport:jvmTest :socket-udp:jvmTest \
+            -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 \
+            -PquicEchoAllArches=true -PlinuxTargets=false \
+            --continue --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee /tmp/gradle-jdk25.log
+          exit "${PIPESTATUS[0]}"
+
+      # The permanent proof that this job ran on 25. The root build script logs the launcher it
+      # resolved for every jvmTest task and fails a task whose launcher is not the requested one; here
+      # the log must name every module this job asked for, each on a 25.x runtime, and no task may
+      # have logged any other launcher. Keep the list below in step with the Gradle call above.
+      - name: Assert every jvmTest ran on a JDK 25 launcher
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          expected=":jvmTest :network-monitor:jvmTest :socket-quic:jvmTest :socket-quic-default:jvmTest :socket-trace:jvmTest :socket-testkit:jvmTest :socket-testsuite:jvmTest :socket-http3:jvmTest :socket-webtransport:jvmTest :socket-udp:jvmTest"
+          grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk25.log | sed -E 's/^[0-9TZ:.-]* *//' | sort -u
+          for t in $expected; do
+            if ! grep -qE "TEST LAUNCHER ${t}: JDK 25[.0-9+]*" /tmp/gradle-jdk25.log; then
+              echo "::error title=No JDK 25 proof::$t did not log a JDK 25 test launcher, so this job cannot claim it ran on 25 (it failed before the test task started, or the launcher was not 25)."
+              exit 1
+            fi
+          done
+          if grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk25.log | grep -vqE ': JDK 25[.0-9+]*'; then
+            echo "::error title=Not JDK 25::a jvmTest task logged a launcher that is not JDK 25"
+            exit 1
+          fi
+
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
+
+      - name: Upload test reports (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-linux-jvm-jdk25
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/hs_err_pid*.log
+            **/replay_pid*.log
           retention-days: 90
           if-no-files-found: ignore
 
