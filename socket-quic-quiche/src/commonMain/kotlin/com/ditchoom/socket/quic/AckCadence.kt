@@ -31,7 +31,7 @@ internal enum class EvidenceSource {
     /** `lost` + `retrans`: packets this endpoint sent that were declared lost or sent again as a probe. */
     PacketsLost,
 
-    /** Ack-eliciting packets that arrived beyond the next expected packet number: a gap or a reorder. */
+    /** Ack-eliciting packets that arrived after a gap of at least two packet numbers: a loss or a reorder. */
     ReceiveGap,
 }
 
@@ -52,7 +52,9 @@ internal sealed interface LossEvidence {
  *    `quiche_conn_stats`), packets this endpoint sent that were declared lost or sent again as a probe;
  *  - [EvidenceSource.ReceiveGap]: ack-eliciting packets that arrived after a gap in the packet numbers
  *    (`quiche_conn_recv_gaps`, a patched-in export), RFC 9000 §13.2.1's trigger for an immediate ACK. It
- *    is the only evidence a pure receiver has once its handshake is over, and it fires on a reorder too.
+ *    is the only evidence a pure receiver has once its handshake is over. A gap of one packet number is
+ *    not counted (quiche itself skips single numbers, and a swap of neighbours leaves one), so only a
+ *    loss of two or more in a row, or a reorder by two or more places, is evidence.
  *
  * Once evidence grows, the path counts as lossy for [LOSS_MEMORY_RTTS] round trips ([remember]); after
  * that long without new evidence the cadence relaxes again. The memory is in round trips, not turns,

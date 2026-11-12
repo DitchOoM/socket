@@ -268,8 +268,8 @@ fun downloadQuicheSource(
     // Export whether any stream still has data (or a FIN) the peer has not acknowledged, the fact a
     // graceful close waits for. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheStreamDataUnacknowledgedFfi(sourceDir)
-    // Count the ack-eliciting packets that arrive beyond the next expected packet number (a gap or a reorder:
-    // RFC 9000 §13.2.1's immediate-ACK trigger) and export the count, so a receiver that never has packets of
+    // Count the ack-eliciting packets that arrive after a gap of at least two packet numbers (a loss or a
+    // reorder: RFC 9000 §13.2.1's immediate-ACK trigger) and export the count, so a receiver that never has packets of
     // its own lost can still see loss. Idempotent, fails loudly on drift OR on an upstream export. See the KDoc.
     patchQuicheRecvGapCounter(sourceDir)
     // Export the peer's certificate chain (quiche's C API has only the leaf), for SecTrust on iOS and
@@ -730,8 +730,9 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
 }
 
 /**
- * Count, and export as `quiche_conn_recv_gaps`, the ack-eliciting packets that arrived with a packet number
- * beyond the next one expected in their space: a packet after a gap, which is a loss or a reorder.
+ * Count, and export as `quiche_conn_recv_gaps`, the ack-eliciting packets that arrived with at least two
+ * packet numbers missing before them in their space: a packet after a gap, which is a loss or a reorder. The
+ * first packet of a space has nothing before it to be missing from, so it never counts.
  *
  * RFC 9000 §13.2.1 makes exactly this the moment to ACK at once ("an endpoint SHOULD send an ACK frame
  * immediately ... when the packet is out of order"). quiche knows it (`recv_pkt_need_ack` is a range set
@@ -742,9 +743,13 @@ fun patchQuicheStreamDataUnacknowledgedFfi(sourceDir: File) {
  *
  * One field (`Connection::socket_recv_gaps`, a monotonic `u64` over all packet-number spaces), one
  * increment at the point where a received packet number is recorded, and the export. A late packet that
- * fills a hole is not counted again: only the packet that jumped ahead is. quiche's own optimistic-ACK
- * defence skips one packet number every few thousand packets (`PktNumManager`), which reads as a gap of one;
- * that is rare enough to be noise. Marker-guarded and loud in both directions: a re-run returns, a moved
+ * fills a hole is not counted again: only the packet that jumped ahead is. A gap of one missing number is
+ * deliberately not counted: quiche's own optimistic-ACK defence skips one packet number every few tens of
+ * packets (`PktNumManager`, 2 x the initial window plus a random part of the congestion window), so every
+ * quiche peer produces gaps of exactly one on a clean path, and counting them held the cadence in its
+ * careful mode on 64 % of turns with no loss at all (measured in the sim). A swap of two neighbouring
+ * packets is a gap of one too, so mild reordering does not count either: the same threshold the ACK
+ * frequency extension defaults to for its Reordering Threshold. Marker-guarded and loud in both directions: a re-run returns, a moved
  * anchor throws, and an upstream that exports an equivalent throws, telling you to delete this patch.
  *
  * Mutation-testing it: delete the `socket_recv_gaps += 1` line (the export stays, so the natives still link)
@@ -784,7 +789,7 @@ fun patchQuicheRecvGapCounter(sourceDir: File) {
         libRs,
         "    handshake_confirmed: bool,\n",
         "    handshake_confirmed: bool,\n\n" +
-            "    // $marker: ack-eliciting packets received beyond the next expected packet number.\n" +
+            "    // $marker: ack-eliciting packets received after a gap of two or more packet numbers.\n" +
             "    socket_recv_gaps: u64,\n",
     )
     replaceOnce(
@@ -795,8 +800,12 @@ fun patchQuicheRecvGapCounter(sourceDir: File) {
     replaceOnce(
         libRs,
         "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
-        "        // $marker: a packet that jumped past the next expected number is a gap (loss) or a reorder.\n" +
-            "        if ack_elicited && pn > self.pkt_num_spaces[epoch].largest_rx_pkt_num.saturating_add(1) {\n" +
+        "        // $marker: at least two packet numbers missing before this packet: a loss or a reorder, and\n" +
+            "        // never quiche's own single skipped number, and never the first packet of a space.\n" +
+            "        if ack_elicited &&\n" +
+            "            self.pkt_num_spaces[epoch].largest_rx_pkt_num > 0 &&\n" +
+            "            pn > self.pkt_num_spaces[epoch].largest_rx_pkt_num.saturating_add(2)\n" +
+            "        {\n" +
             "            self.socket_recv_gaps += 1;\n" +
             "        }\n\n" +
             "        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);\n",
@@ -804,7 +813,7 @@ fun patchQuicheRecvGapCounter(sourceDir: File) {
     ffiRs.appendText(
         "\n" +
             """
-            |// $marker: ack-eliciting packets received beyond the next expected packet number (a gap or a
+            |// $marker: ack-eliciting packets received after a gap of two or more packet numbers (a loss or a
             |// reorder) — RFC 9000 §13.2.1's immediate-ACK trigger, as a monotonic count.
             |#[no_mangle]
             |pub extern "C" fn quiche_conn_recv_gaps(conn: &Connection) -> u64 {

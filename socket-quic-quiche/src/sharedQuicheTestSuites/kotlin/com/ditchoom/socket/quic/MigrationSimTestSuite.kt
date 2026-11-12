@@ -383,6 +383,39 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A client that only receives has no packet of its own in flight once its request is acknowledged, so
+     * the loss counters of the packets it sent never move and [AckCadence] stays on an ACK every second
+     * datagram however lossy the link turns. Here the link is clean through the handshake and the request
+     * and loses half its datagrams from the moment the server has read it. The client sees the loss only as
+     * gaps in the packet numbers it receives (`quiche_conn_recv_gaps`, [EvidenceSource.ReceiveGap]).
+     *
+     * Over seeds 0..299 on an 800 ms path: 110 runs short of the whole reply with an ACK every second
+     * datagram, 98 with the sent-packet evidence alone, 77 with the gap evidence added, 55 with an ACK per
+     * datagram. These seeds are short of it without the gap evidence and whole with it; a seed fixes the
+     * pipe's loss draws, not which datagrams they land on, so the list belongs to the cadence.
+     */
+    @Test
+    fun aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers() =
+        runTest {
+            wrapTestBody {
+                for (seed in SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE) {
+                    val read =
+                        readAReplyAfterTheServerClosed(
+                            seed,
+                            impairment = PathImpairment(latency = SLOW_PATH_ONE_WAY),
+                            impairmentAfterRequest = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = 0.5),
+                        )
+                    assertEquals(
+                        read.expected,
+                        read.received,
+                        "seed $seed: the client got ${read.received} of ${read.expected} bytes, then ${read.ending}, traffic ${read.traffic}",
+                    )
+                    assertEquals(ReplyEnding.Fin, read.ending, "seed $seed: the reply arrived whole; it must also end")
+                }
+            }
+        }
+
+    /**
      * [LossModel.Bursty] loses datagrams in runs, at the rate it was given: over the datagrams the server
      * sent on a link at 15 % overall loss and a mean burst of 5, the lost fraction is near 15 % and a lost
      * datagram is followed by another about four times in five. It is what the sweep over bursty paths
@@ -455,11 +488,12 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * quiche counts the ack-eliciting packets that arrive after a gap in the packet numbers
+     * quiche counts the ack-eliciting packets that arrive after a gap of at least two packet numbers
      * (`quiche_conn_recv_gaps`, patched in by `patchQuicheRecvGapCounter`): RFC 9000 §13.2.1's trigger for an
      * immediate ACK, and the only loss a pure receiver can see. A flight delivered whole counts none; the
-     * same flight with its first datagram lost counts one, the datagram after the gap; the lost one arriving
-     * late fills the hole and counts nothing more.
+     * same flight with one datagram lost counts none either (quiche itself skips single packet numbers, so a
+     * gap of one is not evidence); with its first two datagrams lost it counts one, the datagram after the
+     * gap; the lost ones arriving late fill the hole and count nothing more.
      *
      * Red against a quiche built without the `socket_recv_gaps += 1` line of the patch.
      */
@@ -487,13 +521,21 @@ abstract class MigrationSimTestSuite {
                     val flight = pair.sends(pair.server)
                     assertTrue(flight.size >= 4, "the reply must span at least four datagrams, was ${flight.size}")
                     pair.deliver(flight.drop(1), pair.client)
+                    assertEquals(before, pair.recvGaps(pair.client), "one packet number missing is not a gap quiche counts")
+                    pair.deliver(flight.take(1), pair.client)
+                    pair.settle()
+
+                    assertEquals(reply.length, pair.streamSend(pair.server, stream, reply, fin = false))
+                    val third = pair.sends(pair.server)
+                    assertTrue(third.size >= 4, "the reply must span at least four datagrams, was ${third.size}")
+                    pair.deliver(third.drop(2), pair.client)
                     assertEquals(
                         before + 1,
                         pair.recvGaps(pair.client),
-                        "the datagram after the lost one is one gap, however many follow it",
+                        "the datagram after two lost ones is one gap, however many follow it",
                     )
-                    pair.deliver(flight.take(1), pair.client)
-                    assertEquals(before + 1, pair.recvGaps(pair.client), "the late datagram fills the hole and is not counted again")
+                    pair.deliver(third.take(2), pair.client)
+                    assertEquals(before + 1, pair.recvGaps(pair.client), "the late datagrams fill the hole and are not counted again")
                 } finally {
                     pair.close()
                 }
@@ -1665,6 +1707,8 @@ abstract class MigrationSimTestSuite {
     private suspend fun readAReplyAfterTheServerClosed(
         seed: Long,
         impairment: PathImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+        /** What the link does from the moment the server has read the request: loss that starts after the client's last packet of its own. */
+        impairmentAfterRequest: PathImpairment = impairment,
     ): ReplyRead =
         withMigrationSim(
             simEnv(),
@@ -1681,6 +1725,7 @@ abstract class MigrationSimTestSuite {
                 ) {
                     Unit
                 }
+                pipe.impair(pipe.paths().first().local, impairmentAfterRequest)
                 val out = BufferFactory.network().allocate(reply.length)
                 out.writeString(reply, Charset.UTF8)
                 out.resetForRead()
@@ -5178,6 +5223,9 @@ abstract class MigrationSimTestSuite {
 
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
+
+        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 50. */
+        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(1L, 17L, 22L, 24L, 28L)
 
         /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
         const val BURSTY_CHECK_SEEDS = 40L

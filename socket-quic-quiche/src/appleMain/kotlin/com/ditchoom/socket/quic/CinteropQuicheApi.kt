@@ -69,6 +69,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
@@ -83,7 +84,6 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_capacity
-import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_data_unacknowledged
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send

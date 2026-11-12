@@ -1316,8 +1316,8 @@ uint32_t quiche_conn_early_data_reason(const quiche_conn *conn);
 // patch in socket-quic-quiche/build.gradle.kts (patchQuicheStreamDataUnacknowledgedFfi).
 bool quiche_conn_stream_data_unacknowledged(const quiche_conn *conn);
 
-// socket-recv-gaps: ack-eliciting packets received beyond the next expected packet number (a gap or a
-// reorder), a monotonic count over all packet-number spaces. Added by the marker-guarded source patch in
+// socket-recv-gaps: ack-eliciting packets received after a gap of at least two packet numbers (a loss or
+// a reorder), a monotonic count over all packet-number spaces. Added by the marker-guarded source patch in
 // socket-quic-quiche/build.gradle.kts (patchQuicheRecvGapCounter).
 uint64_t quiche_conn_recv_gaps(const quiche_conn *conn);
 
