@@ -107,10 +107,7 @@ open class NodeSocket(
     override val writePolicy: WritePolicy get() = config.writePolicy
 
     override val isOpen: Boolean
-        get() {
-            val socket = netSocket ?: return false
-            return !isClosed || socket.remoteAddress != null
-        }
+        get() = netSocket != null && !isClosed
 
     override suspend fun localPort() = netSocket?.localPort ?: -1
 
