@@ -47,7 +47,9 @@ internal sealed interface LossEvidence {
  * Once evidence grows, the path counts as lossy for [LOSS_MEMORY_RTTS] round trips ([remember]); after
  * that long without new evidence the cadence relaxes again. The memory is in round trips, not turns,
  * because how many turns a round trip takes depends on how the peer's datagrams arrive. Four was the
- * smallest of 1, 2, 4, 8 and 16 that recovered the sim's misses (see [QuicheDriver.dispatchQueued]).
+ * smallest of 1, 2, 4, 8 and 16 that recovered the sim's misses on the 800 ms, 30 %-loss path (see
+ * [QuicheDriver.dispatchQueued]); at 20 and 100 ms and on iid loss 2, 4 and 8 recover alike, and on bursty
+ * loss no hold recovers what an ACK per datagram does, because the receiver does not see the loss.
  *
  * Confined to the driver loop, like everything the loop reads: no lock, no atomics.
  */

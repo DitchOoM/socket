@@ -383,6 +383,48 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * [LossModel.Bursty] loses datagrams in runs, at the rate it was given: over the datagrams the server
+     * sent on a link at 15 % overall loss and a mean burst of 5, the lost fraction is near 15 % and a lost
+     * datagram is followed by another about four times in five. It is what the sweep over bursty paths
+     * behind [AckCadence]'s hold rests on, so the model is checked rather than trusted.
+     */
+    @Test
+    fun aBurstyLinkLosesInRunsAtTheRateItWasGiven() =
+        runTest {
+            wrapTestBody {
+                var sent = 0
+                var lost = 0
+                var runs = 0
+                for (seed in 0L until BURSTY_CHECK_SEEDS) {
+                    val read =
+                        readAReplyAfterTheServerClosed(
+                            seed,
+                            PathImpairment(
+                                latency = 50.milliseconds,
+                                loss = 0.15,
+                                lossModel = LossModel.Bursty(meanBurst = 5, overall = 0.15),
+                            ),
+                        )
+                    var inRun = false
+                    for (entry in read.wire.filter { it.contains("server->client") }) {
+                        sent++
+                        if (entry.endsWith(" lost")) {
+                            lost++
+                            if (!inRun) runs++
+                            inRun = true
+                        } else {
+                            inRun = false
+                        }
+                    }
+                }
+                val rate = lost.toDouble() / sent
+                val meanRun = lost.toDouble() / runs
+                assertTrue(rate in 0.10..0.20, "15 % overall loss was $rate over $sent datagrams")
+                assertTrue(meanRun in 3.5..7.0, "a mean burst of 5 was $meanRun over $runs runs")
+            }
+        }
+
+    /**
      * The reply's FIN is part of the reply. When the server's FIN goes out on its own, after the data —
      * the shape of a handler that writes and then closes — quiche could lose it: by counting the send side
      * complete once the data was acknowledged (and collecting the stream with the FIN unsent or lost, while
@@ -1574,11 +1616,14 @@ abstract class MigrationSimTestSuite {
      * long, closes the stream and returns; its connection then closes as [SharedQuicheServer] closes it.
      * The client reads the reply only after the connection has closed.
      */
-    private suspend fun readAReplyAfterTheServerClosed(seed: Long): ReplyRead =
+    private suspend fun readAReplyAfterTheServerClosed(
+        seed: Long,
+        impairment: PathImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+    ): ReplyRead =
         withMigrationSim(
             simEnv(),
             seed = seed,
-            primaryImpairment = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = SLOW_PATH_LOSS),
+            primaryImpairment = impairment,
         ) {
             val reply = "reply;".repeat(SLOW_REPLY_BYTES / 6)
             client.launch {
@@ -5087,6 +5132,9 @@ abstract class MigrationSimTestSuite {
 
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
+
+        /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
+        const val BURSTY_CHECK_SEEDS = 40L
 
         /** A reply of a handful of datagrams, inside the initial congestion window. */
         const val STAGED_REPLY_BYTES = 6000
