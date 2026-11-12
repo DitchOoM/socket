@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -134,14 +134,14 @@ class QuicReadPoolingTests {
                     repeat(300) {
                         val read = async { stream.read(2.seconds) }
                         // Turns of the loop until the parked read has been served; the stream is readable.
-                        api.readableStreams.addLast(slot.id.id)
+                        api.readableWhileRunning.store(listOf(slot.id.id))
                         while (!read.isCompleted) {
                             val turn = CompletableDeferred<QuicStatsSnapshot>()
                             driver.commands.send(QuicheCmd.Stats(turn))
                             withTimeout(2.seconds) { turn.await() }
                             yield()
                         }
-                        api.readableStreams.clear()
+                        api.readableWhileRunning.store(emptyList())
                         val result = read.await()
                         assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
                         result.buffer.freeIfNeeded()
