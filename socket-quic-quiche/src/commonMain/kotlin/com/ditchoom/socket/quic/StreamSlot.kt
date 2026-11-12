@@ -15,11 +15,16 @@ import kotlin.concurrent.atomics.AtomicReference
  * The [dataSignal] channel wakes pending reads when quiche reports data available.
  * CONFLATED: multiple signals before a receive coalesce into one wakeup.
  */
-class StreamSlot internal constructor(
+class StreamSlot(
     val id: QuicStreamId,
-    /** Whether this stream can ever carry bytes toward us; see [StreamReceiveSide]. */
-    private val receiveSide: StreamReceiveSide = StreamReceiveSide.FromPeer,
 ) {
+    /** Whether this stream can ever carry bytes toward us; set once, while the slot is made. See [StreamReceiveSide]. */
+    private var receiveSide: StreamReceiveSide = StreamReceiveSide.FromPeer
+
+    internal constructor(id: QuicStreamId, receiveSide: StreamReceiveSide) : this(id) {
+        this.receiveSide = receiveSide
+    }
+
     val dataSignal = Channel<Unit>(Channel.CONFLATED)
 
     /**
