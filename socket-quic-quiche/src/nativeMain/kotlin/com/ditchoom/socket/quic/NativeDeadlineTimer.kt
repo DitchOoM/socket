@@ -88,7 +88,7 @@ internal class NativeDeadlineTimer private constructor(
         action: Runnable,
     ): DisposableHandle {
         val wait = delay.inWholeNanoseconds
-        if (!delay.isFinite() || wait >= Long.MAX_VALUE / 4) return Nothing
+        if (!delay.isFinite() || wait >= Long.MAX_VALUE / 4) return NeverDue
         val due = now() + maxOf(wait, 0L)
         val node = queue.arm(due, action)
         wakeIfEarlier(due)
@@ -181,7 +181,8 @@ internal class NativeDeadlineTimer private constructor(
         /** A remainder this short is slept, uninterruptibly, rather than parked for. */
         private const val SLEEP_THE_REST_MICROS = 200L
 
-        private object Nothing : DisposableHandle {
+        /** The handle of a deadline that is never due: nothing was scheduled, so there is nothing to disarm. */
+        private object NeverDue : DisposableHandle {
             override fun dispose() = Unit
         }
     }
