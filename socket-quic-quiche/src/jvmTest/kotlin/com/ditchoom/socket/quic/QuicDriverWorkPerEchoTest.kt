@@ -33,11 +33,45 @@ class QuicDriverWorkPerEchoTest {
 
     private val tls get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
+    /**
+     * Counts what the loop asks of quiche, split by what woke the turn. A turn a timer woke calls
+     * `quiche_conn_on_timeout` (or sends a keepalive PING) before its flush; a turn a command or a datagram
+     * woke runs a `recv` or a stream call first. How many timer turns fit in a run depends on how long the
+     * run takes, so only the command-and-datagram turns are counted against the bound: a slow machine gets
+     * more timer turns and the same count here.
+     */
     private class WorkCountingApi(
         private val delegate: QuicheApi,
     ) : QuicheApi by delegate {
+        /** `quiche_conn_send` calls in turns a stream command or a received datagram woke. */
         val sends = AtomicInteger()
+
+        /** `quiche_conn_send` calls in turns a timer woke (not bounded: their number is the run's duration). */
+        val timerSends = AtomicInteger()
         val streamRecvs = AtomicInteger()
+
+        // Loop-confined: every call below is made by the one driver loop this api backs.
+        private var timerTurn = false
+
+        override fun connOnTimeout(conn: QuicheConn) {
+            timerTurn = true
+            delegate.connOnTimeout(conn)
+        }
+
+        override fun connSendAckEliciting(conn: QuicheConn): Int {
+            timerTurn = true
+            return delegate.connSendAckEliciting(conn)
+        }
+
+        override fun connRecv(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            recvInfo: QuicheRecvInfo,
+        ): Int {
+            timerTurn = false
+            return delegate.connRecv(conn, buf, bufLen, recvInfo)
+        }
 
         override fun connSend(
             conn: QuicheConn,
@@ -45,8 +79,19 @@ class QuicDriverWorkPerEchoTest {
             bufLen: Int,
             sendInfo: QuicheSendInfo,
         ): Int {
-            sends.incrementAndGet()
+            (if (timerTurn) timerSends else sends).incrementAndGet()
             return delegate.connSend(conn, buf, bufLen, sendInfo)
+        }
+
+        override fun connStreamSend(
+            conn: QuicheConn,
+            streamId: QuicStreamId,
+            buf: Long,
+            bufLen: Int,
+            fin: Boolean,
+        ): StreamSendResult {
+            timerTurn = false
+            return delegate.connStreamSend(conn, streamId, buf, bufLen, fin)
         }
 
         override fun connStreamRecv(
@@ -55,6 +100,7 @@ class QuicDriverWorkPerEchoTest {
             buf: Long,
             bufLen: Int,
         ): StreamRecvResult {
+            timerTurn = false
             streamRecvs.incrementAndGet()
             return delegate.connStreamRecv(conn, streamId, buf, bufLen)
         }
@@ -93,14 +139,20 @@ class QuicDriverWorkPerEchoTest {
                             repeat(ECHOES) { echo(stream) }
                             val sends = counting.sends.get() - sendsBefore
                             val recvs = counting.streamRecvs.get() - recvsBefore
-                            // One stream read per echo: the bytes the loop hands the parked read. Any more is
-                            // a read that asked the loop first (or an echo split in two).
-                            assertTrue(recvs <= ECHOES, "client stream reads for $ECHOES echoes: $recvs (want exactly $ECHOES)")
-                            // Request flush (data + done), the reply's turn (ACK + done) and the turn of the
-                            // server's ACK (done): 5 at best. The old loop made 7.
+                            // One stream read per echo: the bytes the loop hands the parked read. A read asks the
+                            // loop only when the reply beats it to the park, which a loaded machine makes
+                            // more likely, so the bound is halfway between one per echo and the two the old
+                            // loop made on every echo, not the exact figure.
                             assertTrue(
-                                sends <= ECHOES * 5 + TIMER_FLUSHES,
-                                "quiche_conn_send calls for $ECHOES echoes: $sends (want at most ${ECHOES * 5 + TIMER_FLUSHES})",
+                                recvs <= ECHOES * 3 / 2,
+                                "client stream reads for $ECHOES echoes: $recvs (want about $ECHOES, never the 2 per echo the old loop made)",
+                            )
+                            // Request flush (data + done), the reply's turn (ACK + done) and the turn of the
+                            // server's ACK (done): 5 at best, a little more when a read asks or a datagram
+                            // splits a turn. The old loop made 7 on every echo; the bound is 6.
+                            assertTrue(
+                                sends <= ECHOES * 6,
+                                "quiche_conn_send calls for $ECHOES echoes: $sends (want about ${ECHOES * 5}, never the 7 per echo the old loop made; timer turns not counted)",
                             )
                             stream.close()
                         }
@@ -135,11 +187,5 @@ class QuicDriverWorkPerEchoTest {
     private companion object {
         const val WARMUP = 200
         const val ECHOES = 500
-
-        /**
-         * `quiche_conn_send` passes a timer wake adds beyond the five an echo costs (the ACK and loss timers
-         * firing mid-run, each one a flush that finds nothing or one ACK): measured 2,545 for 2,500 on JNI.
-         */
-        const val TIMER_FLUSHES = 50
     }
 }
