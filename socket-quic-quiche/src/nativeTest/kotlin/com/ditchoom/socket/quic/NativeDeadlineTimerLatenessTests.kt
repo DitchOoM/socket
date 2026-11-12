@@ -38,6 +38,12 @@ class NativeDeadlineTimerLatenessTests {
         }
 
     @Test
+    fun printsHowLateRawWaitsReturn() {
+        rawWaitLateness(listOf(500L, 2_000L, 10_000L, 100_000L, 200_000L)) { if (it >= 100_000L) 5 else 100 }
+            .forEach { println(it) }
+    }
+
+    @Test
     fun printsHowLateDeadlinesFire() =
         runTest {
             for (delay in listOf(500.microseconds, 2.milliseconds, 10.milliseconds)) {
