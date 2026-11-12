@@ -6,32 +6,22 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 
 /**
- * [DeadlineQueue]'s lock-free protocol, model checked as the timer thread and the threads that arm and
- * disarm use it.
+ * [DeadlineQueue]'s lock-free protocol, model checked as the timer thread and the threads that arm and disarm use it.
  *
- * **The two sides.** Any thread arms ([arm0]..) and disarms ([disarm0]..) a deadline. One thread, the
- * timer's, fires what is due ([fireDue15], [fireDue100]) at a time it is given, which is the virtual clock:
- * the model never sleeps, and a deadline is early or late only by what [fireDue] is told.
+ * Any thread arms ([arm0]..) and disarms ([disarm0]..) a deadline; one thread, the timer's, fires what is due
+ * ([fireDue15], [fireDue100]) at a time it is given, which is the virtual clock.
  *
- * **Why the check is an audit and not a linearizability specification.** `fireDue` is not one atomic step: it
- * drains the inbox, then pops and claims deadlines one by one, so a deadline armed while it runs may or may
- * not be fired by it (the next pass fires it), and a disarm that lands between the pop and the claim wins.
- * No sequential specification can say which, and the first version of this test, which had one, reported that
- * schedule as a violation although the queue is right. What the queue promises is per deadline, so the test
- * records every outcome and a final audit ([audit], the last actor, after a `fireDue` that sees everything)
- * checks it:
+ * The check is an audit, not a linearizability specification: `fireDue` is several steps (drain the inbox, then pop
+ * and claim one by one), so a deadline armed or disarmed while it runs may or may not be fired by it, which no
+ * sequential specification can express. Every outcome is recorded and a final [audit], after a `fireDue` that sees
+ * everything, checks that each deadline fires at most once, not after a disarm that succeeded, not before it is due,
+ * and not never unless it was disarmed (so a sweep that lost a live deadline is caught).
  *
- * - a deadline fires at most once;
- * - it does not fire if its `disarm()` returned true, and does fire if it returned false;
- * - it never fires before it is due (checked when it fires, against the time `fireDue` was given);
- * - so a deadline the sweep dropped is a deadline that never fired and was never disarmed: lost, and caught.
- *
- * The queue is built with a sweep size of 2 so that a scenario of a few deadlines reaches the sweep; the
- * production size is 4096 and the code path is the same. Each slot is armed by one actor.
+ * The queue is built with a sweep size of 2 so that a few deadlines reach the sweep. Each slot is armed by one actor.
  */
 class DeadlineQueueLincheckTest {
     private val queue = DeadlineQueue(compactMin = 2)
-    private val handles = arrayOfNulls<DeadlineQueue.Node>(SLOTS)
+    private val handles = arrayOfNulls<DeadlineNode>(SLOTS)
     private val fires = Array(SLOTS) { AtomicInteger() }
     private val disarmedOk = Array(SLOTS) { AtomicInteger() }
     private val violations = AtomicInteger()

@@ -19,7 +19,7 @@ import kotlin.time.TimeSource
 class DeadlineTimerRaceTests {
     private class Armed(
         val fires: AtomicInteger,
-        val node: DeadlineQueue.Node,
+        val node: DeadlineNode,
         val disarmedByUs: Boolean,
     )
 
@@ -36,7 +36,7 @@ class DeadlineTimerRaceTests {
                         // Most are far deadlines armed and disarmed at once (the stream-bound shape, enough of them to
                         // trigger sweeps); the rest are due within a few milliseconds and race the timer thread firing them.
                         val far = random.nextInt(10) < 7
-                        val node = timer.schedule(if (far) 60_000L else random.nextLong(0, 4)) { fires.incrementAndGet() }
+                        val node = timer.scheduleNode(if (far) 60_000L else random.nextLong(0, 4)) { fires.incrementAndGet() }
                         val disarmed =
                             if (far) {
                                 node.disarm()
@@ -70,14 +70,14 @@ class DeadlineTimerRaceTests {
     @Test
     fun anEarlierDeadlineArmedWhileTheThreadWorksOutHowLongToSleepIsStillMetWithinItsBound() {
         val timer = DeadlineTimer()
-        val far = timer.schedule(60_000) { }
+        val far = timer.scheduleNode(60_000) { }
         val random = Random(7)
         var worst = 0L
         repeat(ROUNDS) {
             val fired = CountDownLatch(1)
             val mark = TimeSource.Monotonic.markNow()
             // No wait for the thread to park: this arming lands anywhere in its pass, which is the race.
-            timer.schedule(random.nextLong(0, 2)) { fired.countDown() }
+            timer.scheduleNode(random.nextLong(0, 2)) { fired.countDown() }
             assertTrue(fired.await(5, TimeUnit.SECONDS), "an earlier deadline was not met within 5 s (round $it): a lost wake-up")
             worst = maxOf(worst, mark.elapsedNow().inWholeMilliseconds)
         }
