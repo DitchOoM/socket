@@ -183,6 +183,11 @@ internal class NettyQuicLoopback(
     connectionCount: Int = 1,
     clientThreads: Int = 1,
     serverLoops: Int = 1,
+    /** Where the server binds; port 0 picks one, otherwise socket i takes [basePort] + i. */
+    bindHost: String = "127.0.0.1",
+    basePort: Int = 0,
+    /** A server elsewhere: none is started here, the clients connect to these. */
+    targets: List<InetSocketAddress> = emptyList(),
 ) : AutoCloseable {
     private val serverGroup: EventLoopGroup =
         MultiThreadIoEventLoopGroup(serverLoops, io.netty.util.concurrent.DefaultThreadFactory("netty-server", true), NioIoHandler.newFactory())
@@ -244,12 +249,12 @@ internal class NettyQuicLoopback(
                     },
                 ).build()
         serverChannels =
-            List(serverLoops) {
+            List(if (targets.isEmpty()) serverLoops else 0) { i ->
                 Bootstrap()
                     .group(serverGroup)
                     .channel(NioDatagramChannel::class.java)
                     .handler(serverCodec())
-                    .bind(InetSocketAddress("127.0.0.1", 0))
+                    .bind(InetSocketAddress(bindHost, if (basePort == 0) 0 else basePort + i))
                     .sync()
                     .channel()
             }
@@ -275,7 +280,13 @@ internal class NettyQuicLoopback(
                     .group(clientGroup)
                     .channel(NioDatagramChannel::class.java)
                     .handler(clientCodec())
-                    .bind(InetSocketAddress("127.0.0.1", 0))
+                    .bind(
+                        when {
+                            targets.isEmpty() -> InetSocketAddress("127.0.0.1", 0)
+                            targets[0].address is java.net.Inet6Address -> InetSocketAddress("::", 0)
+                            else -> InetSocketAddress("0.0.0.0", 0)
+                        },
+                    )
                     .sync()
                     .channel()
             }
@@ -287,7 +298,7 @@ internal class NettyQuicLoopback(
                         object : ChannelInitializer<QuicChannel>() {
                             override fun initChannel(ch: QuicChannel) {}
                         },
-                    ).remoteAddress(serverChannels[index % serverLoops].localAddress())
+                    ).remoteAddress(if (targets.isEmpty()) serverChannels[index % serverLoops].localAddress() else targets[index % targets.size])
                     .connect()
                     .get(IO_TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
             }

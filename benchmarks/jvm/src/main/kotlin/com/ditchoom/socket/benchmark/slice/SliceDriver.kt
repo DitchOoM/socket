@@ -358,12 +358,12 @@ private val LOOP_SPIN_NANOS = (System.getProperty("slice.loopSpinMicros") ?: "10
 
 private val NOBODY = Thread { }
 
-internal fun openUdp(): DatagramChannel {
-    val ch = DatagramChannel.open(StandardProtocolFamily.INET)
+internal fun openUdp(bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0)): DatagramChannel {
+    val ch = DatagramChannel.open(if (bind.address is java.net.Inet6Address) StandardProtocolFamily.INET6 else StandardProtocolFamily.INET)
     ch.configureBlocking(false)
     ch.setOption(StandardSocketOptions.SO_RCVBUF, 2 * 1024 * 1024)
     ch.setOption(StandardSocketOptions.SO_SNDBUF, 2 * 1024 * 1024)
-    ch.bind(InetSocketAddress("127.0.0.1", 0))
+    ch.bind(bind)
     return ch
 }
 
@@ -619,8 +619,11 @@ internal class SliceLoop(
     }
 
     /** Client side: opens a connection to [peer] on a socket of its own and waits for the handshake. */
-    fun connect(peer: InetSocketAddress): SliceConn {
-        val channel = openUdp()
+    fun connect(
+        peer: InetSocketAddress,
+        local: InetSocketAddress = InetSocketAddress("127.0.0.1", 0),
+    ): SliceConn {
+        val channel = openUdp(local)
         channel.connect(peer)
         val done = AtomicReference<SliceConn>()
         val waiter = Thread.currentThread()
@@ -1024,20 +1027,30 @@ internal class SliceLoop(
     }
 
     private fun sockaddr(a: InetSocketAddress): NativeBuf {
-        val ip = (a.address as Inet4Address).address
-        val buf = NativeBuf(16)
+        val address = a.address
+        val ip = address.address
+        val v6 = address is java.net.Inet6Address
+        val size = if (v6) 28 else 16
+        val buf = NativeBuf(size)
         val bb = buf.bb
+        // sockaddr_in / sockaddr_in6: BSD leads with a length byte, Linux has a two-byte family.
+        val family = if (!v6) 2 else if (IS_BSD) 30 else 10
         if (IS_BSD) {
-            bb.put(0, 16)
-            bb.put(1, 2)
+            bb.put(0, size.toByte())
+            bb.put(1, family.toByte())
         } else {
-            bb.put(0, 2)
+            bb.put(0, family.toByte())
             bb.put(1, 0)
         }
         bb.put(2, (a.port shr 8).toByte())
         bb.put(3, a.port.toByte())
-        for (i in 0 until 4) bb.put(4 + i, ip[i])
-        buf.limit = 16
+        if (v6) {
+            for (i in 0 until 16) bb.put(8 + i, ip[i])
+            bb.order(java.nio.ByteOrder.nativeOrder()).putInt(24, (address as java.net.Inet6Address).scopeId)
+        } else {
+            for (i in 0 until 4) bb.put(4 + i, ip[i])
+        }
+        buf.limit = size
         return buf
     }
 

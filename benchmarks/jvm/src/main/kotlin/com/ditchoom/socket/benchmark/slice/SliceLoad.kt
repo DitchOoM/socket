@@ -32,6 +32,11 @@ internal class LoadWindow(
 ) {
     @Volatile private var clientLoopCpu = 0L
 
+    /** Wall-clock bounds of the measured window, for lining a client up with a server in another process. */
+    @Volatile var measuredFromEpochMs = 0L
+
+    @Volatile var measuredToEpochMs = 0L
+
     @Volatile private var appCpu = 0L
 
     fun clientLoopCpuNanos(): Long = clientLoopCpu
@@ -46,15 +51,19 @@ internal class LoadWindow(
 
     @Volatile private var ended = false
 
-    fun start() {
-        startNs = System.nanoTime()
+    /** Starts the warm-up now, or at [atEpochMs] when that is later (so two clients measure the same window). */
+    fun start(atEpochMs: Long = 0L) {
+        val wait = (atEpochMs - System.currentTimeMillis()).coerceAtLeast(0)
+        startNs = System.nanoTime() + wait * 1_000_000
         thread(isDaemon = true) {
-            Thread.sleep(warmupS * 1000)
+            Thread.sleep(wait + warmupS * 1000)
+            measuredFromEpochMs = System.currentTimeMillis()
             val p0 = os.processCpuTime
             val s0 = cpuOf(serverThreads())
             val c0 = cpuOf(clientLoopThreads())
             val a0 = cpuOf(appThreads())
             Thread.sleep(measureS * 1000)
+            measuredToEpochMs = System.currentTimeMillis()
             processCpu = os.processCpuTime - p0
             serverCpu = cpuOf(serverThreads()) - s0
             clientLoopCpu = cpuOf(clientLoopThreads()) - c0
@@ -82,6 +91,7 @@ internal fun latencyLoad(
     measureS: Long,
     serverThreads: () -> List<Thread>,
     clientLoopThreads: () -> List<Thread> = { emptyList() },
+    startAtEpochMs: Long = 0L,
     worker: (index: Int, record: (nanos: Long) -> Unit, done: () -> Boolean) -> Unit,
 ) {
     val apps = java.util.concurrent.ConcurrentLinkedQueue<Thread>()
@@ -99,12 +109,16 @@ internal fun latencyLoad(
                 )
             }
         }
-    window.start()
+    window.start(startAtEpochMs)
     workers.forEach { it.join() }
     val p50s = mutableListOf<Double>()
     val p99s = mutableListOf<Double>()
+    val pooled = LongArray(counts.sum())
+    var filled = 0
     for (i in 0 until m) {
         val a = lat[i].copyOf(counts[i]).also { it.sort() }
+        System.arraycopy(a, 0, pooled, filled, a.size)
+        filled += a.size
         if (a.isEmpty()) continue
         p50s += a[a.size / 2] / 1000.0
         p99s += a[(a.size * 0.99).toInt().coerceAtMost(a.size - 1)] / 1000.0
@@ -127,6 +141,13 @@ internal fun latencyLoad(
                 window.appCpuNanos() / 1000.0 / total,
                 window.processCpuNanos() / 1e9 / window.seconds(),
             ),
+    )
+    pooled.sort()
+
+    fun pct(p: Double) = if (pooled.isEmpty()) Double.NaN else pooled[(pooled.size * p).toInt().coerceAtMost(pooled.size - 1)] / 1000.0
+    println(
+        "window %d %d ops %d pooled p50 %.1f us p99 %.1f us p99.9 %.1f us max %.1f us"
+            .format(window.measuredFromEpochMs, window.measuredToEpochMs, counts.sum(), pct(0.50), pct(0.99), pct(0.999), pct(1.0)),
     )
 }
 

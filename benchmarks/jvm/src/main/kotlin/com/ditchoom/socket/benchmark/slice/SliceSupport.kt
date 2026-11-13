@@ -574,6 +574,11 @@ internal class SliceLoopback(
     connectionCount: Int = 1,
     clientLoops: Int = 1,
     serverLoops: Int = 1,
+    /** Where the server's sockets bind; port 0 picks one, otherwise loop i takes [serverBasePort] + i. */
+    serverBind: String = "127.0.0.1",
+    serverBasePort: Int = 0,
+    /** A server in another process or on another machine: none is started here, the clients connect to these. */
+    remote: List<InetSocketAddress> = emptyList(),
 ) : AutoCloseable {
     private val api = loadQuicheApi()
     val probe: HandoffProbe? = if (System.getProperty("slice.probe") == "true") HandoffProbe() else null
@@ -593,7 +598,7 @@ internal class SliceLoopback(
         val serverConfig = sliceConfig(api, server = true)
         val addresses = ArrayList<InetSocketAddress>()
         servers =
-            List(serverLoops) { i ->
+            List(if (remote.isEmpty()) serverLoops else 0) { i ->
                 val threads: HandlerThreads? =
                     when (placementName) {
                         "loop", "watch" -> null
@@ -611,21 +616,29 @@ internal class SliceLoopback(
                         else -> HandlerPlacement.Owned(threads.dispatcher, threads.hooks)
                     }
                 val handler: suspend (SliceStream) -> Unit = if (handingOver) ::serveStreamHandingOver else ::serveStream
-                val channel = openUdp()
+                val channel = openUdp(InetSocketAddress(serverBind, if (serverBasePort == 0) 0 else serverBasePort + i))
                 addresses.add(channel.localAddress as InetSocketAddress)
                 SliceLoop("slice-server-loop${i + 1}", api, serverConfig, serverSettings, placement, handler).also {
                     it.start()
                     it.serve(channel)
                 }
             }
-        watchdog = if (watch) Watchdog(servers, WATCH_BUDGET_NANOS).also { it.start() } else null
+        watchdog = if (watch && servers.isNotEmpty()) Watchdog(servers, WATCH_BUDGET_NANOS).also { it.start() } else null
+        if (remote.isNotEmpty()) addresses.addAll(remote)
+        // A client of a server elsewhere binds no particular address: the route to the server picks it.
+        val clientLocal =
+            when {
+                remote.isEmpty() -> InetSocketAddress("127.0.0.1", 0)
+                remote[0].address is java.net.Inet6Address -> InetSocketAddress("::", 0)
+                else -> InetSocketAddress("0.0.0.0", 0)
+            }
         val clientSettings = SliceSettings(holdAck, callerRuns)
         val clientConfig = sliceConfig(api, server = false)
         clients =
             List(clientLoops) { i ->
                 SliceLoop("slice-client-loop${i + 1}", api, clientConfig, clientSettings, HandlerPlacement.OnLoop) {}.also { it.start() }
             }
-        connections = List(connectionCount) { i -> clients[i % clientLoops].connect(addresses[i % serverLoops]) }
+        connections = List(connectionCount) { i -> clients[i % clientLoops].connect(addresses[i % addresses.size], clientLocal) }
     }
 
     fun serverThreads(): List<Thread> =
@@ -661,7 +674,7 @@ internal class SliceLoopback(
                 "loop takeovers ${server { it.takeovers }}, promotions ${server { it.promotions }}, demotions ${server { it.demotions }}, " +
                 "stolen resumes ${handlerThreads.filterIsInstance<LoopHandlers>().sumOf { it.steals.sum() }}" +
                 (if (watchdog == null) "" else ", watchdog ticks ${watchdog.ticks.sum()}") +
-                (if (DEBUG_PACE) ", send times ahead of now: server ${servers[0].counts.paceAhead}; client ${clients[0].counts.paceAhead}" else "")
+                (if (DEBUG_PACE && servers.isNotEmpty() && clients.isNotEmpty()) ", send times ahead of now: server ${servers[0].counts.paceAhead}; client ${clients[0].counts.paceAhead}" else "")
         return if (probe == null) text else text + "\n" + probe.report()
     }
 
