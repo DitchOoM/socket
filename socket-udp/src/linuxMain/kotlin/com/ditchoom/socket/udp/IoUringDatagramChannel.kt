@@ -47,6 +47,8 @@ import com.ditchoom.socket.udp.linux.io_uring_prep_sendmsg
 import com.ditchoom.socket.udp.linux.iovec
 import com.ditchoom.socket.udp.linux.msghdr
 import com.ditchoom.socket.udp.linux.socket_bind
+import com.ditchoom.socket.udp.linux.socket_recvmsg_now
+import com.ditchoom.socket.udp.linux.socket_sendmsg_now
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
@@ -70,6 +72,7 @@ import kotlinx.coroutines.withContext
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
 import platform.posix.EADDRNOTAVAIL
+import platform.posix.EAGAIN
 import platform.posix.ETIME
 import platform.posix.ETIMEDOUT
 import platform.posix.IPPROTO_IP
@@ -136,6 +139,9 @@ private const val V4_MAPPED_UNSPECIFIED_LO = 0x0000FFFF00000000L
  * reserved for the eventfd wake, so 0 can never be a live `user_data` and needs no separate flag.
  */
 private const val NO_OP_IN_FLIGHT = 0L
+
+/** How many datagrams in a row a receiver takes without waiting before it waits once. */
+private const val RECEIVE_BURST = 64
 
 /**
  * Shared core of the Linux io_uring datagram channels — the `recvmsg`/`sendmsg` machinery behind
@@ -416,16 +422,20 @@ internal abstract class IoUringDatagramChannelCore(
                             msg.msg_controllen = CONTROL_BUFFER_SIZE.convert()
 
                             val n =
-                                IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
-                                    // Runs on the poller thread — see [close] for why that is what makes
-                                    // this safe. Naming the descriptor is conditional on the close not
-                                    // having happened yet; a nop wakes this receiver at once instead.
-                                    if (handoff.closed) {
-                                        io_uring_prep_nop(sqe)
-                                    } else {
-                                        inFlightReceive.value = userData
-                                        io_uring_prep_recvmsg(sqe, fd, msg.ptr, 0u)
-                                    }
+                                when (val queued = receiveNow(msg.ptr)) {
+                                    -EAGAIN ->
+                                        IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
+                                            // Runs on the poller thread — see [close] for why that is what makes
+                                            // this safe. Naming the descriptor is conditional on the close not
+                                            // having happened yet; a nop wakes this receiver at once instead.
+                                            if (handoff.closed) {
+                                                io_uring_prep_nop(sqe)
+                                            } else {
+                                                inFlightReceive.value = userData
+                                                io_uring_prep_recvmsg(sqe, fd, msg.ptr, 0u)
+                                            }
+                                        }
+                                    else -> queued
                                 }
                             inFlightReceive.value = NO_OP_IN_FLIGHT
                             when {
@@ -475,6 +485,27 @@ internal abstract class IoUringDatagramChannelCore(
             throw t
         }
     }
+
+    /**
+     * Takes a datagram the socket already holds, on the caller's thread and without waiting: its length, or
+     * -errno. `-EAGAIN` sends the caller to the ring, which waits for one; so does every [RECEIVE_BURST]th
+     * call in a row that found one queued, because the wait is where a receiver that shares a thread with
+     * whoever consumes its datagrams lets them run. The caller's admission keeps the descriptor open across
+     * the call; a closed channel reads nothing and reports 0, which the caller's closed check answers first.
+     */
+    private fun receiveNow(msg: CPointer<msghdr>): Int {
+        if (handoff.closed) return 0
+        if (receivedWithoutWaiting == RECEIVE_BURST) {
+            receivedWithoutWaiting = 0
+            return -EAGAIN
+        }
+        val n = socket_recvmsg_now(fd, msg)
+        receivedWithoutWaiting = if (n == -EAGAIN) 0 else receivedWithoutWaiting + 1
+        return n
+    }
+
+    /** Receives in a row that [receiveNow] answered. One receiver at a time by this channel's contract. */
+    private var receivedWithoutWaiting = 0
 
     /**
      * Shared `sendmsg` path. [target] carries the addressed wrapper's REQUIRED per-send destination;
@@ -560,21 +591,25 @@ internal abstract class IoUringDatagramChannelCore(
                 is SourcePin.Pinned -> writePktInfo(msg, pin.address)
             }
 
-            // Check the CQE result. io_uring reports failure as a negative `res` carrying -errno, and
-            // discarding it made a failed sendmsg indistinguishable from a delivered datagram — which
-            // for quiche means a packet counted as in flight that never left the host.
+            // A failed send is a negative `res` carrying -errno on either path. Discarding it would make a
+            // failed sendmsg indistinguishable from a delivered datagram, which for quiche means a packet
+            // counted as in flight that never left the host.
             val submitted = AtomicLong(NO_OP_IN_FLIGHT)
             val res =
-                IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
-                    // On the poller thread, exactly like receive's: a close that got here first means
-                    // this send must not name the descriptor, and a nop retires the submission instead.
-                    if (handoff.closed) {
-                        io_uring_prep_nop(sqe)
-                    } else {
-                        submitted.value = userData
-                        inFlightSend.value = userData
-                        io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
-                    }
+                when (val sent = sendNow(msg.ptr)) {
+                    -EAGAIN ->
+                        IoUringManager.submitAndWait(1.seconds) { sqe, userData ->
+                            // On the poller thread, exactly like receive's: a close that got here first means
+                            // this send must not name the descriptor, and a nop retires the submission instead.
+                            if (handoff.closed) {
+                                io_uring_prep_nop(sqe)
+                            } else {
+                                submitted.value = userData
+                                inFlightSend.value = userData
+                                io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
+                            }
+                        }
+                    else -> sent
                 }
             // Only this send's own slot: overlapping senders each write the field, and a finished one must not
             // erase another's in-flight send.
@@ -584,6 +619,15 @@ internal abstract class IoUringDatagramChannelCore(
             if (res < 0) throw DatagramSendException(sendFailure(-res, attempted = len, pin = pin))
         }
     }
+
+    /**
+     * Hands [msg] to the kernel on the caller's thread without waiting: the bytes sent, or -errno. A UDP socket
+     * takes a datagram whenever its send buffer has room, so this is the whole send almost every time and costs
+     * one system call and no thread hand-off. `-EAGAIN` (no room right now) is the one answer the caller takes
+     * to the ring, which waits for room. The caller's admission keeps the descriptor open across the call; a
+     * closed channel sends nothing and reports 0, which the caller's own closed check turns into its failure.
+     */
+    private fun sendNow(msg: CPointer<msghdr>): Int = if (handoff.closed) 0 else socket_sendmsg_now(fd, msg)
 
     /**
      * What one send must do about [DatagramSendOptions.fromLocal] on *this* socket.
