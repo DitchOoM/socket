@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           cells=$(jq -c --arg only "$ONLY" '[.peers | to_entries[]
-                           | select($only == "" or ([$only | split(",")[]] | index(.key)))
+                           | select(.key as $k | $only == "" or ($only | split(",") | index([$k])) != null)
                            | (if (.value | index("server")) then {peer: .key, direction: "our-client"} else empty end),
                              (if (.value | index("client")) then {peer: .key, direction: "our-server"} else empty end)]' \
                     test-harness/quic-interop/peers.json)
