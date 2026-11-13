@@ -26,6 +26,11 @@ on:
         default: "gate"
         type: choice
         options: [gate, record]
+      peers:
+        description: "Comma-separated peers to run (empty = every peer; a partial run is reported, not judged)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -67,3 +72,4 @@ jobs:
       natives-run-id: ${{ needs.natives.outputs.run-id }}
       stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
       record: ${{ inputs.mode || 'gate' }}
+      peers: ${{ inputs.peers || '' }}

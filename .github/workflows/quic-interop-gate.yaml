@@ -36,6 +36,11 @@ on:
         required: false
         default: "gate"
         type: string
+      peers:
+        description: "Comma-separated peers to run (names from peers.json); empty runs every peer. A partial run is never judged."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -54,9 +59,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: cells
+        env:
+          ONLY: ${{ inputs.peers }}
         run: |
           set -euo pipefail
-          cells=$(jq -c '[.peers | to_entries[]
+          cells=$(jq -c --arg only "$ONLY" '[.peers | to_entries[]
+                           | select($only == "" or ([$only | split(",")[]] | index(.key)))
                            | (if (.value | index("server")) then {peer: .key, direction: "our-client"} else empty end),
                              (if (.value | index("client")) then {peer: .key, direction: "our-server"} else empty end)]' \
                     test-harness/quic-interop/peers.json)
@@ -219,6 +227,7 @@ jobs:
           path: interop-results
           merge-multiple: true
       - name: Judge every cell against the expectations
+        if: ${{ inputs.peers == '' }}
         run: |
           set -uo pipefail
           exp=test-harness/quic-interop/expectations.json
