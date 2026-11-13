@@ -22,5 +22,7 @@ internal actual fun listQlogFiles(dir: String): List<QlogFile> =
         .listFiles()
         .orEmpty()
         .filter { it.isFile }
-        .sortedBy { it.lastModified() }
-        .map { QlogFile(it.path, it.length()) }
+        // Each file's time is read once: a file written during the sort would otherwise compare inconsistently.
+        .map { it.lastModified() to QlogFile(it.path, it.length()) }
+        .sortedBy { it.first }
+        .map { it.second }
