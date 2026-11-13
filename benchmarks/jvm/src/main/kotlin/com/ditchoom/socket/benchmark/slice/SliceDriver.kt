@@ -82,6 +82,100 @@ internal class NativeBuf(
 /** What a read came to: bytes (a [NativeBuf] to hand back through [SliceStream.release]) or the peer's FIN. */
 internal sealed interface SliceRead
 
+/** The public API's shape: a result object over the buffer, made for each read. */
+internal class SliceData(
+    val buffer: NativeBuf,
+) : SliceRead
+
+/** A connection id as a map key: up to 20 bytes. */
+internal class CidKey(
+    var a: Long = 0,
+    var b: Long = 0,
+    var c: Int = 0,
+    var len: Int = 0,
+) {
+    override fun equals(other: Any?): Boolean = other is CidKey && other.a == a && other.b == b && other.c == c && other.len == len
+
+    override fun hashCode(): Int = (a xor (a ushr 32) xor b xor (b ushr 29)).toInt() * 31 + c
+
+    fun copy(): CidKey = CidKey(a, b, c, len)
+}
+
+private const val ARMED = 0
+private const val FIRED = 1
+private const val DISARMED = 2
+private const val COMPACT_MIN = 64
+private const val OP_TIMEOUT_NANOS = 30_000_000_000L
+
+/** One bounded wait. */
+internal class DeadlineNode(
+    val due: Long,
+    val fire: Runnable,
+) {
+    val state = AtomicInteger(ARMED)
+    var next: DeadlineNode? = null
+}
+
+/**
+ * The deadlines of a loop's waiting operations, in the shape of the library's deadline queue: any thread arms
+ * by pushing onto a lock-free inbox (the loop is not woken), the loop moves the inbox into a heap when it next
+ * runs, a disarmed node stays in the heap until enough are dead to rebuild it.
+ */
+internal class Deadlines {
+    private val inbox = AtomicReference<DeadlineNode?>(null)
+    private val heap = PriorityQueue<DeadlineNode>(256) { x, y -> x.due.compareTo(y.due) }
+    private val dead = AtomicInteger()
+
+    fun arm(
+        due: Long,
+        fire: Runnable,
+    ): DeadlineNode {
+        val node = DeadlineNode(due, fire)
+        while (true) {
+            val head = inbox.get()
+            node.next = head
+            if (inbox.compareAndSet(head, node)) return node
+        }
+    }
+
+    fun disarm(node: DeadlineNode) {
+        if (node.state.compareAndSet(ARMED, DISARMED)) dead.incrementAndGet()
+    }
+
+    /** Loop thread. Fires what is due; returns the next deadline or [NEVER]. */
+    fun fireDue(now: Long): Long {
+        var chain = inbox.getAndSet(null)
+        while (chain != null) {
+            val following = chain.next
+            chain.next = null
+            heap.add(chain)
+            chain = following
+        }
+        val d = dead.get()
+        if (d >= COMPACT_MIN && d * 2 >= heap.size) {
+            heap.removeIf { it.state.get() == DISARMED }
+            dead.set(0)
+        }
+        while (true) {
+            val top = heap.peek() ?: return NEVER
+            if (top.due > now) return top.due
+            heap.poll()
+            if (top.state.compareAndSet(ARMED, FIRED)) top.fire.run() else dead.decrementAndGet()
+        }
+    }
+}
+
+/** Reads of native memory the quiche binding has no call for (the send time in quiche's send info). */
+private object Raw {
+    private val unsafe: sun.misc.Unsafe =
+        sun.misc.Unsafe::class.java.getDeclaredField("theUnsafe").also { it.isAccessible = true }.get(null) as sun.misc.Unsafe
+
+    fun long(address: Long): Long = unsafe.getLong(address)
+}
+
+/** quiche fills the send time of a datagram on Linux only; elsewhere the field is zero. */
+internal val PACING_AVAILABLE: Boolean = System.getProperty("os.name").lowercase().contains("linux")
+
 internal data object SliceEnd : SliceRead
 
 /** Where a server runs the coroutine that serves a stream. */
@@ -177,6 +271,10 @@ internal class SliceCounts {
     val enteredByCaller = LongAdder()
     val violations = LongAdder()
     val takeovers = LongAdder()
+    val pathMismatches = LongAdder()
+    val paced = LongAdder()
+    val unroutable = LongAdder()
+    val closedSeen = LongAdder()
     val promotions = LongAdder()
     val demotions = LongAdder()
     val sendErrors = LongAdder()
@@ -191,6 +289,24 @@ internal class SliceSettings(
     /** Counts entries into a connection and fails loudly on two at once. For the stress test only. */
     val check: Boolean = System.getProperty("slice.check") == "true"
 
+    /**
+     * The per-request work a real driver does and the bare slice skips, each switchable (`-Dslice.real=` a comma
+     * list of dl,dcid,rr,pace,chk, or `all`):
+     * dl   every operation that waits arms a deadline and disarms it when it completes;
+     * dcid the server parses each datagram's QUIC header and finds the connection by destination connection id;
+     * rr   a read returns a result object over a buffer the caller releases, as the public API does;
+     * pace a datagram quiche stamps with a later send time is held until then (quiche gives a time on Linux only);
+     * chk  each datagram's source and destination are checked against the connection's path, and each pass
+     *      asks quiche whether the connection closed and whether a path event is waiting.
+     */
+    private val real: Set<String> =
+        (System.getProperty("slice.real") ?: "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    val deadlines: Boolean = "all" in real || "dl" in real
+    val dcid: Boolean = "all" in real || "dcid" in real
+    val result: Boolean = "all" in real || "rr" in real
+    val pacing: Boolean = ("all" in real || "pace" in real) && PACING_AVAILABLE
+    val checks: Boolean = "all" in real || "chk" in real
+
     /** Mutation for the stress test: entering never waits for the thread inside. The test must fail with it. */
     val broken: Boolean = System.getProperty("slice.breakOwnership") == "true"
 }
@@ -204,7 +320,10 @@ private const val READ_CHUNK = 64 * 1024
 private const val QUICHE_DONE = -1
 private const val SCID_LEN = 16
 private const val HOLD_NANOS = 1_000_000L
+private const val PACE_SLACK_NANOS = 50_000L
 private const val DEPOSED = -1L
+private val DEBUG_TAKEOVER = System.getProperty("slice.debugTakeover") == "true"
+private const val QUIC_TYPE_INITIAL = 1
 private val LOOP_SPIN_NANOS = (System.getProperty("slice.loopSpinMicros") ?: "100").toLong() * 1000
 
 private val NOBODY = Thread { }
@@ -382,6 +501,10 @@ internal class SliceLoop(
         if (began <= 0L || now - began <= budget) return
         if (!unit.compareAndSet(began, DEPOSED)) return
         val old = thread
+        if (DEBUG_TAKEOVER) {
+            System.err.println("[takeover] ${old.name} in a unit for ${(now - began) / 1000} us: " +
+                old.stackTrace.take(14).joinToString(" <- ") { it.className.substringAfterLast('.') + "." + it.methodName + ":" + it.lineNumber })
+        }
         val successor = standby.poll() ?: LoopRunner("$baseName-${runnerNames.incrementAndGet()}").also {
             runners.add(it)
             it.start()
@@ -413,6 +536,13 @@ internal class SliceLoop(
     private val timers = PriorityQueue<TimerEntry>(64) { a, b -> a.deadline.compareTo(b.deadline) }
     private val held = ArrayDeque<HeldEntry>()
     private val recvBuf = NativeBuf(2048)
+    val deadlines = Deadlines()
+    private var nextDeadline = NEVER
+
+    /** Server side, when routing by connection id: connections by every id that reaches them. */
+    private val byCid = HashMap<CidKey, SliceConn>()
+    private val probe = CidKey()
+    private val header = if (settings.dcid) HeaderScratch() else null
     private val random = SecureRandom()
     private val readPool = ConcurrentLinkedQueue<NativeBuf>()
     private val datagramPool = ConcurrentLinkedQueue<NativeBuf>()
@@ -621,13 +751,15 @@ internal class SliceLoop(
         val h = held.peek()
         if (h != null && h.since + HOLD_NANOS < wake) wake = h.since + HOLD_NANOS
         if (passRecheckAt < wake) wake = passRecheckAt
+        if (nextDeadline < wake) wake = nextDeadline
         return wake - now
     }
 
     /** Whoever is inside [c], after a flush: when quiche next wants its timer run. */
     fun rearm(c: SliceConn) {
         val t = api.connTimeout(c.conn)
-        val at = if (t == null) NEVER else System.nanoTime() + t.inWholeNanoseconds
+        var at = if (t == null) NEVER else System.nanoTime() + t.inWholeNanoseconds
+        if (c.pacedLen > 0 && c.pacedAt < at) at = c.pacedAt
         c.timeoutAt = at
         // A later deadline costs nothing: the entry already queued fires early and re-queues itself.
         if (at < c.queuedDeadline) {
@@ -649,6 +781,7 @@ internal class SliceLoop(
 
     private fun expireTimers() {
         val now = System.nanoTime()
+        if (settings.deadlines) nextDeadline = deadlines.fireDue(now)
         while (true) {
             val e = timers.peek() ?: break
             if (e.deadline > now) break
@@ -700,8 +833,19 @@ internal class SliceLoop(
             val bb = recvBuf.bb
             bb.clear()
             val from = s.channel.receive(bb) ?: return
-            val c = byPeer[from] ?: accept(s, from as InetSocketAddress)
-            feed(c, bb.position())
+            val c =
+                if (header == null) {
+                    byPeer[from] ?: accept(s, from as InetSocketAddress)
+                } else {
+                    route(s, from as InetSocketAddress, bb.position())
+                }
+            if (c == null) {
+                counts.unroutable.increment()
+            } else {
+                // A datagram from an address that is not the connection's path: a real driver starts a path here.
+                if (settings.checks && from != c.peer) counts.pathMismatches.increment()
+                feed(c, bb.position())
+            }
             n++
         }
     }
@@ -729,6 +873,39 @@ internal class SliceLoop(
         )
     }
 
+    /** The connection a datagram is for, by the destination connection id in its header. */
+    private fun route(
+        s: ServerSocket,
+        from: InetSocketAddress,
+        len: Int,
+    ): SliceConn? {
+        val h = header!!
+        h.reset()
+        val rc =
+            api.headerInfo(
+                recvBuf.address,
+                len,
+                SCID_LEN,
+                h.version.address,
+                h.type.address,
+                h.scid.address,
+                h.scidLen.address,
+                h.dcid.address,
+                h.dcidLen.address,
+                h.token.address,
+                h.tokenLen.address,
+            )
+        if (rc < 0) return null
+        h.key(probe)
+        val known = byCid[probe]
+        if (known != null) return known
+        // Only a client's first packets carry an id this server did not issue.
+        if (h.type.bb.get(0).toInt() != QUIC_TYPE_INITIAL) return null
+        val c = accept(s, from)
+        byCid[probe.copy()] = c
+        return c
+    }
+
     private fun accept(
         s: ServerSocket,
         peer: InetSocketAddress,
@@ -740,6 +917,7 @@ internal class SliceLoop(
         check(conn.handle != 0L) { "quiche_accept failed" }
         val c = SliceConn(this, conn, s.channel, peer, connected = false, peerAddr, s.local, firstLocalStream = 1L)
         byPeer[peer] = c
+        if (settings.dcid) byCid[CidKey(scid.bb.getLong(0), scid.bb.getLong(8), 0, SCID_LEN)] = c
         all.add(c)
         return c
     }
@@ -748,22 +926,48 @@ internal class SliceLoop(
     fun flush(c: SliceConn) {
         c.heldSince = 0L
         val out = c.sendBuf
+        if (c.pacedLen > 0) {
+            // A datagram is waiting for its send time: nothing overtakes it.
+            if (System.nanoTime() < c.pacedAt) {
+                rearm(c)
+                return
+            }
+            transmit(c, c.pacedLen)
+            c.pacedLen = 0
+        }
         while (true) {
             counts.connSendCalls.increment()
             val n = api.connSend(c.conn, out.address, MAX_DATAGRAM, c.sendInfo)
             if (n <= 0) break
-            val bb = out.bb
-            bb.clear()
-            bb.limit(n)
-            val sent =
-                try {
-                    if (c.connected) c.channel.write(bb) else c.channel.send(bb, c.peer)
-                } catch (_: java.io.IOException) {
-                    0
+            if (settings.checks) c.checkDestination()
+            if (settings.pacing) {
+                val at = c.sendTime()
+                if (at - System.nanoTime() > PACE_SLACK_NANOS) {
+                    c.pacedLen = n
+                    c.pacedAt = at
+                    counts.paced.increment()
+                    break
                 }
-            if (sent == 0) counts.sendDrops.increment() else counts.datagramsSent.increment()
+            }
+            transmit(c, n)
         }
         rearm(c)
+    }
+
+    private fun transmit(
+        c: SliceConn,
+        n: Int,
+    ) {
+        val bb = c.sendBuf.bb
+        bb.clear()
+        bb.limit(n)
+        val sent =
+            try {
+                if (c.connected) c.channel.write(bb) else c.channel.send(bb, c.peer)
+            } catch (_: java.io.IOException) {
+                0
+            }
+        if (sent == 0) counts.sendDrops.increment() else counts.datagramsSent.increment()
     }
 
     fun startHandler(stream: SliceStream) {
@@ -810,6 +1014,38 @@ internal class SliceLoop(
         val channel: DatagramChannel,
         val local: NativeBuf,
     )
+
+    /** The out-parameters of quiche_header_info. */
+    private class HeaderScratch {
+        val version = NativeBuf(8)
+        val type = NativeBuf(8)
+        val scid = NativeBuf(24)
+        val scidLen = NativeBuf(8)
+        val dcid = NativeBuf(24)
+        val dcidLen = NativeBuf(8)
+        val token = NativeBuf(256)
+        val tokenLen = NativeBuf(8)
+
+        init {
+            for (b in listOf(scidLen, dcidLen, tokenLen)) b.bb.order(java.nio.ByteOrder.nativeOrder())
+        }
+
+        fun reset() {
+            scidLen.bb.putLong(0, 20)
+            dcidLen.bb.putLong(0, 20)
+            tokenLen.bb.putLong(0, 256)
+            dcid.bb.putLong(0, 0)
+            dcid.bb.putLong(8, 0)
+            dcid.bb.putInt(16, 0)
+        }
+
+        fun key(into: CidKey) {
+            into.a = dcid.bb.getLong(0)
+            into.b = dcid.bb.getLong(8)
+            into.c = dcid.bb.getInt(16)
+            into.len = dcidLen.bb.getLong(0).toInt()
+        }
+    }
 
     private companion object {
         val IS_BSD = System.getProperty("os.name").lowercase().let { "mac" in it || "darwin" in it || "bsd" in it }
@@ -860,6 +1096,36 @@ internal class SliceConn(
 
     /** Something changed since the last flush. */
     var touched = false
+
+    /** A datagram held in [sendBuf] until its send time. */
+    var pacedLen = 0
+    var pacedAt = 0L
+
+    private val toOffset = api.sendInfoToAddr(sendInfo) - sendInfo.handle
+    private val expectedPort = (peer as InetSocketAddress).port
+    private val pathScratch = if (loop.settings.checks) Array(4) { NativeBuf(if (it % 2 == 0) 128 else 8) } else emptyArray()
+
+    /** quiche's send time of the datagram it just wrote, on the clock of System.nanoTime (Linux). */
+    fun sendTime(): Long {
+        val at = sendInfo.handle + toOffset + 128 + 8
+        return Raw.long(at) * 1_000_000_000L + Raw.long(at + 8)
+    }
+
+    /** The datagram quiche just wrote is for this connection's path (a real driver sends to the address quiche names). */
+    fun checkDestination() {
+        val to = api.sendInfoToAddr(sendInfo)
+        if (api.sockAddrPort(to) != expectedPort) loop.counts.pathMismatches.increment()
+    }
+
+    /** Once per pass: did the connection close, is a path event waiting. */
+    private fun checkState() {
+        if (api.connIsClosed(conn)) {
+            loop.counts.closedSeen.increment()
+            for (s in streams.values.toList()) s.connectionGone()
+        }
+        val event = api.connPathEventNext(conn, pathScratch[0].address, pathScratch[1].address, pathScratch[2].address, pathScratch[3].address)
+        if (event != null) loop.counts.pathMismatches.increment()
+    }
 
     /** Adaptive placement: this connection's handlers have kept their resumes short and run on the loop. */
     @Volatile var handlersOnLoop = false
@@ -957,6 +1223,7 @@ internal class SliceConn(
     private fun finishPass() {
         if (!touched) return
         serve()
+        if (loop.settings.checks) checkState()
         touched = false
         if (tryHold()) {
             loop.rearm(this)
@@ -980,6 +1247,7 @@ internal class SliceConn(
 
     fun onTimeout() {
         guard()
+        // Not quiche's timer when the deadline was a paced datagram's send time; quiche then finds nothing due.
         api.connOnTimeout(conn)
         touched = true
     }
@@ -1135,6 +1403,21 @@ internal class SliceStream(
     private var handedOverWaiting = 0
     var blockedPass = -1L
 
+    private val deadlineFire = Runnable { waiter.getAndSet(null)?.resume(SliceEnd) }
+
+    private fun arm(): DeadlineNode? =
+        if (loop.settings.deadlines) loop.deadlines.arm(System.nanoTime() + OP_TIMEOUT_NANOS, deadlineFire) else null
+
+    private fun disarm(node: DeadlineNode?) {
+        if (node != null) loop.deadlines.disarm(node)
+    }
+
+    /** Inside the connection: it closed under this stream. */
+    fun connectionGone() {
+        recvFinished = true
+        waiter.getAndSet(null)?.resume(SliceEnd)
+    }
+
     private val deliverOp = Runnable { deliver() }
     private val deliverTask =
         Runnable {
@@ -1150,9 +1433,14 @@ internal class SliceStream(
         if (conn.ownedByMe()) {
             val now = recvNow()
             if (now != null) return now
-            return suspendCancellableCoroutine { c ->
-                waiter.set(c)
-                c.invokeOnCancellation { waiter.compareAndSet(c, null) }
+            val node = arm()
+            try {
+                return suspendCancellableCoroutine { c ->
+                    waiter.set(c)
+                    c.invokeOnCancellation { waiter.compareAndSet(c, null) }
+                }
+            } finally {
+                disarm(node)
             }
         }
         if (conn.callerRuns && readable && conn.tryOwn()) {
@@ -1162,13 +1450,18 @@ internal class SliceStream(
             conn.leave()
             if (now != null) return now
         }
-        return suspendCancellableCoroutine { c ->
-            waiter.set(c)
-            c.invokeOnCancellation { waiter.compareAndSet(c, null) }
-            // Otherwise whoever feeds the connection finds this waiter when bytes arrive, and nobody is woken now.
-            if (readable || recvFinished) {
-                if (conn.callerRuns) conn.handOff(deliverOp) else loop.execute(deliverTask)
+        val node = arm()
+        try {
+            return suspendCancellableCoroutine { c ->
+                waiter.set(c)
+                c.invokeOnCancellation { waiter.compareAndSet(c, null) }
+                // Otherwise whoever feeds the connection finds this waiter when bytes arrive, and nobody is woken now.
+                if (readable || recvFinished) {
+                    if (conn.callerRuns) conn.handOff(deliverOp) else loop.execute(deliverTask)
+                }
             }
+        } finally {
+            disarm(node)
         }
     }
 
@@ -1207,7 +1500,7 @@ internal class SliceStream(
                 buf.limit = r.bytesRead
                 // quiche gives all it has up to the buffer's size, so a short read left nothing behind.
                 if (r.bytesRead < buf.capacity) readable = false
-                return buf
+                return if (loop.settings.result) SliceData(buf) else buf
             }
             StreamRecvResult.Done -> {
                 loop.release(buf)
@@ -1236,29 +1529,45 @@ internal class SliceStream(
             conn.adopt(this)
             conn.work()
             if (sendSome(src, fin)) return
-            return suspendCancellableCoroutine { c -> conn.addPending(PendingWrite(this, src, fin, c)) }
+            val node = arm()
+            try {
+                return suspendCancellableCoroutine { c -> conn.addPending(PendingWrite(this, src, fin, c)) }
+            } finally {
+                disarm(node)
+            }
         }
-        if (conn.callerRuns) {
-            if (conn.tryOwn()) {
-                // This thread is inside the connection: it calls quiche and sends the datagram itself.
-                loop.counts.enteredByCaller.increment()
-                conn.adopt(this)
-                conn.work()
-                if (sendSome(src, fin)) {
-                    conn.leave()
-                    return
-                }
+        if (conn.callerRuns && conn.tryOwn()) {
+            // This thread is inside the connection: it calls quiche and sends the datagram itself.
+            loop.counts.enteredByCaller.increment()
+            conn.adopt(this)
+            conn.work()
+            if (sendSome(src, fin)) {
+                conn.leave()
+                return
+            }
+            val node = arm()
+            try {
                 return suspendCancellableCoroutine { c ->
                     conn.addPending(PendingWrite(this, src, fin, c))
                     conn.leave()
                 }
+            } finally {
+                disarm(node)
             }
-            return suspendCancellableCoroutine { c -> conn.handOff { writeInside(src, fin, c) } }
         }
-        return suspendCancellableCoroutine { c ->
-            loop.execute {
-                if (loop.enter(conn)) writeInside(src, fin, c) else conn.handOff { writeInside(src, fin, c) }
+        val node = arm()
+        try {
+            return suspendCancellableCoroutine { c ->
+                if (conn.callerRuns) {
+                    conn.handOff { writeInside(src, fin, c) }
+                } else {
+                    loop.execute {
+                        if (loop.enter(conn)) writeInside(src, fin, c) else conn.handOff { writeInside(src, fin, c) }
+                    }
+                }
             }
+        } finally {
+            disarm(node)
         }
     }
 

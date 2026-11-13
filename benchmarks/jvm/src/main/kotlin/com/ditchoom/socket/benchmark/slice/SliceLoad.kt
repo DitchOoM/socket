@@ -141,9 +141,10 @@ fun main(args: Array<String>) {
     val placement = args.getOrElse(3) { "loop" }
     val callerRuns = args.getOrElse(4) { "false" }.toBoolean()
     val clientLoops = args.getOrElse(5) { "4" }.toInt()
-    println("# slice load: placement=$placement callerRuns=$callerRuns clientLoops=$clientLoops cpus=${Runtime.getRuntime().availableProcessors()} backend=${assertQuicheBackend()}")
+    val hold = args.getOrElse(6) { "true" }.toBoolean()
+    println("# slice load: placement=$placement callerRuns=$callerRuns clientLoops=$clientLoops hold=$hold real=${System.getProperty("slice.real") ?: "off"} cpus=${Runtime.getRuntime().availableProcessors()} backend=${assertQuicheBackend()}")
     for (m in ms) {
-        val loopback = SliceLoopback(placement, holdAck = true, callerRuns = callerRuns, connectionCount = m, clientLoops = minOf(clientLoops, m))
+        val loopback = SliceLoopback(placement, holdAck = hold, callerRuns = callerRuns, connectionCount = m, clientLoops = minOf(clientLoops, m))
         val ops = AtomicLong()
         latencyLoad("slice", m, warmupS, measureS, loopback::serverThreads, loopback::clientLoopThreads) { i, record, done ->
             runBlocking {
@@ -211,17 +212,18 @@ internal object SliceStress {
                             stream.write(out)
                             var got = 0
                             while (got < len) {
-                                when (val r = stream.read()) {
-                                    is NativeBuf -> {
-                                        for (i in r.position until r.limit) {
-                                            val want = if (got == 0) ECHO_MARKER else expected(w, message, got)
-                                            if (r.bb.get(i) != want) mismatches.incrementAndGet()
-                                            got++
-                                        }
-                                        stream.release(r)
+                                val r =
+                                    when (val result = stream.read()) {
+                                        is NativeBuf -> result
+                                        is SliceData -> result.buffer
+                                        SliceEnd -> error("stream $w ended early")
                                     }
-                                    SliceEnd -> error("stream $w ended early")
+                                for (i in r.position until r.limit) {
+                                    val want = if (got == 0) ECHO_MARKER else expected(w, message, got)
+                                    if (r.bb.get(i) != want) mismatches.incrementAndGet()
+                                    got++
                                 }
+                                stream.release(r)
                             }
                             if (got != len) mismatches.incrementAndGet()
                             message++

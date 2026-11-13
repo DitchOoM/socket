@@ -73,8 +73,13 @@ internal suspend fun serveStream(stream: SliceStream) {
     var echo = false
     var blocking = false
     while (true) {
-        when (val r = stream.read()) {
-            is NativeBuf ->
+        val r =
+            when (val result = stream.read()) {
+                is NativeBuf -> result
+                is SliceData -> result.buffer
+                SliceEnd -> break
+            }
+        run {
                 try {
                     if (first) {
                         first = false
@@ -87,7 +92,6 @@ internal suspend fun serveStream(stream: SliceStream) {
                 } finally {
                     stream.release(r)
                 }
-            SliceEnd -> break
         }
     }
     stream.shutdownSend()
@@ -99,19 +103,20 @@ internal suspend fun serveStreamHandingOver(stream: SliceStream) {
     var echo = false
     var blocking = false
     while (true) {
-        when (val r = stream.read()) {
-            is NativeBuf -> {
-                if (first) {
-                    first = false
-                    val b = if (r.remaining > 0) r.bb.get(r.position) else 0
-                    blocking = b == BLOCK_MARKER
-                    echo = b == ECHO_MARKER || blocking
-                }
-                if (blocking) Thread.sleep(BLOCK_MILLIS)
-                if (echo) stream.send(r) else stream.release(r)
+        val r =
+            when (val result = stream.read()) {
+                is NativeBuf -> result
+                is SliceData -> result.buffer
+                SliceEnd -> break
             }
-            SliceEnd -> break
+        if (first) {
+            first = false
+            val b = if (r.remaining > 0) r.bb.get(r.position) else 0
+            blocking = b == BLOCK_MARKER
+            echo = b == ECHO_MARKER || blocking
         }
+        if (blocking) Thread.sleep(BLOCK_MILLIS)
+        if (echo) stream.send(r) else stream.release(r)
     }
     stream.finish()
 }
@@ -652,6 +657,7 @@ internal class SliceLoopback(
                 "left for the thread inside ${per(both { it.handedToOwner })}, " +
                 "held flushes ${per(both { it.heldFlushes })}, send drops ${both { it.sendDrops }}, " +
                 "send errors ${both { it.sendErrors }}, violations ${both { it.violations }}, " +
+                "path mismatches ${both { it.pathMismatches }}, unroutable ${server { it.unroutable }}, paced ${both { it.paced }}, " +
                 "loop takeovers ${server { it.takeovers }}, promotions ${server { it.promotions }}, demotions ${server { it.demotions }}, " +
                 "stolen resumes ${handlerThreads.filterIsInstance<LoopHandlers>().sumOf { it.steals.sum() }}" +
                 (if (watchdog == null) "" else ", watchdog ticks ${watchdog.ticks.sum()}")
@@ -686,13 +692,14 @@ internal fun filledRequest(size: Int): NativeBuf {
 internal suspend fun SliceStream.readExactly(expected: Int): Int {
     var got = 0
     while (got < expected) {
-        when (val r = read()) {
-            is NativeBuf -> {
-                got += r.remaining
-                release(r)
+        val r =
+            when (val result = read()) {
+                is NativeBuf -> result
+                is SliceData -> result.buffer
+                SliceEnd -> return got
             }
-            SliceEnd -> return got
-        }
+        got += r.remaining
+        release(r)
     }
     return got
 }
@@ -700,12 +707,13 @@ internal suspend fun SliceStream.readExactly(expected: Int): Int {
 internal suspend fun SliceStream.readToEnd(): Int {
     var got = 0
     while (true) {
-        when (val r = read()) {
-            is NativeBuf -> {
-                got += r.remaining
-                release(r)
+        val r =
+            when (val result = read()) {
+                is NativeBuf -> result
+                is SliceData -> result.buffer
+                SliceEnd -> return got
             }
-            SliceEnd -> return got
-        }
+        got += r.remaining
+        release(r)
     }
 }
