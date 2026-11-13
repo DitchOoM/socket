@@ -70,7 +70,7 @@ internal fun latencyLoad(
     worker: (index: Int, record: (nanos: Long) -> Unit, done: () -> Boolean) -> Unit,
 ) {
     val window = LoadWindow(warmupS, measureS, serverThreads)
-    val lat = Array(m) { LongArray(1_500_000) }
+    val lat = Array(m) { LongArray((40_000_000 / m).coerceIn(20_000, 1_500_000)) }
     val counts = IntArray(m)
     val workers =
         List(m) { i ->
