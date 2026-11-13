@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -24,9 +25,12 @@ import java.io.FileOutputStream
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * This library as a [quic-interop-runner](https://github.com/quic-interop/quic-interop-runner) endpoint,
@@ -64,6 +68,11 @@ private val BLOCK_TIMEOUT = 5.minutes
  *    a peer that advertises one is reported as a failure, which is accurate: it does not move to it.
  *  - `keyupdate`, `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
  *  - `http3`: socket-http3 can serve it; wiring it in here is a follow-up.
+ *
+ * The runner has no test in which the CLIENT moves its own path, so this endpoint adds one through
+ * `CLIENT_PARAMS`, which the runner's compose file passes to the client container from the environment the
+ * runner runs in: with `migrate=active` the client's `transfer` migrates while it downloads (see
+ * [ClientMode.ActiveMigration]). The runner still judges the transfer itself.
  */
 private val clientTests = setOf("handshake", "transfer", "multiconnect", "retry", "resumption", "zerortt")
 private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt")
@@ -193,6 +202,34 @@ private suspend fun QuicScope.sendFile(
 
 // ---- client -------------------------------------------------------------------------------------
 
+/** What the client does beyond what `TESTCASE` asks, from `CLIENT_PARAMS`. */
+private sealed interface ClientMode {
+    data object Plain : ClientMode
+
+    /**
+     * `transfer` with [MOVES] client-initiated migrations (RFC 9000 §9), one every [MOVE_EVERY_BYTES]
+     * received, each onto a fresh local port while the responses are still arriving. Every move's typed
+     * result is printed as a `MIGRATION` line and the connection's totals as one `MIGRATION-SUMMARY` line,
+     * so a peer that refuses or limits migration reads differently from a transfer that broke: the first is
+     * a result, the second a failed download.
+     */
+    data object ActiveMigration : ClientMode
+}
+
+private const val MOVES = 6
+private const val MOVE_EVERY_BYTES = 1_500_000L
+
+/** A [MigrationResult.Unmoved.Failed.NoSpareConnectionId] can clear once the peer issues an id; tries per move. */
+private const val SPARE_ID_ATTEMPTS = 5
+private val SPARE_ID_WAIT = 100.milliseconds
+
+private fun clientMode(): ClientMode =
+    if (System.getenv("CLIENT_PARAMS").orEmpty().split(' ').contains("migrate=active")) {
+        ClientMode.ActiveMigration
+    } else {
+        ClientMode.Plain
+    }
+
 private fun runClient(test: String): Int {
     val urls =
         System
@@ -209,7 +246,15 @@ private fun runClient(test: String): Int {
     val host = urls.first().host
     val port = urls.first().port.takeIf { it > 0 } ?: 443
     val peer = singleCandidate(host, port)
-    val options = baseOptions().copy(migration = MigrationPolicy.Forbidden)
+    val mode = clientMode()
+    val options =
+        baseOptions().copy(
+            migration =
+                when (mode) {
+                    ClientMode.Plain -> MigrationPolicy.Forbidden
+                    ClientMode.ActiveMigration -> MigrationPolicy.Manual
+                },
+        )
     return runBlocking(Dispatchers.IO) {
         try {
             when (test) {
@@ -217,7 +262,7 @@ private fun runClient(test: String): Int {
                 "resumption", "zerortt" -> {
                     val ticket =
                         withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) {
-                            download(urls.first(), downloads)
+                            download(urls.first(), downloads, ReceivedBytes())
                             withTimeout(10.seconds) {
                                 sessionTicket.filterIsInstance<QuicSessionTicketState.Issued>().first().ticket
                             }
@@ -225,7 +270,7 @@ private fun runClient(test: String): Int {
                     val rest = urls.drop(1)
                     if (test == "resumption") {
                         withQuicConnection(peer, options.copy(resumption = QuicResumption.Resume(ticket)), timeout = BLOCK_TIMEOUT) {
-                            downloadAll(rest, downloads)
+                            downloadAll(rest, downloads, ReceivedBytes())
                         }
                     } else {
                         zeroRtt(peer, options, ticket, rest, downloads)
@@ -234,9 +279,15 @@ private fun runClient(test: String): Int {
                 // A new connection per file: the handshake is what the loss/corruption is aimed at.
                 "multiconnect" ->
                     urls.forEach { url ->
-                        withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) { download(url, downloads) }
+                        withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) { download(url, downloads, ReceivedBytes()) }
                     }
-                else -> withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) { downloadAll(urls, downloads) }
+                else ->
+                    withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) {
+                        when (mode) {
+                            ClientMode.Plain -> downloadAll(urls, downloads, ReceivedBytes())
+                            ClientMode.ActiveMigration -> downloadAllMigrating(urls, downloads)
+                        }
+                    }
             }
             0
         } catch (e: Exception) {
@@ -283,33 +334,122 @@ private suspend fun zeroRtt(
         val opened = withTimeout(30.seconds) { early.await() }
         println("resumption=$resumption")
         coroutineScope {
-            opened.map { (url, stream) -> async { receive(stream, url, downloads) } }.awaitAll()
+            opened.map { (url, stream) -> async { receive(stream, url, downloads, ReceivedBytes()) } }.awaitAll()
         }
     }
+}
+
+/** Bytes of response bodies received so far, across every stream of one connection. */
+private class ReceivedBytes {
+    private val total = AtomicLong()
+
+    fun add(count: Int) {
+        total.addAndGet(count.toLong())
+    }
+
+    fun total(): Long = total.get()
+}
+
+/** One move of [ClientMode.ActiveMigration]: which, after how many bytes, what it came to and how long it took. */
+private class Move(
+    val number: Int,
+    val afterBytes: Long,
+    val result: MigrationResult,
+    val attempts: Int,
+    val tookMillis: Long,
+)
+
+private fun MigrationResult.describe(): String =
+    when (this) {
+        is MigrationResult.Succeeded -> "Succeeded port=${localEndpoint.port}"
+        is MigrationResult.Unmoved -> toString()
+    }
+
+/**
+ * [downloadAll] while moving the connection [MOVES] times, one move each time another [MOVE_EVERY_BYTES]
+ * have arrived, so every move happens with response data in flight. Moves stop once the downloads finish.
+ */
+private suspend fun QuicScope.downloadAllMigrating(
+    urls: List<URI>,
+    downloads: File,
+) {
+    val received = ReceivedBytes()
+    val moves = mutableListOf<Move>()
+    coroutineScope {
+        val transfer = async { downloadAll(urls, downloads, received) }
+        for (number in 1..MOVES) {
+            val threshold = number * MOVE_EVERY_BYTES
+            while (received.total() < threshold && !transfer.isCompleted) delay(5.milliseconds)
+            if (transfer.isCompleted) break
+            val started = TimeSource.Monotonic.markNow()
+            var attempts = 1
+            var result = migrate()
+            while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && attempts < SPARE_ID_ATTEMPTS) {
+                delay(SPARE_ID_WAIT)
+                attempts++
+                result = migrate()
+            }
+            val move = Move(number, received.total(), result, attempts, started.elapsedNow().inWholeMilliseconds)
+            moves += move
+            println(
+                "MIGRATION move=${move.number} afterBytes=${move.afterBytes} result=${move.result.describe()} " +
+                    "attempts=${move.attempts} tookMs=${move.tookMillis}",
+            )
+            System.out.flush()
+        }
+        transfer.await()
+    }
+    val driver = (this as QuicheBackedConnection).quicheDriver
+    val limit =
+        when (val params = driver.peerTransportParams()) {
+            PeerTransportParams.NotYetNegotiated -> "not negotiated"
+            is PeerTransportParams.Negotiated -> params.activeConnIdLimit.toString()
+        }
+    val paths =
+        when (val snapshot = driver.stallSnapshot()) {
+            is Inspected.Read -> snapshot.value.paths.map { it.key.port }.toString()
+            Inspected.ConnectionGone -> "connection gone"
+        }
+    val succeeded = moves.count { it.result is MigrationResult.Succeeded }
+    val leadingSuccesses = moves.takeWhile { it.result is MigrationResult.Succeeded }.size
+    val firstUnmoved =
+        moves
+            .filter { it.result !is MigrationResult.Succeeded }
+            .take(1)
+            .joinToString { "move ${it.number}: ${it.result.describe()}" }
+            .ifEmpty { "none" }
+    println(
+        "MIGRATION-SUMMARY attempted=${moves.size} succeeded=$succeeded consecutive=$leadingSuccesses " +
+            "firstUnmoved=$firstUnmoved " +
+            "peerActiveConnIdLimit=$limit pathPortsHeld=$paths bytes=${received.total()}",
+    )
+    System.out.flush()
 }
 
 private suspend fun QuicScope.downloadAll(
     urls: List<URI>,
     downloads: File,
+    received: ReceivedBytes,
 ) {
     // The multiplexing test asks for thousands of files: open them as fast as the peer's stream limit
     // lets, but keep the number of reads in flight bounded.
     val inFlight = Semaphore(100)
     coroutineScope {
-        urls.map { url -> async { inFlight.withPermit { download(url, downloads) } } }.awaitAll()
+        urls.map { url -> async { inFlight.withPermit { download(url, downloads, received) } } }.awaitAll()
     }
 }
 
 private suspend fun QuicScope.download(
     url: URI,
     downloads: File,
+    received: ReceivedBytes,
 ) {
     // At the peer's stream limit this waits for its MAX_STREAMS (QuicOptions.streamOpenPolicy defaults
     // to UntilClosed): the multiplexing test asks for far more files than a peer allows streams at once
     // (msquic grants 100), and credit for a finished stream returns only once the peer has seen it finish.
     val stream = openStream()
     writeRequest(stream, url, bufferFactory)
-    receive(stream, url, downloads)
+    receive(stream, url, downloads, received)
 }
 
 private suspend fun writeRequest(
@@ -332,6 +472,7 @@ private suspend fun receive(
     stream: QuicByteStream,
     url: URI,
     downloads: File,
+    received: ReceivedBytes,
 ) {
     val target = downloads.resolve(url.path.trimStart('/'))
     target.parentFile?.mkdirs()
@@ -341,7 +482,9 @@ private suspend fun receive(
                 when (val r = stream.read(60.seconds)) {
                     is ReadResult.Data ->
                         try {
-                            out.write(r.buffer.readByteArray(r.buffer.remaining()))
+                            val count = r.buffer.remaining()
+                            out.write(r.buffer.readByteArray(count))
+                            received.add(count)
                         } finally {
                             r.buffer.freeIfNeeded()
                         }

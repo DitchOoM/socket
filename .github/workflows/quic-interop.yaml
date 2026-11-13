@@ -14,6 +14,11 @@ name: QUIC interop (quic-interop-runner)
 # QuicInteropEndpoint.kt for the list and why: e.g. `connectionmigration` is the server's
 # preferred_address, which quiche does not advertise).
 #
+# The runner has no test in which the CLIENT moves its own path, which is what a phone does on a network
+# handoff. A second run adds one: with CLIENT_PARAMS=migrate=active our client's `transfer` migrates six
+# times while it downloads (QuicInteropEndpoint.kt, ClientMode.ActiveMigration). The runner judges the
+# download; the summary lists every move's typed result per peer.
+#
 # Informational: this job reports a matrix and fails only if the endpoint could not run at all, so a
 # peer's regression never reddens main. Read the summary.
 
@@ -139,6 +144,20 @@ jobs:
             fi
           done
 
+      # The runner's compose file hands the client container CLIENT_PARAMS from this environment.
+      - name: Run (our client migrating actively → peer servers)
+        env:
+          PEERS: ${{ inputs.peers || 'quic-go,ngtcp2,quinn,msquic' }}
+          CLIENT_PARAMS: migrate=active
+        working-directory: /tmp/runner
+        run: |
+          set -uo pipefail
+          python3 run.py -c ditchoom -s "$PEERS" -t transfer -l /tmp/interop/logs-migration -j /tmp/interop/migration.json -d || true
+          if [ ! -s /tmp/interop/migration.json ]; then
+            echo "::error::the runner produced no active-migration result — the endpoint or the runner did not start"
+            exit 1
+          fi
+
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
@@ -170,11 +189,39 @@ jobs:
             echo "Legend: ✅ succeeded · ❌ failed · – unsupported by one side · skipped = the runner never ran the pair"
             echo
           }
+          # One row per peer server: the runner's verdict on the download, and what our client's moves came to.
+          migration() {
+            local f=/tmp/interop/migration.json
+            [ -s "$f" ] || return 0
+            echo "### Our client migrating actively (transfer, six moves while downloading)"
+            echo
+            echo "| Server | Download | Moves |"
+            echo "| --- | --- | --- |"
+            jq -r '. as $r | range(0; $r.servers | length) as $s
+                   | [$r.servers[$s], ($r.results[$s] | map(select(.abbr == "DC")) | .[0].result // "skipped")] | @tsv' "$f" |
+              while IFS=$'\t' read -r peer verdict; do
+                summary=$(find /tmp/interop/logs-migration -path "*${peer}_ditchoom*" -name output.txt -exec grep -h -o 'MIGRATION-SUMMARY.*' {} + 2>/dev/null | head -1 | sed 's/^MIGRATION-SUMMARY //; s/|/\\|/g' || true)
+                echo "| $peer | $verdict | ${summary:-no summary printed (the client did not finish the transfer)} |"
+              done
+            echo
+            echo "<details><summary>Every move</summary>"
+            echo
+            echo '```'
+            find /tmp/interop/logs-migration -name output.txt | sort | while read -r out; do
+              echo "== $(echo "$out" | sed 's|/tmp/interop/logs-migration/||; s|/output.txt||')"
+              grep -h -o 'MIGRATION .*' "$out" || echo "(no moves printed)"
+            done
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          }
           {
             echo "## QUIC interop"
             echo
             table /tmp/interop/client.json "Our client"
             table /tmp/interop/server.json "Our server"
+            migration
             echo "Test abbreviations are the runner's; see its README."
           } >> "$GITHUB_STEP_SUMMARY"
 
