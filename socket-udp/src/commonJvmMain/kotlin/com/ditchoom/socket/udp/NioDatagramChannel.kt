@@ -372,7 +372,7 @@ internal abstract class NioDatagramChannelCore(
         options: DatagramSendOptions,
         write: (ByteBuffer) -> Int,
     ): DatagramSendAttempt {
-        if (androidMainThread != null && Thread.currentThread() === androidMainThread) return DatagramSendAttempt.WouldWait
+        if (Thread.currentThread() === androidMainThread) return DatagramSendAttempt.WouldWait
         val view = stage(payload, options)
         val length = view.remaining()
         if (length > maxWritableSize) {
