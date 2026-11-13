@@ -108,11 +108,15 @@ class NettyServerActiveMigrationTests {
                             assertEquals(PAYLOAD.size, echoed.count, "every byte written came back, in order")
                             assertEquals(QuicPathState.Migrated(moved.localEndpoint), pathState.value)
 
+                            // Netty 4.2.20's path events carry their ports byte-swapped (a peer on 52374 is
+                            // reported as 38604), so the new peer port is read from the connection itself.
                             val peerPortForNetty = route.serverSidePortOf(moved.localEndpoint.port)
-                            eventually(SERVER_SEES_BUDGET, { "Netty never reported the peer migrated to port $peerPortForNetty: ${server.describe()}" }) {
-                                server.pathEvents().any { it is QuicPathEvent.PeerMigrated && it.remote().port == peerPortForNetty }
+                            eventually(SERVER_SEES_BUDGET, { "Netty never reported a peer migration: ${server.describe()}" }) {
+                                server.pathEvents().any { it is QuicPathEvent.PeerMigrated }
                             }
-                            assertEquals(listOf(NettyQuicEchoServer.NettyPeer.At(peerPortForNetty)), server.peers(), "the peer Netty names for the connection")
+                            eventually(SERVER_SEES_BUDGET, { "Netty never moved the connection to port $peerPortForNetty: ${server.describe()}" }) {
+                                server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(peerPortForNetty))
+                            }
 
                             eventually(RETIRE_BUDGET, { "the path on port $originalPort was never released" }) {
                                 localPorts() == listOf(moved.localEndpoint.port)
