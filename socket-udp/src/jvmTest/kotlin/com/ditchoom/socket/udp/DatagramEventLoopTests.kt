@@ -20,6 +20,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import java.util.Collections
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
@@ -225,6 +226,35 @@ class DatagramEventLoopTests {
         val far = g.hold(near = a.loop)
         assertTrue(far.loop !== a.loop)
         listOf(a, b, c, near, near2, far).forEach { it.release() }
+    }
+
+    @Test
+    fun holdsTakenFromManyThreadsAtOnceAreAllPlaced() {
+        // 64 loops: the JDK's sort checks that its comparator is consistent only from 32 elements up.
+        val g = group(size = 64, linger = 500.milliseconds)
+        val failures = ConcurrentLinkedQueue<Throwable>()
+        val start = CountDownLatch(1)
+        val workers =
+            List(8) {
+                thread {
+                    start.await()
+                    val held = ArrayDeque<DatagramEventLoopHold>()
+                    try {
+                        repeat(4_000) {
+                            held.addLast(g.hold())
+                            if (held.size > 3) held.removeFirst().release()
+                        }
+                    } catch (failure: Throwable) {
+                        failures.add(failure)
+                    } finally {
+                        held.forEach { it.release() }
+                    }
+                }
+            }
+        start.countDown()
+        workers.forEach { it.join(60_000) }
+        assertEquals(emptyList(), failures.map { it.toString() }, "every hold is placed while other threads take and release holds")
+        assertEquals(0, g.loops.sumOf { it.holders }, "every hold was released")
     }
 
     @Test

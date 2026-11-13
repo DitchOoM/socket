@@ -1,6 +1,9 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic
 
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.Duration
 
 /**
@@ -556,11 +559,18 @@ internal class StubQuicheApi : QuicheApi {
      */
     val readableStreams: ArrayDeque<Long> = ArrayDeque()
 
+    /**
+     * Stream IDs reported readable in addition to [readableStreams], replaced as one immutable list, so a test
+     * may change it while the driver loop runs; [readableStreams] may only be changed before the driver starts.
+     */
+    val readableWhileRunning = AtomicReference<List<Long>>(emptyList())
+
     private var readableSnapshot: ArrayDeque<Long> = ArrayDeque()
 
     override fun connReadable(conn: QuicheConn): QuicheStreamIter {
-        if (readableStreams.isEmpty()) return QuicheStreamIter(0L)
-        readableSnapshot = ArrayDeque(readableStreams)
+        val whileRunning = readableWhileRunning.load()
+        if (readableStreams.isEmpty() && whileRunning.isEmpty()) return QuicheStreamIter(0L)
+        readableSnapshot = ArrayDeque(readableStreams + whileRunning)
         return QuicheStreamIter(READABLE_ITER)
     }
 

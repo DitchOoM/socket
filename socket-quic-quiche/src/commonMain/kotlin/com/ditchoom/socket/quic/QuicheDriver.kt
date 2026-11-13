@@ -2688,6 +2688,13 @@ class QuicheDriver(
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
         releaseFinishedStreams()
+        // Once established, the sweep that hands a parked read its bytes comes before the flush, so one flush
+        // carries both the ACK and the flow-control credit those bytes make quiche owe. quiche's readable set
+        // grows only in `quiche_conn_recv`, so the sweep sees the same streams on either side of the flush.
+        // Before the handshake is established the flush comes first: `quiche_conn_send` can complete the
+        // handshake, and the sweep classifies a stream as early data by whether it is complete.
+        val establishedAtStart = _state.value is QuicConnectionState.Established
+        if (establishedAtStart) discoverNewStreams()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -2695,7 +2702,7 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
-        discoverNewStreams()
+        if (!establishedAtStart) discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
@@ -2927,7 +2934,6 @@ class QuicheDriver(
                 val existing = streams[streamId.id]
                 if (existing != null) {
                     handToWaitingRead(existing)
-                    existing.dataSignal.trySend(Unit)
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
                 } else if (!isNewPeerStream(streamId)) {
                     // A stream this endpoint opened, or one the peer opened that has been released: nothing
@@ -2946,7 +2952,7 @@ class QuicheDriver(
                             writePolicy = streamWritePolicy,
                         )
                     incomingStreams.trySend(QuicByteStream(streamId, byteStream, originOfPeerStream()))
-                    slot.dataSignal.trySend(Unit)
+                    slot.announce()
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
                 }
             }
@@ -2956,19 +2962,19 @@ class QuicheDriver(
     }
 
     /**
-     * When a read is parked on [slot]'s data signal, read what quiche has for it now and queue it on the
-     * slot, so the signal that follows wakes the read with its bytes already in hand. Without this the
-     * woken read had to send a `StreamRecv` back through this loop and wait for the answer: two more
-     * thread hand-offs on the critical path of every read that waited for the network.
+     * Wakes or announces [slot], which quiche reports readable. When a read is parked on it, reads what
+     * quiche has for it now and queues that on the slot before waking it, so the read returns with its
+     * bytes in hand instead of sending a `StreamRecv` back through this loop.
      *
      * One chunk per park, of the size the read asked for ([StreamSlot.takeWaitingRead]): exactly what the
-     * read's own `StreamRecv` would have taken, so flow control credits the peer no sooner than before.
-     * The queue keeps order with the read's later `StreamRecv`s (see [StreamSlot.awaitData]), and the
-     * chunk is handed over and its FIN latched the way the teardown drain does ([StreamSlot.deliverDrained]).
+     * read's own `StreamRecv` would have taken. The queue keeps order with the read's later `StreamRecv`s
+     * (see [StreamSlot.awaitData]), and the chunk is handed over and its FIN latched the way the teardown
+     * drain does ([StreamSlot.deliverDrained]). With no read parked, or nothing to hand over, the slot is
+     * announced instead ([StreamSlot.announce]).
      */
     private fun handToWaitingRead(slot: StreamSlot) {
         val size = slot.takeWaitingRead()
-        if (size <= 0) return
+        if (size <= 0) return slot.announce()
         val buffer = streamReadPool.allocate(size)
         when (val result = api.connStreamRecv(conn, slot.id, addr(buffer), size)) {
             is StreamRecvResult.Data -> {
@@ -2977,18 +2983,23 @@ class QuicheDriver(
                     quicheOwesAFlush = true
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
-                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                    if (!slot.handedOff(buffer, result.fin, size, result.bytesRead)) buffer.freeNativeMemory()
                 } else {
                     buffer.freeNativeMemory()
                     if (result.fin) slot.latchFin()
+                    slot.announce()
                 }
             }
             is StreamRecvResult.Reset -> {
                 buffer.freeNativeMemory()
                 slot.latchReset(result.applicationErrorCode)
+                slot.announce()
             }
             // Nothing to hand over after all, or a failure the read's own StreamRecv will meet and report.
-            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> buffer.freeNativeMemory()
+            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> {
+                buffer.freeNativeMemory()
+                slot.announce()
+            }
         }
     }
 
@@ -3140,9 +3151,11 @@ class QuicheDriver(
         // conn that cleanup() is about to free.
         latchForClose()
         refreshSessionTicket()
-        // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
-        // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
-        // would skip it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
+        // A close that does not come out of [afterCommand]'s own sequence (a Close command's updateState,
+        // which runs inside execute before the turn's sweep; a cancelled loop; a rejected send during the
+        // handshake, where the sweep still follows the flush) can run before the sweep has looked at the
+        // streams, so a stream that became readable is not in [streams] yet and the drain below would skip
+        // it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
         discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
@@ -5159,8 +5172,11 @@ class DriverStreamAdapter(
                     if (slot.end != StreamEnd.Open) {
                         slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
                     }
+                    // A stream nothing has announced parks without asking the loop: [StreamSlot.readNeedsQuicheAnswer].
+                    if (!slot.readNeedsQuicheAnswer()) awaitDataThenQueued()?.let { return@withStreamDeadline it }
                     while (true) {
                         val deferred = CompletableDeferred<StreamRecvResult>()
+                        slot.asking()
                         // trySend, not send: on the UNLIMITED command channel it always succeeds unless
                         // the channel is closed (getOrThrow then rethrows the close cause, exactly like
                         // send). Unlike send it is not a suspend call, so there is no state in which the

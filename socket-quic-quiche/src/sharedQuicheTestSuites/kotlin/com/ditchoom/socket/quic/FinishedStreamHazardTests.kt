@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -6,7 +8,10 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -29,7 +34,7 @@ class FinishedStreamHazardTests {
             finishSend(stream)
             assertEquals(emptyList(), held(driver), "both directions are over")
 
-            api.readableStreams.addLast(PEER_BIDI)
+            api.readableWhileRunning.store(listOf(PEER_BIDI))
             driver.stats()
             assertTrue(driver.incomingStreams.tryReceive().isFailure, "the stream is not announced a second time")
             assertEquals(emptyList(), held(driver), "no slot is made for it")
@@ -43,10 +48,12 @@ class FinishedStreamHazardTests {
             api.streamRecvResult = StreamRecvResult.Data(bytesRead = 0, fin = true)
             adapter.streamClose(slot.id)
             assertEquals(listOf(slot.id.id), held(driver), "the receive side is still to be read")
-            assertIs<ReadResult.End>(adapter.streamRead(slot.id, bufferFactory, READ_SIZE, TIMEOUT))
+            assertIs<ReadResult.End>(
+                onceQuicheReportsReadable(api, driver, slot.id.id) { adapter.streamRead(slot.id, bufferFactory, READ_SIZE, TIMEOUT) },
+            )
             assertEquals(emptyList(), held(driver), "both directions are over")
 
-            api.readableStreams.addLast(slot.id.id)
+            api.readableWhileRunning.store(listOf(slot.id.id))
             driver.stats()
             assertTrue(driver.incomingStreams.tryReceive().isFailure, "a stream this endpoint opened is never announced")
             assertEquals(emptyList(), held(driver))
@@ -55,22 +62,22 @@ class FinishedStreamHazardTests {
     @Test
     fun aPeerStreamIsKeptWhileItsReceiveSideHoldsUnreadBytes() =
         withDriver(QuicRole.Server) { api, driver ->
-            api.readableStreams.addLast(PEER_BIDI)
+            api.readableWhileRunning.store(listOf(PEER_BIDI))
             driver.stats()
             val stream = withTimeout(TIMEOUT) { driver.incomingStreams.receive() }
-            api.readableStreams.clear()
+            api.readableWhileRunning.store(emptyList())
 
             finishSend(stream)
             assertEquals(listOf(PEER_BIDI), held(driver), "the send side is over; the peer's bytes are still to come")
 
             api.streamRecvResult = StreamRecvResult.Data(bytesRead = 5, fin = false)
-            val bytes = assertIs<ReadResult.Data>(stream.read(TIMEOUT))
+            val bytes = assertIs<ReadResult.Data>(onceQuicheReportsReadable(api, driver, PEER_BIDI) { stream.read(TIMEOUT) })
             assertEquals(5, bytes.buffer.remaining())
             bytes.buffer.freeIfNeeded()
             assertEquals(listOf(PEER_BIDI), held(driver), "bytes delivered, the end is not")
 
             api.streamRecvResult = StreamRecvResult.Data(bytesRead = 0, fin = true)
-            assertIs<ReadResult.End>(stream.read(TIMEOUT))
+            assertIs<ReadResult.End>(onceQuicheReportsReadable(api, driver, PEER_BIDI) { stream.read(TIMEOUT) })
             assertEquals(emptyList(), held(driver))
         }
 
@@ -115,7 +122,7 @@ class FinishedStreamHazardTests {
             finishReceive(api, stream)
             assertEquals(emptyList(), held(driver), "it has no send side")
 
-            api.readableStreams.addLast(PEER_UNI)
+            api.readableWhileRunning.store(listOf(PEER_UNI))
             driver.stats()
             assertTrue(driver.incomingStreams.tryReceive().isFailure)
         }
@@ -131,7 +138,9 @@ class FinishedStreamHazardTests {
             assertEquals(listOf(slot.id.id), held(driver), "the peer's reset is still to be read")
 
             api.streamRecvResult = StreamRecvResult.Reset(resetCode)
-            assertIs<ReadResult.Reset>(adapter.streamRead(slot.id, bufferFactory, READ_SIZE, TIMEOUT))
+            assertIs<ReadResult.Reset>(
+                onceQuicheReportsReadable(api, driver, slot.id.id) { adapter.streamRead(slot.id, bufferFactory, READ_SIZE, TIMEOUT) },
+            )
             assertEquals(emptyList(), held(driver))
         }
 
@@ -226,11 +235,31 @@ class FinishedStreamHazardTests {
         driver: QuicheDriver,
         id: Long,
     ): QuicByteStream {
-        readableStreams.addLast(id)
+        readableWhileRunning.store(listOf(id))
         driver.stats()
         val stream = withTimeout(TIMEOUT) { driver.incomingStreams.receive() }
-        readableStreams.clear()
+        readableWhileRunning.store(emptyList())
         return stream
+    }
+
+    /**
+     * [read], with quiche reporting [id] readable until it returns: a read of a stream quiche has not reported
+     * readable parks, and the loop's sweep of the readable set is what hands it the bytes, FIN or reset.
+     */
+    private suspend fun <T> CoroutineScope.onceQuicheReportsReadable(
+        api: StubQuicheApi,
+        driver: QuicheDriver,
+        id: Long,
+        read: suspend () -> T,
+    ): T {
+        val reading = async { read() }
+        api.readableWhileRunning.store(listOf(id))
+        while (!reading.isCompleted) {
+            driver.stats()
+            yield()
+        }
+        api.readableWhileRunning.store(emptyList())
+        return reading.await()
     }
 
     /** The application reads [stream] to the peer's FIN. */
