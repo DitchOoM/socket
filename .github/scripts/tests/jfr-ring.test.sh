@@ -76,7 +76,8 @@ JFR_RING_ROOT="$tmp/root" JFR_RING_POLL_SECONDS=1 bash "$script" watch "$tmp/rin
 wd=$!
 sleep 2; touch "$tmp/root/build/test-results/jvmTest/binary/results.bin"; sleep 1
 [ -z "$(ls "$tmp/ring-hang"/*.jfr 2>/dev/null)" ]; check "test progress keeps the watchdog quiet" $?
-for _ in $(seq 1 30); do ls "$tmp/ring-hang"/*.jfr >/dev/null 2>&1 && break; sleep 1; done
+# The reason file is written after the recording is complete, so it is the one whose arrival says the dump is done.
+for _ in $(seq 1 30); do ls "$tmp/ring-hang"/*.jfr.txt >/dev/null 2>&1 && break; sleep 1; done
 ls "$tmp/ring-hang"/worker-"$worker_pid"-*.jfr >/dev/null 2>&1; check "a live worker with no test progress is dumped" $?
 grep -q 'hang' "$tmp/ring-hang"/*.jfr.txt 2>/dev/null; check "the hang reason is recorded" $?
 touch "$tmp/ring-hang/.stop"; sleep 2; kill "$wd" 2>/dev/null
