@@ -2751,6 +2751,13 @@ class QuicheDriver(
      */
     private var leftPathSourceId: LeftPathSourceId = LeftPathSourceId.Settled
 
+    /** What the peer is known to do with the paths this client leaves. See [PeerPathRoom]. */
+    private var peerPathRoom: PeerPathRoom = PeerPathRoom.Kept(emptySet())
+
+    /** How many of our source ids this client has asked the peer to retire (Retire Prior To), and how many it has retired. */
+    private var retirementsAsked = 0L
+    private var retirementsSeen = 0L
+
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
      * the turn whose packet carried HANDSHAKE_DONE. Costs one lane check when nothing waits.
@@ -3098,6 +3105,10 @@ class QuicheDriver(
             if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
             val issued = issueSpareCids()
             val retired = drainRetiredScids()
+            retirementsSeen += retired
+            // More retirements than this client asked for: the peer retires the ids of paths a client leaves
+            // on its own, so it frees those paths and has room for any number of moves.
+            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
@@ -3758,6 +3769,11 @@ class QuicheDriver(
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
         val keptResumable = cmd.target is MigrationTarget.FreshLocalEndpoint && keptPath() is KeptPath.Found
+        if (!keptResumable && peerHasNoRoomForANewPath()) {
+            // The peer would drop the probe: answering now saves the validation budget it would cost.
+            cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
+            return
+        }
         if (api.connAvailableDcids(conn) <= 0L && !keptResumable) {
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
@@ -4102,6 +4118,11 @@ class QuicheDriver(
                 entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
                 active = entry
                 leftPathSourceId = LeftPathSourceId.Owed
+                peerPathRoom =
+                    when (val room = peerPathRoom) {
+                        PeerPathRoom.Freed -> PeerPathRoom.Freed
+                        is PeerPathRoom.Kept -> PeerPathRoom.Kept(room.movedTo + entry.key)
+                    }
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
                 // unanswered expiries is re-baselined here, in the same statement sequence
@@ -4220,6 +4241,7 @@ class QuicheDriver(
                     api.connScidsLeft(conn) > 0L -> LeftPathSourceId.Settled
                     issueOneScid() >= 0 -> {
                         count++
+                        retirementsAsked++
                         LeftPathSourceId.Settled
                     }
                     else -> LeftPathSourceId.Owed
@@ -4231,6 +4253,25 @@ class QuicheDriver(
         }
         return count
     }
+
+    /**
+     * Whether a move to a new 4-tuple would exceed what the peer can hold. A peer keeps a path for each of
+     * our ids it holds and holds at most its `active_connection_id_limit` of them; one that never frees a
+     * path a client left (quiche: `path.rs` `make_room_for_new_path` evicts only a path with no id, and
+     * `lib.rs` relinks the id that Retire Prior To brings to the left path) admits a new 4-tuple only while
+     * it holds fewer paths than that limit. Unknown before the handshake, and never once the peer has
+     * shown it frees left paths.
+     */
+    private fun peerHasNoRoomForANewPath(): Boolean =
+        when (val room = peerPathRoom) {
+            PeerPathRoom.Freed -> false
+            is PeerPathRoom.Kept ->
+                when (val params = api.connPeerTransportParams(conn)) {
+                    PeerTransportParams.NotYetNegotiated -> false
+                    // The original path is held too, beside every one moved to.
+                    is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
+                }
+        }
 
     /**
      * Issue one new source connection id (`quiche_conn_new_scid` with retire_if_needed): its sequence

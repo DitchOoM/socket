@@ -904,6 +904,35 @@ class PathRetirementTests {
         }
 
     /**
+     * **A peer with room for two paths that frees none gets no probe it would drop.** Its
+     * `active_connection_id_limit` of 2 caps the paths it holds at two; once the client has moved off the
+     * original path, and the peer has retired nothing it was not asked to, a move to a new 4-tuple is
+     * answered NoSpareConnectionId at once, with no socket opened and no probe sent.
+     */
+    @Test
+    fun aSecondMoveAgainstAPeerWithRoomForTwoPathsIsRefusedWithoutAProbe() =
+        runTest {
+            val f = Fixture()
+            f.stub.peerActiveConnIdLimit = 2L
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val first = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                first.assertSucceeded()
+
+                val second = f.migrate()
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, second.await())
+                assertEquals(1, f.factory.opened, "a socket was opened for a move the peer cannot admit")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
      *
      * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring

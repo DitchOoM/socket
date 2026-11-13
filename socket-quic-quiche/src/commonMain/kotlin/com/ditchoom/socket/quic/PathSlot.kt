@@ -120,3 +120,14 @@ internal enum class LeftPathSourceId {
     /** A migration has left a path whose source id still occupies a slot under the peer's limit. */
     Owed,
 }
+
+/** What the peer is known to do with the paths this client leaves. */
+internal sealed interface PeerPathRoom {
+    /** The peer has retired ids of ours unasked: it frees the paths a client leaves, so any number of moves fit. */
+    data object Freed : PeerPathRoom
+
+    /** No sign yet that the peer frees anything: it may still hold the original path and every one in [movedTo]. */
+    data class Kept(
+        val movedTo: Set<PathKey>,
+    ) : PeerPathRoom
+}

@@ -139,9 +139,11 @@ sealed interface MigrationResult {
             data object AlreadyInProgress : Failed
 
             /**
-             * No connection id is free to move onto: the peer has issued no spare one, or every id of this
-             * endpoint's is still held by a path the peer has not retired (RFC 9000 §5.1, §9.5). Asking again
-             * after a round trip can succeed.
+             * No connection id is free to move onto (RFC 9000 §5.1, §9.5): the peer has issued no spare one,
+             * every id of this endpoint's is still held by a path the peer has not retired, or the peer already
+             * holds as many paths as its `active_connection_id_limit` allows and has shown no sign of freeing
+             * the ones this connection left. Answered without sending a probe. Asking again after a round trip
+             * can succeed in the first two cases; in the last, a move to a new address needs a new connection.
              */
             data object NoSpareConnectionId : Failed
 

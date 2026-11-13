@@ -867,9 +867,13 @@ internal class StubQuicheApi : QuicheApi {
      * real connection would still be waiting on.
      *
      * The negotiated values mirror this module's own defaults so a driver test reads plausible numbers;
-     * nothing in [QuicheDriver] dispatches on any field but [PeerTransportParams.Negotiated.disableActiveMigration].
+     * [QuicheDriver] dispatches on [PeerTransportParams.Negotiated.disableActiveMigration] and on
+     * [PeerTransportParams.Negotiated.activeConnIdLimit], which bounds the paths a peer that frees none can hold.
      */
     @Volatile var peerDisablesActiveMigration = false
+
+    /** The peer's `active_connection_id_limit`: this module's default, so existing tests move as often as they like. */
+    @Volatile var peerActiveConnIdLimit = 8L
 
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
         if (!established) {
@@ -887,7 +891,7 @@ internal class StubQuicheApi : QuicheApi {
                 ackDelayExponent = 3,
                 maxAckDelayMillis = 25,
                 disableActiveMigration = peerDisablesActiveMigration,
-                activeConnIdLimit = 4,
+                activeConnIdLimit = peerActiveConnIdLimit,
                 maxDatagramFrameSize = -1,
             )
         }
