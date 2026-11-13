@@ -8,6 +8,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -219,6 +220,13 @@ private sealed interface ClientMode {
 private const val MOVES = 6
 private const val MOVE_EVERY_BYTES = 1_500_000L
 
+/**
+ * How long one move may take, retries included. Path validation gives up after three probe timeouts
+ * (RFC 9000 §8.2.4), well under this, so a move that outlasts it is hung: it is reported with the driver's
+ * state and the moves stop, while the download carries on.
+ */
+private val MOVE_BUDGET = 20.seconds
+
 /** A [MigrationResult.Unmoved.Failed.NoSpareConnectionId] can clear once the peer issues an id; tries per move. */
 private const val SPARE_ID_ATTEMPTS = 5
 private val SPARE_ID_WAIT = 100.milliseconds
@@ -350,19 +358,51 @@ private class ReceivedBytes {
     fun total(): Long = total.get()
 }
 
+/** What one move came to: the typed answer of its last attempt, or no answer within [MOVE_BUDGET]. */
+private sealed interface MoveOutcome {
+    class Answered(
+        val result: MigrationResult,
+        val attempts: Int,
+    ) : MoveOutcome
+
+    data object Hung : MoveOutcome
+}
+
 /** One move of [ClientMode.ActiveMigration]: which, after how many bytes, what it came to and how long it took. */
 private class Move(
     val number: Int,
     val afterBytes: Long,
-    val result: MigrationResult,
-    val attempts: Int,
+    val outcome: MoveOutcome,
     val tookMillis: Long,
-)
+) {
+    val succeeded: Boolean get() = outcome is MoveOutcome.Answered && outcome.result is MigrationResult.Succeeded
+}
 
-private fun MigrationResult.describe(): String =
+private fun MoveOutcome.describe(): String =
     when (this) {
-        is MigrationResult.Succeeded -> "Succeeded port=${localEndpoint.port}"
-        is MigrationResult.Unmoved -> toString()
+        MoveOutcome.Hung -> "Hung (no answer within $MOVE_BUDGET)"
+        is MoveOutcome.Answered ->
+            when (result) {
+                is MigrationResult.Succeeded -> "Succeeded port=${result.localEndpoint.port} attempts=$attempts"
+                is MigrationResult.Unmoved -> "$result attempts=$attempts"
+            }
+    }
+
+/** One move, retrying a [MigrationResult.Unmoved.Failed.NoSpareConnectionId] while the peer may still issue an id. */
+private suspend fun QuicScope.moveOnce(): MoveOutcome =
+    try {
+        withTimeout(MOVE_BUDGET) {
+            var attempts = 1
+            var result = migrate()
+            while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && attempts < SPARE_ID_ATTEMPTS) {
+                delay(SPARE_ID_WAIT)
+                attempts++
+                result = migrate()
+            }
+            MoveOutcome.Answered(result, attempts)
+        }
+    } catch (hung: TimeoutCancellationException) {
+        MoveOutcome.Hung
     }
 
 /**
@@ -382,19 +422,18 @@ private suspend fun QuicScope.downloadAllMigrating(
             while (received.total() < threshold && !transfer.isCompleted) delay(5.milliseconds)
             if (transfer.isCompleted) break
             val started = TimeSource.Monotonic.markNow()
-            var attempts = 1
-            var result = migrate()
-            while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && attempts < SPARE_ID_ATTEMPTS) {
-                delay(SPARE_ID_WAIT)
-                attempts++
-                result = migrate()
-            }
-            val move = Move(number, received.total(), result, attempts, started.elapsedNow().inWholeMilliseconds)
+            val afterBytes = received.total()
+            val move = Move(number, afterBytes, moveOnce(), started.elapsedNow().inWholeMilliseconds)
             moves += move
             println(
-                "MIGRATION move=${move.number} afterBytes=${move.afterBytes} result=${move.result.describe()} " +
-                    "attempts=${move.attempts} tookMs=${move.tookMillis}",
+                "MIGRATION move=${move.number} afterBytes=${move.afterBytes} result=${move.outcome.describe()} " +
+                    "tookMs=${move.tookMillis}",
             )
+            if (move.outcome is MoveOutcome.Hung) {
+                printDriverState("MIGRATION-HUNG")
+                System.out.flush()
+                break
+            }
             System.out.flush()
         }
         transfer.await()
@@ -410,13 +449,13 @@ private suspend fun QuicScope.downloadAllMigrating(
             is Inspected.Read -> snapshot.value.paths.map { it.key.port }.toString()
             Inspected.ConnectionGone -> "connection gone"
         }
-    val succeeded = moves.count { it.result is MigrationResult.Succeeded }
-    val leadingSuccesses = moves.takeWhile { it.result is MigrationResult.Succeeded }.size
+    val succeeded = moves.count { it.succeeded }
+    val leadingSuccesses = moves.takeWhile { it.succeeded }.size
     val firstUnmoved =
         moves
-            .filter { it.result !is MigrationResult.Succeeded }
+            .filter { !it.succeeded }
             .take(1)
-            .joinToString { "move ${it.number}: ${it.result.describe()}" }
+            .joinToString { "move ${it.number}: ${it.outcome.describe()}" }
             .ifEmpty { "none" }
     println(
         "MIGRATION-SUMMARY attempted=${moves.size} succeeded=$succeeded consecutive=$leadingSuccesses " +
@@ -424,6 +463,18 @@ private suspend fun QuicScope.downloadAllMigrating(
             "peerActiveConnIdLimit=$limit pathPortsHeld=$paths bytes=${received.total()}",
     )
     System.out.flush()
+}
+
+/** The driver's snapshot and flight recording, each line prefixed with [tag], for a move that hung. */
+private suspend fun QuicScope.printDriverState(tag: String) {
+    val driver = (this as QuicheBackedConnection).quicheDriver
+    println("$tag snapshot ${driver.stallSnapshot()}")
+    val recording =
+        when (val r = driver.flightRecording()) {
+            FlightRecording.Off -> "flight recorder off"
+            is FlightRecording.Recorded -> r.render()
+        }
+    recording.lineSequence().forEach { println("$tag $it") }
 }
 
 private suspend fun QuicScope.downloadAll(
