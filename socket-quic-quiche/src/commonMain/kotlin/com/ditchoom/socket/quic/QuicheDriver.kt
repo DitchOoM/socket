@@ -1553,6 +1553,13 @@ class QuicheDriver(
         ) : Wake {
             override val priority = 3
         }
+
+        /** The bound on a held flush ([AckHold]). Last: on a tie every other deadline's work is done first, and the flush follows it. */
+        class HeldFlush(
+            override val remaining: Duration,
+        ) : Wake {
+            override val priority = 4
+        }
     }
 
     private fun Wake.kind(): WakeKind =
@@ -1561,6 +1568,7 @@ class QuicheDriver(
             is Wake.KeepAlive -> WakeKind.KeepAlive
             is Wake.QuicheTimeout -> WakeKind.QuicheTimeout
             is Wake.SilenceVerdict -> WakeKind.SilenceVerdict
+            is Wake.HeldFlush -> WakeKind.HeldFlush
         }
 
     /** Whether any deadline is pending at all — never a duration standing in for "none". */
@@ -1577,6 +1585,7 @@ class QuicheDriver(
         connTimeout: Deadline,
         keepAlive: Deadline,
         probe: Deadline,
+        heldFlush: Deadline,
     ): NextWake {
         // The soonest of up to five deadlines, picked as they are met: one object per deadline that is armed
         // and nothing else (this runs every turn). Ties go to the lower [Wake.priority], and among equals to
@@ -1589,6 +1598,7 @@ class QuicheDriver(
         if (floor is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(floor.remaining))
         val unanswered = unansweredWake()
         if (unanswered is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(unanswered.remaining))
+        if (heldFlush is Deadline.Due) soonest = soonerOf(soonest, Wake.HeldFlush(heldFlush.remaining))
         return soonest
     }
 
@@ -2138,6 +2148,11 @@ class QuicheDriver(
                         connTimeout = Deadline.from(connTimeout),
                         keepAlive = Deadline.from(keepAliveRemaining),
                         probe = Deadline.from(probeRemaining),
+                        heldFlush =
+                            when (val hold = ackHold) {
+                                AckHold.NotHolding -> Deadline.NotArmed
+                                is AckHold.Holding -> Deadline.Due(hold.remaining())
+                            },
                     )
                 loopWait = armed
                 loopWaitArmedAt = clock.markNow()
@@ -2215,6 +2230,8 @@ class QuicheDriver(
                                     // measured.
                                     is Wake.SilenceVerdict -> declareSilenceReached()
                                     is Wake.QuicheTimeout -> api.connOnTimeout(conn)
+                                    // Nothing to do here: the flush below is the one that was held.
+                                    is Wake.HeldFlush -> Unit
                                 }
                         }
                 }
@@ -2391,6 +2408,71 @@ class QuicheDriver(
 
     private val ackMemory = AckCadenceMemory()
 
+    /** What a command adds to its turn's [TurnWork]. Exhaustive, so a new command has to choose. */
+    private fun QuicheCmd.turnWork(): TurnWork =
+        when (this) {
+            is QuicheCmd.RecvPacket -> TurnWork.DatagramsOnly
+            is QuicheCmd.StreamSend, is QuicheCmd.DgramSend -> TurnWork.ApplicationWrite
+            is QuicheCmd.OpenStream, is QuicheCmd.StreamRecv, is QuicheCmd.DgramRecv,
+            is QuicheCmd.AbandonOpen, is QuicheCmd.StreamShutdown, is QuicheCmd.PeerCert, is QuicheCmd.Stats,
+            is QuicheCmd.PeerTransportParamsRead, is QuicheCmd.SourceIdsRead, is InspectConnection<*>,
+            is QuicheCmd.Close, is QuicheCmd.Migrate, is PathOpened, is PathSendSettled,
+            -> TurnWork.Other
+        }
+
+    private val ackHoldGate = AckHoldGate()
+
+    /** Whether the last [afterCommand] held its flush. Loop only. */
+    private var ackHold: AckHold = AckHold.NotHolding
+
+    /** What the commands run since the last [afterCommand] did. Loop only. */
+    private var turnWork = TurnWork.TimerOnly
+
+    /** Stream bytes handed to reads that were waiting for them since the last [afterCommand]. Loop only. */
+    private var bytesHandedToWaitingReads = 0L
+
+    /**
+     * Whether this turn's flush waits for the application's reply ([AckHoldGate]), and the account of a
+     * hold the turn before made. Called once per [afterCommand], after its sweep has handed over what
+     * arrived, with the datagrams the turn fed quiche in [received].
+     *
+     * A turn holds only when all of this is true: the connection is established and open; the turn fed
+     * quiche exactly one datagram and did nothing else (a second datagram is RFC 9000 §13.2.2's cue for an
+     * ACK); that datagram's stream bytes went to a read that was waiting, so an answer is likely; the path
+     * has shown no loss lately (an ACK is worth most where datagrams are dropped); no migration is under
+     * way; and the flush before this one was not held too, so no flush waits longer than one bound.
+     */
+    private fun holdsItsFlush(
+        established: Boolean,
+        received: Int,
+    ): AckHold {
+        val work = turnWork
+        val handed = bytesHandedToWaitingReads
+        turnWork = TurnWork.TimerOnly
+        bytesHandedToWaitingReads = 0L
+        when (ackHold) {
+            is AckHold.Holding -> {
+                when (work) {
+                    TurnWork.ApplicationWrite -> ackHoldGate.replied()
+                    TurnWork.TimerOnly, TurnWork.DatagramsOnly, TurnWork.Other -> ackHoldGate.missed()
+                }
+                return AckHold.NotHolding
+            }
+            AckHold.NotHolding -> Unit
+        }
+        if (!established || work != TurnWork.DatagramsOnly || received != 1 || handed == 0L) return AckHold.NotHolding
+        if (ackMemory.cadence() != AckCadence.Relaxed) return AckHold.NotHolding
+        when (lane) {
+            MigrationLane.Idle -> Unit
+            is MigrationLane.AwaitingConfirmation, is MigrationLane.Opening, is MigrationLane.Validating -> return AckHold.NotHolding
+        }
+        if (api.connIsClosed(conn)) return AckHold.NotHolding
+        return when (ackHoldGate.offer()) {
+            HoldDecision.Hold -> AckHold.Holding(clock.markNow())
+            HoldDecision.FlushNow -> AckHold.NotHolding
+        }
+    }
+
     /**
      * This turn's [AckCadence]: one read of the connection's loss counters ([QuicheApi.connLossEvidence],
      * which JNI and FFM answer without allocating). A backend that has not bound the stats FFI reads 0
@@ -2431,6 +2513,7 @@ class QuicheDriver(
     /** Run one dequeued command. A throw completes its deferred first, since nothing else can reach it now. */
     private fun dispatch(cmd: QuicheCmd) {
         loopGuard.assertOnLoop(LoopSite.Dispatch)
+        turnWork = turnWork.after(cmd.turnWork())
         try {
             when (cmd) {
                 is QuicheCmd.Migrate -> handleMigrate(cmd) // does NOT suspend: the socket opens beside the loop
@@ -2675,6 +2758,7 @@ class QuicheDriver(
 
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
+        val received = receivedSinceFlush
         receivedSinceFlush = 0
         // Once established, the sweep that hands a parked read its bytes comes before the flush, so one flush
         // carries both the ACK and the flow-control credit those bytes make quiche owe. quiche's readable set
@@ -2683,10 +2767,19 @@ class QuicheDriver(
         // handshake, and the sweep classifies a stream as early data by whether it is complete.
         val establishedAtStart = _state.value is QuicConnectionState.Established
         if (establishedAtStart) discoverNewStreams()
-        flushOutgoing()
-        // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
-        // the sweeps below queue is owed again, and is flushed once they are done.
-        quicheOwesAFlush = false
+        // A held flush skips both flushes of this turn and nothing else: the sweeps below still run, and
+        // the next turn, which the hold's deadline guarantees, flushes everything this one owed.
+        val hold = holdsItsFlush(establishedAtStart, received)
+        ackHold = hold
+        when (hold) {
+            is AckHold.Holding -> flight.record(FlightEvent.FlushHeld, 0L)
+            AckHold.NotHolding -> {
+                flushOutgoing()
+                // Everything quiche owed the peer when this turn began has just been offered to the sockets;
+                // what the sweeps below queue is owed again, and is flushed once they are done.
+                quicheOwesAFlush = false
+            }
+        }
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
@@ -2702,7 +2795,10 @@ class QuicheDriver(
         // read (MAX_STREAM_DATA / MAX_DATA), NEW_CONNECTION_ID for a CID just issued, a path switch's
         // frames. Costs nothing on a turn whose sweeps queued nothing. Not after a close: the connection
         // has said everything it will.
-        if (quicheOwesAFlush && _state.value !is QuicConnectionState.Closed) flushOutgoing()
+        when (hold) {
+            is AckHold.Holding -> Unit
+            AckHold.NotHolding -> if (quicheOwesAFlush && _state.value !is QuicConnectionState.Closed) flushOutgoing()
+        }
     }
 
     /**
@@ -2929,6 +3025,7 @@ class QuicheDriver(
                 if (result.bytesRead > 0) {
                     // Consuming stream bytes is what makes quiche owe the peer flow-control credit.
                     quicheOwesAFlush = true
+                    bytesHandedToWaitingReads += result.bytesRead
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
                     if (!slot.handedOff(buffer, result.fin, size, result.bytesRead)) buffer.freeNativeMemory()

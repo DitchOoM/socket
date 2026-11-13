@@ -41,7 +41,7 @@ internal sealed interface LoopWake {
     ) : LoopWake
 }
 
-internal enum class WakeKind { ProbeAbandon, KeepAlive, QuicheTimeout, SilenceVerdict }
+internal enum class WakeKind { ProbeAbandon, KeepAlive, QuicheTimeout, SilenceVerdict, HeldFlush }
 
 internal sealed interface QuicheTimer {
     data object Unarmed : QuicheTimer

@@ -46,6 +46,9 @@ class QuicDriverWorkPerEchoTest {
         val timerSends = AtomicInteger()
         val streamRecvs = AtomicInteger()
 
+        /** Datagrams quiche wrote, in any turn: a `quiche_conn_send` that produced one. */
+        val datagrams = AtomicInteger()
+
         // Loop-confined: every call below is made by the one driver loop this api backs.
         private var timerTurn = false
 
@@ -76,7 +79,9 @@ class QuicDriverWorkPerEchoTest {
             sendInfo: QuicheSendInfo,
         ): Int {
             (if (timerTurn) timerSends else sends).incrementAndGet()
-            return delegate.connSend(conn, buf, bufLen, sendInfo)
+            val written = delegate.connSend(conn, buf, bufLen, sendInfo)
+            if (written > 0) datagrams.incrementAndGet()
+            return written
         }
 
         override fun connStreamSend(
@@ -146,6 +151,56 @@ class QuicDriverWorkPerEchoTest {
                             assertTrue(
                                 sends <= ECHOES * 6,
                                 "quiche_conn_send calls for $ECHOES echoes: $sends (want about ${ECHOES * 5}; timer turns not counted)",
+                            )
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(QuicDriverWorkPerEchoTest::class, e)
+            }
+        }
+
+    /**
+     * The client's ACK of a reply leaves in the datagram that carries its next request, so a run of echoes
+     * costs the client about one datagram each, not a request and an ACK-only datagram.
+     */
+    @Test
+    fun anEchoCostsTheClientAboutOneDatagram() =
+        runQuicTest(timeout = 30.seconds) {
+            try {
+                val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
+                val counting = WorkCountingApi(loadQuicheApi())
+                withQuicServer(port = 0, tlsConfig = tls, quicOptions = opts) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                while (true) {
+                                    if (stream.read(9.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                }
+                                stream.close()
+                            }
+                        }
+                    try {
+                        commonJvmWithQuicConnection(
+                            endpoint = QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
+                            serverName = "localhost",
+                            quicOptions = opts,
+                            connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
+                            timeout = 10.seconds,
+                            api = counting,
+                        ) {
+                            val stream = openStream()
+                            repeat(WARMUP) { echo(stream) }
+                            val before = counting.datagrams.get()
+                            repeat(ECHOES) { echo(stream) }
+                            val datagrams = counting.datagrams.get() - before
+                            assertTrue(
+                                datagrams <= ECHOES * 5 / 4,
+                                "client datagrams for $ECHOES echoes: $datagrams (want about $ECHOES)",
                             )
                             stream.close()
                         }

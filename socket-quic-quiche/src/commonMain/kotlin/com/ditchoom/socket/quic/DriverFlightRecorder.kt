@@ -117,6 +117,9 @@ internal enum class FlightEvent {
 
     /** A read handed bytes to its caller. arg: the stream id. */
     ReadReturned,
+
+    /** A turn held its flush for the application's reply ([AckHold]). */
+    FlushHeld,
     ;
 
     fun describe(
@@ -130,6 +133,7 @@ internal enum class FlightEvent {
             SendBegin -> "SendBegin len=$arg"
             SendEnd -> "SendEnd ${listOf("sent", "failed", "stalled").getOrNull(arg.toInt()) ?: arg}"
             StreamSignalled, ReaderParked, ReaderResumed, ReadReturned -> "$name stream=$arg"
+            FlushHeld -> "FlushHeld"
         }
 }
 
