@@ -29,9 +29,12 @@ import platform.Network.nw_connection_t
 import platform.posix.ECONNABORTED
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
+import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.native.ref.createCleaner
 import kotlin.time.Duration
 
 /**
@@ -46,6 +49,26 @@ open class NWSocketWrapper(
     internal val config: TransportConfig = TransportConfig(),
 ) : ClientSocket {
     internal var connection: nw_connection_t = null
+        set(value) {
+            field = value
+            holding = if (value == null) Holding.Unset else Holding.Connection(NwConnectionRelease(value))
+        }
+
+    /** What [connection] is released through: by [closeInternal], or by the collector once this socket is unreachable. */
+    private var holding: Holding = Holding.Unset
+
+    private sealed interface Holding {
+        data object Unset : Holding
+
+        @OptIn(ExperimentalNativeApi::class)
+        class Connection(
+            val release: NwConnectionRelease,
+        ) : Holding {
+            /** Runs [NwConnectionRelease.cancel] when the owning socket is collected without having been closed. */
+            private val cleaner = createCleaner(release) { it.cancel() }
+        }
+    }
+
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
 
@@ -241,9 +264,10 @@ open class NWSocketWrapper(
         if (closedLocally) return
         closedLocally = true
         connectionReady = false
-        val conn = connection ?: return
-        nw_helper_cancel(conn)
-        nw_helper_force_cancel(conn)
+        when (val held = holding) {
+            is Holding.Connection -> held.release.cancel()
+            Holding.Unset -> Unit
+        }
     }
 
     override suspend fun close() {
@@ -315,5 +339,24 @@ open class NWSocketWrapper(
                 else -> SocketIOException(message)
             }
         }
+    }
+}
+
+/**
+ * Cancels one `nw_connection_t`, once. A started connection holds its descriptor until it is cancelled,
+ * so every path that ends the connection (a close, a failed read or write, the owning socket being
+ * collected) goes through here.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal class NwConnectionRelease(
+    private val connection: nw_connection_t,
+) {
+    private val cancelled = AtomicInt(0)
+
+    fun cancel() {
+        if (!cancelled.compareAndSet(0, 1)) return
+        val conn = connection ?: return
+        nw_helper_cancel(conn)
+        nw_helper_force_cancel(conn)
     }
 }

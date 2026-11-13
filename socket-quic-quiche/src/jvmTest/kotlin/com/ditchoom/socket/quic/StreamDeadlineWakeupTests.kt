@@ -14,16 +14,10 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * **A bounded stream read or write that completes before its bound wakes no timer thread.**
  *
- * Every read and write of a stream is bounded, so a busy stream arms a deadline and disarms it a few
- * microseconds later, twice per side per round trip. A timer that wakes its thread for each arming costs
- * the waker an unpark and the thread a park and a pass over its queue (2.0 unparks and 2.0 parks per
- * arm pair, measured with JDK Flight Recorder method timing on the long-lived stream benchmark), for a
- * deadline that never fires.
- *
- * The property is counted, not timed: how many times the threads that fire timers went from running to
- * waiting while N operations completed. A wake per operation gives N or more; a timer that wakes only
- * for an earlier deadline gives a handful, whatever N is. The bound is a constant independent of N so
- * that a wake per operation cannot hide under it ([OPERATIONS] is far above [AT_MOST]).
+ * A busy stream arms a deadline and disarms it microseconds later on every read and write. The property is counted:
+ * how many times the threads that fire timers went from running to waiting while N operations completed. A wake per
+ * operation gives N or more, a timer that wakes only for an earlier deadline a handful whatever N is, so [AT_MOST] is
+ * a constant far below [OPERATIONS].
  */
 class StreamDeadlineWakeupTests {
     @Test

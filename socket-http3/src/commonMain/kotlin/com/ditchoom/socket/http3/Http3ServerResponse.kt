@@ -30,6 +30,12 @@ class Http3ServerResponse internal constructor(
     suspend fun sendHeaders(
         status: Int,
         headers: List<QpackHeaderField> = emptyList(),
+    ) = sendHeaders(status, headers, AfterHeaders.BodyFollows)
+
+    private suspend fun sendHeaders(
+        status: Int,
+        headers: List<QpackHeaderField>,
+        after: AfterHeaders,
     ) {
         check(!headersSent) { "response HEADERS already sent" }
         check(!finished) { "response already finished" }
@@ -40,7 +46,10 @@ class Http3ServerResponse internal constructor(
             }
         val section = encodeSection(fields, streamId)
         try {
-            writeFrame(Http3Frame.Headers(section))
+            when (after) {
+                AfterHeaders.BodyFollows -> writeFrame(Http3Frame.Headers(section))
+                AfterHeaders.StreamEnds -> streamWriter.writeFinalFrame(stream, Http3Frame.Headers(section))
+            }
         } finally {
             section.freeIfNeeded()
         }
@@ -72,9 +81,14 @@ class Http3ServerResponse internal constructor(
         headers: List<QpackHeaderField> = emptyList(),
         body: ReadBuffer? = null,
     ) {
-        sendHeaders(status, headers)
-        body?.let { writeBody(it) }
-        finish()
+        if (body == null || body.remaining() == 0) {
+            sendHeaders(status, headers, AfterHeaders.StreamEnds)
+        } else {
+            sendHeaders(status, headers, AfterHeaders.BodyFollows)
+            check(!finished) { "response already finished" }
+            streamWriter.writeFinalFrame(stream, Http3Frame.Data(body))
+        }
+        finished = true
     }
 
     /** FIN the send side, emitting a minimal `500` first if the handler sent no HEADERS. Idempotent. */

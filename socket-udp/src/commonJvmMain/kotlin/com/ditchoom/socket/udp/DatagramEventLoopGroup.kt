@@ -46,8 +46,8 @@ class DatagramEventLoopGroup(
      * @throws DatagramEventLoopUnavailableException when no loop runs and none can be started.
      */
     fun hold(near: DatagramEventLoop? = null): DatagramEventLoopHold {
-        val ranked = loops.withIndex().sortedWith(compareBy({ it.value.holders }, { if (it.value.isRunning) 0 else 1 }, { it.index }))
-        if (near != null && near.isRunning && near.holders <= ranked.first().value.holders + NEAR_SLACK) {
+        val ranked = loops.mapIndexed(::LoopRank).sortedWith(LEAST_HELD_FIRST)
+        if (near != null && near.isRunning && near.holders <= ranked.first().holders + NEAR_SLACK) {
             try {
                 return near.hold()
             } catch (_: DatagramEventLoopUnavailableException) {
@@ -55,7 +55,8 @@ class DatagramEventLoopGroup(
             }
         }
         var failure: DatagramEventLoopUnavailableException? = null
-        for ((_, loop) in ranked) {
+        for (rank in ranked) {
+            val loop = rank.loop
             // After one start has failed, only a loop that already runs can be held.
             if (failure != null && !loop.isRunning) continue
             try {
@@ -86,8 +87,25 @@ class DatagramEventLoopGroup(
 
         /** How many more holders than the least held loop a [hold]'s `near` loop may have and still be taken. */
         private const val NEAR_SLACK = 1
+
+        private val LEAST_HELD_FIRST: Comparator<LoopRank> = compareBy({ it.holders }, { it.thread }, { it.index })
     }
 }
+
+/**
+ * One loop's place in a [DatagramEventLoopGroup.hold] ranking, read once. Other threads take and release
+ * holds while a ranking is sorted, and a sort needs every comparison of the same two loops to agree.
+ */
+private class LoopRank(
+    val index: Int,
+    val loop: DatagramEventLoop,
+) {
+    val holders: Int = loop.holders
+    val thread: LoopThread = if (loop.isRunning) LoopThread.Running else LoopThread.Stopped
+}
+
+/** Whether a loop's thread ran when it was ranked; a running one ranks first. */
+private enum class LoopThread { Running, Stopped }
 
 /** A loop's thread is a platform daemon thread: a selector needs a platform thread, and a loop must never keep a process alive. */
 private class DaemonLoopThreads(

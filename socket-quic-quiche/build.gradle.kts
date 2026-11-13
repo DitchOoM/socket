@@ -39,6 +39,13 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
+
+/**
+ * rustc flags of every quiche build: opt-level=3 as quiche's own release profile, because the packet-path
+ * calls (`quiche_conn_recv`, `quiche_conn_send`) are the largest part of a connection's CPU. One codegen unit,
+ * and no LTO: BoringSSL's archives carry no bitcode.
+ */
+val quicheRustcOpt = "-C opt-level=3 -C codegen-units=1"
 val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBoringCrateVersion = libs.versions.quicheBoringCrate.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
@@ -3438,9 +3445,9 @@ fun createBuildQuicheSharedTask(
             // refuses to link against such a dylib. The Apple `strip -x` below strips it instead.
             val baseRustflags =
                 if (os == "macos") {
-                    "-C opt-level=s -C codegen-units=1"
+                    quicheRustcOpt
                 } else {
-                    "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+                    "$quicheRustcOpt -C strip=symbols"
                 }
             if (os == "linux" && usesExternalBssl) {
                 // External-BoringSSL path: whole-archive libssl.a + libcrypto.a INTO the cdylib so
@@ -3709,7 +3716,7 @@ fun createBuildQuicheAppleStaticTask(
             logger.lifecycle("Building quiche $quicheVersion (static, $libSubdir / $rustTarget)...")
 
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "$quicheRustcOpt -C strip=symbols"
             rustToolchain.requireTarget(rustTarget)
             env["PATH"] = rustToolchain.childPath()
 
@@ -4436,7 +4443,7 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
             logger.lifecycle("Building quiche for Android ${abi.abi}...")
             val env = mutableMapOf<String, String>()
             env["ANDROID_NDK_HOME"] = ndk.absolutePath
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "$quicheRustcOpt -C strip=symbols"
             rustToolchain.requireTarget(abi.rustTarget)
             env["PATH"] = rustToolchain.childPath()
 
