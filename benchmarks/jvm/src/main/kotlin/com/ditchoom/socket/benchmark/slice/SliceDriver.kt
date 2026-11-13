@@ -304,6 +304,12 @@ internal class SliceCounts {
     val paced = LongAdder()
     val unroutable = LongAdder()
     val closedSeen = LongAdder()
+
+    /** Flush after handlers: a pass that received data and wrote its reply; a fallback hold; how each hold ended. */
+    val repliedInPass = LongAdder()
+    val fallbackHolds = LongAdder()
+    val fallbackRides = LongAdder()
+    val fallbackTimerFires = LongAdder()
     val paceAhead = PaceAhead()
     val promotions = LongAdder()
     val demotions = LongAdder()
@@ -336,6 +342,14 @@ internal class SliceSettings(
     val result: Boolean = "all" in real || "rr" in real
     val pacing: Boolean = ("all" in real || "pace" in real) && PACING_AVAILABLE
     val checks: Boolean = "all" in real || "chk" in real
+
+    /**
+     * Flush after handlers (`-Dslice.fah=true`, with the hold on): a pass serves every connection it read for,
+     * hands over what goes to handler threads, runs the writes that have arrived meanwhile, and only then
+     * flushes. A connection that wrote in the pass flushes at once, its ACK and its reply together, with no
+     * timer; one that received data and wrote nothing falls back to the short hold.
+     */
+    val fah: Boolean = System.getProperty("slice.fah") == "true"
 
     /** Mutation for the stress test: entering never waits for the thread inside. The test must fail with it. */
     val broken: Boolean = System.getProperty("slice.breakOwnership") == "true"
@@ -730,6 +744,18 @@ internal class SliceLoop(
                 keys.clear()
             }
             expireTimers()
+            if (settings.fah) {
+                // Serve first, everywhere; then whatever writes that made ready; and only then flush.
+                var k = 0
+                while (k < entered.size) {
+                    entered[k].servePhase()
+                    if (me.deposed) return finishDeposed(me)
+                    k++
+                }
+                passRecheckAt = hooks.endPass(System.nanoTime())
+                runQueued()
+                if (me.deposed) return finishDeposed(me)
+            }
             // One pass: everything the datagrams and the queued work made ready is served, then one flush each.
             var i = 0
             while (i < entered.size) {
@@ -739,7 +765,7 @@ internal class SliceLoop(
                 i++
             }
             entered.clear()
-            passRecheckAt = hooks.endPass(System.nanoTime())
+            if (!settings.fah) passRecheckAt = hooks.endPass(System.nanoTime())
         }
         for (c in all) {
             if (c.tryOwn()) {
@@ -1185,6 +1211,8 @@ internal class SliceConn(
     @Volatile var heldSince = 0L
 
     private var received = 0
+    private var servedUpTo = 0
+    private var wrote = 0
     private var deliveredToWaiter = 0
     private var otherWork = 0
     private var heldLast = false
@@ -1298,6 +1326,7 @@ internal class SliceConn(
 
     fun holdExpired() {
         if (heldSince == 0L) return
+        loop.counts.fallbackTimerFires.increment()
         if (++misses >= 2) {
             misses = 0
             sitOut = 256
@@ -1309,7 +1338,14 @@ internal class SliceConn(
 
     fun work() {
         otherWork++
+        wrote++
         touched = true
+    }
+
+    /** Flush after handlers, loop thread: the handlers of this pass run now; the flush comes later in the pass. */
+    fun servePhase() {
+        runWaiting()
+        if (touched) serve()
     }
 
     fun adopt(stream: SliceStream) {
@@ -1351,7 +1387,8 @@ internal class SliceConn(
             establishedSeen = true
             onEstablished()
         }
-        if (received > 0) {
+        if (received > servedUpTo) {
+            servedUpTo = received
             val it = api.connReadable(conn)
             var n = 0
             while (n < ids.size) {
@@ -1403,8 +1440,15 @@ internal class SliceConn(
     private fun tryHold(): Boolean {
         val wasHeld = heldSince != 0L
         var hold =
-            loop.settings.holdAck && loop.isLoopThread && establishedSeen && !wasHeld && !heldLast &&
-                received == 1 && deliveredToWaiter > 0 && otherWork == 0
+            if (loop.settings.fah) {
+                // The reply did not come within the pass: the short hold is the fallback.
+                loop.settings.holdAck && loop.isLoopThread && establishedSeen && !wasHeld && received > 0 && wrote == 0
+            } else {
+                loop.settings.holdAck && loop.isLoopThread && establishedSeen && !wasHeld && !heldLast &&
+                    received == 1 && deliveredToWaiter > 0 && otherWork == 0
+            }
+        if (received > 0 && wrote > 0 && !wasHeld) loop.counts.repliedInPass.increment()
+        if (wasHeld && wrote > 0) loop.counts.fallbackRides.increment()
         if (hold && sitOut > 0) {
             sitOut--
             hold = false
@@ -1412,12 +1456,15 @@ internal class SliceConn(
         // A held flush that leaves because the application wrote is a hit.
         if (wasHeld && otherWork > 0) misses = 0
         received = 0
+        servedUpTo = 0
+        wrote = 0
         deliveredToWaiter = 0
         otherWork = 0
         heldLast = hold
         if (hold) {
             heldSince = System.nanoTime()
             loop.counts.heldFlushes.increment()
+            loop.counts.fallbackHolds.increment()
         }
         return hold
     }

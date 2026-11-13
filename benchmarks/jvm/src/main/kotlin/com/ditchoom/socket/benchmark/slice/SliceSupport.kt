@@ -670,6 +670,9 @@ internal class SliceLoopback(
                 "left for the thread inside ${per(both { it.handedToOwner })}, " +
                 "held flushes ${per(both { it.heldFlushes })}, send drops ${both { it.sendDrops }}, " +
                 "send errors ${both { it.sendErrors }}, violations ${both { it.violations }}, " +
+                "replied in the pass server ${per(server { it.repliedInPass })} client ${per(client { it.repliedInPass })}, " +
+                "holds server ${per(server { it.fallbackHolds })} client ${per(client { it.fallbackHolds })}, " +
+                "holds ended by a write ${per(both { it.fallbackRides })}, hold timer fires ${per(both { it.fallbackTimerFires })}, " +
                 "path mismatches ${both { it.pathMismatches }}, unroutable ${server { it.unroutable }}, paced ${both { it.paced }}, " +
                 "loop takeovers ${server { it.takeovers }}, promotions ${server { it.promotions }}, demotions ${server { it.demotions }}, " +
                 "stolen resumes ${handlerThreads.filterIsInstance<LoopHandlers>().sumOf { it.steals.sum() }}" +
