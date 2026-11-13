@@ -38,6 +38,14 @@ public final class com/ditchoom/socket/udp/DatagramEventLoopUnavailableException
 	public fun <init> (Ljava/lang/String;Ljava/lang/Throwable;)V
 }
 
+public final class com/ditchoom/socket/udp/DatagramSendAttempt : java/lang/Enum {
+	public static final field Sent Lcom/ditchoom/socket/udp/DatagramSendAttempt;
+	public static final field WouldWait Lcom/ditchoom/socket/udp/DatagramSendAttempt;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/udp/DatagramSendAttempt;
+	public static fun values ()[Lcom/ditchoom/socket/udp/DatagramSendAttempt;
+}
+
 public abstract interface class com/ditchoom/socket/udp/DatagramSendError {
 	public fun describe ()Ljava/lang/String;
 }
@@ -380,6 +388,14 @@ public final class com/ditchoom/socket/udp/MultiplexedUdpSocket$DefaultImpls {
 public final class com/ditchoom/socket/udp/MultiplexedUdpSocketKt {
 	public static final fun demultiplex-D8Jn--E (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lkotlinx/coroutines/CoroutineScope;Ljava/util/Set;I)Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;
 	public static synthetic fun demultiplex-D8Jn--E$default (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lkotlinx/coroutines/CoroutineScope;Ljava/util/Set;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/MultiplexedUdpSocket;
+}
+
+public abstract interface class com/ditchoom/socket/udp/NonSuspendingAddressedSend {
+	public abstract fun trySendNow (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;)Lcom/ditchoom/socket/udp/DatagramSendAttempt;
+}
+
+public abstract interface class com/ditchoom/socket/udp/NonSuspendingConnectedSend {
+	public abstract fun trySendNow (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/DatagramSendOptions;)Lcom/ditchoom/socket/udp/DatagramSendAttempt;
 }
 
 public final class com/ditchoom/socket/udp/SockAddrLayout {

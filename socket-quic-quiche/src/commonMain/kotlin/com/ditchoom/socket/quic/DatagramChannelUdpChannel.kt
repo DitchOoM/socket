@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.awaitCancellation
 
@@ -37,7 +38,8 @@ import kotlinx.coroutines.awaitCancellation
  */
 internal class DatagramChannelUdpChannel(
     private val channel: ConnectedDatagramChannel,
-) : UdpChannel {
+) : UdpChannel,
+    ImmediateUdpSend {
     override val ownsReceiveBuffer: Boolean = true
 
     override suspend fun receiveOwned(): OwnedDatagram =
@@ -89,6 +91,16 @@ internal class DatagramChannelUdpChannel(
         buffer.position(0)
         buffer.setLimit(len)
         return sendOutcomeOf { channel.send(buffer) }
+    }
+
+    override fun sendNow(
+        buffer: PlatformBuffer,
+        len: Int,
+        target: SendTarget,
+    ): ImmediateSend {
+        buffer.position(0)
+        buffer.setLimit(len)
+        return sendImmediately(channel, buffer, DatagramSendOptions.Default)
     }
 
     override fun close() {
