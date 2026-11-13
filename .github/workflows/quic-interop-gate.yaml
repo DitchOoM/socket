@@ -118,13 +118,25 @@ jobs:
 
       # tshark decodes the captures the runner judges rebinding and handshakes from. See quic-interop.yaml's
       # history for why the issued connection id length must stay below 20.
+      # Every cell job starts this at once, and Launchpad's API answers some of them 500
+      # (GPGKeyTemporarilyNotFoundError) under that burst, so the PPA and apt steps are retried with backoff.
       - name: Install the runner and tshark
         run: |
           set -euo pipefail
-          sudo add-apt-repository -y ppa:wireshark-dev/stable
-          sudo apt-get update
+          retry() {
+            local attempt
+            for attempt in 1 2 3 4 5 6; do
+              "$@" && return 0
+              echo "attempt $attempt of '$*' failed; retrying in $((attempt * 15)) s"
+              sleep $((attempt * 15))
+            done
+            "$@"
+          }
+          sleep $((RANDOM % 30))
+          retry sudo add-apt-repository -y ppa:wireshark-dev/stable
+          retry sudo apt-get update
           echo "wireshark-common wireshark-common/install-setuid boolean false" | sudo debconf-set-selections
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
           git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
           pip install -r /tmp/runner/requirements.txt
           cd /tmp/runner
