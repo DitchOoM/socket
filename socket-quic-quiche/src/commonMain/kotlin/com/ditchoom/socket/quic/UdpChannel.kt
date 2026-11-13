@@ -67,3 +67,19 @@ class OwnedDatagram(
     val buffer: PlatformBuffer,
     val length: Int,
 )
+
+/**
+ * A [UdpChannel] that can try one send without suspending. Separate from [UdpChannel], a published interface,
+ * so the driver's fast path is not part of the public ABI.
+ */
+internal interface ImmediateUdpSend {
+    /**
+     * One attempt to send that never suspends. [ImmediateSend.MustWait] leaves everything untouched, and the
+     * caller sends through [UdpChannel.send], which waits under the driver's stall bound.
+     */
+    fun sendNow(
+        buffer: PlatformBuffer,
+        len: Int,
+        target: SendTarget = SendTarget.ConnectedPeer,
+    ): ImmediateSend
+}

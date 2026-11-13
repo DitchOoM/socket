@@ -1587,25 +1587,34 @@ class QuicheDriver(
         keepAlive: Deadline,
         probe: Deadline,
     ): NextWake {
-        fun candidate(
-            deadline: Deadline,
-            wake: (Duration) -> Wake,
-        ): Wake? =
-            when (deadline) {
-                Deadline.NotArmed -> null
-                is Deadline.Due -> wake(deadline.remaining)
-            }
-
-        val soonest =
-            listOfNotNull(
-                candidate(probe, Wake::ProbeAbandon),
-                candidate(keepAlive, Wake::KeepAlive),
-                candidate(connTimeout, Wake::QuicheTimeout),
-                candidate(floorWake(), Wake::SilenceVerdict),
-                candidate(unansweredWake(), Wake::SilenceVerdict),
-            ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
-        return NextWake.Armed(soonest)
+        // The soonest of up to five deadlines, picked as they are met: one object per deadline that is armed
+        // and nothing else (this runs every turn). Ties go to the lower [Wake.priority], and among equals to
+        // the first met, in the order probe, keepalive, quiche, then the two silence deadlines.
+        var soonest: NextWake = NextWake.NoTimer
+        if (probe is Deadline.Due) soonest = soonerOf(soonest, Wake.ProbeAbandon(probe.remaining))
+        if (keepAlive is Deadline.Due) soonest = soonerOf(soonest, Wake.KeepAlive(keepAlive.remaining))
+        if (connTimeout is Deadline.Due) soonest = soonerOf(soonest, Wake.QuicheTimeout(connTimeout.remaining))
+        val floor = floorWake()
+        if (floor is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(floor.remaining))
+        val unanswered = unansweredWake()
+        if (unanswered is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(unanswered.remaining))
+        return soonest
     }
+
+    /** [candidate] if it is due sooner than [current], or equally soon with a lower [Wake.priority]; else [current]. */
+    private fun soonerOf(
+        current: NextWake,
+        candidate: Wake,
+    ): NextWake =
+        when (current) {
+            NextWake.NoTimer -> NextWake.Armed(candidate)
+            is NextWake.Armed ->
+                when {
+                    candidate.remaining < current.wake.remaining -> NextWake.Armed(candidate)
+                    candidate.remaining == current.wake.remaining && candidate.priority < current.wake.priority -> NextWake.Armed(candidate)
+                    else -> current
+                }
+        }
 
     /**
      * How long until the active path's silence meets the threshold's time **floor**, as a [Deadline].
@@ -3456,31 +3465,19 @@ class QuicheDriver(
                 } else {
                     SendTarget.ConnectedPeer
                 }
-            // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
-            // a backend that throws outside that contract. It normalises into the type — it does not
-            // decide policy. That decision is the exhaustive `when` below, which is what makes adding
-            // a new outcome a compile error rather than a silent inheritance of whatever this branch
-            // happened to do. Letting anything escape would leak an uncaught coroutine failure into
-            // the parent scope, the original defect this site was written to fix.
+            // A send the socket takes at once needs no bound: it cannot have stalled and has no cancellation point
+            // to be mistaken for non-delivery. Only a send that must wait takes the bounded path.
+            flight.record(FlightEvent.SendBegin, written.toLong())
+            val immediate =
+                when (channel) {
+                    is ImmediateUdpSend -> channel.sendNow(scratch.buffer, written, sendTarget)
+                    else -> ImmediateSend.MustWait
+                }
             val outcome =
-                try {
-                    // Bounded, because the driver loop's liveness must not be an external promise.
-                    // `send` is the one call this loop makes into platform code that can suspend
-                    // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
-                    // Network.framework awaits a handler on a serial queue, and a completion that
-                    // never arrives is indistinguishable from one that has not arrived yet. Unbounded,
-                    // that parks the loop itself — and with it every timer the loop arms, including
-                    // the idle timer RFC 9000 SS10 makes responsible for reaping a dead connection, and
-                    // every queued stream command. The connection then cannot die, so nothing
-                    // reconnects: measured in the field as 48.6 hours of total silence from a client
-                    // that had been echoing at full cadence a moment earlier.
-                    flight.record(FlightEvent.SendBegin, written.toLong())
-                    loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
-                        ?: SendOutcome.Stalled(sendStallBound)
-                } catch (ce: kotlinx.coroutines.CancellationException) {
-                    throw ce
-                } catch (untyped: Exception) {
-                    SendOutcome.Failed(DatagramSendError.Transport(untyped))
+                when (immediate) {
+                    ImmediateSend.Sent -> SendOutcome.Sent
+                    is ImmediateSend.Failed -> SendOutcome.Failed(immediate.error)
+                    ImmediateSend.MustWait -> sendBounded(channel, scratch, written, sendTarget)
                 }
             flight.record(
                 FlightEvent.SendEnd,
@@ -3531,6 +3528,33 @@ class QuicheDriver(
             }
         }
     }
+
+    /**
+     * [channel]'s `send`, bounded because the driver loop's liveness must not be an external promise.
+     * `send` is the one call this loop makes into platform code that can suspend indefinitely: io_uring
+     * awaits a completion and Network.framework awaits a handler on a serial queue, and a completion that
+     * never arrives is indistinguishable from one that has not arrived yet. Unbounded, that parks the loop
+     * itself, and with it every timer it arms, the idle timer included, so the connection could never die.
+     * A send that outlives [sendStallBound] is [SendOutcome.Stalled].
+     *
+     * A channel reports failure as a value ([SendOutcome]); the `catch` is only a net for a backend that
+     * throws outside that contract, normalising it into the type. Letting anything escape would leak an
+     * uncaught coroutine failure into the parent scope.
+     */
+    private suspend fun sendBounded(
+        channel: UdpChannel,
+        scratch: SendScratch,
+        written: Int,
+        target: SendTarget,
+    ): SendOutcome =
+        try {
+            loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, target) } }
+                ?: SendOutcome.Stalled(sendStallBound)
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (untyped: Exception) {
+            SendOutcome.Failed(DatagramSendError.Transport(untyped))
+        }
 
     /**
      * Send [lent] again on [entry]'s socket beside the loop, with no bound: this coroutine may wait as

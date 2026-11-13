@@ -48,7 +48,8 @@ internal class ServerConnectionUdpChannel(
     private val peerFor: (PathKey) -> SocketAddress?,
     private val localFor: (PathKey) -> SocketAddress?,
     private val pinning: ReplySourcePinning,
-) : UdpChannel {
+) : UdpChannel,
+    ImmediateUdpSend {
     override suspend fun receive(buffer: PlatformBuffer): Int =
         throw UnsupportedOperationException("server egress channel does not receive")
 
@@ -97,6 +98,34 @@ internal class ServerConnectionUdpChannel(
      * end in the same options but mean different things, and only one of them is a defect (see
      * [ReplySource]).
      */
+    override fun sendNow(
+        buffer: PlatformBuffer,
+        len: Int,
+        target: SendTarget,
+    ): ImmediateSend {
+        val peer: SocketAddress
+        val options: DatagramSendOptions
+        when (target) {
+            SendTarget.ConnectedPeer -> {
+                peer = fixedPeer
+                options = DatagramSendOptions.Default
+            }
+
+            is SendTarget.ServerReply -> {
+                // A destination nothing knows any more is reported by [send].
+                peer = if (target.to == fixedPeerKey) fixedPeer else peerFor(target.to) ?: return ImmediateSend.MustWait
+                options =
+                    when (pinning) {
+                        ReplySourcePinning.PerDatagram, ReplySourcePinning.SocketPerAddress -> optionsFor(target.from)
+                        ReplySourcePinning.BoundAddress, ReplySourcePinning.PlatformChooses -> DatagramSendOptions.Default
+                    }
+            }
+        }
+        buffer.position(0)
+        buffer.setLimit(len)
+        return sendImmediately(channel, buffer, peer, options)
+    }
+
     private fun optionsFor(source: ReplySource): DatagramSendOptions =
         when (source) {
             // Nothing to pin, and inventing an address would be worse than the platform's own choice.
