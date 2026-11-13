@@ -171,14 +171,30 @@ private class NettyEchoOrSink : ChannelInboundHandlerAdapter() {
 }
 
 /** One Netty QUIC server on 127.0.0.1 and one client connection to it, held open for the life of a trial. */
-internal class NettyQuicLoopback : AutoCloseable {
-    private val serverGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
-    private val clientGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
+internal class NettyQuicLoopback(
+    connectionCount: Int = 1,
+    clientThreads: Int = 1,
+) : AutoCloseable {
+    private val serverGroup: EventLoopGroup =
+        MultiThreadIoEventLoopGroup(1, io.netty.util.concurrent.DefaultThreadFactory("netty-server", true), NioIoHandler.newFactory())
+    private val clientGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(clientThreads, NioIoHandler.newFactory())
     private val handlerExecutor: io.netty.util.concurrent.EventExecutorGroup? =
-        if (System.getProperty("bench.nettyHandlerExecutor") == "true") io.netty.util.concurrent.DefaultEventExecutorGroup(4) else null
+        if (System.getProperty("bench.nettyHandlerExecutor") == "true") {
+            io.netty.util.concurrent.DefaultEventExecutorGroup(
+                (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 8),
+                io.netty.util.concurrent.DefaultThreadFactory("netty-handler", true),
+            )
+        } else {
+            null
+        }
     private val serverChannel: Channel
-    private val clientDatagram: Channel
-    val connection: QuicChannel
+    private val clientDatagrams: List<Channel>
+    val connections: List<QuicChannel>
+    val connection: QuicChannel get() = connections[0]
+
+    /** The server's event loop and, when handlers run off it, the handler executor's threads. */
+    fun serverThreads(): List<Thread> =
+        Thread.getAllStackTraces().keys.filter { it.name.startsWith("netty-server") || it.name.startsWith("netty-handler") }
 
     init {
         val dir = System.getProperty("bench.certDir") ?: error("bench.certDir is not set: run through Gradle")
@@ -223,7 +239,8 @@ internal class NettyQuicLoopback : AutoCloseable {
                 .sync()
                 .channel()
 
-        val clientCodec =
+        // One codec per client socket: the client codec is not sharable.
+        fun clientCodec() =
             QuicClientCodecBuilder()
                 .sslContext(
                     QuicSslContextBuilder
@@ -237,31 +254,35 @@ internal class NettyQuicLoopback : AutoCloseable {
                 .initialMaxStreamDataBidirectionalRemote(16L * 1024 * 1024)
                 .initialMaxStreamsBidirectional(1_000_000)
                 .build()
-        clientDatagram =
-            Bootstrap()
-                .group(clientGroup)
-                .channel(NioDatagramChannel::class.java)
-                .handler(clientCodec)
-                .bind(InetSocketAddress("127.0.0.1", 0))
-                .sync()
-                .channel()
-        connection =
-            QuicChannel
-                .newBootstrap(clientDatagram)
-                .handler(
-                    object : ChannelInitializer<QuicChannel>() {
-                        override fun initChannel(ch: QuicChannel) {}
-                    },
-                ).remoteAddress(serverChannel.localAddress())
-                .connect()
-                .get(IO_TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
+        clientDatagrams =
+            List(connectionCount) {
+                Bootstrap()
+                    .group(clientGroup)
+                    .channel(NioDatagramChannel::class.java)
+                    .handler(clientCodec())
+                    .bind(InetSocketAddress("127.0.0.1", 0))
+                    .sync()
+                    .channel()
+            }
+        connections =
+            clientDatagrams.map { datagram ->
+                QuicChannel
+                    .newBootstrap(datagram)
+                    .handler(
+                        object : ChannelInitializer<QuicChannel>() {
+                            override fun initChannel(ch: QuicChannel) {}
+                        },
+                    ).remoteAddress(serverChannel.localAddress())
+                    .connect()
+                    .get(IO_TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
+            }
     }
 
     /** A new bidirectional stream whose replies land in the returned sink. */
-    fun openStream(): Pair<QuicStreamChannel, NettyStreamSink> {
+    fun openStream(index: Int = 0): Pair<QuicStreamChannel, NettyStreamSink> {
         val sink = NettyStreamSink()
         val stream =
-            connection
+            connections[index]
                 .createStream(QuicStreamType.BIDIRECTIONAL, sink)
                 .get(IO_TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
         stream.config().isAllowHalfClosure = true
@@ -269,8 +290,8 @@ internal class NettyQuicLoopback : AutoCloseable {
     }
 
     override fun close() {
-        connection.close().awaitUninterruptibly(10, TimeUnit.SECONDS)
-        clientDatagram.close().awaitUninterruptibly(10, TimeUnit.SECONDS)
+        connections.forEach { it.close().awaitUninterruptibly(10, TimeUnit.SECONDS) }
+        clientDatagrams.forEach { it.close().awaitUninterruptibly(10, TimeUnit.SECONDS) }
         serverChannel.close().awaitUninterruptibly(10, TimeUnit.SECONDS)
         clientGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
         serverGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
@@ -278,7 +299,7 @@ internal class NettyQuicLoopback : AutoCloseable {
     }
 }
 
-private fun filledRequest(size: Int): ByteBuf {
+internal fun nettyFilledRequest(size: Int): ByteBuf {
     val buf = PooledByteBufAllocator.DEFAULT.directBuffer(size)
     buf.writeByte(ECHO_MARKER.toInt())
     repeat(size - 1) { buf.writeByte('r'.code) }
@@ -304,7 +325,7 @@ open class NettyQuicLongLivedStreamRoundTrip {
         val (s, k) = loopback.openStream()
         stream = s
         sink = k
-        request = filledRequest(size)
+        request = nettyFilledRequest(size)
     }
 
     @TearDown(Level.Trial)
@@ -334,7 +355,7 @@ open class NettyQuicStreamPerRequest {
     @Setup(Level.Trial)
     fun setUp() {
         loopback = NettyQuicLoopback()
-        request = filledRequest(SIZE)
+        request = nettyFilledRequest(SIZE)
     }
 
     @TearDown(Level.Trial)
