@@ -174,6 +174,8 @@ private class NettyEchoOrSink : ChannelInboundHandlerAdapter() {
 internal class NettyQuicLoopback : AutoCloseable {
     private val serverGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
     private val clientGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
+    private val handlerExecutor: io.netty.util.concurrent.EventExecutorGroup? =
+        if (System.getProperty("bench.nettyHandlerExecutor") == "true") io.netty.util.concurrent.DefaultEventExecutorGroup(4) else null
     private val serverChannel: Channel
     private val clientDatagram: Channel
     val connection: QuicChannel
@@ -205,7 +207,10 @@ internal class NettyQuicLoopback : AutoCloseable {
                 ).streamHandler(
                     object : ChannelInitializer<QuicStreamChannel>() {
                         override fun initChannel(ch: QuicStreamChannel) {
-                            ch.pipeline().addLast(NettyEchoOrSink())
+                            // -Dbench.nettyHandlerExecutor=true: the handler runs on an EventExecutorGroup, off the
+                            // event loop, which is where Netty applications put a handler that may block.
+                            val group = handlerExecutor
+                            if (group == null) ch.pipeline().addLast(NettyEchoOrSink()) else ch.pipeline().addLast(group, NettyEchoOrSink())
                         }
                     },
                 ).build()
@@ -269,6 +274,7 @@ internal class NettyQuicLoopback : AutoCloseable {
         serverChannel.close().awaitUninterruptibly(10, TimeUnit.SECONDS)
         clientGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
         serverGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
+        handlerExecutor?.shutdownGracefully(0, 1, TimeUnit.SECONDS)?.awaitUninterruptibly(10, TimeUnit.SECONDS)
     }
 }
 
