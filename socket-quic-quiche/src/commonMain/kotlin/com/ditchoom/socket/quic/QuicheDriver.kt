@@ -799,6 +799,15 @@ class QuicheDriver(
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
 
+    /** Peer-opened streams whose slot has been released: never announced again. Driver-loop only. */
+    private val releasedPeerStreams = ReleasedPeerStreams()
+
+    /**
+     * Slots whose stream reached [StreamLifecycle.Finished] on an application thread, waiting for the loop
+     * to release them (the stream map is loop-only). Drained at the start of every turn's sweep.
+     */
+    private val finishedStreams = Channel<StreamSlot>(Channel.UNLIMITED)
+
     /**
      * Streams whose last write quiche refused for flow control (`QUICHE_ERR_DONE`, or 0 bytes): the only
      * ones with a writer that may be parked on [StreamSlot.writableSignal], and the only ones
@@ -1578,25 +1587,34 @@ class QuicheDriver(
         keepAlive: Deadline,
         probe: Deadline,
     ): NextWake {
-        fun candidate(
-            deadline: Deadline,
-            wake: (Duration) -> Wake,
-        ): Wake? =
-            when (deadline) {
-                Deadline.NotArmed -> null
-                is Deadline.Due -> wake(deadline.remaining)
-            }
-
-        val soonest =
-            listOfNotNull(
-                candidate(probe, Wake::ProbeAbandon),
-                candidate(keepAlive, Wake::KeepAlive),
-                candidate(connTimeout, Wake::QuicheTimeout),
-                candidate(floorWake(), Wake::SilenceVerdict),
-                candidate(unansweredWake(), Wake::SilenceVerdict),
-            ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
-        return NextWake.Armed(soonest)
+        // The soonest of up to five deadlines, picked as they are met: one object per deadline that is armed
+        // and nothing else (this runs every turn). Ties go to the lower [Wake.priority], and among equals to
+        // the first met, in the order probe, keepalive, quiche, then the two silence deadlines.
+        var soonest: NextWake = NextWake.NoTimer
+        if (probe is Deadline.Due) soonest = soonerOf(soonest, Wake.ProbeAbandon(probe.remaining))
+        if (keepAlive is Deadline.Due) soonest = soonerOf(soonest, Wake.KeepAlive(keepAlive.remaining))
+        if (connTimeout is Deadline.Due) soonest = soonerOf(soonest, Wake.QuicheTimeout(connTimeout.remaining))
+        val floor = floorWake()
+        if (floor is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(floor.remaining))
+        val unanswered = unansweredWake()
+        if (unanswered is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(unanswered.remaining))
+        return soonest
     }
+
+    /** [candidate] if it is due sooner than [current], or equally soon with a lower [Wake.priority]; else [current]. */
+    private fun soonerOf(
+        current: NextWake,
+        candidate: Wake,
+    ): NextWake =
+        when (current) {
+            NextWake.NoTimer -> NextWake.Armed(candidate)
+            is NextWake.Armed ->
+                when {
+                    candidate.remaining < current.wake.remaining -> NextWake.Armed(candidate)
+                    candidate.remaining == current.wake.remaining && candidate.priority < current.wake.priority -> NextWake.Armed(candidate)
+                    else -> current
+                }
+        }
 
     /**
      * How long until the active path's silence meets the threshold's time **floor**, as a [Deadline].
@@ -2553,6 +2571,13 @@ class QuicheDriver(
                 // The writer is about to park on writableSignal; recorded before it is told, so the
                 // next afterCommand already looks for its window to reopen.
                 if (sent.result == QUICHE_ERR_DONE || sent.result == 0) awaitingWritable += cmd.streamId
+                // quiche takes the FIN only with a write it accepts whole; a stream the peer stopped or reset
+                // takes no more writes. Either way this stream's send side is over.
+                val sendOver =
+                    (cmd.fin && sent.result == cmd.bufLen) ||
+                        sent.result == QUICHE_ERR_STREAM_STOPPED ||
+                        sent.result == QUICHE_ERR_STREAM_RESET
+                if (sendOver) streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
                 cmd.result.complete(sent)
             }
 
@@ -2560,6 +2585,10 @@ class QuicheDriver(
                 val result = api.connStreamShutdown(conn, QuicStreamId(cmd.streamId), cmd.direction, cmd.errorCode)
                 // Write side (1) shut: no write on it will be refused again, so it no longer waits to be woken.
                 if (cmd.direction == 1) awaitingWritable -= cmd.streamId
+                if (result == 0) {
+                    val direction = if (cmd.direction == 1) StreamDirection.Send else StreamDirection.Receive
+                    streams[cmd.streamId]?.let { directionOver(it, direction) }
+                }
                 cmd.result.complete(result)
             }
 
@@ -2677,6 +2706,7 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
+        releaseFinishedStreams()
         // Once established, the sweep that hands a parked read its bytes comes before the flush, so one flush
         // carries both the ACK and the flow-control credit those bytes make quiche owe. quiche's readable set
         // grows only in `quiche_conn_recv`, so the sweep sees the same streams on either side of the flush.
@@ -2805,7 +2835,7 @@ class QuicheDriver(
             } else {
                 QuicStreamId(nextStreamId).also { nextStreamId += 4 }
             }
-        val slot = StreamSlot(id, if (unidirectional) StreamReceiveSide.Never else StreamReceiveSide.FromPeer)
+        val slot = StreamSlot(id, StreamLifecycle.of(id, role))
         streams[id.id] = slot
         // Make the stream real to quiche now, so that openStream() means what its name says.
         // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
@@ -2875,6 +2905,42 @@ class QuicheDriver(
         }
     }
 
+    /** Whether [id], readable with no slot, is a stream the peer has just opened. */
+    private fun isNewPeerStream(id: QuicStreamId): Boolean = isPeerOpened(id) && id !in releasedPeerStreams
+
+    /**
+     * Drop the slot of every stream that reached [StreamLifecycle.Finished]: both directions are over, so
+     * no command, readable event or write window concerns it again. Bytes the application has not read
+     * are not lost: its receive side is not over until it has been given the end, and the application's
+     * handle holds the slot itself.
+     */
+    private fun releaseFinishedStreams() {
+        while (true) {
+            val slot = finishedStreams.tryReceive().getOrNull() ?: return
+            if (streams[slot.id.id] !== slot) continue
+            streams.remove(slot.id.id)
+            awaitingWritable -= slot.id.id
+            if (isPeerOpened(slot.id)) releasedPeerStreams.add(slot.id)
+        }
+    }
+
+    private fun isPeerOpened(id: QuicStreamId): Boolean =
+        when (role) {
+            QuicRole.Client -> id.isServerInitiated
+            QuicRole.Server -> id.isClientInitiated
+        }
+
+    /**
+     * [direction] of [slot]'s stream is over. When that finishes the stream, the loop releases the slot at
+     * its next turn; callable from any thread.
+     */
+    internal fun directionOver(
+        slot: StreamSlot,
+        direction: StreamDirection,
+    ) {
+        if (slot.finish(direction)) finishedStreams.trySend(slot)
+    }
+
     private fun discoverNewStreams() {
         val iter = api.connReadable(conn)
         if (iter.isExhausted) return
@@ -2897,8 +2963,12 @@ class QuicheDriver(
                 if (existing != null) {
                     handToWaitingRead(existing)
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
+                } else if (!isNewPeerStream(streamId)) {
+                    // A stream this endpoint opened, or one the peer opened that has been released: nothing
+                    // is waiting for it, and it is not a stream to announce.
+                    flight.record(FlightEvent.ReleasedStreamReadable, streamId.id)
                 } else {
-                    val slot = StreamSlot(streamId)
+                    val slot = StreamSlot(streamId, StreamLifecycle.of(streamId, role))
                     streams[streamId.id] = slot
                     val adapter = DriverStreamAdapter(this, slot)
                     val byteStream =
@@ -3418,31 +3488,19 @@ class QuicheDriver(
                 } else {
                     SendTarget.ConnectedPeer
                 }
-            // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
-            // a backend that throws outside that contract. It normalises into the type — it does not
-            // decide policy. That decision is the exhaustive `when` below, which is what makes adding
-            // a new outcome a compile error rather than a silent inheritance of whatever this branch
-            // happened to do. Letting anything escape would leak an uncaught coroutine failure into
-            // the parent scope, the original defect this site was written to fix.
+            // A send the socket takes at once needs no bound: it cannot have stalled and has no cancellation point
+            // to be mistaken for non-delivery. Only a send that must wait takes the bounded path.
+            flight.record(FlightEvent.SendBegin, written.toLong())
+            val immediate =
+                when (channel) {
+                    is ImmediateUdpSend -> channel.sendNow(scratch.buffer, written, sendTarget)
+                    else -> ImmediateSend.MustWait
+                }
             val outcome =
-                try {
-                    // Bounded, because the driver loop's liveness must not be an external promise.
-                    // `send` is the one call this loop makes into platform code that can suspend
-                    // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
-                    // Network.framework awaits a handler on a serial queue, and a completion that
-                    // never arrives is indistinguishable from one that has not arrived yet. Unbounded,
-                    // that parks the loop itself — and with it every timer the loop arms, including
-                    // the idle timer RFC 9000 SS10 makes responsible for reaping a dead connection, and
-                    // every queued stream command. The connection then cannot die, so nothing
-                    // reconnects: measured in the field as 48.6 hours of total silence from a client
-                    // that had been echoing at full cadence a moment earlier.
-                    flight.record(FlightEvent.SendBegin, written.toLong())
-                    loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
-                        ?: SendOutcome.Stalled(sendStallBound)
-                } catch (ce: kotlinx.coroutines.CancellationException) {
-                    throw ce
-                } catch (untyped: Exception) {
-                    SendOutcome.Failed(DatagramSendError.Transport(untyped))
+                when (immediate) {
+                    ImmediateSend.Sent -> SendOutcome.Sent
+                    is ImmediateSend.Failed -> SendOutcome.Failed(immediate.error)
+                    ImmediateSend.MustWait -> sendBounded(channel, scratch, written, sendTarget)
                 }
             flight.record(
                 FlightEvent.SendEnd,
@@ -3493,6 +3551,33 @@ class QuicheDriver(
             }
         }
     }
+
+    /**
+     * [channel]'s `send`, bounded because the driver loop's liveness must not be an external promise.
+     * `send` is the one call this loop makes into platform code that can suspend indefinitely: io_uring
+     * awaits a completion and Network.framework awaits a handler on a serial queue, and a completion that
+     * never arrives is indistinguishable from one that has not arrived yet. Unbounded, that parks the loop
+     * itself, and with it every timer it arms, the idle timer included, so the connection could never die.
+     * A send that outlives [sendStallBound] is [SendOutcome.Stalled].
+     *
+     * A channel reports failure as a value ([SendOutcome]); the `catch` is only a net for a backend that
+     * throws outside that contract, normalising it into the type. Letting anything escape would leak an
+     * uncaught coroutine failure into the parent scope.
+     */
+    private suspend fun sendBounded(
+        channel: UdpChannel,
+        scratch: SendScratch,
+        written: Int,
+        target: SendTarget,
+    ): SendOutcome =
+        try {
+            loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, target) } }
+                ?: SendOutcome.Stalled(sendStallBound)
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (untyped: Exception) {
+            SendOutcome.Failed(DatagramSendError.Transport(untyped))
+        }
 
     /**
      * Send [lent] again on [entry]'s socket beside the loop, with no bound: this coroutine may wait as
@@ -4276,6 +4361,7 @@ class QuicheDriver(
         latchForClose()
         wireIdScratch.freeNativeMemory()
         commands.close()
+        finishedStreams.close()
         // A driver torn down mid-handshake never confirms it: release whatever waits for that.
         handshakeSettled.complete(HandshakeSettled.Failed)
 
@@ -5077,7 +5163,10 @@ class DriverStreamAdapter(
                 driver.flight.record(FlightEvent.ReadReturned, slot.id.id)
                 driver.readReturned(slot)
             }
-            ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
+            ReadResult.End, ReadResult.Reset -> {
+                driver.readSideFinished(slot)
+                driver.directionOver(slot, StreamDirection.Receive)
+            }
         }
         return result
     }

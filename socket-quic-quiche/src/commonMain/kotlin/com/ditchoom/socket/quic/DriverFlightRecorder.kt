@@ -118,6 +118,9 @@ internal enum class FlightEvent {
     /** A read handed bytes to its caller. arg: the stream id. */
     ReadReturned,
 
+    /** quiche reported readable a stream with no slot that is not a new peer stream. arg: the stream id. */
+    ReleasedStreamReadable,
+
     /** quiche took a datagram. arg: `quiche_conn_recv`'s answer (bytes read, or a negative quiche error). ref: where it arrived. */
     Received,
 
@@ -141,7 +144,7 @@ internal enum class FlightEvent {
             WokeByTimer -> "WokeByTimer ${WakeKind.entries.getOrNull(arg.toInt()) ?: arg}"
             SendBegin -> "SendBegin len=$arg"
             SendEnd -> "SendEnd ${listOf("sent", "failed", "stalled").getOrNull(arg.toInt()) ?: arg}"
-            StreamSignalled, ReaderParked, ReaderResumed, ReadReturned -> "$name stream=$arg"
+            StreamSignalled, ReaderParked, ReaderResumed, ReadReturned, ReleasedStreamReadable -> "$name stream=$arg"
             Received -> "Received rc=$arg from=$ref"
             DroppedFromLeftPath -> "DroppedFromLeftPath port=$arg"
             SendDroppedNoPath -> "SendDroppedNoPath port=$arg"
