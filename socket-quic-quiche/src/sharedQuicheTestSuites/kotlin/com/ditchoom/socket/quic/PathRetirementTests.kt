@@ -904,6 +904,34 @@ class PathRetirementTests {
         }
 
     /**
+     * **At the peer's limit with unused ids of ours left, a migration pushes nothing out.** The peer still
+     * holds ids no path of it uses, so the next probe has one; issuing at the limit would have the peer hold
+     * one id more than it allowed until it applies Retire Prior To, and xquic closes the connection for that
+     * (CONNECTION_ID_LIMIT_ERROR) the moment our client first migrates.
+     */
+    @Test
+    fun aMigrationAtThePeersLimitPushesNothingOutWhileThePeerHoldsAnUnusedIdOfOurs() =
+        runTest {
+            val f = Fixture()
+            f.stub.scidsLeft = 0L
+            f.stub.activeScidCount = 8
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(0, f.stub.newScidCalls, "an id was issued at the peer's limit although it held six unused ones")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **A peer with room for two paths that frees none gets no probe it would drop.** Its
      * `active_connection_id_limit` of 2 caps the paths it holds at two; once the client has moved off the
      * original path, and the peer has retired nothing it was not asked to, a move to a new 4-tuple is

@@ -4231,14 +4231,19 @@ class QuicheDriver(
      */
     private fun issueSpareCids(): Int {
         var count = 0
-        // At the peer's limit with a left path's id still counted: a new id issued with retire_if_needed
-        // asks the peer (Retire Prior To, RFC 9000 §5.1.2) to retire the lowest one, which is the id of the
-        // path left longest ago. Its RETIRE_CONNECTION_ID frees the slot, and the new id becomes the spare
-        // the next probe needs. Below the limit the loop beneath issues a spare without retiring anything.
+        // At the peer's limit with a left path's id still counted and no id of ours left unused by the
+        // peer: a new id issued with retire_if_needed asks the peer (Retire Prior To, RFC 9000 §5.1.2) to
+        // retire the lowest one, which is the id of the path left longest ago. Its RETIRE_CONNECTION_ID frees
+        // the slot, and the new id becomes the spare the next probe needs. While the peer still holds an
+        // unused id of ours the next probe has one already, and nothing is pushed: issuing at the limit makes
+        // the peer briefly hold one id more than it allowed, which RFC 9000 §5.1.1 permits with Retire Prior
+        // To but a peer may still close the connection for (xquic answers CONNECTION_ID_LIMIT_ERROR). Below the
+        // limit the loop beneath issues a spare without retiring anything.
         if (leftPathSourceId == LeftPathSourceId.Owed) {
             leftPathSourceId =
                 when {
                     api.connScidsLeft(conn) > 0L -> LeftPathSourceId.Settled
+                    peerHoldsAnUnusedIdOfOurs() -> LeftPathSourceId.Settled
                     issueOneScid() >= 0 -> {
                         count++
                         retirementsAsked++
@@ -4253,6 +4258,17 @@ class QuicheDriver(
         }
         return count
     }
+
+    /**
+     * Whether the peer holds an id of ours that none of the paths it may still keep uses: our active ids
+     * outnumber the original path and every path moved to. A peer that frees left paths ([PeerPathRoom.Freed])
+     * retires their ids itself, so its capacity comes back without a push.
+     */
+    private fun peerHoldsAnUnusedIdOfOurs(): Boolean =
+        when (val room = peerPathRoom) {
+            PeerPathRoom.Freed -> true
+            is PeerPathRoom.Kept -> api.connActiveScids(conn) > room.movedTo.size + 1
+        }
 
     /**
      * Whether a move to a new 4-tuple would exceed what the peer can hold. A peer keeps a path for each of
