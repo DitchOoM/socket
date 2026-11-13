@@ -6,6 +6,8 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceSink
 import io.netty.handler.codec.quic.QuicPathEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -15,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -50,8 +53,10 @@ class NettyServerActiveMigrationTests {
     fun theClientKeepsMigratingPastItsConnectionIdLimitAgainstANettyServer() =
         runQuicTest(timeout = 120.seconds) {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
-                NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
-                    withQuicConnection("127.0.0.1", server.port, clientOptions, timeout = CONNECTION_BUDGET.scaled()) {
+                val timeline = ClientTimeline()
+                timeline.explaining {
+                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
+                    withQuicConnection("127.0.0.1", server.port, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
                         val stream = openStream()
                         assertEquals("m0", stream.echo("m0"))
                         repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
@@ -64,6 +69,7 @@ class NettyServerActiveMigrationTests {
                         }
                         stream.close()
                     }
+                    }
                 }
             }
         }
@@ -71,9 +77,11 @@ class NettyServerActiveMigrationTests {
     private fun migratesMidTransfer(link: Link) =
         runQuicTest(timeout = 90.seconds) {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
-                NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
+                val timeline = ClientTimeline()
+                timeline.explaining {
+                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
                     link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
-                        withQuicConnection("127.0.0.1", route.clientFacingPort, clientOptions, timeout = CONNECTION_BUDGET.scaled()) {
+                        withQuicConnection("127.0.0.1", route.clientFacingPort, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
                             val stream = openStream()
                             val echoed = EchoedPrefix(PAYLOAD)
                             val originalPort = localPorts().single()
@@ -124,6 +132,7 @@ class NettyServerActiveMigrationTests {
                             assertEquals("after", stream.echo("after"), "the stream on the new path, once the old one is gone")
                             stream.close()
                         }
+                    }
                     }
                 }
             }
@@ -197,6 +206,31 @@ class NettyServerActiveMigrationTests {
     private fun certificate(name: String): File {
         val url = assertNotNull(this::class.java.classLoader.getResource("certs/$name"), "certs/$name is not on the test classpath")
         return File(url.toURI())
+    }
+
+    /** The client's protocol events, the newest [KEPT_EVENTS] of them, attached to a failure so it names what the connection did. */
+    private class ClientTimeline {
+        private val events = ConcurrentLinkedQueue<String>()
+
+        val options: QuicOptions =
+            clientOptions.copy(
+                trace =
+                    QuicTraceCapture(
+                        TraceSink { event ->
+                            events.add(event.toString())
+                            while (events.size > KEPT_EVENTS) events.poll()
+                        },
+                    ),
+            )
+
+        suspend fun explaining(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (failure: Throwable) {
+                failure.addSuppressed(AssertionError("client protocol timeline, newest last:\n" + events.joinToString("\n")))
+                throw failure
+            }
+        }
     }
 
     /** What an echo stream has given back so far, checked against [expected] as it arrives. */
@@ -277,6 +311,7 @@ class NettyServerActiveMigrationTests {
         const val CONNECTION_ID_LIMIT = 4L
         const val MIGRATIONS_PAST_THE_LIMIT = 6
         const val SPARE_ID_ATTEMPTS = 40
+        const val KEPT_EVENTS = 400
 
         val PATH_ONE_WAY_DELAY = 15.milliseconds
         val SPARE_ID_WAIT = 50.milliseconds
