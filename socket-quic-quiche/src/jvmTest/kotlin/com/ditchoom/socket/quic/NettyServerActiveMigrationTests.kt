@@ -57,6 +57,7 @@ class NettyServerActiveMigrationTests {
                 timeline.explaining {
                     NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
                     withQuicConnection("127.0.0.1", server.port, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
+                        timeline.watch((this as QuicheBackedConnection).quicheDriver)
                         val stream = openStream()
                         assertEquals("m0", stream.echo("m0"))
                         repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
@@ -82,6 +83,7 @@ class NettyServerActiveMigrationTests {
                     NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
                     link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
                         withQuicConnection("127.0.0.1", route.clientFacingPort, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
+                            timeline.watch((this as QuicheBackedConnection).quicheDriver)
                             val stream = openStream()
                             val echoed = EchoedPrefix(PAYLOAD)
                             val originalPort = localPorts().single()
@@ -208,9 +210,17 @@ class NettyServerActiveMigrationTests {
         return File(url.toURI())
     }
 
-    /** The client's protocol events, the newest [KEPT_EVENTS] of them, attached to a failure so it names what the connection did. */
+    /**
+     * What the client did, attached to a failure: the newest [KEPT_EVENTS] protocol events, and the
+     * driver's own record. The driver's flight recording is read without the loop, so it answers even
+     * when the loop is stuck; it shows every received datagram's fate (quiche's answer, or dropped as
+     * arriving on a path the driver left) and what the loop last did. The snapshot (paths with their
+     * slot and which one is active, streams, stats) and the client's source connection ids need the
+     * loop, and say so when it does not answer.
+     */
     private class ClientTimeline {
         private val events = ConcurrentLinkedQueue<String>()
+        private val drivers = ConcurrentLinkedQueue<QuicheDriver>()
 
         val options: QuicOptions =
             clientOptions.copy(
@@ -223,15 +233,44 @@ class NettyServerActiveMigrationTests {
                     ),
             )
 
+        fun watch(driver: QuicheDriver) {
+            drivers.add(driver)
+        }
+
         suspend fun explaining(block: suspend () -> Unit) {
             try {
                 block()
             } catch (failure: AssertionError) {
                 // A new error rather than a suppressed one: coroutine stack-trace recovery copies the
                 // failure on its way out and the copy drops what was attached to the original.
-                throw AssertionError("${failure.message}\nclient protocol timeline (${events.size} events), newest last:\n${events.joinToString("\n")}", failure)
+                throw AssertionError("${failure.message}\n${report()}", failure)
             }
         }
+
+        private suspend fun report(): String =
+            buildString {
+                for (driver in drivers) {
+                    append(
+                        when (val recording = driver.flightRecording()) {
+                            FlightRecording.Off -> "driver flight recorder: off"
+                            is FlightRecording.Recorded -> recording.render()
+                        },
+                    )
+                    append("\ndriver snapshot: ").append(answerOrSilence { driver.stallSnapshot().toString() })
+                    append("\nclient source connection ids: ")
+                        .append(answerOrSilence { driver.sourceIds().joinToString { id -> id.toHexString() } })
+                    append('\n')
+                }
+                append("client protocol timeline (").append(events.size).append(" events), newest last:\n")
+                events.forEach { append(it).append('\n') }
+            }
+
+        private suspend fun answerOrSilence(read: suspend () -> String): String =
+            try {
+                withTimeout(LOOP_ANSWER_BUDGET) { read() }
+            } catch (_: TimeoutCancellationException) {
+                "the driver loop did not answer within $LOOP_ANSWER_BUDGET"
+            }
     }
 
     /** What an echo stream has given back so far, checked against [expected] as it arrives. */
@@ -313,6 +352,7 @@ class NettyServerActiveMigrationTests {
         const val MIGRATIONS_PAST_THE_LIMIT = 6
         const val SPARE_ID_ATTEMPTS = 40
         const val KEPT_EVENTS = 400
+        val LOOP_ANSWER_BUDGET = 2.seconds
 
         val PATH_ONE_WAY_DELAY = 15.milliseconds
         val SPARE_ID_WAIT = 50.milliseconds

@@ -76,4 +76,21 @@ internal data class PathView(
     val key: PathKey,
     val egress: PathEgressKind,
     val reader: PathReader,
-)
+    val slot: PathSlot,
+    val use: PathUse,
+) {
+    override fun toString(): String = "PathView(key=$key, egress=$egress, reader=$reader, slot=${slot.describe()}, use=$use)"
+}
+
+private fun PathSlot.describe(): String =
+    when (this) {
+        is PathSlot.Probing -> "Probing(dcidSeq=$dcidSeq)"
+        is PathSlot.Unanswered -> "Unanswered(dcidSeq=$dcidSeq, local=$localEndpoint)"
+        is PathSlot.Answered -> "Answered(dcidSeq=$dcidSeq, local=$localEndpoint)"
+        is PathSlot.Validated -> "Validated(dcidSeq=$dcidSeq)"
+        is PathSlot.Active -> "Active(dcidSeq=$dcidSeq)"
+        PathSlot.Abandoned -> "Abandoned"
+    }
+
+/** Whether a path is the one the connection sends on. */
+internal enum class PathUse { Active, Standby }

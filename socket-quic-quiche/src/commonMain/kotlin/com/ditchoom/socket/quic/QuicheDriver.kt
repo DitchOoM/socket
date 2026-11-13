@@ -2448,6 +2448,7 @@ class QuicheDriver(
                         is PacketSource.FromPath -> {
                             val entry = paths[source.key]
                             if (entry == null) {
+                                flight.record(FlightEvent.DroppedFromLeftPath, source.key.port.toLong())
                                 // The packet arrived on a path that has since been retired — a
                                 // reader's final datagrams can be queued behind their own teardown.
                                 // Feeding it under another path's recv_info would tell quiche it
@@ -2469,11 +2470,20 @@ class QuicheDriver(
                 // so the owner needs no re-pairing — only the fence, which costs nothing per datagram
                 // where an extra object on the receive hot path would not.
                 receivedSinceFlush++
-                try {
-                    api.connRecv(conn, addr, cmd.len, info)
-                } finally {
-                    reachabilityFence(cmd.buf)
-                }
+                val received =
+                    try {
+                        api.connRecv(conn, addr, cmd.len, info)
+                    } finally {
+                        reachabilityFence(cmd.buf)
+                    }
+                flight.record(
+                    FlightEvent.Received,
+                    received.toLong(),
+                    when (source) {
+                        is PacketSource.FromPath -> source.key
+                        is PacketSource.FromServerSocket -> PacketSource.FromServerSocket::class
+                    },
+                )
                 // quiche copied what it needs during connRecv: the buffer goes back to its pool and
                 // the server may release the cached recv_info the packet was carrying.
                 cmd.release(QuicheCmd.ReleaseDoor.Executed)
@@ -2701,6 +2711,15 @@ class QuicheDriver(
      * owe the peer a frame, until the flush that sends it. Loop only.
      */
     private var quicheOwesAFlush = false
+
+    /**
+     * Whether the source connection id of a path this client has left still has to be pushed out.
+     * quiche links one of our source ids to every path the peer has answered on, and only the peer's
+     * RETIRE_CONNECTION_ID unlinks it. A peer that retires nothing on its own (any quiche-based server
+     * that does not migrate itself) leaves the left path's id holding one of the slots its
+     * `active_connection_id_limit` allows, and once every slot is linked quiche refuses the next probe.
+     */
+    private var leftPathSourceId: LeftPathSourceId = LeftPathSourceId.Settled
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
@@ -3789,7 +3808,15 @@ class QuicheDriver(
             when (probe) {
                 is ProbeOutcome.Rejected -> {
                     releaseUnprobedPath(newPath)
-                    cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
+                    cmd.result.complete(
+                        when (probe.code) {
+                            // A spare destination id was checked above; this is quiche finding no source id
+                            // of ours free to bind to the new path. Either way there is nothing to move onto
+                            // until the peer retires one of ours or issues one of its own.
+                            QUICHE_ERR_OUT_OF_IDENTIFIERS -> MigrationResult.Unmoved.Failed.NoSpareConnectionId
+                            else -> MigrationResult.Unmoved.Failed.ProbeRejected(probe.code)
+                        },
+                    )
                     return
                 }
 
@@ -3985,6 +4012,7 @@ class QuicheDriver(
                 val previous = active
                 entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
                 active = entry
+                leftPathSourceId = LeftPathSourceId.Owed
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
                 // unanswered expiries is re-baselined here, in the same statement sequence
@@ -4093,27 +4121,51 @@ class QuicheDriver(
      */
     private fun issueSpareCids(): Int {
         var count = 0
+        // At the peer's limit with a left path's id still counted: a new id issued with retire_if_needed
+        // asks the peer (Retire Prior To, RFC 9000 §5.1.2) to retire the lowest one, which is the id of the
+        // path left longest ago. Its RETIRE_CONNECTION_ID frees the slot, and the new id becomes the spare
+        // the next probe needs. Below the limit the loop beneath issues a spare without retiring anything.
+        if (leftPathSourceId == LeftPathSourceId.Owed) {
+            leftPathSourceId =
+                when {
+                    api.connScidsLeft(conn) > 0L -> LeftPathSourceId.Settled
+                    issueOneScid() >= 0 -> {
+                        count++
+                        LeftPathSourceId.Settled
+                    }
+                    else -> LeftPathSourceId.Owed
+                }
+        }
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
-            val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
-            val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
-            repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
-            token.resetForRead()
-            val rc =
-                api.connNewScid(
-                    conn,
-                    scid.driverOwnedNativeAddress(),
-                    QUIC_ISSUED_CONN_ID_LEN,
-                    token.driverOwnedNativeAddress(),
-                    true,
-                    addr(seqScratch),
-                )
-            scid.freeNativeMemory()
-            token.freeNativeMemory()
-            if (rc < 0) break
+            if (issueOneScid() < 0) break
             count++
-            quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
         }
         return count
+    }
+
+    /**
+     * Issue one new source connection id (`quiche_conn_new_scid` with retire_if_needed): its sequence
+     * number, or a negative quiche error. At the peer's limit quiche raises Retire Prior To past the lowest
+     * id still in use instead of refusing.
+     */
+    private fun issueOneScid(): Int {
+        val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
+        val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
+        repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
+        token.resetForRead()
+        val rc =
+            api.connNewScid(
+                conn,
+                scid.driverOwnedNativeAddress(),
+                QUIC_ISSUED_CONN_ID_LEN,
+                token.driverOwnedNativeAddress(),
+                true,
+                addr(seqScratch),
+            )
+        scid.freeNativeMemory()
+        token.freeNativeMemory()
+        if (rc >= 0) quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
+        return rc
     }
 
     /**
@@ -4488,6 +4540,8 @@ class QuicheDriver(
                                 null -> PathReader.None
                                 else -> if (job.isActive) PathReader.Running else PathReader.Ended
                             },
+                        slot = entry.slot,
+                        use = if (entry === active) PathUse.Active else PathUse.Standby,
                     )
                 },
         )

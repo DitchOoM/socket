@@ -867,6 +867,43 @@ class PathRetirementTests {
         }
 
     /**
+     * **At the peer's limit, a migration pushes the left path's source id out.** quiche links one of
+     * our source ids to each path the peer answered on, and only the peer's RETIRE_CONNECTION_ID unlinks
+     * it; a peer that retires nothing on its own leaves the left path's id occupying a slot, and once all
+     * are linked the next probe is refused. With no capacity left (`scids_left` = 0), the switch must be
+     * followed by exactly one new id issued with retire_if_needed (Retire Prior To past the lowest), and
+     * no more on later wakes.
+     */
+    @Test
+    fun aMigrationAtThePeersLimitIssuesOneIdThatRetiresTheLeftPathsId() =
+        runTest {
+            val f = Fixture()
+            f.stub.scidsLeft = 0L
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.wake()
+                runCurrent()
+                assertEquals(0, f.stub.newScidCalls, "at the limit with nothing left behind, no id is owed")
+
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "the left path's source id was never pushed out")
+
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "one left path owes one id, not one per wake")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
      *
      * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring
@@ -885,10 +922,7 @@ class PathRetirementTests {
                 val result = f.migrate()
                 runCurrent()
 
-                assertEquals(
-                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_OUT_OF_IDENTIFIERS),
-                    result.await(),
-                )
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, result.await())
                 assertEquals(
                     emptyList(),
                     f.stub.retiredDcids,

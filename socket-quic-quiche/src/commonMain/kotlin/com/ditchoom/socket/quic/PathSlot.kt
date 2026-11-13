@@ -111,3 +111,12 @@ internal sealed interface PathSlot {
      */
     data object Abandoned : PathSlot
 }
+
+/** Whether a path this client left still holds one of its source connection ids that must be pushed out. */
+internal enum class LeftPathSourceId {
+    /** Nothing owed. */
+    Settled,
+
+    /** A migration has left a path whose source id still occupies a slot under the peer's limit. */
+    Owed,
+}
