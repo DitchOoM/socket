@@ -36,8 +36,10 @@ permissions:
   contents: read
   actions: read
 
+# A nightly run replaces the previous one; a manual run never cancels another (a recording, or a re-run of
+# one of its cells, would be lost).
 concurrency:
-  group: quic-interop-${{ github.ref }}
+  group: quic-interop-${{ github.ref }}-${{ github.event_name == 'schedule' && 'nightly' || github.run_id }}
   cancel-in-progress: true
 
 jobs:

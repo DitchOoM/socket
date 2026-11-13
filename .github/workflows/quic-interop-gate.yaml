@@ -197,6 +197,14 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The runner's own verdict lines for every test that did not succeed, small enough to keep with the
+          # results (the full logs, captures included, are a separate artifact of a few hundred MB).
+          find /tmp/interop -name output.txt | sort | while read -r out; do
+            if grep -q -E 'Test failed|Expected|Didn.t|not compliant|exited with code [1-9]|failed:|Exception' "$out"; then
+              echo "== ${out#/tmp/interop/}"
+              grep -E 'Test failed|Expected|Didn.t|not compliant|exited with code [1-9]|failed:|Exception|took longer|Got:|Wrong|Missing|check' "$out" | sed 's/\x1b\[[0-9;]*m//g' | tail -15
+            fi
+          done > "$results/${DIRECTION}__${PEER}.reasons.txt" || true
           ls -la "$results"
 
       - uses: actions/upload-artifact@v7
