@@ -63,18 +63,26 @@ internal fun sliceConfig(
     return config
 }
 
+/** A stream whose first byte is this is echoed by a handler that blocks its thread for [BLOCK_MILLIS] per chunk. */
+internal const val BLOCK_MARKER: Byte = 'B'.code.toByte()
+internal const val BLOCK_MILLIS = 100L
+
 /** The handler of QuicLoopback.serveStream: echo a stream that starts with ECHO_MARKER, drain any other. */
 internal suspend fun serveStream(stream: SliceStream) {
     var first = true
     var echo = false
+    var blocking = false
     while (true) {
         when (val r = stream.read()) {
             is NativeBuf ->
                 try {
                     if (first) {
                         first = false
-                        echo = r.remaining > 0 && r.bb.get(r.position) == ECHO_MARKER
+                        val b = if (r.remaining > 0) r.bb.get(r.position) else 0
+                        blocking = b == BLOCK_MARKER
+                        echo = b == ECHO_MARKER || blocking
                     }
+                    if (blocking) Thread.sleep(BLOCK_MILLIS)
                     if (echo) stream.write(r)
                 } finally {
                     stream.release(r)
@@ -83,6 +91,29 @@ internal suspend fun serveStream(stream: SliceStream) {
         }
     }
     stream.shutdownSend()
+}
+
+/** The same handler over writes that are handed to the driver with their buffer and do not wait. */
+internal suspend fun serveStreamHandingOver(stream: SliceStream) {
+    var first = true
+    var echo = false
+    var blocking = false
+    while (true) {
+        when (val r = stream.read()) {
+            is NativeBuf -> {
+                if (first) {
+                    first = false
+                    val b = if (r.remaining > 0) r.bb.get(r.position) else 0
+                    blocking = b == BLOCK_MARKER
+                    echo = b == ECHO_MARKER || blocking
+                }
+                if (blocking) Thread.sleep(BLOCK_MILLIS)
+                if (echo) stream.send(r) else stream.release(r)
+            }
+            SliceEnd -> break
+        }
+    }
+    stream.finish()
 }
 
 /**
@@ -139,6 +170,11 @@ private class Timed(
 internal sealed interface HandlerThreads : AutoCloseable {
     val dispatcher: CoroutineDispatcher
 
+    /** Times a handler thread was woken for work. */
+    val wakes: LongAdder
+
+    val hooks: LoopHooks get() = NoHooks
+
     fun threads(): List<Thread>
 }
 
@@ -172,11 +208,16 @@ internal class HandOffThreads(
 
     private val inner = pool.asCoroutineDispatcher()
     override val dispatcher: CoroutineDispatcher get() = this
+    override val wakes = LongAdder()
 
     override fun dispatch(
         context: CoroutineContext,
         block: Runnable,
-    ) = inner.dispatch(context, if (probe == null) block else Timed(block, probe))
+    ) {
+        // Every hand-off of this pool goes to a parked thread, or starts one.
+        wakes.increment()
+        inner.dispatch(context, if (probe == null) block else Timed(block, probe))
+    }
 
     override fun threads(): List<Thread> = started.toList()
 
@@ -204,6 +245,7 @@ internal class QueueThreads(
     private val workers = Array(size) { Worker(it + 1) }
 
     override val dispatcher: CoroutineDispatcher get() = this
+    override val wakes = LongAdder()
 
     init {
         workers.forEach { it.thread.start() }
@@ -217,6 +259,7 @@ internal class QueueThreads(
         for (w in workers) {
             if (w.state.get() == PARKED && w.state.compareAndSet(PARKED, NOTIFIED)) {
                 probe?.woke?.increment()
+                wakes.increment()
                 LockSupport.unpark(w.thread)
                 return
             }
@@ -256,80 +299,379 @@ internal class QueueThreads(
     }
 }
 
+private const val STALL_NANOS = 1_000_000L
+private val SPIN_WHILE_LOOP_AWAKE = System.getProperty("slice.spinWhileLoopAwake") != "false"
+private const val BATCH_CHUNK = 32
+
 /**
- * One slice server on 127.0.0.1 and [connectionCount] client connections to it. The server has one loop
- * thread (as a Netty QUIC server has one event loop per UDP socket); the clients share [clientLoops].
+ * Handler threads that belong to one loop, in one of two shapes.
  *
- * placement: `loop` (handler on the server's loop), `owned` (hand-off pool), `ownedq` (queue pool).
+ * batched: the loop keeps the resumes one pass produced and hands them over at the end of the pass, at most
+ * [BATCH_CHUNK] to a thread, waking each thread once; a handler's writes wait in its thread's batch and reach
+ * the loop as one task when the batch is done.
+ *
+ * affine (not batched): one of the threads is the loop's own. A resume goes to it at once; it spins for
+ * [spinNanos] after its last piece of work before it parks, so while the loop is busy it is never woken.
+ *
+ * Either way a handler that blocks does not hold the others: a thread that has been in one resume for more
+ * than [STALL_NANOS] is passed over, and what waits behind it is taken by another thread.
+ */
+internal class LoopHandlers(
+    private val batched: Boolean,
+    size: Int,
+    private val spinNanos: Long,
+) : CoroutineDispatcher(),
+    HandlerThreads,
+    LoopHooks {
+    private lateinit var loop: SliceLoop
+    private val workers = Array(size) { Worker(it) }
+    private val passResumes = ArrayList<Runnable>()
+    private val outstanding = AtomicInteger()
+
+    @Volatile private var primary = 0
+
+    @Volatile private var running = true
+    override val dispatcher: CoroutineDispatcher get() = this
+    override val wakes = LongAdder()
+    override val hooks: LoopHooks get() = this
+    val steals = LongAdder()
+
+    override fun attach(loop: SliceLoop) {
+        this.loop = loop
+        workers.forEach { it.start() }
+    }
+
+    override fun outstanding(): Int = if (batched) 0 else outstanding.get()
+
+    override fun dispatch(
+        context: CoroutineContext,
+        block: Runnable,
+    ) {
+        outstanding.incrementAndGet()
+        if (batched && loop.isLoopThread) {
+            passResumes.add(block)
+            return
+        }
+        val w = pick()
+        w.inbox.add(block)
+        wake(w)
+    }
+
+    /** The thread a resume goes to now: the loop's own, unless it is stuck in a resume. */
+    private fun pick(): Worker {
+        val now = System.nanoTime()
+        var i = primary
+        repeat(workers.size) {
+            val w = workers[i]
+            if (!w.stalled(now)) {
+                if (i != primary) primary = i
+                return w
+            }
+            i = (i + 1) % workers.size
+        }
+        return workers[primary]
+    }
+
+    private fun wake(w: Worker) {
+        if (w.state.get() == PARKED && w.state.compareAndSet(PARKED, NOTIFIED)) {
+            wakes.increment()
+            LockSupport.unpark(w)
+        }
+    }
+
+    override fun endPass(now: Long): Long {
+        if (passResumes.isNotEmpty()) {
+            var from = 0
+            var i = 0
+            while (from < passResumes.size) {
+                var w = workers[i % workers.size]
+                var tries = 0
+                while (w.stalled(now) && tries < workers.size) {
+                    i++
+                    tries++
+                    w = workers[i % workers.size]
+                }
+                val to = minOf(from + BATCH_CHUNK, passResumes.size)
+                for (k in from until to) w.inbox.add(passResumes[k])
+                wake(w)
+                from = to
+                i++
+            }
+            passResumes.clear()
+        }
+        var recheck = NEVER
+        for (w in workers) {
+            val began = w.busySince
+            if (began == 0L) continue
+            val waits = !w.inbox.isEmpty() || !w.outbox.isEmpty()
+            if (!waits) continue
+            if (now - began > STALL_NANOS) {
+                // Stuck in a resume: its finished writes go out now, and another thread takes what waits behind it.
+                w.flushTask.run()
+                if (!w.inbox.isEmpty()) workers.firstOrNull { it !== w && it.state.get() == PARKED }?.let { wake(it) }
+            } else if (began + STALL_NANOS < recheck) {
+                recheck = began + STALL_NANOS
+            }
+        }
+        return recheck
+    }
+
+    override fun threads(): List<Thread> = workers.toList()
+
+    override fun close() {
+        running = false
+        workers.forEach { LockSupport.unpark(it) }
+    }
+
+    private inner class Worker(
+        private val index: Int,
+    ) : BatchingThread("slice-handler-${if (batched) "b" else "a"}${index + 1}") {
+        val inbox = ConcurrentLinkedQueue<Runnable>()
+        val outbox = ConcurrentLinkedQueue<Runnable>()
+        val state = AtomicInteger(RUNNING)
+
+        /** When the resume this thread is in began; 0 between resumes. */
+        @Volatile var busySince = 0L
+
+        /** Loop thread: runs the writes this thread's handlers have handed over so far. */
+        val flushTask =
+            Runnable {
+                while (true) {
+                    val op = outbox.poll() ?: break
+                    op.run()
+                }
+            }
+
+        init {
+            isDaemon = true
+        }
+
+        fun stalled(now: Long): Boolean {
+            val began = busySince
+            return began != 0L && now - began > STALL_NANOS
+        }
+
+        override fun batch(op: Runnable) {
+            if (batched) outbox.add(op) else loop.execute(op)
+        }
+
+        private fun steal(): Runnable? {
+            for (o in workers) {
+                if (o === this) continue
+                val began = o.busySince
+                if (began != 0L && System.nanoTime() - began > STALL_NANOS) {
+                    val t = o.inbox.poll()
+                    if (t != null) {
+                        steals.increment()
+                        return t
+                    }
+                }
+            }
+            return null
+        }
+
+        override fun run() {
+            var idleSince = 0L
+            while (running) {
+                val task = inbox.poll() ?: steal()
+                if (task != null) {
+                    busySince = System.nanoTime()
+                    try {
+                        task.run()
+                    } finally {
+                        busySince = 0L
+                        outstanding.decrementAndGet()
+                    }
+                    idleSince = 0L
+                    continue
+                }
+                if (!outbox.isEmpty()) loop.execute(flushTask)
+                if (!batched) {
+                    // The loop's own handler thread stays awake while the loop is at work or was a moment ago.
+                    val now = System.nanoTime()
+                    if (idleSince == 0L) idleSince = now
+                    if (index == primary && ((SPIN_WHILE_LOOP_AWAKE && !loop.asleep) || now - idleSince < spinNanos)) {
+                        Thread.onSpinWait()
+                        continue
+                    }
+                }
+                state.set(PARKED)
+                if (inbox.isEmpty() && steal().also { if (it != null) inbox.add(it) } == null) {
+                    while (state.get() == PARKED && running) LockSupport.park(this)
+                }
+                state.set(RUNNING)
+                idleSince = 0L
+            }
+        }
+    }
+}
+
+/**
+ * The monitor of the on-loop design: every half millisecond while a loop is awake it looks at the unit of
+ * user code each loop is in, and hands a loop whose unit has run past [budgetNanos] to a successor thread.
+ * It parks when every loop is asleep and is woken by the first loop that wakes.
+ */
+internal class Watchdog(
+    private val loops: List<SliceLoop>,
+    private val budgetNanos: Long,
+) : Thread("slice-watchdog") {
+    @Volatile private var running = true
+
+    @Volatile private var parked = false
+    val ticks = LongAdder()
+
+    init {
+        isDaemon = true
+        for (l in loops) l.onWake = { if (parked) LockSupport.unpark(this) }
+    }
+
+    override fun run() {
+        var quiet = 0
+        while (running) {
+            LockSupport.parkNanos(this, 500_000L)
+            ticks.increment()
+            val now = System.nanoTime()
+            var anyAwake = false
+            for (l in loops) {
+                l.checkOverrun(now, budgetNanos)
+                if (!l.asleep) anyAwake = true
+            }
+            quiet = if (anyAwake) 0 else quiet + 1
+            if (quiet >= 4) {
+                parked = true
+                if (loops.all { it.asleep }) LockSupport.park(this)
+                parked = false
+                quiet = 0
+            }
+        }
+    }
+
+    fun close() {
+        running = false
+        LockSupport.unpark(this)
+    }
+}
+
+/**
+ * A slice server on 127.0.0.1 with [serverLoops] loop threads (a UDP socket each, as a Netty QUIC server has
+ * one event loop per socket) and [connectionCount] client connections spread over them; the clients share
+ * [clientLoops] loops.
+ *
+ * placement: `loop` (handler on the server's loop), `watch` (on the loop, with the watchdog), `owned` (hand-off
+ * pool), `ownedq` (queue pool), `ownedw` (hand-off pool, writes handed over), `batched`, `affine`, `adaptive`
+ * (starts on the batched threads, moves to the loop while its resumes stay short, watchdog on).
+ * callerRuns: client threads enter their connection to write; with `owned`/`ownedq` the handler threads do too.
  */
 internal class SliceLoopback(
-    placementName: String,
+    private val placementName: String,
     holdAck: Boolean,
     callerRuns: Boolean,
     connectionCount: Int = 1,
     clientLoops: Int = 1,
+    serverLoops: Int = 1,
 ) : AutoCloseable {
     private val api = loadQuicheApi()
-    private val settings = SliceSettings(holdAck, callerRuns)
     val probe: HandoffProbe? = if (System.getProperty("slice.probe") == "true") HandoffProbe() else null
-    private val handlerThreads: HandlerThreads? =
-        when (placementName) {
-            "loop" -> null
-            "owned" -> HandOffThreads(probe)
-            "ownedq" -> QueueThreads((Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 8), probe)
-            else -> error("placement must be loop, owned or ownedq, was $placementName")
-        }
-    private val serverLoop: SliceLoop
+    private val handlerThreads = ArrayList<HandlerThreads>()
+    private val servers: List<SliceLoop>
     private val clients: List<SliceLoop>
+    private val watchdog: Watchdog?
     val connections: List<SliceConn>
     val connection: SliceConn get() = connections[0]
 
     init {
-        val placement = if (handlerThreads == null) HandlerPlacement.OnLoop else HandlerPlacement.Owned(handlerThreads.dispatcher)
-        val serverChannel = openUdp()
-        serverLoop = SliceLoop("slice-server-loop", api, sliceConfig(api, server = true), settings, placement, ::serveStream)
-        serverLoop.start()
-        serverLoop.serve(serverChannel)
-        val serverAddress = serverChannel.localAddress as InetSocketAddress
+        val cores = Runtime.getRuntime().availableProcessors()
+        val kept = (cores / 2).coerceIn(2, 8)
+        val watch = placementName == "watch" || placementName == "adaptive"
+        val serverSettings = SliceSettings(holdAck, callerRuns && (placementName == "owned" || placementName == "ownedq"), watch)
+        val handingOver = placementName == "ownedw" || placementName == "batched" || placementName == "affine" || placementName == "adaptive"
+        val serverConfig = sliceConfig(api, server = true)
+        val addresses = ArrayList<InetSocketAddress>()
+        servers =
+            List(serverLoops) { i ->
+                val threads: HandlerThreads? =
+                    when (placementName) {
+                        "loop", "watch" -> null
+                        "owned", "ownedw" -> HandOffThreads(probe)
+                        "ownedq" -> QueueThreads(kept, probe)
+                        "batched", "adaptive" -> LoopHandlers(batched = true, size = kept, spinNanos = 0)
+                        "affine" -> LoopHandlers(batched = false, size = 3, spinNanos = AFFINE_SPIN_NANOS)
+                        else -> error("unknown placement $placementName")
+                    }
+                if (threads != null) handlerThreads.add(threads)
+                val placement =
+                    when {
+                        threads == null -> HandlerPlacement.OnLoop
+                        placementName == "adaptive" -> HandlerPlacement.Adaptive(threads.dispatcher, threads.hooks)
+                        else -> HandlerPlacement.Owned(threads.dispatcher, threads.hooks)
+                    }
+                val handler: suspend (SliceStream) -> Unit = if (handingOver) ::serveStreamHandingOver else ::serveStream
+                val channel = openUdp()
+                addresses.add(channel.localAddress as InetSocketAddress)
+                SliceLoop("slice-server-loop${i + 1}", api, serverConfig, serverSettings, placement, handler).also {
+                    it.start()
+                    it.serve(channel)
+                }
+            }
+        watchdog = if (watch) Watchdog(servers, WATCH_BUDGET_NANOS).also { it.start() } else null
+        val clientSettings = SliceSettings(holdAck, callerRuns)
         val clientConfig = sliceConfig(api, server = false)
         clients =
             List(clientLoops) { i ->
-                SliceLoop("slice-client-loop-${i + 1}", api, clientConfig, settings, HandlerPlacement.OnLoop) {}.also { it.start() }
+                SliceLoop("slice-client-loop${i + 1}", api, clientConfig, clientSettings, HandlerPlacement.OnLoop) {}.also { it.start() }
             }
-        connections = List(connectionCount) { i -> clients[i % clientLoops].connect(serverAddress) }
+        connections = List(connectionCount) { i -> clients[i % clientLoops].connect(addresses[i % serverLoops]) }
     }
 
-    fun serverThreads(): List<Thread> = listOf(serverLoop.thread) + (handlerThreads?.threads() ?: emptyList())
+    fun serverThreads(): List<Thread> =
+        servers.flatMap { it.threads() } + handlerThreads.flatMap { it.threads() } + listOfNotNull(watchdog)
+
+    fun clientLoopThreads(): List<Thread> = clients.flatMap { it.threads() }
 
     /** Per-operation counts over everything since the loops started, both endpoints together. */
     fun report(ops: Long): String {
-        val s = serverLoop.counts
         val o = ops.coerceAtLeast(1).toDouble()
 
         fun per(v: Long) = "%.2f".format(v / o)
 
-        fun clientSum(f: (SliceCounts) -> LongAdder) = clients.sumOf { f(it.counts).sum() }
+        fun server(f: (SliceCounts) -> LongAdder) = servers.sumOf { f(it.counts).sum() }
 
-        fun both(f: (SliceCounts) -> LongAdder) = f(s).sum() + clientSum(f)
+        fun client(f: (SliceCounts) -> LongAdder) = clients.sumOf { f(it.counts).sum() }
+
+        fun both(f: (SliceCounts) -> LongAdder) = server(f) + client(f)
+        val handlerWakes = handlerThreads.sumOf { it.wakes.sum() }
+        val wakeUps = server { it.blockingSelects } + handlerWakes + client { it.blockingSelects } + client { it.resumesAcrossThreads }
         val text =
             "# slice counts per op over $ops ops: datagrams ${per(both { it.datagramsSent })}, " +
                 "conn_send ${per(both { it.connSendCalls })}, conn_recv ${per(both { it.connRecvCalls })}, " +
-                "loop sleeps server ${per(s.blockingSelects.sum())} client ${per(clientSum { it.blockingSelects })}, " +
-                "resumes across threads server ${per(s.resumesAcrossThreads.sum())} client ${per(clientSum { it.resumesAcrossThreads })}, " +
-                "loop tasks server ${per(s.tasks.sum())} client ${per(clientSum { it.tasks })}, " +
-                "entered by caller server ${per(s.enteredByCaller.sum())} client ${per(clientSum { it.enteredByCaller })}, " +
+                "WAKE-UPS ${per(wakeUps)} = server loop ${per(server { it.blockingSelects })} + handler threads ${per(handlerWakes)} + " +
+                "client loops ${per(client { it.blockingSelects })} + callers ${per(client { it.resumesAcrossThreads })}, " +
+                "resumes handed to handler threads ${per(server { it.resumesAcrossThreads })}, " +
+                "loop tasks server ${per(server { it.tasks })} client ${per(client { it.tasks })}, " +
+                "entered by caller server ${per(server { it.enteredByCaller })} client ${per(client { it.enteredByCaller })}, " +
                 "left for the thread inside ${per(both { it.handedToOwner })}, " +
                 "held flushes ${per(both { it.heldFlushes })}, send drops ${both { it.sendDrops }}, " +
-                "send errors ${both { it.sendErrors }}, violations ${both { it.violations }}"
+                "send errors ${both { it.sendErrors }}, violations ${both { it.violations }}, " +
+                "loop takeovers ${server { it.takeovers }}, promotions ${server { it.promotions }}, demotions ${server { it.demotions }}, " +
+                "stolen resumes ${handlerThreads.filterIsInstance<LoopHandlers>().sumOf { it.steals.sum() }}" +
+                (if (watchdog == null) "" else ", watchdog ticks ${watchdog.ticks.sum()}")
         return if (probe == null) text else text + "\n" + probe.report()
     }
 
-    fun violations(): Long = serverLoop.counts.violations.sum() + clients.sumOf { it.counts.violations.sum() }
+    fun violations(): Long = servers.sumOf { it.counts.violations.sum() } + clients.sumOf { it.counts.violations.sum() }
+
+    fun takeovers(): Long = servers.sumOf { it.counts.takeovers.sum() }
 
     override fun close() {
+        watchdog?.close()
         clients.forEach { it.close() }
-        serverLoop.close()
-        handlerThreads?.close()
+        servers.forEach { it.close() }
+        handlerThreads.forEach { it.close() }
+    }
+
+    private companion object {
+        const val WATCH_BUDGET_NANOS = 1_000_000L
+        val AFFINE_SPIN_NANOS = (System.getProperty("slice.affineSpinMicros") ?: "50").toLong() * 1000
     }
 }
 

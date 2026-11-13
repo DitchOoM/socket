@@ -27,7 +27,17 @@ internal class LoadWindow(
     private val warmupS: Long,
     private val measureS: Long,
     private val serverThreads: () -> List<Thread>,
+    private val clientLoopThreads: () -> List<Thread> = { emptyList() },
+    private val appThreads: () -> List<Thread> = { emptyList() },
 ) {
+    @Volatile private var clientLoopCpu = 0L
+
+    @Volatile private var appCpu = 0L
+
+    fun clientLoopCpuNanos(): Long = clientLoopCpu
+
+    fun appCpuNanos(): Long = appCpu
+
     @Volatile private var startNs = Long.MAX_VALUE
 
     @Volatile private var processCpu = 0L
@@ -42,9 +52,13 @@ internal class LoadWindow(
             Thread.sleep(warmupS * 1000)
             val p0 = os.processCpuTime
             val s0 = cpuOf(serverThreads())
+            val c0 = cpuOf(clientLoopThreads())
+            val a0 = cpuOf(appThreads())
             Thread.sleep(measureS * 1000)
             processCpu = os.processCpuTime - p0
             serverCpu = cpuOf(serverThreads()) - s0
+            clientLoopCpu = cpuOf(clientLoopThreads()) - c0
+            appCpu = cpuOf(appThreads()) - a0
             ended = true
         }
     }
@@ -67,14 +81,17 @@ internal fun latencyLoad(
     warmupS: Long,
     measureS: Long,
     serverThreads: () -> List<Thread>,
+    clientLoopThreads: () -> List<Thread> = { emptyList() },
     worker: (index: Int, record: (nanos: Long) -> Unit, done: () -> Boolean) -> Unit,
 ) {
-    val window = LoadWindow(warmupS, measureS, serverThreads)
+    val apps = java.util.concurrent.ConcurrentLinkedQueue<Thread>()
+    val window = LoadWindow(warmupS, measureS, serverThreads, clientLoopThreads) { apps.toList() }
     val lat = Array(m) { LongArray((40_000_000 / m).coerceIn(20_000, 1_500_000)) }
     val counts = IntArray(m)
     val workers =
         List(m) { i ->
             thread(name = "load-app-$i") {
+                apps.add(Thread.currentThread())
                 worker(
                     i,
                     { dt -> if (window.measuring() && counts[i] < lat[i].size) lat[i][counts[i]++] = dt },
@@ -96,7 +113,7 @@ internal fun latencyLoad(
     p99s.sort()
     val total = counts.sum().coerceAtLeast(1)
     println(
-        "%-10s M=%4d  agg %9.0f op/s  per-conn p50 med %8.1f us  p99 med %8.1f us  p99 worst %9.1f us  process cpu %7.1f us/op  server cpu %7.1f us/op  (%5.2f cores)"
+        "%-10s M=%4d  agg %9.0f op/s  per-conn p50 med %8.1f us  p99 med %8.1f us  p99 worst %9.1f us  process cpu %7.1f us/op  server cpu %7.1f us/op  client loops %7.1f us/op  app threads %7.1f us/op  (%5.2f cores)"
             .format(
                 label,
                 m,
@@ -106,6 +123,8 @@ internal fun latencyLoad(
                 p99s.lastOrNull() ?: Double.NaN,
                 window.processCpuNanos() / 1000.0 / total,
                 window.serverCpuNanos() / 1000.0 / total,
+                window.clientLoopCpuNanos() / 1000.0 / total,
+                window.appCpuNanos() / 1000.0 / total,
                 window.processCpuNanos() / 1e9 / window.seconds(),
             ),
     )
@@ -126,7 +145,7 @@ fun main(args: Array<String>) {
     for (m in ms) {
         val loopback = SliceLoopback(placement, holdAck = true, callerRuns = callerRuns, connectionCount = m, clientLoops = minOf(clientLoops, m))
         val ops = AtomicLong()
-        latencyLoad("slice", m, warmupS, measureS, loopback::serverThreads) { i, record, done ->
+        latencyLoad("slice", m, warmupS, measureS, loopback::serverThreads, loopback::clientLoopThreads) { i, record, done ->
             runBlocking {
                 val stream = loopback.connections[i].openStream()
                 val request = filledRequest(64)
@@ -251,7 +270,7 @@ internal object NettyLoad {
         }
         for (m in ms) {
             val loopback = com.ditchoom.socket.benchmark.NettyQuicLoopback(m, minOf(clientLoops, m))
-            latencyLoad("netty", m, warmupS, measureS, loopback::serverThreads) { i, record, done ->
+            latencyLoad("netty", m, warmupS, measureS, loopback::serverThreads, loopback::clientLoopThreads) { i, record, done ->
                 val (stream, sink) = loopback.openStream(i)
                 val request = com.ditchoom.socket.benchmark.nettyFilledRequest(64)
                 while (!done()) {
@@ -267,5 +286,165 @@ internal object NettyLoad {
             loopback.close()
         }
         System.exit(0)
+    }
+}
+
+private fun percentiles(samples: LongArray, n: Int): String {
+    if (n == 0) return "no samples"
+    val a = samples.copyOf(n).also { it.sort() }
+    return "n=%d p50 %.1f us  p99 %.1f us  worst %.1f us".format(n, a[n / 2] / 1000.0, a[(n * 0.99).toInt().coerceAtMost(n - 1)] / 1000.0, a[n - 1] / 1000.0)
+}
+
+/** Round trips back to back on [op] from the moment [from] is set until [until]; returns what they took. */
+private class Victim(
+    val label: String,
+) {
+    val samples = LongArray(4_000_000)
+
+    @Volatile var n = 0
+}
+
+/**
+ * The safety column: one stream is served by a handler that blocks its thread for 100 ms per request, back to
+ * back; meanwhile three victims run 64-byte round trips back to back and report what they saw:
+ * (1) another stream on the blocked handler's connection, (2) another connection on the same server loop,
+ * (3) a connection on the server's other loop.
+ *
+ * args: placement, callerRuns (client), seconds.
+ */
+internal object SliceSafety {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val placement = args.getOrElse(0) { "loop" }
+        val callerRuns = args.getOrElse(1) { "true" }.toBoolean()
+        val seconds = args.getOrElse(2) { "5" }.toLong()
+        // Connections 0 and 2 are on the first server loop, connection 1 on the second.
+        val loopback = SliceLoopback(placement, holdAck = true, callerRuns = callerRuns, connectionCount = 3, clientLoops = 3, serverLoops = 2)
+        val victims = listOf(Victim("(1) same connection"), Victim("(2) same loop"), Victim("(3) other loop"))
+        val conns = listOf(loopback.connections[0], loopback.connections[2], loopback.connections[1])
+        val blockedFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+        val end = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+        val threads =
+            victims.mapIndexed { i, v ->
+                thread(name = "victim-$i") {
+                    runBlocking {
+                        val stream = conns[i].openStream()
+                        val request = filledRequest(64)
+                        while (true) {
+                            val t0 = System.nanoTime()
+                            if (t0 >= end.get()) break
+                            request.position = 0
+                            stream.write(request)
+                            stream.readExactly(64)
+                            val t1 = System.nanoTime()
+                            if (t0 >= blockedFrom.get() && v.n < v.samples.size) v.samples[v.n++] = t1 - t0
+                        }
+                    }
+                }
+            }
+        Thread.sleep(1000)
+        var blocks = 0
+        val blocker =
+            thread(name = "blocker") {
+                runBlocking {
+                    val stream = loopback.connections[0].openStream()
+                    val request = filledRequest(64)
+                    request.bb.put(0, BLOCK_MARKER)
+                    blockedFrom.set(System.nanoTime())
+                    val stopAt = System.nanoTime() + seconds * 1_000_000_000L
+                    while (System.nanoTime() < stopAt) {
+                        request.position = 0
+                        stream.write(request)
+                        stream.readExactly(64)
+                        blocks++
+                    }
+                    end.set(System.nanoTime())
+                }
+            }
+        blocker.join()
+        threads.forEach { it.join(3000) }
+        println("# slice safety: placement=$placement callerRuns=$callerRuns blocked requests=$blocks takeovers=${loopback.takeovers()} violations=${loopback.violations()}")
+        for (v in victims) println("safety %-10s %-20s %s".format(placement, v.label, percentiles(v.samples, v.n)))
+        Runtime.getRuntime().halt(0)
+    }
+}
+
+/** The safety column on Netty QUIC. `-Dbench.nettyHandlerExecutor=true` moves the handler off the event loop. args: seconds. */
+internal object NettySafety {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val seconds = args.getOrElse(0) { "5" }.toLong()
+        val mode = if (System.getProperty("bench.nettyHandlerExecutor") == "true") "nettyExec" else "nettyLoop"
+        val loopback = com.ditchoom.socket.benchmark.NettyQuicLoopback(3, 3, 2)
+        val victims = listOf(Victim("(1) same connection"), Victim("(2) same loop"), Victim("(3) other loop"))
+        val conns = listOf(0, 2, 1)
+        val blockedFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+        val end = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+        val threads =
+            victims.mapIndexed { i, v ->
+                thread(name = "victim-$i") {
+                    val (stream, sink) = loopback.openStream(conns[i])
+                    val request = com.ditchoom.socket.benchmark.nettyFilledRequest(64)
+                    while (true) {
+                        val t0 = System.nanoTime()
+                        if (t0 >= end.get()) break
+                        sink.reset()
+                        stream.writeAndFlush(request.retainedDuplicate())
+                        sink.awaitBytes(64)
+                        val t1 = System.nanoTime()
+                        if (t0 >= blockedFrom.get() && v.n < v.samples.size) v.samples[v.n++] = t1 - t0
+                    }
+                }
+            }
+        Thread.sleep(1000)
+        var blocks = 0
+        val blocker =
+            thread(name = "blocker") {
+                val (stream, sink) = loopback.openStream(0)
+                val request = com.ditchoom.socket.benchmark.nettyFilledRequest(64)
+                request.setByte(0, 'B'.code)
+                blockedFrom.set(System.nanoTime())
+                val stopAt = System.nanoTime() + seconds * 1_000_000_000L
+                while (System.nanoTime() < stopAt) {
+                    sink.reset()
+                    stream.writeAndFlush(request.retainedDuplicate())
+                    sink.awaitBytes(64)
+                    blocks++
+                }
+                end.set(System.nanoTime())
+            }
+        blocker.join()
+        threads.forEach { it.join(3000) }
+        println("# netty safety: mode=$mode blocked requests=$blocks")
+        for (v in victims) println("safety %-10s %-20s %s".format(mode, v.label, percentiles(v.samples, v.n)))
+        Runtime.getRuntime().halt(0)
+    }
+}
+
+/**
+ * What the server's threads cost with no traffic: one connection, a hundred round trips, then nothing for
+ * [seconds]; prints the CPU the server's threads used in that time. args: placement, seconds.
+ */
+internal object SliceIdle {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val placement = args.getOrElse(0) { "affine" }
+        val seconds = args.getOrElse(1) { "5" }.toLong()
+        val loopback = SliceLoopback(placement, holdAck = true, callerRuns = true)
+        runBlocking {
+            val stream = loopback.connection.openStream()
+            val request = filledRequest(64)
+            repeat(100) {
+                request.position = 0
+                stream.write(request)
+                stream.readExactly(64)
+            }
+        }
+        Thread.sleep(200)
+        val c0 = cpuOf(loopback.serverThreads())
+        Thread.sleep(seconds * 1000)
+        val used = cpuOf(loopback.serverThreads()) - c0
+        println("idle %-8s server threads used %.3f ms of CPU in %d s (%.4f%% of a core)".format(placement, used / 1e6, seconds, used / 1e7 / seconds))
+        Runtime.getRuntime().halt(0)
     }
 }

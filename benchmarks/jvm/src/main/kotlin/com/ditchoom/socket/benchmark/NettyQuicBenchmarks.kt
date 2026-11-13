@@ -134,13 +134,21 @@ internal class NettyStreamSink : ChannelInboundHandlerAdapter() {
 /** The server's stream handler: the same protocol as serveStream in QuicLoopback.kt. */
 private class NettyEchoOrSink : ChannelInboundHandlerAdapter() {
     private var echo: Boolean? = null
+    private var blocking = false
 
     override fun channelRead(
         ctx: ChannelHandlerContext,
         msg: Any,
     ) {
         val buf = msg as ByteBuf
-        val first = echo ?: (buf.isReadable && buf.getByte(buf.readerIndex()) == ECHO_MARKER).also { echo = it }
+        val first =
+            echo ?: run {
+                val b = if (buf.isReadable) buf.getByte(buf.readerIndex()) else 0
+                // 'B': the handler of the safety runs, which blocks its thread for 100 ms per chunk and echoes.
+                blocking = b == 'B'.code.toByte()
+                (b == ECHO_MARKER || blocking).also { echo = it }
+            }
+        if (blocking) Thread.sleep(100)
         if (first) ctx.write(buf) else buf.release()
     }
 
@@ -174,10 +182,12 @@ private class NettyEchoOrSink : ChannelInboundHandlerAdapter() {
 internal class NettyQuicLoopback(
     connectionCount: Int = 1,
     clientThreads: Int = 1,
+    serverLoops: Int = 1,
 ) : AutoCloseable {
     private val serverGroup: EventLoopGroup =
-        MultiThreadIoEventLoopGroup(1, io.netty.util.concurrent.DefaultThreadFactory("netty-server", true), NioIoHandler.newFactory())
-    private val clientGroup: EventLoopGroup = MultiThreadIoEventLoopGroup(clientThreads, NioIoHandler.newFactory())
+        MultiThreadIoEventLoopGroup(serverLoops, io.netty.util.concurrent.DefaultThreadFactory("netty-server", true), NioIoHandler.newFactory())
+    private val clientGroup: EventLoopGroup =
+        MultiThreadIoEventLoopGroup(clientThreads, io.netty.util.concurrent.DefaultThreadFactory("netty-client", true), NioIoHandler.newFactory())
     private val handlerExecutor: io.netty.util.concurrent.EventExecutorGroup? =
         if (System.getProperty("bench.nettyHandlerExecutor") == "true") {
             io.netty.util.concurrent.DefaultEventExecutorGroup(
@@ -187,19 +197,22 @@ internal class NettyQuicLoopback(
         } else {
             null
         }
-    private val serverChannel: Channel
+    private val serverChannels: List<Channel>
     private val clientDatagrams: List<Channel>
     val connections: List<QuicChannel>
     val connection: QuicChannel get() = connections[0]
 
     /** The server's event loop and, when handlers run off it, the handler executor's threads. */
+    fun clientLoopThreads(): List<Thread> = Thread.getAllStackTraces().keys.filter { it.name.startsWith("netty-client") }
+
     fun serverThreads(): List<Thread> =
         Thread.getAllStackTraces().keys.filter { it.name.startsWith("netty-server") || it.name.startsWith("netty-handler") }
 
     init {
         val dir = System.getProperty("bench.certDir") ?: error("bench.certDir is not set: run through Gradle")
         // Both ends: the flow-control limits of QuicLoopback.OPTIONS.
-        val serverCodec =
+        // One codec and one socket per server event loop.
+        fun serverCodec() =
             QuicServerCodecBuilder()
                 .sslContext(
                     QuicSslContextBuilder
@@ -230,14 +243,16 @@ internal class NettyQuicLoopback(
                         }
                     },
                 ).build()
-        serverChannel =
-            Bootstrap()
-                .group(serverGroup)
-                .channel(NioDatagramChannel::class.java)
-                .handler(serverCodec)
-                .bind(InetSocketAddress("127.0.0.1", 0))
-                .sync()
-                .channel()
+        serverChannels =
+            List(serverLoops) {
+                Bootstrap()
+                    .group(serverGroup)
+                    .channel(NioDatagramChannel::class.java)
+                    .handler(serverCodec())
+                    .bind(InetSocketAddress("127.0.0.1", 0))
+                    .sync()
+                    .channel()
+            }
 
         // One codec per client socket: the client codec is not sharable.
         fun clientCodec() =
@@ -265,14 +280,14 @@ internal class NettyQuicLoopback(
                     .channel()
             }
         connections =
-            clientDatagrams.map { datagram ->
+            clientDatagrams.mapIndexed { index, datagram ->
                 QuicChannel
                     .newBootstrap(datagram)
                     .handler(
                         object : ChannelInitializer<QuicChannel>() {
                             override fun initChannel(ch: QuicChannel) {}
                         },
-                    ).remoteAddress(serverChannel.localAddress())
+                    ).remoteAddress(serverChannels[index % serverLoops].localAddress())
                     .connect()
                     .get(IO_TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
             }
@@ -292,7 +307,7 @@ internal class NettyQuicLoopback(
     override fun close() {
         connections.forEach { it.close().awaitUninterruptibly(10, TimeUnit.SECONDS) }
         clientDatagrams.forEach { it.close().awaitUninterruptibly(10, TimeUnit.SECONDS) }
-        serverChannel.close().awaitUninterruptibly(10, TimeUnit.SECONDS)
+        serverChannels.forEach { it.close().awaitUninterruptibly(10, TimeUnit.SECONDS) }
         clientGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
         serverGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly(10, TimeUnit.SECONDS)
         handlerExecutor?.shutdownGracefully(0, 1, TimeUnit.SECONDS)?.awaitUninterruptibly(10, TimeUnit.SECONDS)

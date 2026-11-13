@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.LongAdder
 import java.util.concurrent.locks.LockSupport
+import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -88,10 +89,77 @@ internal sealed interface HandlerPlacement {
     /** On the loop thread, inside the read pass. */
     data object OnLoop : HandlerPlacement
 
-    /** On [dispatcher], threads the server owns. */
+    /**
+     * On [dispatcher], threads the server owns. [hooks] lets the dispatcher see the loop's passes (to batch
+     * what one pass hands over, or to keep a handler thread spinning while the loop is at work).
+     */
     class Owned(
         val dispatcher: CoroutineDispatcher,
+        val hooks: LoopHooks = NoHooks,
     ) : HandlerPlacement
+
+    /**
+     * A handler starts on [dispatcher]'s threads. Once its resumes have stayed short it is resumed on the
+     * loop instead, and it goes back to the threads on its first long resume.
+     */
+    class Adaptive(
+        val dispatcher: CoroutineDispatcher,
+        val hooks: LoopHooks,
+    ) : HandlerPlacement
+}
+
+/** A resume shorter than this counts toward running on the loop; a resume on the loop longer than this ends it. */
+internal const val PROMOTE_BUDGET_NANOS = 20_000L
+internal const val PROMOTE_AFTER = 16
+
+/** What a set of handler threads may want from the loop that feeds it. All called on the loop thread. */
+internal interface LoopHooks {
+    fun attach(loop: SliceLoop) {}
+
+    /** The pass is over. Returns when the loop should look again even if nothing else wakes it, or [NEVER]. */
+    fun endPass(now: Long): Long = NEVER
+
+    /** Resumes handed to the handler threads and not finished yet; the loop spins briefly instead of sleeping while any are. */
+    fun outstanding(): Int = 0
+}
+
+internal object NoHooks : LoopHooks
+
+internal const val NEVER = Long.MAX_VALUE
+
+/** The connection a handler coroutine serves, so the loop knows which connection a unit of user code belongs to. */
+internal class ConnElement(
+    val conn: SliceConn,
+) : AbstractCoroutineContextElement(Key) {
+    /** Adaptive placement, decided per connection: its handlers' resumes run on the loop. */
+    val onLoop: Boolean get() = conn.handlersOnLoop
+
+    /** A resume off the loop took [nanos]. */
+    fun ranOffLoop(
+        nanos: Long,
+        counts: SliceCounts,
+    ) {
+        if (nanos > PROMOTE_BUDGET_NANOS) {
+            conn.shortResumes = 0
+        } else if (++conn.shortResumes >= PROMOTE_AFTER && !conn.handlersOnLoop) {
+            conn.handlersOnLoop = true
+            counts.promotions.increment()
+        }
+    }
+
+    /** A resume on the loop took [nanos]. */
+    fun ranOnLoop(
+        nanos: Long,
+        counts: SliceCounts,
+    ) {
+        if (nanos > PROMOTE_BUDGET_NANOS && conn.handlersOnLoop) {
+            conn.handlersOnLoop = false
+            conn.shortResumes = 0
+            counts.demotions.increment()
+        }
+    }
+
+    companion object Key : CoroutineContext.Key<ConnElement>
 }
 
 /** Load-proof counts. */
@@ -108,12 +176,17 @@ internal class SliceCounts {
     val handedToOwner = LongAdder()
     val enteredByCaller = LongAdder()
     val violations = LongAdder()
+    val takeovers = LongAdder()
+    val promotions = LongAdder()
+    val demotions = LongAdder()
     val sendErrors = LongAdder()
 }
 
 internal class SliceSettings(
     val holdAck: Boolean,
     val callerRuns: Boolean,
+    /** A monitor may hand the loop to a successor thread when a unit of user code overruns. */
+    val watch: Boolean = false,
 ) {
     /** Counts entries into a connection and fails loudly on two at once. For the stress test only. */
     val check: Boolean = System.getProperty("slice.check") == "true"
@@ -131,7 +204,8 @@ private const val READ_CHUNK = 64 * 1024
 private const val QUICHE_DONE = -1
 private const val SCID_LEN = 16
 private const val HOLD_NANOS = 1_000_000L
-private const val NEVER = Long.MAX_VALUE
+private const val DEPOSED = -1L
+private val LOOP_SPIN_NANOS = (System.getProperty("slice.loopSpinMicros") ?: "100").toLong() * 1000
 
 private val NOBODY = Thread { }
 
@@ -172,8 +246,163 @@ internal class SliceLoop(
     private val state = AtomicInteger(AWAKE)
 
     @Volatile private var running = true
-    val thread = Thread(::run, name).also { it.isDaemon = true }
+
+    /** The thread that is the loop now. It changes only when the watchdog hands the loop to a successor. */
+    @Volatile var thread: LoopRunner = LoopRunner("$name-1")
+        private set
+    private val runners = ConcurrentLinkedQueue<LoopRunner>().also { it.add(thread) }
+    private val standby = ConcurrentLinkedQueue<LoopRunner>()
+    private val runnerNames = AtomicInteger(1)
+    private val baseName = name
+
+    /**
+     * 0 when the loop is not in user code; else the time the unit of user code began; [DEPOSED] once the
+     * watchdog has taken the loop away from the thread that is still in that unit.
+     */
+    val unit = AtomicLong(0)
+
+    @Volatile private var takeoverFrom: LoopRunner = thread
+    private var passRecheckAt = NEVER
+    private val hooks: LoopHooks =
+        when (placement) {
+            HandlerPlacement.OnLoop -> NoHooks
+            is HandlerPlacement.Owned -> placement.hooks
+            is HandlerPlacement.Adaptive -> placement.hooks
+        }
+
+    /** The dispatcher of an adaptive handler: the loop for a promoted handler, the handler threads otherwise. */
+    private val adaptive: CoroutineDispatcher =
+        object : CoroutineDispatcher() {
+            override fun isDispatchNeeded(context: CoroutineContext): Boolean = !(isLoopThread && context[ConnElement]?.onLoop == true)
+
+            override fun dispatch(
+                context: CoroutineContext,
+                block: Runnable,
+            ) {
+                val e = context[ConnElement]
+                val threads = (placement as HandlerPlacement.Adaptive).dispatcher
+                if (e == null) {
+                    threads.dispatch(context, block)
+                } else if (e.onLoop) {
+                    execute(UserTask(block, e.conn, e))
+                } else {
+                    threads.dispatch(
+                        context,
+                        Runnable {
+                            val began = System.nanoTime()
+                            block.run()
+                            e.ranOffLoop(System.nanoTime() - began, counts)
+                        },
+                    )
+                }
+            }
+        }
+
+    /** The handler element when resuming [context] here and now runs user code in place on the loop thread. */
+    fun runsInPlace(context: CoroutineContext): Boolean {
+        if (!isLoopThread) return false
+        val interceptor = context[ContinuationInterceptor]
+        return interceptor === this || (interceptor === adaptive && context[ConnElement]?.onLoop == true)
+    }
     private val handlerScope = CoroutineScope(SupervisorJob())
+
+    /** Set by the watchdog: called when the loop wakes from a blocking select. */
+    @Volatile var onWake: () -> Unit = {}
+
+    val asleep: Boolean get() = state.get() == ASLEEP
+
+    fun threads(): List<Thread> = runners.toList()
+
+    /** A thread that can be the loop. One is; the others wait to succeed it. */
+    inner class LoopRunner(
+        name: String,
+    ) : Thread(name) {
+        @Volatile private var go = false
+
+        /** This thread was the loop and lost it while in user code; it may only finish its own connection. */
+        var deposed = false
+
+        /** The connection whose handler this thread is running, when it is in a unit of user code. */
+        var unitConn: SliceConn? = null
+
+        init {
+            isDaemon = true
+        }
+
+        fun assign() {
+            go = true
+            LockSupport.unpark(this)
+        }
+
+        override fun run() {
+            while (running) {
+                while (!go && running) LockSupport.park(this)
+                if (!running) return
+                go = false
+                deposed = false
+                loopBody(this)
+                unitConn = null
+                standby.add(this)
+            }
+        }
+    }
+
+    /**
+     * Runs [block], user code that belongs to [conn], as one unit the watchdog can time. If the watchdog took
+     * the loop away meanwhile, this thread is no longer the loop when [block] returns.
+     */
+    inline fun userCode(
+        conn: SliceConn?,
+        element: ConnElement?,
+        block: () -> Unit,
+    ) {
+        val me = thread
+        if (!settings.watch || Thread.currentThread() !== me || unit.get() != 0L) {
+            block()
+            return
+        }
+        me.unitConn = conn
+        val began = System.nanoTime()
+        unit.set(began)
+        block()
+        element?.ranOnLoop(System.nanoTime() - began, counts)
+        if (!unit.compareAndSet(began, 0L)) {
+            me.deposed = true
+            // The watchdog names the successor right after it deposes; until then this thread must not look like the loop.
+            while (thread === me) Thread.onSpinWait()
+        }
+    }
+
+    /** The watchdog: hands the loop to a successor when the unit of user code in progress has run past [budget]. */
+    fun checkOverrun(
+        now: Long,
+        budget: Long,
+    ) {
+        val began = unit.get()
+        if (began <= 0L || now - began <= budget) return
+        if (!unit.compareAndSet(began, DEPOSED)) return
+        val old = thread
+        val successor = standby.poll() ?: LoopRunner("$baseName-${runnerNames.incrementAndGet()}").also {
+            runners.add(it)
+            it.start()
+        }
+        takeoverFrom = old
+        thread = successor
+        successor.assign()
+    }
+
+    /** The successor: takes every connection the deposed thread had entered, except the one its handler is in. */
+    private fun adopt(me: LoopRunner) {
+        val old = takeoverFrom
+        val busy = old.unitConn
+        val mine = ArrayList<SliceConn>()
+        for (c in entered) if (c !== busy && c.transfer(old, me)) mine.add(c)
+        entered.clear()
+        entered.addAll(mine)
+        unit.set(0L)
+        state.set(AWAKE)
+        counts.takeovers.increment()
+    }
 
     /** Server side: connections by the peer's address. */
     private val byPeer = HashMap<SocketAddress, SliceConn>()
@@ -190,14 +419,27 @@ internal class SliceLoop(
 
     val isLoopThread: Boolean get() = Thread.currentThread() === thread
 
-    fun start() = thread.start()
+    fun start() {
+        hooks.attach(this)
+        thread.start()
+        thread.assign()
+    }
 
     override fun isDispatchNeeded(context: CoroutineContext): Boolean = !isLoopThread
 
     override fun dispatch(
         context: CoroutineContext,
         block: Runnable,
-    ) = execute(block)
+    ) = execute(if (settings.watch) UserTask(block, context[ConnElement]?.conn, null) else block)
+
+    /** A resume of user code queued for the loop, and the connection it belongs to. */
+    private class UserTask(
+        val block: Runnable,
+        val conn: SliceConn?,
+        val element: ConnElement?,
+    ) : Runnable {
+        override fun run() = block.run()
+    }
 
     fun execute(task: Runnable) {
         queue.add(task)
@@ -262,6 +504,7 @@ internal class SliceLoop(
     fun close() {
         running = false
         selector.wakeup()
+        for (r in runners) LockSupport.unpark(r)
         thread.join(5_000)
         handlerScope.cancel()
     }
@@ -281,13 +524,22 @@ internal class SliceLoop(
         return true
     }
 
-    private fun run() {
+    private fun loopBody(me: LoopRunner) {
+        if (takeoverFrom !== me && unit.get() == DEPOSED) adopt(me)
         while (running) {
             runQueued()
+            if (me.deposed) return finishDeposed(me)
             // Work that ran just now has not been flushed yet: the loop may only sleep with nothing owed.
             if (queue.isEmpty() && entered.isEmpty()) {
+                if (hooks.outstanding() > 0) {
+                    // A handler thread is at work on what this pass handed it: its write is a moment away.
+                    val spinFrom = System.nanoTime()
+                    while (queue.isEmpty() && hooks.outstanding() > 0 && System.nanoTime() - spinFrom < LOOP_SPIN_NANOS) Thread.onSpinWait()
+                }
                 val waitNanos = nextWakeNanos()
-                if (waitNanos > 0) {
+                if (!queue.isEmpty()) {
+                    selector.selectNow()
+                } else if (waitNanos > 0) {
                     state.set(ASLEEP)
                     if (queue.isEmpty()) {
                         counts.blockingSelects.increment()
@@ -295,6 +547,7 @@ internal class SliceLoop(
                         selector.select((waitNanos + 999_999L) / 1_000_000L)
                     }
                     state.set(AWAKE)
+                    onWake()
                 } else {
                     selector.selectNow()
                 }
@@ -302,6 +555,7 @@ internal class SliceLoop(
                 selector.selectNow()
             }
             runQueued()
+            if (me.deposed) return finishDeposed(me)
             val keys = selector.selectedKeys()
             if (!keys.isEmpty()) {
                 for (key in keys) {
@@ -317,9 +571,12 @@ internal class SliceLoop(
             var i = 0
             while (i < entered.size) {
                 entered[i].leave()
+                // User code runs inside leave(): if it overran, another thread is the loop now and owns this list.
+                if (me.deposed) return
                 i++
             }
             entered.clear()
+            passRecheckAt = hooks.endPass(System.nanoTime())
         }
         for (c in all) {
             if (c.tryOwn()) {
@@ -331,12 +588,29 @@ internal class SliceLoop(
         selector.close()
     }
 
+    /** A deposed thread: it leaves the one connection it may still be inside, and stops being a loop. */
+    private fun finishDeposed(me: LoopRunner) {
+        val c = me.unitConn
+        if (c != null && c.ownedByMe()) c.leave()
+    }
+
     private fun runQueued() {
         while (true) {
             val task = queue.poll() ?: return
             counts.tasks.increment()
-            task.run()
+            if (task is UserTask) {
+                userCode(task.conn, task.element) { task.run() }
+                if ((Thread.currentThread() as LoopRunner).deposed) return
+            } else {
+                task.run()
+                if (settings.watch && (Thread.currentThread() as LoopRunner).deposed) return
+            }
         }
+    }
+
+    /** Loop thread: [c] was entered outside the usual places and is to be finished with this pass. */
+    fun noteEntered(c: SliceConn) {
+        entered.add(c)
     }
 
     private fun nextWakeNanos(): Long {
@@ -346,6 +620,7 @@ internal class SliceLoop(
         if (t != null && t.deadline < wake) wake = t.deadline
         val h = held.peek()
         if (h != null && h.since + HOLD_NANOS < wake) wake = h.since + HOLD_NANOS
+        if (passRecheckAt < wake) wake = passRecheckAt
         return wake - now
     }
 
@@ -493,14 +768,23 @@ internal class SliceLoop(
 
     fun startHandler(stream: SliceStream) {
         when (placement) {
-            HandlerPlacement.OnLoop ->
-                // A stream a handler thread found while it was inside the connection is still served on the loop.
+            HandlerPlacement.OnLoop -> {
+                val context = if (settings.watch) this + ConnElement(stream.conn) else this
+                // A stream found by a thread that is not the loop is still served on the loop.
                 if (isLoopThread) {
-                    handlerScope.launch(this, CoroutineStart.UNDISPATCHED) { handler(stream) }
+                    userCode(stream.conn, null) { handlerScope.launch(context, CoroutineStart.UNDISPATCHED) { handler(stream) } }
                 } else {
-                    handlerScope.launch(this) { handler(stream) }
+                    handlerScope.launch(context) { handler(stream) }
                 }
+            }
             is HandlerPlacement.Owned -> handlerScope.launch(placement.dispatcher) { handler(stream) }
+            is HandlerPlacement.Adaptive -> {
+                val element = ConnElement(stream.conn)
+                // A new stream of a connection that has earned the loop starts there, in place.
+                userCode(stream.conn, if (isLoopThread && element.onLoop) element else null) {
+                    handlerScope.launch(adaptive + element) { handler(stream) }
+                }
+            }
         }
     }
 
@@ -537,7 +821,8 @@ internal class PendingWrite(
     val stream: SliceStream,
     val src: NativeBuf,
     val fin: Boolean,
-    val continuation: CancellableContinuation<Unit>,
+    /** The writer to resume; null when the write was handed over with its buffer and nobody waits. */
+    val continuation: CancellableContinuation<Unit>?,
 )
 
 /**
@@ -575,6 +860,11 @@ internal class SliceConn(
 
     /** Something changed since the last flush. */
     var touched = false
+
+    /** Adaptive placement: this connection's handlers have kept their resumes short and run on the loop. */
+    @Volatile var handlersOnLoop = false
+
+    @Volatile var shortResumes = 0
 
     @Volatile var timeoutAt = NEVER
 
@@ -633,8 +923,19 @@ internal class SliceConn(
     fun handOff(op: Runnable) {
         loop.counts.handedToOwner.increment()
         waiting.add(op)
-        drain()
+        if (loop.isLoopThread) {
+            // The loop finishes connections at the end of its pass, never in the middle of reading datagrams.
+            if (tryOwn()) loop.noteEntered(this)
+        } else {
+            drain()
+        }
     }
+
+    /** The loop's successor takes this connection from the deposed thread, which is not inside it. */
+    fun transfer(
+        from: Thread,
+        to: Thread,
+    ): Boolean = owner.compareAndSet(from, to)
 
     private fun drain() {
         while (!waiting.isEmpty()) {
@@ -763,14 +1064,20 @@ internal class SliceConn(
         }
     }
 
+    private var pass = 0L
+
     private fun retryWrites() {
+        pass++
         var i = 0
         while (i < pendingWrites.size) {
             val w = pendingWrites[i]
-            if (w.stream.sendSome(w.src, w.fin)) {
+            // In order within a stream: nothing overtakes a write of the same stream that is still waiting.
+            if (w.stream.blockedPass != pass && w.stream.sendSome(w.src, w.fin)) {
                 pendingWrites.removeAt(i)
-                w.stream.resumeWriter(w.continuation)
+                val c = w.continuation
+                if (c != null) w.stream.resumeWriter(c) else w.stream.handedOverDone(w.src)
             } else {
+                w.stream.blockedPass = pass
                 i++
             }
         }
@@ -809,7 +1116,7 @@ internal class SliceConn(
  * without suspending; one that must wait suspends once and is resumed by whichever thread completes it.
  */
 internal class SliceStream(
-    private val conn: SliceConn,
+    val conn: SliceConn,
     val id: Long,
 ) {
     private val loop = conn.loop
@@ -823,6 +1130,10 @@ internal class SliceStream(
 
     @Volatile private var recvFinished = false
     private var sendFinished = false
+
+    /** Writes handed over with their buffers that quiche has not taken yet. */
+    private var handedOverWaiting = 0
+    var blockedPass = -1L
 
     private val deliverOp = Runnable { deliver() }
     private val deliverTask =
@@ -872,8 +1183,12 @@ internal class SliceStream(
             waiter.set(c)
             return false
         }
-        if (c.context[ContinuationInterceptor] !== loop || !loop.isLoopThread) loop.counts.resumesAcrossThreads.increment()
-        c.resume(now)
+        if (loop.runsInPlace(c.context)) {
+            loop.userCode(conn, c.context[ConnElement]) { c.resume(now) }
+        } else {
+            loop.counts.resumesAcrossThreads.increment()
+            c.resume(now)
+        }
         return true
     }
 
@@ -960,8 +1275,50 @@ internal class SliceStream(
     suspend fun shutdownSend() = write(EMPTY, fin = true)
 
     fun resumeWriter(c: CancellableContinuation<Unit>) {
-        if (c.context[ContinuationInterceptor] !== loop || !loop.isLoopThread) loop.counts.resumesAcrossThreads.increment()
-        c.resume(Unit)
+        if (loop.runsInPlace(c.context)) {
+            loop.userCode(conn, c.context[ConnElement]) { c.resume(Unit) }
+        } else {
+            loop.counts.resumesAcrossThreads.increment()
+            c.resume(Unit)
+        }
+    }
+
+    /**
+     * Hands [src] (and the FIN, if asked) to the driver and returns at once: the driver sends it and gives the
+     * buffer back to the pool. From a handler thread that batches, the write waits in that thread's batch.
+     */
+    fun send(
+        src: NativeBuf,
+        fin: Boolean = false,
+    ) {
+        if (conn.ownedByMe()) {
+            sendInside(src, fin)
+            return
+        }
+        val op = Runnable { if (loop.enter(conn)) sendInside(src, fin) else conn.handOff { sendInside(src, fin) } }
+        val t = Thread.currentThread()
+        if (t is BatchingThread) t.batch(op) else loop.execute(op)
+    }
+
+    fun finish() = send(EMPTY, fin = true)
+
+    private fun sendInside(
+        src: NativeBuf,
+        fin: Boolean,
+    ) {
+        conn.adopt(this)
+        conn.work()
+        if (handedOverWaiting == 0 && sendSome(src, fin)) {
+            if (src !== EMPTY) loop.release(src)
+        } else {
+            handedOverWaiting++
+            conn.addPending(PendingWrite(this, src, fin, null))
+        }
+    }
+
+    fun handedOverDone(src: NativeBuf) {
+        handedOverWaiting--
+        if (src !== EMPTY) loop.release(src)
     }
 
     /** Inside the connection. True when all of [src] (and the FIN, if asked) is with quiche. */
@@ -993,4 +1350,11 @@ internal class SliceStream(
     private companion object {
         val EMPTY = NativeBuf(1)
     }
+}
+
+/** A handler thread that collects the writes of one batch of resumes and gives them to the loop together. */
+internal abstract class BatchingThread(
+    name: String,
+) : Thread(name) {
+    abstract fun batch(op: Runnable)
 }
