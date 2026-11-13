@@ -10,6 +10,7 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -78,6 +79,28 @@ internal class Http3StreamWriter(
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
             stream.emit(buffer)
+        } finally {
+            // Free on both paths: write is zero-copy and does not take ownership.
+            buffer.freeIfNeeded()
+        }
+    }
+
+    /**
+     * Encode [frame] and write it as the last thing [stream] sends: the stream's FIN leaves with the
+     * frame's last bytes, so a frame that fits a packet costs one packet, not one for it and one for the FIN.
+     */
+    suspend fun writeFinalFrame(
+        stream: QuicByteStream,
+        frame: Http3Frame,
+    ) {
+        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
+        try {
+            when (deadlineSource) {
+                Http3WriteDeadline.CONFIG -> stream.writeFullyAndShutdownSend(buffer, config.writePolicy.toDeadline())
+                Http3WriteDeadline.LEAF -> stream.writeFullyAndShutdownSend(buffer)
+            }
+        } catch (e: ByteSinkStalledException) {
+            throw SocketWriteStalledException(e)
         } finally {
             // Free on both paths: write is zero-copy and does not take ownership.
             buffer.freeIfNeeded()
@@ -174,4 +197,13 @@ internal enum class Http3WriteDeadline {
 
     /** Defer to each leaf stream's own `writePolicy` — the adapter rule, used by the WebTransport mux. */
     LEAF,
+}
+
+/** Whether the HEADERS frame being written is the last thing its stream sends. */
+internal enum class AfterHeaders {
+    /** More follows on the stream: a body, trailers, or a FIN sent later. */
+    BodyFollows,
+
+    /** Nothing follows: the stream's FIN leaves with the frame. */
+    StreamEnds,
 }
