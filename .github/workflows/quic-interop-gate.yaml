@@ -10,9 +10,9 @@ name: QUIC interop gate
 #
 # A cell expected to pass that fails twice (one retry) fails the gate, so does a peer that produced no
 # result and a cell with no expectation. A known failure that starts passing is STALE: a warning on a
-# pull request, a failure nightly, so the file never goes out of date unnoticed. Called by review.yaml
-# (pull requests touching QUIC, UDP or the interop files, with that run's natives) and by
-# quic-interop.yaml (nightly on main, and on demand, also to record a new expectations file).
+# pull request, a failure nightly, so the file never goes out of date unnoticed. Called by quic-interop.yaml
+# (nightly on main, and on demand, also to record a new expectations file). It is not yet run on pull
+# requests: that waits until every failing cell is classified and the macOS and Windows lanes exist.
 
 on:
   workflow_call:

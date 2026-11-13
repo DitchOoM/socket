@@ -1,8 +1,7 @@
 name: QUIC interop (quic-interop-runner)
 
 # Runs this library's QUIC client and server against every implementation the quic-interop-runner offers,
-# nightly on main and on demand, through the gate in quic-interop-gate.yaml (which pull requests touching
-# QUIC, UDP or the interop files also run, from review.yaml).
+# nightly on main and on demand, through the gate in quic-interop-gate.yaml.
 #
 # Every other QUIC lane here is quiche talking to quiche (the HTTP/3 lane's aioquic server and the browser
 # WebTransport lane aside). Two copies of one engine can agree on the same mistake; another stack does not.

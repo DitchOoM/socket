@@ -49,34 +49,6 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
-  # The QUIC interop gate (quic-interop-gate.yaml) runs only when the pull request touches QUIC, UDP or the
-  # interop files: one job per peer and direction, against the natives build-linux built in this run.
-  interop-scope:
-    name: "QUIC interop: in scope?"
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.scope.outputs.run }}
-    steps:
-      - id: scope
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename')
-          if grep -q -E '^(socket-quic|socket-udp/|test-harness/quic-interop/|\.github/workflows/quic-interop|\.github/scripts/quic-interop-gate)' <<<"$files"; then
-            echo "run=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=no" >> "$GITHUB_OUTPUT"
-          fi
-
-  quic-interop:
-    needs: [version, build-linux, interop-scope]
-    if: ${{ !cancelled() && needs.interop-scope.outputs.run == 'yes' }}
-    uses: ./.github/workflows/quic-interop-gate.yaml
-    with:
-      version: ${{ needs.version.outputs.version }}
-
   validate:
     needs: [version, build-linux, build-apple]
     uses: ./.github/workflows/validate-artifacts.yaml
