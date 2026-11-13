@@ -13,11 +13,17 @@ import kotlinx.coroutines.flow.flow
 import java.net.InetSocketAddress
 import java.nio.channels.AsynchronousServerSocketChannel
 import java.nio.channels.ClosedChannelException
+import java.util.concurrent.atomic.AtomicInteger
 
 class AsyncServerSocket(
     private val config: TransportConfig = TransportConfig(),
 ) : ServerSocket {
     private var server: AsynchronousServerSocketChannel? = null
+    private val acceptsStarted = AtomicInteger()
+    private val acceptsCompleted = AtomicInteger()
+
+    override fun toString() =
+        "AsyncServerSocket(listening=${isListening()}, port=${port()}, acceptsStarted=$acceptsStarted, acceptsCompleted=$acceptsCompleted)"
 
     override fun port() = (server?.localAddress as? InetSocketAddress)?.port ?: -1
 
@@ -45,9 +51,12 @@ class AsyncServerSocket(
         this@AsyncServerSocket.server = server
         return flow {
             while (isListening()) {
+                acceptsStarted.incrementAndGet()
                 val client =
                     try {
-                        offTheAndroidMainThread(onAbandoned = { it.close() }) { server.aAccept() }
+                        offTheAndroidMainThread(
+                            onAbandoned = { it.close() },
+                        ) { server.aAccept() }.also { acceptsCompleted.incrementAndGet() }
                     } catch (e: ClosedChannelException) {
                         // Supertype on purpose, covering both shutdown orderings: a close that
                         // lands *during* a pending accept surfaces as AsynchronousCloseException

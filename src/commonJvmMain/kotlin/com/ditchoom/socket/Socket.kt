@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.nio.NioClientSocket
 import com.ditchoom.socket.nio.NioServerSocket
+import com.ditchoom.socket.nio.SelectorServerSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 
@@ -35,10 +36,42 @@ actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToSer
 var useAsyncChannels = true
 var useNioBlocking = false
 
-actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket =
-    if (nio2Available) AsyncServerSocket(config) else NioServerSocket(config)
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket = serverSocketFor(config, serverBacking())
+
+/** Which listener implementation `allocate` returns. */
+internal sealed interface ServerBacking {
+    /** NIO2 asynchronous channels. */
+    data object Nio2 : ServerBacking
+
+    /** Plain NIO whose accepts and reads wait on the shared selector loops. */
+    data object NioSelector : ServerBacking
+
+    /** Plain NIO that parks a `Dispatchers.IO` thread per listener and per connection read. */
+    data object NioBlocking : ServerBacking
+}
+
+/**
+ * NIO2 wherever the runtime has it, whatever `useAsyncChannels` and `useNioBlocking` say (they choose the
+ * client). Without NIO2 (Android below API 26) plain NIO: selector loops, unless `useNioBlocking` asks for blocking.
+ */
+internal fun serverBacking(): ServerBacking =
+    when {
+        nio2Available -> ServerBacking.Nio2
+        useNioBlocking -> ServerBacking.NioBlocking
+        else -> ServerBacking.NioSelector
+    }
+
+internal fun serverSocketFor(
+    config: TransportConfig,
+    backing: ServerBacking,
+): ServerSocket =
+    when (backing) {
+        ServerBacking.Nio2 -> AsyncServerSocket(config)
+        ServerBacking.NioBlocking -> NioServerSocket(config)
+        ServerBacking.NioSelector -> SelectorServerSocket(config)
+    }
 
 /** Whether this runtime has NIO2's asynchronous channels (every JVM; Android from API 26). Probed by name. */
-internal val nio2Available: Boolean by lazy {
+internal val nio2Available: Boolean by lazy(LazyThreadSafetyMode.PUBLICATION) {
     runCatching { Class.forName("java.nio.channels.AsynchronousServerSocketChannel") }.isSuccess
 }

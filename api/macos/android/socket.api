@@ -1027,6 +1027,7 @@ public abstract class com/ditchoom/socket/nio/BaseClientSocket : com/ditchoom/so
 	public fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun remotePort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun toString ()Ljava/lang/String;
 	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
@@ -1050,6 +1051,7 @@ public abstract class com/ditchoom/socket/nio/ByteBufferClientSocket : com/ditch
 	public fun read (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	protected final fun setSocket (Ljava/nio/channels/NetworkChannel;)V
+	public fun toString ()Ljava/lang/String;
 	public fun write-egxuoLU (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun writeGathered-OVV_2m0 (Ljava/util/List;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun writeGathered-egxuoLU (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -1075,6 +1077,16 @@ public final class com/ditchoom/socket/nio/NioServerSocket : com/ditchoom/socket
 public final class com/ditchoom/socket/nio/NioServerToClientSocket : com/ditchoom/socket/nio/BaseClientSocket {
 	public fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;)V
 	public synthetic fun <init> (Ljava/nio/channels/SocketChannel;Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+}
+
+public final class com/ditchoom/socket/nio/SelectorServerSocket : com/ditchoom/socket/ServerSocket {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/socket/TransportConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/TransportConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun bind (ILjava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun isListening ()Z
+	public fun port ()I
 }
 
 public final class com/ditchoom/socket/nio/util/NetworkChannelExtensionsKt {
@@ -1126,6 +1138,7 @@ public abstract class com/ditchoom/socket/nio2/AsyncBaseClientSocket : com/ditch
 	public fun read-8Mi8wO0 (Lcom/ditchoom/buffer/BaseJvmBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun read-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun remotePort (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun toString ()Ljava/lang/String;
 	public fun write-OVV_2m0 (Lcom/ditchoom/buffer/ReadBuffer;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
@@ -1144,6 +1157,7 @@ public final class com/ditchoom/socket/nio2/AsyncServerSocket : com/ditchoom/soc
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun isListening ()Z
 	public fun port ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/socket/nio2/AsyncServerToClientSocket : com/ditchoom/socket/nio2/AsyncBaseClientSocket {

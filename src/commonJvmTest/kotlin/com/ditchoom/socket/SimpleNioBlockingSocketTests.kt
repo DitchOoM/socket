@@ -20,6 +20,9 @@ import kotlin.test.Test
  * Save-and-restore around each test isolates the mutation to this class.
  */
 class SimpleNioBlockingSocketTests {
+    @get:org.junit.Rule
+    val diagnostics = TcpFailureDiagnostics()
+
     private var savedAsync = true
     private var savedBlocking = false
 
