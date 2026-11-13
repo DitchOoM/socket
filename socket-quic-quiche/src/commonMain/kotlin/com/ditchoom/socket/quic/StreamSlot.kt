@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
@@ -14,9 +15,12 @@ import kotlin.concurrent.atomics.AtomicReference
  * The [dataSignal] channel wakes pending reads when quiche reports data available.
  * CONFLATED: multiple signals before a receive coalesce into one wakeup.
  */
-class StreamSlot(
+class StreamSlot internal constructor(
     val id: QuicStreamId,
+    private val receiveSide: StreamReceiveSide,
 ) {
+    constructor(id: QuicStreamId) : this(id, StreamReceiveSide.FromPeer)
+
     val dataSignal = Channel<Unit>(Channel.CONFLATED)
 
     /**
@@ -91,23 +95,83 @@ class StreamSlot(
     private val waitingRead = AtomicInt(0)
 
     /**
-     * Park the reader until the driver signals [dataSignal], advertising a read of [size] bytes for the
+     * Park the reader until the driver wakes [dataSignal], advertising a read of [size] bytes for the
      * driver to fill ([takeWaitingRead]) meanwhile. The advert is withdrawn BEFORE this returns, so the
      * caller's next look at [pendingData] cannot be followed by a drain it did not see: once the advert
-     * is gone the driver only signals. A drain that took the advert first may still be landing as the
+     * is gone the driver only announces. A drain that took the advert first may still be landing as the
      * reader looks; the driver answers that reader's next `StreamRecv` with `Done` while the queue holds
      * anything or the end is latched (see `QuicheDriver.execute`), so the queued chunk is read before any
      * byte quiche has after it, and the end of a stream quiche has already collected is the reader's
      * verdict rather than a question put to quiche.
+     *
+     * A cancelled wait leaves the stream [ReaderMay.Ask]: the wake it was cancelled under may have been
+     * consumed with it.
      */
     internal suspend fun awaitData(size: Int) {
         advertiseWaitingRead(size)
         try {
             dataSignal.receive()
+        } catch (cancelled: CancellationException) {
+            assumption.store(ReaderMay.Ask)
+            throw cancelled
         } finally {
             withdrawWaitingRead()
         }
     }
+
+    /**
+     * What the next read of this stream may assume about what quiche holds for it. One value, decided by
+     * the loop's sweep (after each turn the loop looks at the readable streams) and by the read itself.
+     */
+    private val assumption = AtomicReference<ReaderMay>(ReaderMay.Park)
+
+    /**
+     * Loop only: quiche holds bytes, a FIN or a reset for this stream and no read is parked to take them.
+     * The next read asks; [dataSignal] wakes a read that is about to park.
+     */
+    internal fun announce() {
+        assumption.store(ReaderMay.Ask)
+        dataSignal.trySend(Unit)
+    }
+
+    /**
+     * Loop only: wakes the read parked in [awaitData] after the loop took [chunk] out of quiche for it
+     * ([deliverDrained]). A chunk that filled the [requested] size may be followed by more, so the stream
+     * stays [ReaderMay.Ask]. Returns false when the queue is closed and [chunk] was not taken.
+     */
+    internal fun handedOff(
+        chunk: ReadBuffer,
+        fin: Boolean,
+        requested: Int,
+        bytesRead: Int,
+    ): Boolean {
+        val taken = deliverDrained(chunk, fin)
+        if (bytesRead >= requested) assumption.store(ReaderMay.Ask)
+        dataSignal.trySend(Unit)
+        return taken
+    }
+
+    /**
+     * Whether a read that found nothing queued must put a `StreamRecv` to the loop before it parks.
+     *
+     * quiche's readable set is level-triggered (a stream stays in it until drained) and grows only when a
+     * datagram is received; the loop sweeps it at the end of every turn. So bytes, a FIN or a reset waiting
+     * in quiche are, after the turn that received them, handed to a read parked in [awaitData] or announced
+     * ([announce]) until read. A read that finds the stream [ReaderMay.Park] therefore parks at once:
+     * whatever arrives later reaches it through the same sweep. Taking the state resets it; a wake left in
+     * [dataSignal] is drained first, so it cannot wake the park that follows.
+     *
+     * A stream quiche can only answer with a typed error (see [StreamReceiveSide.Never]), or whose read side
+     * the application has finished, always asks.
+     */
+    internal fun readNeedsQuicheAnswer(): Boolean {
+        dataSignal.tryReceive()
+        val ask = assumption.exchange(ReaderMay.Park) === ReaderMay.Ask
+        return ask || receiveSide === StreamReceiveSide.Never || readState.load() == StreamReadState.Finished
+    }
+
+    /** A read is about to ask the loop, which drains everything quiche holds: whatever was announced is answered. */
+    internal fun asking() = assumption.store(ReaderMay.Park)
 
     /** [awaitData]'s advert, apart from its wait: the hand-off model checks these two around the driver. */
     internal fun advertiseWaitingRead(size: Int) = waitingRead.store(size)
@@ -231,4 +295,25 @@ sealed interface StreamEnd {
     data class Reset(
         val applicationErrorCode: QuicAppErrorCode,
     ) : StreamEnd
+}
+
+/** What the next read of a stream may assume about what quiche holds for it. See [StreamSlot.readNeedsQuicheAnswer]. */
+internal sealed interface ReaderMay {
+    /** Nothing quiche holds is unannounced: the read parks without asking the loop. */
+    data object Park : ReaderMay
+
+    /** quiche may hold bytes, a FIN or a reset: the read asks the loop first. */
+    data object Ask : ReaderMay
+}
+
+/**
+ * Whether bytes can ever arrive on a stream's read side, decided from the stream's direction and who opened
+ * it when the slot is made.
+ */
+internal sealed interface StreamReceiveSide {
+    /** A bidirectional stream, or one the peer opened: the peer's bytes, FIN or RESET_STREAM can arrive. */
+    data object FromPeer : StreamReceiveSide
+
+    /** A unidirectional stream this endpoint opened: quiche answers every read of it with `INVALID_STREAM_STATE`. */
+    data object Never : StreamReceiveSide
 }

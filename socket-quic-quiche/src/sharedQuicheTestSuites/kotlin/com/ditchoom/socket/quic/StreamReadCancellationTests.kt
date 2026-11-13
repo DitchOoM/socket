@@ -153,7 +153,7 @@ class StreamReadCancellationTests {
         api.streamRecvSequence.addLast(delivered)
         api.streamRecvResult = StreamRecvResult.Done
         driver.start(this)
-        val slot = StreamSlot(QuicStreamId(0L))
+        val slot = announcedSlot()
         val adapter = DriverStreamAdapter(driver, slot)
 
         // The StreamRecv is queued against a driver that cannot process it; the read's own deadline
