@@ -63,7 +63,8 @@ def run_test(args, test, workdir):
     www = os.path.join(workdir, "www")
     downloads = os.path.join(workdir, "downloads")
     certs = os.path.join(workdir, "certs")
-    for d in (www, downloads, certs):
+    logs = os.path.join(workdir, "logs")
+    for d in (www, downloads, certs, logs):
         os.makedirs(d, exist_ok=True)
     make_certs(certs)
     names = []
@@ -74,7 +75,7 @@ def run_test(args, test, workdir):
         names.append(name)
     port = free_udp_port()
     urls = [f"https://127.0.0.1:{port}/{n}" for n in names]
-    base = dict(os.environ, TESTCASE=test, WWW=www, CERTS=certs, DOWNLOADS=downloads, PORT=str(port))
+    base = dict(os.environ, TESTCASE=test, WWW=www, CERTS=certs, DOWNLOADS=downloads, LOGS=logs, PORT=str(port))
     server_env = dict(base, ROLE="server")
     client_env = dict(base, ROLE="client", REQUESTS=" ".join(urls))
     if args.direction.endswith("our-client-migrating"):
