@@ -51,11 +51,12 @@ class NettyServerActiveMigrationTests {
         runQuicTest(timeout = 120.seconds) {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
                 NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
-                    withQuicConnection("127.0.0.1", server.port, clientOptions, timeout = CONNECT_BUDGET.scaled()) {
+                    withQuicConnection("127.0.0.1", server.port, clientOptions, timeout = CONNECTION_BUDGET.scaled()) {
                         val stream = openStream()
                         assertEquals("m0", stream.echo("m0"))
                         repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
-                            val moved = assertIs<MigrationResult.Succeeded>(migrateOnceAConnectionIdIsSpare(), "migration ${index + 1}")
+                            val result = migrateOnceAConnectionIdIsSpare()
+                            val moved = assertIs<MigrationResult.Succeeded>(result, "migration ${index + 1}: $result, Netty saw ${server.describe()}")
                             eventually(SERVER_SEES_BUDGET, { "Netty never named ${moved.localEndpoint.port} as the peer: ${server.describe()}" }) {
                                 server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(moved.localEndpoint.port))
                             }
@@ -72,7 +73,7 @@ class NettyServerActiveMigrationTests {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
                 NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
                     link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
-                        withQuicConnection("127.0.0.1", route.clientFacingPort, clientOptions, timeout = CONNECT_BUDGET.scaled()) {
+                        withQuicConnection("127.0.0.1", route.clientFacingPort, clientOptions, timeout = CONNECTION_BUDGET.scaled()) {
                             val stream = openStream()
                             val echoed = EchoedPrefix(PAYLOAD)
                             val originalPort = localPorts().single()
@@ -100,7 +101,8 @@ class NettyServerActiveMigrationTests {
                                     }
                                     writerAtBarrier.await()
                                     migrationStarted.complete(Unit)
-                                    assertIs<MigrationResult.Succeeded>(migrate(), "the migration with ${echoed.progress()}")
+                                    val result = migrate()
+                                    assertIs<MigrationResult.Succeeded>(result, "the migration with ${echoed.progress()}: $result")
                                 }
 
                             assertEquals(PAYLOAD.size, echoed.count, "every byte written came back, in order")
@@ -275,7 +277,8 @@ class NettyServerActiveMigrationTests {
         val PATH_ONE_WAY_DELAY = 15.milliseconds
         val SPARE_ID_WAIT = 50.milliseconds
         val POLL = 10.milliseconds
-        val CONNECT_BUDGET = 10.seconds
+        /** Bounds the whole connection, block included: withQuicConnection's timeout is not only the connect. */
+        val CONNECTION_BUDGET = 60.seconds
         val READ_DEADLINE = 15.seconds
         val WRITE_DEADLINE = 10.seconds
         val STALL_BUDGET = 20.seconds
