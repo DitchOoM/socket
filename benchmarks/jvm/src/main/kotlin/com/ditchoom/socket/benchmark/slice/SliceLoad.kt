@@ -2,6 +2,10 @@ package com.ditchoom.socket.benchmark.slice
 
 import com.ditchoom.socket.benchmark.ECHO_MARKER
 import com.ditchoom.socket.benchmark.assertQuicheBackend
+import io.netty.buffer.PooledByteBufAllocator
+import io.netty.buffer.Unpooled
+import io.netty.channel.WriteBufferWaterMark
+import io.netty.handler.codec.quic.QuicStreamChannel
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import java.util.concurrent.atomic.AtomicLong
@@ -15,6 +19,9 @@ import kotlin.concurrent.thread
  *   SliceStressKt  the test of the one-thread-inside invariant: many streams on few connections, every echoed
  *                  byte checked, every entry into a connection counted.
  */
+
+/** Requests that ended without their whole reply (a stall, a reply timeout or a stream that ended early). */
+internal val incompleteOps = AtomicLong()
 
 private val os = ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
 private val threadsBean = ManagementFactory.getThreadMXBean()
@@ -110,6 +117,8 @@ internal fun latencyLoad(
             }
         }
     window.start(startAtEpochMs)
+    println("# window starts")
+    System.out.flush()
     workers.forEach { it.join() }
     val p50s = mutableListOf<Double>()
     val p99s = mutableListOf<Double>()
@@ -146,8 +155,8 @@ internal fun latencyLoad(
 
     fun pct(p: Double) = if (pooled.isEmpty()) Double.NaN else pooled[(pooled.size * p).toInt().coerceAtMost(pooled.size - 1)] / 1000.0
     println(
-        "window %d %d ops %d pooled p50 %.1f us p99 %.1f us p99.9 %.1f us max %.1f us"
-            .format(window.measuredFromEpochMs, window.measuredToEpochMs, counts.sum(), pct(0.50), pct(0.99), pct(0.999), pct(1.0)),
+        "window %d %d ops %d pooled p50 %.1f us p99 %.1f us p99.9 %.1f us max %.1f us incomplete %d"
+            .format(window.measuredFromEpochMs, window.measuredToEpochMs, counts.sum(), pct(0.50), pct(0.99), pct(0.999), pct(1.0), incompleteOps.get()),
     )
 }
 
@@ -163,22 +172,42 @@ fun main(args: Array<String>) {
     val callerRuns = args.getOrElse(4) { "false" }.toBoolean()
     val clientLoops = args.getOrElse(5) { "4" }.toInt()
     val hold = args.getOrElse(6) { "true" }.toBoolean()
-    println("# slice load: placement=$placement callerRuns=$callerRuns clientLoops=$clientLoops hold=$hold real=${System.getProperty("slice.real") ?: "off"} cpus=${Runtime.getRuntime().availableProcessors()} backend=${assertQuicheBackend()}")
+    val mode = args.getOrElse(7) { "rt" }
+    println("# slice load: mode=$mode placement=$placement callerRuns=$callerRuns clientLoops=$clientLoops hold=$hold real=${System.getProperty("slice.real") ?: "off"} cpus=${Runtime.getRuntime().availableProcessors()} backend=${assertQuicheBackend()}")
     for (m in ms) {
         val loopback = SliceLoopback(placement, holdAck = hold, callerRuns = callerRuns, connectionCount = m, clientLoops = minOf(clientLoops, m))
         val ops = AtomicLong()
         latencyLoad("slice", m, warmupS, measureS, loopback::serverThreads, loopback::clientLoopThreads) { i, record, done ->
             runBlocking {
-                val stream = loopback.connections[i].openStream()
+                val conn = loopback.connections[i]
                 val request = filledRequest(64)
                 var n = 0L
-                while (!done()) {
-                    val t0 = System.nanoTime()
-                    request.position = 0
-                    stream.write(request)
-                    stream.readExactly(64)
-                    record(System.nanoTime() - t0)
-                    n++
+                if (mode == "rt") {
+                    val stream = conn.openStream()
+                    while (!done()) {
+                        val t0 = System.nanoTime()
+                        request.position = 0
+                        stream.write(request)
+                        val got = stream.readExactly(64)
+                        record(System.nanoTime() - t0)
+                        n++
+                        if (got != 64) {
+                            incompleteOps.incrementAndGet()
+                            break
+                        }
+                    }
+                } else {
+                    while (!done()) {
+                        val t0 = System.nanoTime()
+                        val stream = conn.openStream()
+                        request.position = 0
+                        stream.write(request)
+                        stream.shutdownSend()
+                        val got = stream.readToEnd()
+                        record(System.nanoTime() - t0)
+                        n++
+                        if (got != 64) incompleteOps.incrementAndGet()
+                    }
                 }
                 ops.addAndGet(n)
             }
@@ -286,7 +315,8 @@ internal object NettyLoad {
         val warmupS = args.getOrElse(1) { "3" }.toLong()
         val measureS = args.getOrElse(2) { "8" }.toLong()
         val clientLoops = args.getOrElse(3) { "4" }.toInt()
-        println("# netty load: handlerExecutor=${System.getProperty("bench.nettyHandlerExecutor") == "true"} clientLoops=$clientLoops cpus=${Runtime.getRuntime().availableProcessors()}")
+        val mode = args.getOrElse(4) { "rt" }
+        println("# netty load: mode=$mode handlerExecutor=${System.getProperty("bench.nettyHandlerExecutor") == "true"} clientLoops=$clientLoops cpus=${Runtime.getRuntime().availableProcessors()}")
         Thread.setDefaultUncaughtExceptionHandler { _, e ->
             e.printStackTrace()
             Runtime.getRuntime().halt(1)
@@ -294,17 +324,33 @@ internal object NettyLoad {
         for (m in ms) {
             val loopback = com.ditchoom.socket.benchmark.NettyQuicLoopback(m, minOf(clientLoops, m))
             latencyLoad("netty", m, warmupS, measureS, loopback::serverThreads, loopback::clientLoopThreads) { i, record, done ->
-                val (stream, sink) = loopback.openStream(i)
                 val request = com.ditchoom.socket.benchmark.nettyFilledRequest(64)
-                while (!done()) {
-                    val t0 = System.nanoTime()
-                    sink.reset()
-                    stream.writeAndFlush(request.retainedDuplicate())
-                    sink.awaitBytes(64)
-                    record(System.nanoTime() - t0)
+                if (mode == "rt") {
+                    val (stream, sink) = loopback.openStream(i)
+                    while (!done()) {
+                        val t0 = System.nanoTime()
+                        sink.reset()
+                        stream.writeAndFlush(request.retainedDuplicate())
+                        val got = runCatching { sink.awaitBytes(64) }.getOrDefault(-1)
+                        record(System.nanoTime() - t0)
+                        if (got != 64) {
+                            incompleteOps.incrementAndGet()
+                            break
+                        }
+                    }
+                    stream.close()
+                } else {
+                    while (!done()) {
+                        val t0 = System.nanoTime()
+                        val (stream, sink) = loopback.openStream(i)
+                        stream.writeAndFlush(request.retainedDuplicate()).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT)
+                        val got = runCatching { sink.awaitFinished() }.getOrDefault(-1)
+                        stream.close().awaitUninterruptibly(10, java.util.concurrent.TimeUnit.SECONDS)
+                        record(System.nanoTime() - t0)
+                        if (got != 64) incompleteOps.incrementAndGet()
+                    }
                 }
                 request.release()
-                stream.close()
             }
             loopback.close()
         }
@@ -468,6 +514,83 @@ internal object SliceIdle {
         Thread.sleep(seconds * 1000)
         val used = cpuOf(loopback.serverThreads()) - c0
         println("idle %-8s server threads used %.3f ms of CPU in %d s (%.4f%% of a core)".format(placement, used / 1e6, seconds, used / 1e7 / seconds))
+        Runtime.getRuntime().halt(0)
+    }
+}
+
+/**
+ * Bulk as a plain program, so a window can be lined up with netem: one connection, back-to-back streams of
+ * [mib] MiB in 64 KiB writes, each ended by the server's FIN after it has read everything.
+ * Prints MiB/s, process CPU per MiB and the streams that did not complete.
+ *
+ * args: impl (slice|netty), warm-up s, measured s, MiB per stream, then for the slice: placement, callerRuns, hold.
+ */
+internal object BulkLoad {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val impl = args[0]
+        val warmupS = args[1].toLong()
+        val measureS = args[2].toLong()
+        val mib = args[3].toInt()
+        val chunks = mib * 16
+        val window = LoadWindow(warmupS, measureS, { emptyList() })
+        val bytes = AtomicLong()
+        println("# bulk: $impl ${args.drop(4).joinToString(" ")} real=${System.getProperty("slice.real") ?: "off"}")
+        val closeAll: () -> Unit
+        val worker: () -> Unit
+        if (impl == "slice") {
+            val loopback = SliceLoopback(args[4], holdAck = args[6].toBoolean(), callerRuns = args[5].toBoolean())
+            val chunk = NativeBuf(64 * 1024)
+            for (i in 0 until chunk.capacity) chunk.bb.put(i, 'D'.code.toByte())
+            worker = {
+                runBlocking {
+                    while (!window.done()) {
+                        val stream = loopback.connection.openStream()
+                        repeat(chunks) {
+                            chunk.position = 0
+                            chunk.limit = chunk.capacity
+                            stream.write(chunk)
+                        }
+                        stream.shutdownSend()
+                        val end = stream.readToEnd()
+                        if (end != 0) incompleteOps.incrementAndGet()
+                        if (window.measuring()) bytes.addAndGet(mib * 1048576L)
+                    }
+                }
+            }
+            closeAll = { println(loopback.report(1)); loopback.close() }
+        } else {
+            val loopback = com.ditchoom.socket.benchmark.NettyQuicLoopback()
+            val chunk = PooledByteBufAllocator.DEFAULT.directBuffer(64 * 1024)
+            repeat(64 * 1024) { chunk.writeByte('D'.code) }
+            worker = {
+                while (!window.done()) {
+                    val (stream, sink) = loopback.openStream()
+                    stream.config().writeBufferWaterMark = WriteBufferWaterMark(1024 * 1024, 4 * 1024 * 1024)
+                    var ok = true
+                    repeat(chunks) {
+                        if (!stream.isWritable) ok = ok && runCatching { sink.awaitWritable(stream) }.isSuccess
+                        stream.writeAndFlush(chunk.retainedDuplicate())
+                    }
+                    stream.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT)
+                    if (!ok || runCatching { sink.awaitFinished() }.isFailure) incompleteOps.incrementAndGet()
+                    stream.close().awaitUninterruptibly(10, java.util.concurrent.TimeUnit.SECONDS)
+                    if (window.measuring()) bytes.addAndGet(mib * 1048576L)
+                }
+            }
+            closeAll = { loopback.close() }
+        }
+        val t = thread(name = "bulk") { worker() }
+        window.start()
+        println("# window starts")
+        System.out.flush()
+        t.join()
+        val mibs = bytes.get() / 1048576.0
+        println(
+            "bulk %-6s %8.1f MiB/s  process cpu %8.1f us/MiB  streams incomplete %d"
+                .format(impl, mibs / window.seconds(), window.processCpuNanos() / 1000.0 / mibs.coerceAtLeast(1.0), incompleteOps.get()),
+        )
+        closeAll()
         Runtime.getRuntime().halt(0)
     }
 }
