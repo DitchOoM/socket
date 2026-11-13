@@ -86,8 +86,10 @@ private fun runLoad(
                     ready.completeExceptionally(t)
                 }
             }
-            ready
-        }.map { runBlocking { it.await() } }
+            // One at a time: the loop group's placement sorts loops by a load that concurrent connects change
+            // under it ("Comparison method violates its general contract" at 1024 concurrent connects).
+            runBlocking { ready.await() }
+        }
 
     if ("rt" in phases) {
         latencyPhase("RT", m, clients, warmupS, measureS) { scope ->
