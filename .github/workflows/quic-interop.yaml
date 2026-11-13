@@ -26,8 +26,14 @@ on:
         default: "gate"
         type: choice
         options: [gate, record]
+      lanes:
+        description: "Which lanes: the runner's Linux matrix, the native macOS and Windows lanes, or both"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, linux, native]
       peers:
-        description: "Comma-separated peers to run (empty = every peer; a partial run is reported, not judged)"
+        description: "Comma-separated peers for the Linux matrix (empty = every peer; a partial run is reported, not judged)"
         required: false
         default: ""
         type: string
@@ -50,6 +56,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       run-id: ${{ steps.find.outputs.run-id }}
+      apple-run-id: ${{ steps.find.outputs.apple-run-id }}
+      windows-run-id: ${{ steps.find.outputs.windows-run-id }}
     steps:
       - id: find
         env:
@@ -57,17 +65,23 @@ jobs:
           BRANCH: ${{ github.event_name == 'schedule' && 'main' || '' }}
         run: |
           set -euo pipefail
-          RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=quiche-linux-natives-full&per_page=100" \
-                  --jq "[.artifacts[] | select(.expired == false) | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")]
-                        | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty")
-          if [ -z "$RID" ]; then
-            echo "::error::No unexpired quiche-linux-natives-full artifact exists. Run build-linux once, then retry."
-            exit 1
-          fi
-          echo "run-id=$RID" >> "$GITHUB_OUTPUT"
+          newest() { # <artifact name>: the run that uploaded the newest unexpired copy, from main when nightly
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
+              --jq "[.artifacts[] | select(.expired == false) | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")]
+                    | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty"
+          }
+          for pair in run-id:quiche-linux-natives-full apple-run-id:quiche-apple-natives windows-run-id:quiche-windows-natives; do
+            rid=$(newest "${pair#*:}")
+            if [ -z "$rid" ]; then
+              echo "::error::No unexpired ${pair#*:} artifact exists. Run the build that makes it once, then retry."
+              exit 1
+            fi
+            echo "${pair%%:*}=$rid" >> "$GITHUB_OUTPUT"
+          done
 
   interop:
     needs: natives
+    if: ${{ inputs.lanes != 'native' }}
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"
@@ -75,3 +89,14 @@ jobs:
       stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
       record: ${{ inputs.mode || 'gate' }}
       peers: ${{ inputs.peers || '' }}
+
+  native:
+    needs: natives
+    if: ${{ inputs.lanes != 'linux' && inputs.peers == '' }}
+    uses: ./.github/workflows/quic-interop-native.yaml
+    with:
+      version: "0.0.0-interop"
+      apple-natives-run-id: ${{ needs.natives.outputs.apple-run-id }}
+      windows-natives-run-id: ${{ needs.natives.outputs.windows-run-id }}
+      stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
+      record: ${{ inputs.mode || 'gate' }}

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The QUIC interop gate: the runner's verdict for every cell, judged against a checked-in expectation.
 
-A cell is one direction, one peer and one test:
+A cell is one direction, one peer and one test. A direction may carry a lane prefix (macos-arm64-our-client)
+for the native lanes that run without the runner (test-harness/quic-interop/native-pair.py):
   our-client            our client against the peer's server
   our-server            the peer's client against our server
   our-client-migrating  our client's `transfer` with six active migrations (QuicInteropEndpoint.kt), plus the
@@ -27,8 +28,8 @@ import os
 import re
 import sys
 
-DIRECTIONS = ("our-client", "our-server", "our-client-migrating")
 MIGRATION_TEST = "active-migration"
+CELL_FILE = re.compile(r"((?:[a-z0-9]+-)*our-(?:client-migrating|client|server))__(.+)\.json")
 
 
 def runner_results(path):
@@ -86,7 +87,7 @@ def load_cells(results_dir):
     """{(direction, peer, test): (result, detail)} with a passing retry turning a failure into 'retried'."""
     cells = {}
     for name in sorted(os.listdir(results_dir)):
-        m = re.fullmatch(r"(our-client|our-server|our-client-migrating)__(.+)\.json", name)
+        m = CELL_FILE.fullmatch(name)
         if not m:
             continue
         direction, peer = m.groups()
@@ -98,7 +99,7 @@ def load_cells(results_dir):
                 cells[(direction, peer, test)] = ("retried", "failed once, passed on retry")
             else:
                 cells[(direction, peer, test)] = (result, "")
-        if direction == "our-client-migrating":
+        if direction.endswith("our-client-migrating"):
             cells[(direction, peer, MIGRATION_TEST)] = migration_outcome(
                 os.path.join(results_dir, f"{direction}__{peer}.summary")
             )
@@ -161,8 +162,11 @@ def cmd_judge(args):
         if not accepted:
             failing += 1
         rows.append((verdict, direction, peer, test, result, kind, why or detail))
-    for direction in DIRECTIONS:
-        for peer, tests in exp.get(direction, {}).items():
+    lanes = {d.split("our-")[0] for d, _ in ran_rows}
+    for direction in sorted(exp):
+        if direction.split("our-")[0] not in lanes:
+            continue  # another lane's expectations; this run did not cover that lane
+        for peer, tests in exp[direction].items():
             if (direction, peer) not in ran_rows:
                 rows.append(("MISSING", direction, peer, "*", "not run", "", "the peer's run produced no result"))
                 failing += 1

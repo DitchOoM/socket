@@ -114,5 +114,21 @@ expect_rc "record never fails" $? 0
 expect "record keeps a known failure's reason" "$(cat "$tmp/recorded.json")" '"known-failure": "the peer sends no ticket"'
 expect "record writes a pass" "$(cat "$tmp/recorded.json")" '"handshake": "pass"'
 
+# A native lane's cells carry a lane prefix; a run of one lane is not judged MISSING for another lane's rows.
+mkdir "$tmp/lane"
+runner "$tmp/lane/macos-arm64-our-client__quic-go.json" handshake:succeeded
+runner "$tmp/lane/macos-arm64-our-client-migrating__quic-go.json" transfer:succeeded
+echo "MIGRATION-SUMMARY attempted=6 succeeded=6 consecutive=6 firstUnmoved=none" >"$tmp/lane/macos-arm64-our-client-migrating__quic-go.summary"
+cat >"$tmp/lane-exp.json" <<'EOF2'
+{
+  "our-client": {"peer": {"handshake": "pass"}},
+  "macos-arm64-our-client": {"quic-go": {"handshake": "pass"}},
+  "macos-arm64-our-client-migrating": {"quic-go": {"transfer": "pass", "active-migration": "pass"}}
+}
+EOF2
+out="$(python3 "$script" judge "$tmp/lane-exp.json" "$tmp/lane")"
+expect_rc "a lane's run is judged on its own rows" $? 0
+expect "a lane's run counts its cells" "$out" "3 cells; 0 failing the gate"
+
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
