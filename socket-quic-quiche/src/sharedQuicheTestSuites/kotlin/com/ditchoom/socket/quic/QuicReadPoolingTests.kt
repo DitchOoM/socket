@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -12,7 +12,9 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -92,6 +94,8 @@ class QuicReadPoolingTests {
                     val slot = openStream(driver)
                     val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
                     repeat(300) {
+                        // The stub holds bytes for every read, as a sweep would have announced.
+                        slot.announce()
                         val result = withTimeout(2.seconds) { stream.read(2.seconds) }
                         assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
                         // The consumer hands ownership back after consuming — recycles to the pool.
@@ -106,6 +110,49 @@ class QuicReadPoolingTests {
                 assertTrue(
                     allocations < 20,
                     "[$name] stream read buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 reads",
+                )
+            }
+        }
+
+    /**
+     * The same recycling when the loop serves the reads: each read parks, and a turn of the loop that finds
+     * the stream readable hands it its bytes (`handToWaitingRead`) instead of the read asking. Nothing
+     * here signals the slot by hand: the stub reports the stream readable, as quiche does while it holds
+     * bytes, and the turns are commands.
+     */
+    @Test
+    fun streamReadBuffersTheLoopHandsOffAreRecycledNotAllocatedPerRead() =
+        runQuicTest {
+            for ((name, leaf) in leafFactories) {
+                val counting = leaf.counting()
+                val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
+                val driver = driverWith(api, counting)
+                driver.start(this)
+                try {
+                    val slot = openStream(driver)
+                    val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
+                    repeat(300) {
+                        val read = async { stream.read(2.seconds) }
+                        // Turns of the loop until the parked read has been served; the stream is readable.
+                        api.readableWhileRunning.store(listOf(slot.id.id))
+                        while (!read.isCompleted) {
+                            val turn = CompletableDeferred<QuicStatsSnapshot>()
+                            driver.commands.send(QuicheCmd.Stats(turn))
+                            withTimeout(2.seconds) { turn.await() }
+                            yield()
+                        }
+                        api.readableWhileRunning.store(emptyList())
+                        val result = read.await()
+                        assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
+                        result.buffer.freeIfNeeded()
+                    }
+                } finally {
+                    driver.destroy()
+                }
+                val allocations = counting.allocationCount
+                assertTrue(
+                    allocations < 20,
+                    "[$name] hand-off read buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 reads",
                 )
             }
         }

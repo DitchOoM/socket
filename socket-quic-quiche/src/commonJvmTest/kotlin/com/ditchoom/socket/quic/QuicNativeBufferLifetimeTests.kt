@@ -178,7 +178,7 @@ class QuicNativeBufferLifetimeTests {
             val driver = createTestDriver(api)
             val driverScope = CoroutineScope(SupervisorJob() + CoroutineExceptionHandler { _, _ -> })
             driver.start(driverScope)
-            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val adapter = DriverStreamAdapter(driver, announcedSlot())
             try {
                 withTimeout(30.seconds) { writeThenDropTheBuffer(adapter, payload, published) }
             } finally {
@@ -262,7 +262,7 @@ class QuicNativeBufferLifetimeTests {
             val driver = createTestDriver(api, factory)
             val driverScope = CoroutineScope(SupervisorJob() + CoroutineExceptionHandler { _, _ -> })
             driver.start(driverScope)
-            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val adapter = DriverStreamAdapter(driver, announcedSlot())
             try {
                 withTimeout(30.seconds) { readWithADriverOwnedBuffer(adapter, factory) }
             } finally {
