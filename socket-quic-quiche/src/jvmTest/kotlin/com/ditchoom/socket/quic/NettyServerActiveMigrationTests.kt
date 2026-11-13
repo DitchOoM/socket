@@ -1,0 +1,300 @@
+package com.ditchoom.socket.quic
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.buffer.freeIfNeeded
+import io.netty.handler.codec.quic.QuicPathEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import java.io.File
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * This library's client migrating, by its own decision, against a QUIC server this library did not write
+ * (Netty's QUIC codec). Every other active-migration test here has this library on both ends, so a
+ * mistake the client and the server share would pass them all.
+ *
+ * The migration is the public [QuicScope.migrate] to a fresh local port, a new path by its 4-tuple: the
+ * client probes it, the server answers the challenge, and the client moves.
+ */
+class NettyServerActiveMigrationTests {
+    @Test
+    fun aStreamStaysByteExactAcrossAMigrationAgainstANettyServer() = migratesMidTransfer(Link.Loopback)
+
+    /** The same, on a path with a round-trip time, where a packet sent on the old path is still in flight when the client moves. */
+    @Test
+    fun aStreamStaysByteExactAcrossAMigrationAgainstANettyServerOnAPathWithARoundTripTime() = migratesMidTransfer(Link.Delayed(PATH_ONE_WAY_DELAY))
+
+    /**
+     * Each migration uses up a connection id the server issued and leaves a path behind. More migrations
+     * than the client's `active_connection_id_limit` succeed only if the client retires each path it
+     * left and the server issues new connection ids in exchange.
+     */
+    @Test
+    fun theClientKeepsMigratingPastItsConnectionIdLimitAgainstANettyServer() =
+        runQuicTest(timeout = 120.seconds) {
+            skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
+                NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
+                    withQuicConnection("127.0.0.1", server.port, clientOptions, timeout = CONNECT_BUDGET.scaled()) {
+                        val stream = openStream()
+                        assertEquals("m0", stream.echo("m0"))
+                        repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
+                            val moved = assertIs<MigrationResult.Succeeded>(migrateOnceAConnectionIdIsSpare(), "migration ${index + 1}")
+                            eventually(SERVER_SEES_BUDGET, { "Netty never named ${moved.localEndpoint.port} as the peer: ${server.describe()}" }) {
+                                server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(moved.localEndpoint.port))
+                            }
+                            assertEquals("m${index + 1}", stream.echo("m${index + 1}"), "the stream after migration ${index + 1}")
+                        }
+                        stream.close()
+                    }
+                }
+            }
+        }
+
+    private fun migratesMidTransfer(link: Link) =
+        runQuicTest(timeout = 90.seconds) {
+            skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
+                NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
+                    link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
+                        withQuicConnection("127.0.0.1", route.clientFacingPort, clientOptions, timeout = CONNECT_BUDGET.scaled()) {
+                            val stream = openStream()
+                            val echoed = EchoedPrefix(PAYLOAD)
+                            val originalPort = localPorts().single()
+
+                            val writerAtBarrier = CompletableDeferred<Unit>()
+                            val migrationStarted = CompletableDeferred<Unit>()
+                            val moved =
+                                coroutineScope {
+                                    launch {
+                                        while (echoed.count < PAYLOAD.size) echoed.take(stream.read(READ_DEADLINE.scaled()))
+                                    }
+                                    launch {
+                                        for (chunk in 0 until CHUNKS) {
+                                            // Never more than a window ahead of the echo: bytes are in flight
+                                            // whenever the writer waits, and it cannot finish before the move.
+                                            awaitUntil(STALL_BUDGET.scaled(), "the echo stalled before chunk $chunk: ${echoed.progress()}") {
+                                                echoed.count >= (chunk - PIPELINE_WINDOW) * CHUNK_BYTES
+                                            }
+                                            if (chunk == MIGRATE_AT_CHUNK) {
+                                                writerAtBarrier.complete(Unit)
+                                                migrationStarted.await()
+                                            }
+                                            stream.send(chunk)
+                                        }
+                                    }
+                                    writerAtBarrier.await()
+                                    migrationStarted.complete(Unit)
+                                    assertIs<MigrationResult.Succeeded>(migrate(), "the migration with ${echoed.progress()}")
+                                }
+
+                            assertEquals(PAYLOAD.size, echoed.count, "every byte written came back, in order")
+                            assertEquals(QuicPathState.Migrated(moved.localEndpoint), pathState.value)
+
+                            val peerPortForNetty = route.serverSidePortOf(moved.localEndpoint.port)
+                            eventually(SERVER_SEES_BUDGET, { "Netty never reported the peer migrated to port $peerPortForNetty: ${server.describe()}" }) {
+                                server.pathEvents().any { it is QuicPathEvent.PeerMigrated && it.remote().port == peerPortForNetty }
+                            }
+                            assertEquals(listOf(NettyQuicEchoServer.NettyPeer.At(peerPortForNetty)), server.peers(), "the peer Netty names for the connection")
+
+                            eventually(RETIRE_BUDGET, { "the path on port $originalPort was never released" }) {
+                                localPorts() == listOf(moved.localEndpoint.port)
+                            }
+                            assertEquals("after", stream.echo("after"), "the stream on the new path, once the old one is gone")
+                            stream.close()
+                        }
+                    }
+                }
+            }
+        }
+
+    /** Waits, within [budget], for [condition] to hold; fails with [what] if it never does. */
+    private suspend fun eventually(
+        budget: Duration,
+        what: () -> String,
+        condition: suspend () -> Boolean,
+    ) {
+        try {
+            withTimeout(budget.scaled()) {
+                while (!condition()) delay(POLL)
+            }
+        } catch (expired: TimeoutCancellationException) {
+            throw AssertionError(what(), expired)
+        }
+    }
+
+    /** The local ports of the paths the client's driver holds. */
+    private suspend fun QuicScope.localPorts(): List<Int> {
+        val snapshot = assertIs<Inspected.Read<DriverStallSnapshot>>((this as QuicheBackedConnection).quicheDriver.stallSnapshot())
+        return snapshot.value.paths.map { it.key.port }
+    }
+
+    /** A migration needs a connection id the server has issued and the client has not used; the server issues one per id retired. */
+    private suspend fun QuicScope.migrateOnceAConnectionIdIsSpare(): MigrationResult {
+        repeat(SPARE_ID_ATTEMPTS) {
+            val result = migrate()
+            if (result !is MigrationResult.Unmoved.Failed.NoSpareConnectionId) return result
+            delay(SPARE_ID_WAIT)
+        }
+        return migrate()
+    }
+
+    private suspend fun QuicByteStream.send(chunk: Int) {
+        val out = BufferFactory.deterministic().allocate(CHUNK_BYTES)
+        out.writeString(chunkText(chunk), Charset.UTF8)
+        out.resetForRead()
+        try {
+            writeFully(out, WRITE_DEADLINE.scaled())
+        } finally {
+            out.freeNativeMemory()
+        }
+    }
+
+    private suspend fun QuicByteStream.echo(text: String): String {
+        val out = BufferFactory.deterministic().allocate(text.length)
+        out.writeString(text, Charset.UTF8)
+        out.resetForRead()
+        try {
+            writeFully(out, WRITE_DEADLINE.scaled())
+        } finally {
+            out.freeNativeMemory()
+        }
+        val back = StringBuilder()
+        while (back.length < text.length) {
+            val read = assertIs<ReadResult.Data>(read(READ_DEADLINE.scaled()), "the echo of \"$text\" after \"$back\"")
+            try {
+                back.append(read.buffer.readString(read.buffer.remaining(), Charset.UTF8))
+            } finally {
+                read.buffer.freeIfNeeded()
+            }
+        }
+        return back.toString()
+    }
+
+    private fun NettyQuicEchoServer.describe(): String = "peers ${peers()}, path events ${pathEvents()}"
+
+    private fun certificate(name: String): File {
+        val url = assertNotNull(this::class.java.classLoader.getResource("certs/$name"), "certs/$name is not on the test classpath")
+        return File(url.toURI())
+    }
+
+    /** What an echo stream has given back so far, checked against [expected] as it arrives. */
+    private class EchoedPrefix(
+        private val expected: ByteArray,
+    ) {
+        private val received = AtomicInteger()
+
+        val count: Int get() = received.get()
+
+        fun progress(): String = "$count of ${expected.size} bytes echoed back"
+
+        /** One reader at a time. Fails on anything that is not the next bytes of [expected]. */
+        fun take(result: ReadResult) {
+            val data = assertIs<ReadResult.Data>(result, "the stream ended with ${progress()}")
+            val bytes = ByteArray(data.buffer.remaining())
+            try {
+                for (i in bytes.indices) bytes[i] = data.buffer.readByte()
+            } finally {
+                data.buffer.freeIfNeeded()
+            }
+            val from = count
+            val wanted = expected.copyOfRange(from, minOf(expected.size, from + bytes.size))
+            assertContentEquals(wanted, bytes, "the echo diverged at byte $from of ${expected.size}")
+            received.set(from + bytes.size)
+        }
+    }
+
+    /** How the client reaches the server. */
+    private sealed interface Link {
+        fun open(server: InetSocketAddress): Route
+
+        /** Straight to the server over loopback: no round-trip time to speak of. */
+        data object Loopback : Link {
+            override fun open(server: InetSocketAddress): Route = Route.Direct(server.port)
+        }
+
+        /** Through a [PathDelayRelay] that holds each datagram for [oneWay]. */
+        data class Delayed(
+            val oneWay: Duration,
+        ) : Link {
+            override fun open(server: InetSocketAddress): Route = Route.Relayed(PathDelayRelay(server, oneWay))
+        }
+    }
+
+    private sealed interface Route : AutoCloseable {
+        /** The port the client connects to. */
+        val clientFacingPort: Int
+
+        /** The port the server sees datagrams from a client on [clientPort] arrive from. */
+        fun serverSidePortOf(clientPort: Int): Int
+
+        class Direct(
+            override val clientFacingPort: Int,
+        ) : Route {
+            override fun serverSidePortOf(clientPort: Int): Int = clientPort
+
+            override fun close() = Unit
+        }
+
+        class Relayed(
+            private val relay: PathDelayRelay,
+        ) : Route {
+            override val clientFacingPort: Int get() = relay.port
+
+            override fun serverSidePortOf(clientPort: Int): Int = relay.upstreamPorts().getValue(clientPort)
+
+            override fun close() = relay.close()
+        }
+    }
+
+    private companion object {
+        const val ALPN = "test"
+        const val CHUNK_BYTES = 64
+        const val CHUNKS = 48
+        const val PIPELINE_WINDOW = 4
+        const val MIGRATE_AT_CHUNK = 8
+        const val CONNECTION_ID_LIMIT = 4L
+        const val MIGRATIONS_PAST_THE_LIMIT = 6
+        const val SPARE_ID_ATTEMPTS = 40
+
+        val PATH_ONE_WAY_DELAY = 15.milliseconds
+        val SPARE_ID_WAIT = 50.milliseconds
+        val POLL = 10.milliseconds
+        val CONNECT_BUDGET = 10.seconds
+        val READ_DEADLINE = 15.seconds
+        val WRITE_DEADLINE = 10.seconds
+        val STALL_BUDGET = 20.seconds
+        val SERVER_SEES_BUDGET = 10.seconds
+        val RETIRE_BUDGET = 15.seconds
+
+        val clientOptions =
+            QuicOptions(
+                alpnProtocols = listOf(ALPN),
+                verifyPeer = false,
+                idleTimeout = 30.seconds.scaled(),
+                activeConnectionIdLimit = CONNECTION_ID_LIMIT,
+            )
+
+        val PAYLOAD: ByteArray = (0 until CHUNKS).joinToString("") { chunkText(it) }.encodeToByteArray()
+
+        /** Self-describing, ASCII, exactly [CHUNK_BYTES] long: a divergence names the chunk it is in. */
+        fun chunkText(index: Int): String = "chunk-${index.toString().padStart(4, '0')}-".padEnd(CHUNK_BYTES, 'a' + index % 26)
+
+        fun Duration.scaled(): Duration = this * testTimeScale()
+    }
+}

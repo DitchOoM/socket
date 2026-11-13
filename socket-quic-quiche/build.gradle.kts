@@ -4976,9 +4976,11 @@ afterEvaluate {
         // Unpack every dep jar so the resulting fat jar is `java -jar`-able.
         // Duplicate META-INF entries (manifests, signatures, services) would
         // otherwise break the jar; EXCLUDE picks the first occurrence.
+        // Netty is on the test classpath only as the foreign server of NettyServerActiveMigrationTests; the
+        // echo server never uses it, so it stays out of this jar and the interop jar built from it.
         from({
             testCompilation.runtimeDependencyFiles.files
-                .filter { it.isFile && it.name.endsWith(".jar") }
+                .filter { it.isFile && it.name.endsWith(".jar") && !it.name.startsWith("netty-") }
                 .map { zipTree(it) }
         })
 
@@ -5841,6 +5843,17 @@ kotlin {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        jvmTest.dependencies {
+            // A QUIC server this library did not write, for NettyServerActiveMigrationTests. Test scope on
+            // the JVM only: nothing published depends on Netty.
+            val nettyVersion = providers.gradleProperty("nettyVersion").get()
+            implementation("io.netty:netty-codec-classes-quic:$nettyVersion")
+            implementation("io.netty:netty-handler:$nettyVersion")
+            implementation("io.netty:netty-transport:$nettyVersion")
+            for (classifier in listOf("osx-aarch_64", "osx-x86_64", "linux-x86_64", "linux-aarch_64", "windows-x86_64")) {
+                runtimeOnly("io.netty:netty-codec-native-quic:$nettyVersion:$classifier")
+            }
+        }
         val androidUnitTest by getting {
             dependencies {
                 implementation(kotlin("test"))
