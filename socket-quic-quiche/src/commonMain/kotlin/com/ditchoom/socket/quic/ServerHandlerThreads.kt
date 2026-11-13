@@ -8,7 +8,8 @@ import kotlinx.coroutines.CoroutineDispatcher
  *
  * On JVM/Android: threads of the server's own, started as handlers need them. A handler that blocks
  * keeps one of them and the next handler to become runnable gets another, up to the number of threads
- * `Dispatchers.IO` allows. On Kotlin/Native: [serverReceiveDispatcher], holding nothing.
+ * `Dispatchers.IO` allows; past that, and after [release], a handler resumes on `Dispatchers.IO`.
+ * On Kotlin/Native: [serverReceiveDispatcher], holding nothing.
  */
 internal expect class ServerHandlerThreads(
     /** Names the threads, so a thread dump says which server a handler belongs to. */
