@@ -6,6 +6,8 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogTarget
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceSink
 import io.netty.handler.codec.quic.QuicPathEvent
@@ -17,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.InetSocketAddress
+import java.nio.file.Files
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -42,12 +45,19 @@ class NettyServerActiveMigrationTests {
 
     /** The same, on a path with a round-trip time, where a packet sent on the old path is still in flight when the client moves. */
     @Test
-    fun aStreamStaysByteExactAcrossAMigrationAgainstANettyServerOnAPathWithARoundTripTime() = migratesMidTransfer(Link.Delayed(PATH_ONE_WAY_DELAY))
+    fun aStreamStaysByteExactAcrossAMigrationAgainstANettyServerOnAPathWithARoundTripTime() =
+        migratesMidTransfer(Link.Delayed(PATH_ONE_WAY_DELAY))
 
     /**
      * Each migration uses up a connection id the server issued and leaves a path behind. More migrations
      * than the client's `active_connection_id_limit` succeed only if the client retires each path it
-     * left and the server issues new connection ids in exchange.
+     * left and the server issues new connection ids in exchange, and only if the client pushes the left
+     * path's source id out: quiche keeps it linked to that path until the peer retires it.
+     *
+     * The server advertises [ROOMY_SERVER_ID_LIMIT], not Netty's default of 2. At 2, quiche on the server
+     * holds two paths and frees the one the client left only once its destination id is gone, but retiring
+     * that id links the client's replacement to the same old path, so the server drops the next probe and
+     * a client can move once per connection whatever it does.
      */
     @Test
     fun theClientKeepsMigratingPastItsConnectionIdLimitAgainstANettyServer() =
@@ -55,21 +65,68 @@ class NettyServerActiveMigrationTests {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
                 val timeline = ClientTimeline()
                 timeline.explaining {
-                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
-                    withQuicConnection("127.0.0.1", server.port, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
-                        timeline.watch((this as QuicheBackedConnection).quicheDriver)
-                        val stream = openStream()
-                        assertEquals("m0", stream.echo("m0"))
-                        repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
-                            val result = migrateOnceAConnectionIdIsSpare()
-                            val moved = assertIs<MigrationResult.Succeeded>(result, "migration ${index + 1}: $result, Netty saw ${server.describe()}")
-                            eventually(SERVER_SEES_BUDGET, { "Netty never named ${moved.localEndpoint.port} as the peer: ${server.describe()}" }) {
-                                server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(moved.localEndpoint.port))
+                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN, ROOMY_SERVER_ID_LIMIT).use { server ->
+                        withQuicConnection("127.0.0.1", server.port, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
+                            timeline.watch((this as QuicheBackedConnection).quicheDriver)
+                            timeline.whileConnected {
+                                val stream = openStream()
+                                assertEquals("m0", stream.echo("m0"))
+                                repeat(MIGRATIONS_PAST_THE_LIMIT) { index ->
+                                    val result = migrateOnceAConnectionIdIsSpare()
+                                    val moved =
+                                        assertIs<MigrationResult.Succeeded>(
+                                            result,
+                                            "migration ${index + 1}: $result, Netty saw ${server.describe()}",
+                                        )
+                                    eventually(
+                                        SERVER_SEES_BUDGET,
+                                        { "Netty never named ${moved.localEndpoint.port} as the peer: ${server.describe()}" },
+                                    ) {
+                                        server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(moved.localEndpoint.port))
+                                    }
+                                    assertEquals("m${index + 1}", stream.echo("m${index + 1}"), "the stream after migration ${index + 1}")
+                                }
+                                stream.close()
                             }
-                            assertEquals("m${index + 1}", stream.echo("m${index + 1}"), "the stream after migration ${index + 1}")
                         }
-                        stream.close()
                     }
+                }
+            }
+        }
+
+    /**
+     * Against a quiche server that advertises an `active_connection_id_limit` of 2 (Netty's default), a
+     * client can move to a new 4-tuple once per connection, whatever it does. The server holds two paths
+     * (quiche `lib.rs` `PathMap::new` takes the local limit as its capacity) and admits a third only by
+     * evicting an unused one (`path.rs` `make_room_for_new_path`: unused = not active and no destination
+     * id). The left path never becomes unused: the only way a client retires the id it holds is Retire
+     * Prior To, which arrives with a new id in the same NEW_CONNECTION_ID, and quiche links that new id
+     * to the left path when it retires the old one (`lib.rs`, the `NewConnectionId` frame: inserted first
+     * by `ids.new_dcid`, then `lowest_available_dcid_seq` relinked to every retired path). So the server
+     * drops the second probe. The client must say so as a typed outcome, promptly, and keep the
+     * connection: not a hang, not a silent success.
+     */
+    @Test
+    fun aSecondMoveAgainstAServerWithRoomForTwoPathsEndsTypedAndTheConnectionLives() =
+        runQuicTest(timeout = 60.seconds) {
+            skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
+                val timeline = ClientTimeline()
+                timeline.explaining {
+                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN, NETTY_DEFAULT_ID_LIMIT).use { server ->
+                        withQuicConnection("127.0.0.1", server.port, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
+                            timeline.watch((this as QuicheBackedConnection).quicheDriver)
+                            timeline.whileConnected {
+                                val stream = openStream()
+                                assertEquals("m0", stream.echo("m0"))
+                                assertIs<MigrationResult.Succeeded>(migrateOnceAConnectionIdIsSpare(), "the first move")
+                                assertEquals("m1", stream.echo("m1"))
+
+                                val second = withTimeout(SECOND_MOVE_BUDGET.scaled()) { migrateOnceAConnectionIdIsSpare() }
+                                assertIs<MigrationResult.Unmoved>(second, "a second move the server cannot admit")
+                                assertEquals("m2", stream.echo("m2"), "the connection on the path it kept")
+                                stream.close()
+                            }
+                        }
                     }
                 }
             }
@@ -80,61 +137,74 @@ class NettyServerActiveMigrationTests {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
                 val timeline = ClientTimeline()
                 timeline.explaining {
-                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN).use { server ->
-                    link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
-                        withQuicConnection("127.0.0.1", route.clientFacingPort, timeline.options, timeout = CONNECTION_BUDGET.scaled()) {
-                            timeline.watch((this as QuicheBackedConnection).quicheDriver)
-                            val stream = openStream()
-                            val echoed = EchoedPrefix(PAYLOAD)
-                            val originalPort = localPorts().single()
+                    NettyQuicEchoServer(certificate("cert.crt"), certificate("cert.key"), ALPN, NETTY_DEFAULT_ID_LIMIT).use { server ->
+                        link.open(InetSocketAddress("127.0.0.1", server.port)).use { route ->
+                            withQuicConnection(
+                                "127.0.0.1",
+                                route.clientFacingPort,
+                                timeline.options,
+                                timeout = CONNECTION_BUDGET.scaled(),
+                            ) {
+                                timeline.watch((this as QuicheBackedConnection).quicheDriver)
+                                timeline.whileConnected {
+                                    val stream = openStream()
+                                    val echoed = EchoedPrefix(PAYLOAD)
+                                    val originalPort = localPorts().single()
 
-                            val writerAtBarrier = CompletableDeferred<Unit>()
-                            val migrationStarted = CompletableDeferred<Unit>()
-                            val moved =
-                                coroutineScope {
-                                    launch {
-                                        while (echoed.count < PAYLOAD.size) echoed.take(stream.read(READ_DEADLINE.scaled()))
-                                    }
-                                    launch {
-                                        for (chunk in 0 until CHUNKS) {
-                                            // Never more than a window ahead of the echo: bytes are in flight
-                                            // whenever the writer waits, and it cannot finish before the move.
-                                            awaitUntil(STALL_BUDGET.scaled(), "the echo stalled before chunk $chunk: ${echoed.progress()}") {
-                                                echoed.count >= (chunk - PIPELINE_WINDOW) * CHUNK_BYTES
+                                    val writerAtBarrier = CompletableDeferred<Unit>()
+                                    val migrationStarted = CompletableDeferred<Unit>()
+                                    val moved =
+                                        coroutineScope {
+                                            launch {
+                                                while (echoed.count < PAYLOAD.size) echoed.take(stream.read(READ_DEADLINE.scaled()))
                                             }
-                                            if (chunk == MIGRATE_AT_CHUNK) {
-                                                writerAtBarrier.complete(Unit)
-                                                migrationStarted.await()
+                                            launch {
+                                                for (chunk in 0 until CHUNKS) {
+                                                    // Never more than a window ahead of the echo: bytes are in flight
+                                                    // whenever the writer waits, and it cannot finish before the move.
+                                                    awaitUntil(
+                                                        STALL_BUDGET.scaled(),
+                                                        "the echo stalled before chunk $chunk: ${echoed.progress()}",
+                                                    ) {
+                                                        echoed.count >= (chunk - PIPELINE_WINDOW) * CHUNK_BYTES
+                                                    }
+                                                    if (chunk == MIGRATE_AT_CHUNK) {
+                                                        writerAtBarrier.complete(Unit)
+                                                        migrationStarted.await()
+                                                    }
+                                                    stream.send(chunk)
+                                                }
                                             }
-                                            stream.send(chunk)
+                                            writerAtBarrier.await()
+                                            migrationStarted.complete(Unit)
+                                            val result = migrate()
+                                            assertIs<MigrationResult.Succeeded>(result, "the migration with ${echoed.progress()}: $result")
                                         }
+
+                                    assertEquals(PAYLOAD.size, echoed.count, "every byte written came back, in order")
+                                    assertEquals(QuicPathState.Migrated(moved.localEndpoint), pathState.value)
+
+                                    // Netty 4.2.20's path events carry their ports byte-swapped (a peer on 52374 is
+                                    // reported as 38604), so the new peer port is read from the connection itself.
+                                    val peerPortForNetty = route.serverSidePortOf(moved.localEndpoint.port)
+                                    eventually(SERVER_SEES_BUDGET, { "Netty never reported a peer migration: ${server.describe()}" }) {
+                                        server.pathEvents().any { it is QuicPathEvent.PeerMigrated }
                                     }
-                                    writerAtBarrier.await()
-                                    migrationStarted.complete(Unit)
-                                    val result = migrate()
-                                    assertIs<MigrationResult.Succeeded>(result, "the migration with ${echoed.progress()}: $result")
+                                    eventually(
+                                        SERVER_SEES_BUDGET,
+                                        { "Netty never moved the connection to port $peerPortForNetty: ${server.describe()}" },
+                                    ) {
+                                        server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(peerPortForNetty))
+                                    }
+
+                                    eventually(RETIRE_BUDGET, { "the path on port $originalPort was never released" }) {
+                                        localPorts() == listOf(moved.localEndpoint.port)
+                                    }
+                                    assertEquals("after", stream.echo("after"), "the stream on the new path, once the old one is gone")
+                                    stream.close()
                                 }
-
-                            assertEquals(PAYLOAD.size, echoed.count, "every byte written came back, in order")
-                            assertEquals(QuicPathState.Migrated(moved.localEndpoint), pathState.value)
-
-                            // Netty 4.2.20's path events carry their ports byte-swapped (a peer on 52374 is
-                            // reported as 38604), so the new peer port is read from the connection itself.
-                            val peerPortForNetty = route.serverSidePortOf(moved.localEndpoint.port)
-                            eventually(SERVER_SEES_BUDGET, { "Netty never reported a peer migration: ${server.describe()}" }) {
-                                server.pathEvents().any { it is QuicPathEvent.PeerMigrated }
                             }
-                            eventually(SERVER_SEES_BUDGET, { "Netty never moved the connection to port $peerPortForNetty: ${server.describe()}" }) {
-                                server.peers() == listOf(NettyQuicEchoServer.NettyPeer.At(peerPortForNetty))
-                            }
-
-                            eventually(RETIRE_BUDGET, { "the path on port $originalPort was never released" }) {
-                                localPorts() == listOf(moved.localEndpoint.port)
-                            }
-                            assertEquals("after", stream.echo("after"), "the stream on the new path, once the old one is gone")
-                            stream.close()
                         }
-                    }
                     }
                 }
             }
@@ -222,13 +292,22 @@ class NettyServerActiveMigrationTests {
         private val events = ConcurrentLinkedQueue<String>()
         private val drivers = ConcurrentLinkedQueue<QuicheDriver>()
 
+        /** quiche's own record of the client connection: whether each packet decrypted, what it carried, what was acknowledged. */
+        private val qlog: File = Files.createTempDirectory("netty-migration-qlog").toFile().resolve("client.sqlog")
+
         val options: QuicOptions =
             clientOptions.copy(
                 trace =
                     QuicTraceCapture(
-                        TraceSink { event ->
-                            events.add(event.toString())
-                            while (events.size > KEPT_EVENTS) events.poll()
+                        captureFor = {
+                            QuicConnectionCapture(
+                                sink =
+                                    TraceSink { event ->
+                                        events.add(event.toString())
+                                        while (events.size > KEPT_EVENTS) events.poll()
+                                    },
+                                qlog = QlogTarget.File(qlog.path),
+                            )
                         },
                     ),
             )
@@ -237,9 +316,19 @@ class NettyServerActiveMigrationTests {
             drivers.add(driver)
         }
 
+        /** Runs [block] inside a live connection; a failure takes the driver's report while the loop can still answer. */
+        suspend fun whileConnected(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (failure: AssertionError) {
+                throw AssertionError("${failure.message}\n${report()}", failure)
+            }
+        }
+
         suspend fun explaining(block: suspend () -> Unit) {
             try {
                 block()
+                discard()
             } catch (failure: AssertionError) {
                 // A new error rather than a suppressed one: coroutine stack-trace recovery copies the
                 // failure on its way out and the copy drops what was attached to the original.
@@ -263,7 +352,14 @@ class NettyServerActiveMigrationTests {
                 }
                 append("client protocol timeline (").append(events.size).append(" events), newest last:\n")
                 events.forEach { append(it).append('\n') }
+                append("client qlog, last ").append(KEPT_QLOG_LINES).append(" records (").append(qlog.path).append("):\n")
+                if (qlog.isFile) qlog.readLines().takeLast(KEPT_QLOG_LINES).forEach { append(it).append('\n') }
             }
+
+        /** Removes the qlog of a run that passed. */
+        fun discard() {
+            qlog.parentFile.deleteRecursively()
+        }
 
         private suspend fun answerOrSilence(read: suspend () -> String): String =
             try {
@@ -349,14 +445,18 @@ class NettyServerActiveMigrationTests {
         const val PIPELINE_WINDOW = 4
         const val MIGRATE_AT_CHUNK = 8
         const val CONNECTION_ID_LIMIT = 4L
+        const val NETTY_DEFAULT_ID_LIMIT = 2L
+        const val ROOMY_SERVER_ID_LIMIT = 8L
         const val MIGRATIONS_PAST_THE_LIMIT = 6
         const val SPARE_ID_ATTEMPTS = 40
         const val KEPT_EVENTS = 400
+        const val KEPT_QLOG_LINES = 300
         val LOOP_ANSWER_BUDGET = 2.seconds
 
         val PATH_ONE_WAY_DELAY = 15.milliseconds
         val SPARE_ID_WAIT = 50.milliseconds
         val POLL = 10.milliseconds
+
         /** Bounds the whole connection, block included: withQuicConnection's timeout is not only the connect. */
         val CONNECTION_BUDGET = 60.seconds
         val READ_DEADLINE = 15.seconds
@@ -364,6 +464,9 @@ class NettyServerActiveMigrationTests {
         val STALL_BUDGET = 20.seconds
         val SERVER_SEES_BUDGET = 10.seconds
         val RETIRE_BUDGET = 15.seconds
+
+        /** Path validation's own budget (three PTOs, at least 1 s here) plus the spare-id retries, with room. */
+        val SECOND_MOVE_BUDGET = 15.seconds
 
         val clientOptions =
             QuicOptions(

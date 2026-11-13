@@ -3378,6 +3378,7 @@ class QuicheDriver(
                             // it never probed (the misroute), and a dead fallback socket would abort
                             // this whole flush (the stall). It is already lost: skip it and keep
                             // draining — RFC 9002 loss recovery owns it.
+                            flight.record(FlightEvent.SendDroppedNoPath, from.port.toLong())
                             continue
                         }
                         routed
@@ -3389,7 +3390,10 @@ class QuicheDriver(
                 // Waiting here again would park the loop for another bound, so this datagram is lost
                 // instead — RFC 9002 loss recovery owns it. Shut is unreachable: shut entries leave
                 // [paths], and [primary] and [active] are never shut while the driver runs.
-                is PathEgress.Stalled, PathEgress.Shut -> continue
+                is PathEgress.Stalled, PathEgress.Shut -> {
+                    flight.record(FlightEvent.SendDroppedEgress, entry.key.port.toLong(), entry.egress)
+                    continue
+                }
             }
             val channel = entry.channel
             // Server egress follows the peer and pins its own source: send to the destination quiche

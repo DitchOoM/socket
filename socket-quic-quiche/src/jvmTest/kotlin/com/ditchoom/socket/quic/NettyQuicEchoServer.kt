@@ -30,6 +30,7 @@ internal class NettyQuicEchoServer(
     certChain: File,
     privateKey: File,
     alpn: String,
+    connectionIdLimit: Long,
 ) : AutoCloseable {
     private val group: EventLoopGroup = MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())
     private val pathEvents = ConcurrentLinkedQueue<QuicPathEvent>()
@@ -46,6 +47,7 @@ internal class NettyQuicEchoServer(
                 .initialMaxStreamDataBidirectionalRemote(STREAM_WINDOW)
                 .initialMaxStreamsBidirectional(MAX_STREAMS)
                 .activeMigration(true)
+                .activeConnectionIdLimit(connectionIdLimit)
                 .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
                 .handler(
                     object : ChannelInitializer<QuicChannel>() {
