@@ -7,12 +7,15 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -49,6 +52,9 @@ class QuicDriverWorkPerEchoTest {
         /** Datagrams quiche wrote, in any turn: a `quiche_conn_send` that produced one. */
         val datagrams = AtomicInteger()
 
+        /** Datagrams fed to quiche. */
+        val datagramsIn = AtomicInteger()
+
         // Loop-confined: every call below is made by the one driver loop this api backs.
         private var timerTurn = false
 
@@ -69,6 +75,7 @@ class QuicDriverWorkPerEchoTest {
             recvInfo: QuicheRecvInfo,
         ): Int {
             timerTurn = false
+            datagramsIn.incrementAndGet()
             return delegate.connRecv(conn, buf, bufLen, recvInfo)
         }
 
@@ -213,6 +220,82 @@ class QuicDriverWorkPerEchoTest {
             }
         }
 
+    /**
+     * A request the server reads and does not answer is acknowledged by the held flush's own deadline:
+     * the client sees the ACK datagram and never has to probe for it.
+     */
+    @Test
+    fun aRequestThatGetsNoReplyIsAcknowledgedWithoutARetransmission() =
+        runQuicTest(timeout = 30.seconds) {
+            try {
+                val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
+                val counting = WorkCountingApi(loadQuicheApi())
+                withQuicServer(port = 0, tlsConfig = tls, quicOptions = opts) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                while (true) {
+                                    val read =
+                                        stream.read(9.seconds) {
+                                            if (it.get(it.position()) == ANSWERED) stream.write(it, 5.seconds)
+                                        }
+                                    if (read !is ScopedRead.Data) break
+                                }
+                                stream.close()
+                            }
+                        }
+                    try {
+                        commonJvmWithQuicConnection(
+                            endpoint = QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
+                            serverName = "localhost",
+                            quicOptions = opts,
+                            connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
+                            timeout = 10.seconds,
+                            api = counting,
+                        ) {
+                            val stream = openStream()
+                            repeat(WARMUP) { echo(stream) }
+                            // The last reply's ACK leaves on the client's own held-flush deadline; let it go.
+                            delay(50.milliseconds)
+                            val before = counting.datagrams.get()
+                            repeat(UNANSWERED) {
+                                val seen = counting.datagramsIn.get()
+                                send(stream, UNANSWERED_MARK)
+                                withTimeout(5.seconds) { while (counting.datagramsIn.get() == seen) delay(1.milliseconds) }
+                            }
+                            // One datagram per request and nothing else: an ACK that came late would have
+                            // cost the client a probe.
+                            assertEquals(
+                                UNANSWERED,
+                                counting.datagrams.get() - before,
+                                "client datagrams for $UNANSWERED unanswered requests",
+                            )
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                recordMissingNativeLib(QuicDriverWorkPerEchoTest::class, e)
+            }
+        }
+
+    private suspend fun send(
+        stream: QuicByteStream,
+        mark: Byte,
+    ) {
+        val out = BufferFactory.deterministic().allocate(64)
+        repeat(64) { out.writeByte(mark) }
+        out.resetForRead()
+        try {
+            stream.write(out, 5.seconds)
+        } finally {
+            out.freeNativeMemory()
+        }
+    }
+
     private suspend fun echo(stream: QuicByteStream) {
         val out = BufferFactory.deterministic().allocate(64)
         repeat(64) { out.writeByte(1) }
@@ -235,5 +318,10 @@ class QuicDriverWorkPerEchoTest {
     private companion object {
         const val WARMUP = 200
         const val ECHOES = 500
+
+        /** More than the gate tolerates in a row, so both an open and a shut gate are crossed. */
+        const val UNANSWERED = 8
+        const val ANSWERED: Byte = 1
+        const val UNANSWERED_MARK: Byte = 0
     }
 }
