@@ -99,13 +99,30 @@ class Http3ConnectionTests {
 
     // --- test doubles -------------------------------------------------------
 
+    /** One sending call on a [RecordingByteStream]. */
+    private sealed interface Sent {
+        data class Bytes(
+            val count: Int,
+        ) : Sent
+
+        data class BytesAndFin(
+            val count: Int,
+        ) : Sent
+
+        data object Fin : Sent
+    }
+
     /** A [ByteStream] that records everything written, replays a scripted read sequence, then [endsWith]. */
     private class RecordingByteStream(
         readScript: List<ReadResult> = emptyList(),
         private val endsWith: StreamEnding = StreamEnding.PeerFin,
     ) : ByteStream,
-        com.ditchoom.buffer.flow.Resettable {
+        com.ditchoom.buffer.flow.Resettable,
+        com.ditchoom.socket.quic.FinishingWrite {
         val written = mutableListOf<Int>()
+
+        /** Each call that sent something, in order. */
+        val sends = mutableListOf<Sent>()
         private val reads = ArrayDeque(readScript)
         var closed = false
             private set
@@ -126,7 +143,21 @@ class Http3ConnectionTests {
         ): BytesWritten {
             val n = buffer.remaining()
             repeat(n) { written += buffer.readByte().toInt() and 0xFF }
+            sends += Sent.Bytes(n)
             return BytesWritten(n)
+        }
+
+        override suspend fun writeFullyAndShutdownSend(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ) {
+            val n = buffer.remaining()
+            repeat(n) { written += buffer.readByte().toInt() and 0xFF }
+            sends += Sent.BytesAndFin(n)
+        }
+
+        override suspend fun shutdownSend() {
+            sends += Sent.Fin
         }
 
         override suspend fun close() {
@@ -2015,5 +2046,59 @@ class Http3ConnectionTests {
                 val settings = withTimeout(5.seconds) { connection.peerSettings() }
                 assertEquals(0L, settings.qpackMaxTableCapacity, "GREASE frame ignored; SETTINGS parsed normally")
             }
+        }
+
+    private fun responseHeadStream(): RecordingByteStream {
+        val fields = listOf(QpackHeaderField(":status", "200"))
+        val size = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as com.ditchoom.buffer.codec.WireSize.Exact).bytes
+        val section = BufferFactory.Default.allocate(size)
+        QpackFieldSectionCodec.encode(section, fields, EncodeContext.Empty)
+        section.resetForRead()
+        return RecordingByteStream(listOf(dataChunk(frameBytes(Http3Frame.Headers(section)))))
+    }
+
+    @Test
+    fun aRequestWithoutABodyIsOneWriteThatAlsoEndsTheStream() =
+        runTest {
+            val requestStream = responseHeadStream()
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), requestStream))),
+                )
+            val connection = Http3Connection.bootstrap(scope, TransportConfig())
+
+            val response = connection.request(Http3Request("GET", "example.test", "/"))
+            response.close()
+
+            assertEquals(1, requestStream.sends.size, "sending calls for a request without a body: ${requestStream.sends}")
+            assertIs<Sent.BytesAndFin>(requestStream.sends.single())
+        }
+
+    @Test
+    fun aRequestWithABodyEndsTheStreamWithItsDataFrame() =
+        runTest {
+            val requestStream = responseHeadStream()
+            val scope =
+                FakeQuicScope(
+                    this,
+                    ClientStreams().outgoing(),
+                    incoming = listOf(peerControlStream(clientSettings())),
+                    bidi = ArrayDeque(listOf(QuicByteStream(QuicStreamId(0), requestStream))),
+                )
+            val connection = Http3Connection.bootstrap(scope, TransportConfig())
+            val body = BufferFactory.Default.allocate(5)
+            repeat(5) { body.writeByte(7) }
+            body.resetForRead()
+
+            val response = connection.request(Http3Request("POST", "example.test", "/", body = body))
+            response.close()
+
+            assertEquals(2, requestStream.sends.size, "sending calls for a request with a body: ${requestStream.sends}")
+            assertIs<Sent.Bytes>(requestStream.sends[0])
+            // The DATA frame: type, length, then the five body bytes.
+            assertEquals(Sent.BytesAndFin(2 + 5), requestStream.sends[1])
         }
 }

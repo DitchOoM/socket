@@ -278,9 +278,17 @@ class Http3Connection private constructor(
      * [Http3Response.readFullBody] then close) to release stream-reader buffers.
      */
     suspend fun request(request: Http3Request): Http3Response {
-        val stream = openRequestStream(request.method, request.scheme, request.authority, request.path, request.headers)
-        request.body?.let { writeFrame(stream, Http3Frame.Data(it)) }
-        stream.shutdownSend()
+        val body = request.body
+        val stream =
+            openRequestStream(
+                request.method,
+                request.scheme,
+                request.authority,
+                request.path,
+                request.headers,
+                if (body == null) AfterHeaders.StreamEnds else AfterHeaders.BodyFollows,
+            )
+        if (body != null) streamWriter.writeFinalFrame(stream, Http3Frame.Data(body))
         return readResponse(stream)
     }
 
@@ -299,7 +307,7 @@ class Http3Connection private constructor(
         headers: List<QpackHeaderField> = emptyList(),
         body: suspend Http3RequestBody.() -> Unit,
     ): Http3Response {
-        val stream = openRequestStream(method, scheme, authority, path, headers)
+        val stream = openRequestStream(method, scheme, authority, path, headers, AfterHeaders.BodyFollows)
         Http3RequestBody(stream).body()
         stream.shutdownSend()
         return readResponse(stream)
@@ -420,6 +428,7 @@ class Http3Connection private constructor(
     private suspend fun writeHeadersFrame(
         stream: QuicByteStream,
         fields: List<QpackHeaderField>,
+        after: AfterHeaders = AfterHeaders.BodyFollows,
     ) {
         val activeEncoder = encoder
         val sectionBuffer =
@@ -433,7 +442,10 @@ class Http3Connection private constructor(
                 }
             }
         try {
-            writeFrame(stream, Http3Frame.Headers(sectionBuffer))
+            when (after) {
+                AfterHeaders.BodyFollows -> writeFrame(stream, Http3Frame.Headers(sectionBuffer))
+                AfterHeaders.StreamEnds -> streamWriter.writeFinalFrame(stream, Http3Frame.Headers(sectionBuffer))
+            }
         } finally {
             sectionBuffer.freeIfNeeded()
         }
@@ -446,6 +458,7 @@ class Http3Connection private constructor(
         authority: String,
         path: String,
         headers: List<QpackHeaderField>,
+        after: AfterHeaders,
     ): QuicByteStream {
         refuseIfAborted()
         val stream = scope.openStream()
@@ -457,7 +470,7 @@ class Http3Connection private constructor(
                 add(QpackHeaderField(":path", path))
                 addAll(headers)
             }
-        writeHeadersFrame(stream, fields)
+        writeHeadersFrame(stream, fields, after)
         return stream
     }
 
