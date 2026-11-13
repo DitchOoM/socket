@@ -2440,7 +2440,8 @@ class QuicheDriver(
      * quiche exactly one datagram and did nothing else (a second datagram is RFC 9000 §13.2.2's cue for an
      * ACK); that datagram's stream bytes went to a read that was waiting, so an answer is likely; the path
      * has shown no loss lately (an ACK is worth most where datagrams are dropped); no migration is under
-     * way; and the flush before this one was not held too, so no flush waits longer than one bound.
+     * way; the loop keeps its own timers ([LoopTimers.OnTheLoop]); and the flush before this one was not
+     * held too, so no flush waits longer than one bound.
      */
     private fun holdsItsFlush(
         established: Boolean,
@@ -2461,6 +2462,13 @@ class QuicheDriver(
             AckHold.NotHolding -> Unit
         }
         if (!established || work != TurnWork.DatagramsOnly || received != 1 || handed == 0L) return AckHold.NotHolding
+        // The hold arms a deadline a millisecond away on most echoes and disarms it again. Kept by the loop
+        // that costs nothing; kept by a timer thread each one wakes that thread, which costs more than the
+        // datagram the hold saves.
+        when (placement?.timers) {
+            LoopTimers.OnTheLoop -> Unit
+            LoopTimers.OnAnotherThread, null -> return AckHold.NotHolding
+        }
         if (ackMemory.cadence() != AckCadence.Relaxed) return AckHold.NotHolding
         when (lane) {
             MigrationLane.Idle -> Unit

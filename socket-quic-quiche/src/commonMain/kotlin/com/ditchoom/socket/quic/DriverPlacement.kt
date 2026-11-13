@@ -4,6 +4,15 @@ import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.CoroutineContext
 
+/** Where a timer the driver's loop arms is kept, which decides what arming a short one costs. */
+internal enum class LoopTimers {
+    /** By the loop's own thread, beside its selector: arming and disarming wake nobody. */
+    OnTheLoop,
+
+    /** By a timer thread: a deadline sooner than the one it sleeps on wakes it. */
+    OnAnotherThread,
+}
+
 /**
  * Where one connection's driver (or one server's receive loop) runs, and the hold it keeps on that
  * place until [release]. Made by [placeDriver].
@@ -12,6 +21,7 @@ import kotlin.coroutines.CoroutineContext
 internal class DriverPlacement(
     val context: CoroutineContext,
     private val onRelease: (() -> Unit)?,
+    val timers: LoopTimers = LoopTimers.OnAnotherThread,
 ) {
     private val released = AtomicBoolean(false)
 

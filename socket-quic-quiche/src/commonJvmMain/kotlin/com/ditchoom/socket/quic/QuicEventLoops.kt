@@ -96,5 +96,5 @@ internal actual fun placeDriver(
             throw DeadlineTimerUnavailableException(unavailable.cause ?: unavailable)
         }
     // Every other element the caller added (a test's thread marker, a name) is kept.
-    return DriverPlacement(requested.minusKey(LoopPlacement) + hold.loop) { hold.release() }
+    return DriverPlacement(requested.minusKey(LoopPlacement) + hold.loop, { hold.release() }, LoopTimers.OnTheLoop)
 }
