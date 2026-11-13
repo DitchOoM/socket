@@ -65,10 +65,12 @@ class ServerHandlerThreadsTests {
                                 repeat(50) { roundTrip() }
                                 delay(300)
                                 handlerThreadNames.clear()
+                                val poolActivity = PoolActivity()
                                 val poolBefore = ThreadWaits.of(SHARED_POOL_WORKER)
                                 val handlersBefore = ThreadWaits.of(ServerHandlerThreads.THREAD_NAME_PREFIX)
                                 repeat(OPERATIONS) { roundTrip() }
                                 val poolWaits = ThreadWaits.of(SHARED_POOL_WORKER) - poolBefore
+                                val poolSeen = poolActivity.stop()
                                 val handlerWaits = ThreadWaits.of(ServerHandlerThreads.THREAD_NAME_PREFIX) - handlersBefore
                                 assertTrue(
                                     handlerThreadNames.isNotEmpty() &&
@@ -79,7 +81,7 @@ class ServerHandlerThreadsTests {
                                     poolWaits <= POOL_WAITS_AT_MOST,
                                     "$OPERATIONS echoes made the shared coroutine pool's workers wait $poolWaits times; with the " +
                                         "handler on the server's own threads an echo hands nothing to that pool, so at most " +
-                                        "$POOL_WAITS_AT_MOST were expected",
+                                        "$POOL_WAITS_AT_MOST were expected. What the pool's workers were seen running meanwhile:\n$poolSeen",
                                 )
                                 assertTrue(
                                     handlerWaits <= OPERATIONS * HANDLER_WAITS_PER_ECHO_AT_MOST,
@@ -243,6 +245,47 @@ class ServerHandlerThreadsTests {
                 .keys
                 .filter { it.name.startsWith(namePrefix) }
                 .sumOf { mx.getThreadInfo(it.id)?.waitedCount?.coerceAtLeast(0) ?: 0L }
+    }
+
+    /**
+     * What the shared pool's workers run while it is alive: every 200 us, the coroutine each running
+     * worker carries (kotlinx names the thread after it) and the frames it is in. For a failure report.
+     */
+    private class PoolActivity {
+        private val seen = ConcurrentHashMap<String, AtomicInteger>()
+        private val running =
+            java.util.concurrent.atomic
+                .AtomicBoolean(true)
+        private val sampler =
+            kotlin.concurrent.thread(name = "pool-activity-sampler", isDaemon = true) {
+                while (running.get()) {
+                    Thread.getAllStackTraces().forEach { (thread, stack) ->
+                        if (thread.name.startsWith(SHARED_POOL_WORKER) && thread.state == Thread.State.RUNNABLE) {
+                            val frames =
+                                stack
+                                    .filter { it.className.startsWith("com.ditchoom") || it.className.startsWith("kotlinx") }
+                                    .take(6)
+                                    .joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}" }
+                            seen
+                                .computeIfAbsent(
+                                    "${thread.name.substringAfter(" @", "(no coroutine)")} :: $frames",
+                                ) { AtomicInteger() }
+                                .incrementAndGet()
+                        }
+                    }
+                    java.util.concurrent.locks.LockSupport
+                        .parkNanos(200_000)
+                }
+            }
+
+        fun stop(): String {
+            running.set(false)
+            sampler.join()
+            return seen.entries
+                .sortedByDescending { it.value.get() }
+                .take(20)
+                .joinToString("\n") { "${it.value.get()}x ${it.key}" }
+        }
     }
 
     private companion object {
