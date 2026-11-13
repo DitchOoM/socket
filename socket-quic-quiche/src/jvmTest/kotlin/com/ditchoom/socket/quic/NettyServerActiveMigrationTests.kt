@@ -358,7 +358,7 @@ class NettyServerActiveMigrationTests {
                 }
                 append("client protocol timeline (").append(events.size).append(" events), newest last:\n")
                 events.forEach { append(it).append('\n') }
-                append("client qlog, last ").append(KEPT_QLOG_LINES).append(" records (").append(qlog.path).append("):\n")
+                append("client qlog, last $KEPT_QLOG_LINES records (${qlog.path}):\n")
                 if (qlog.isFile) qlog.readLines().takeLast(KEPT_QLOG_LINES).forEach { append(it).append('\n') }
             }
 
