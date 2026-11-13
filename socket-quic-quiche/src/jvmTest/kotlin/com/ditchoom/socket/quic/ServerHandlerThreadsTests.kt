@@ -4,13 +4,16 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ThreadContextElement
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.lang.management.ManagementFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -19,35 +22,33 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * **A server's handlers run on threads of the server's own**: an echo wakes no worker of the shared
- * coroutine pool, a handler that blocks does not hold up another connection's handler, and the threads
- * end with the server.
+ * **A server's handlers run on threads of the server's own**: every resume of a handler runs on one of
+ * them, a handler that blocks does not hold up another connection's handler, and the threads end with
+ * the server.
  */
 class ServerHandlerThreadsTests {
     private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 20.seconds)
     private val tls = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
     @Test
-    fun anEchoRunsItsHandlerOnTheServersThreadsAndWakesNoSharedPoolWorker(): Unit =
+    fun everyResumeOfAnEchoHandlerRunsOnItsServersThreads(): Unit =
         runBlocking {
             skipOnMissingNativeLib(ServerHandlerThreadsTests::class) {
                 withTimeout(60.seconds) {
-                    val handlerThreadNames = ConcurrentHashMap.newKeySet<String>()
+                    val resumes = HandlerResumes()
                     withQuicServer(port = 0, tlsConfig = tls, quicOptions = options) {
+                        val serverThreads = "${ServerHandlerThreads.THREAD_NAME_PREFIX}$port-"
                         val serverJob =
                             launch(Dispatchers.IO) {
                                 connections {
-                                    val stream = acceptStream()
-                                    while (true) {
-                                        val echoed =
-                                            stream.read(30.seconds) { chunk ->
-                                                handlerThreadNames.add(Thread.currentThread().name)
-                                                stream.write(chunk, 30.seconds)
-                                            }
-                                        handlerThreadNames.add(Thread.currentThread().name)
-                                        if (echoed !is ScopedRead.Data) break
+                                    withContext(resumes) {
+                                        val stream = acceptStream()
+                                        while (true) {
+                                            val echoed = stream.read(30.seconds) { chunk -> stream.write(chunk, 30.seconds) }
+                                            if (echoed !is ScopedRead.Data) break
+                                        }
+                                        stream.close()
                                     }
-                                    stream.close()
                                 }
                             }
                         try {
@@ -64,29 +65,26 @@ class ServerHandlerThreadsTests {
                                 }
                                 repeat(50) { roundTrip() }
                                 delay(300)
-                                handlerThreadNames.clear()
-                                val poolActivity = PoolActivity()
-                                val poolBefore = ThreadWaits.of(SHARED_POOL_WORKER)
-                                val handlersBefore = ThreadWaits.of(ServerHandlerThreads.THREAD_NAME_PREFIX)
+                                resumes.clear()
+                                val waitsBefore = ThreadWaits.of(serverThreads)
                                 repeat(OPERATIONS) { roundTrip() }
-                                val poolWaits = ThreadWaits.of(SHARED_POOL_WORKER) - poolBefore
-                                val poolSeen = poolActivity.stop()
-                                val handlerWaits = ThreadWaits.of(ServerHandlerThreads.THREAD_NAME_PREFIX) - handlersBefore
+                                val waits = ThreadWaits.of(serverThreads) - waitsBefore
+                                val threads = resumes.byThread()
+                                val elsewhere = threads.filterKeys { !it.startsWith(serverThreads) }
                                 assertTrue(
-                                    handlerThreadNames.isNotEmpty() &&
-                                        handlerThreadNames.all { it.startsWith(ServerHandlerThreads.THREAD_NAME_PREFIX) },
-                                    "the handler must run only on its server's own threads, it ran on $handlerThreadNames",
+                                    threads.isNotEmpty() && elsewhere.isEmpty(),
+                                    "every resume of the handler must run on its server's own threads ($serverThreads…); of " +
+                                        "${threads.values.sum()} resumes during $OPERATIONS echoes these ran elsewhere: $elsewhere",
                                 )
                                 assertTrue(
-                                    poolWaits <= POOL_WAITS_AT_MOST,
-                                    "$OPERATIONS echoes made the shared coroutine pool's workers wait $poolWaits times; with the " +
-                                        "handler on the server's own threads an echo hands nothing to that pool, so at most " +
-                                        "$POOL_WAITS_AT_MOST were expected. What the pool's workers were seen running meanwhile:\n$poolSeen",
+                                    threads.values.sum() <= OPERATIONS * RESUMES_PER_ECHO_AT_MOST,
+                                    "$OPERATIONS echoes resumed the handler ${threads.values.sum()} times, at most " +
+                                        "$RESUMES_PER_ECHO_AT_MOST per echo were expected",
                                 )
                                 assertTrue(
-                                    handlerWaits <= OPERATIONS * HANDLER_WAITS_PER_ECHO_AT_MOST,
-                                    "$OPERATIONS echoes made the server's handler threads wait $handlerWaits times, at most " +
-                                        "$HANDLER_WAITS_PER_ECHO_AT_MOST per echo were expected",
+                                    waits <= OPERATIONS * RESUMES_PER_ECHO_AT_MOST,
+                                    "$OPERATIONS echoes made the server's handler threads wait $waits times; a resume is one " +
+                                        "hand-off to one parked thread, so at most $RESUMES_PER_ECHO_AT_MOST per echo were expected",
                                 )
                                 stream.shutdownSend()
                                 stream.close()
@@ -248,51 +246,34 @@ class ServerHandlerThreadsTests {
     }
 
     /**
-     * What the shared pool's workers run while it is alive: every 200 us, the coroutine each running
-     * worker carries (kotlinx names the thread after it) and the frames it is in. For a failure report.
+     * Which thread every resume of the coroutine it is installed in ran on. kotlinx.coroutines calls
+     * [updateThreadContext] on the resuming thread each time the coroutine starts or resumes, so the
+     * record is complete and belongs to that coroutine alone, whatever else runs in the process.
      */
-    private class PoolActivity {
-        private val seen = ConcurrentHashMap<String, AtomicInteger>()
-        private val running =
-            java.util.concurrent.atomic
-                .AtomicBoolean(true)
-        private val sampler =
-            kotlin.concurrent.thread(name = "pool-activity-sampler", isDaemon = true) {
-                while (running.get()) {
-                    Thread.getAllStackTraces().forEach { (thread, stack) ->
-                        if (thread.name.startsWith(SHARED_POOL_WORKER) && thread.state == Thread.State.RUNNABLE) {
-                            val frames =
-                                stack
-                                    .filter { it.className.startsWith("com.ditchoom") || it.className.startsWith("kotlinx") }
-                                    .take(6)
-                                    .joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}" }
-                            seen
-                                .computeIfAbsent(
-                                    "${thread.name.substringAfter(" @", "(no coroutine)")} :: $frames",
-                                ) { AtomicInteger() }
-                                .incrementAndGet()
-                        }
-                    }
-                    java.util.concurrent.locks.LockSupport
-                        .parkNanos(200_000)
-                }
-            }
+    private class HandlerResumes : ThreadContextElement<Unit> {
+        private val resumesByThread = ConcurrentHashMap<String, AtomicInteger>()
 
-        fun stop(): String {
-            running.set(false)
-            sampler.join()
-            return seen.entries
-                .sortedByDescending { it.value.get() }
-                .take(20)
-                .joinToString("\n") { "${it.value.get()}x ${it.key}" }
+        override val key: CoroutineContext.Key<*> get() = Key
+
+        override fun updateThreadContext(context: CoroutineContext) {
+            resumesByThread.computeIfAbsent(Thread.currentThread().name.substringBefore(" @")) { AtomicInteger() }.incrementAndGet()
         }
+
+        override fun restoreThreadContext(
+            context: CoroutineContext,
+            oldState: Unit,
+        ) = Unit
+
+        fun clear() = resumesByThread.clear()
+
+        fun byThread(): Map<String, Int> = resumesByThread.mapValues { it.value.get() }
+
+        private object Key : CoroutineContext.Key<HandlerResumes>
     }
 
     private companion object {
-        const val SHARED_POOL_WORKER = "DefaultDispatcher-worker"
         const val OPERATIONS = 500
-        const val POOL_WAITS_AT_MOST = 50L
-        const val HANDLER_WAITS_PER_ECHO_AT_MOST = 3L
+        const val RESUMES_PER_ECHO_AT_MOST = 3
         const val BLOCK_REQUEST_BYTES = 1
         const val BLOCK_MILLIS = 2_000L
         const val NEIGHBOUR_ROUND_TRIPS = 20
