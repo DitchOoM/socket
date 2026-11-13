@@ -173,6 +173,29 @@ private object Raw {
     fun long(address: Long): Long = unsafe.getLong(address)
 }
 
+/** Debug: how far ahead of now quiche's send times are, as counts by bucket. */
+internal class PaceAhead {
+    val past = LongAdder()
+    val under50us = LongAdder()
+    val under1ms = LongAdder()
+    val under100ms = LongAdder()
+    val beyond = LongAdder()
+
+    fun record(aheadNanos: Long) {
+        when {
+            aheadNanos <= 0 -> past
+            aheadNanos < 50_000 -> under50us
+            aheadNanos < 1_000_000 -> under1ms
+            aheadNanos < 100_000_000 -> under100ms
+            else -> beyond
+        }.increment()
+    }
+
+    override fun toString(): String = "past/now ${past.sum()}, <50us ${under50us.sum()}, <1ms ${under1ms.sum()}, <100ms ${under100ms.sum()}, beyond ${beyond.sum()}"
+}
+
+internal val DEBUG_PACE: Boolean = System.getProperty("slice.debugPace") == "true"
+
 /** quiche fills the send time of a datagram on Linux only; elsewhere the field is zero. */
 internal val PACING_AVAILABLE: Boolean = System.getProperty("os.name").lowercase().contains("linux")
 
@@ -275,6 +298,7 @@ internal class SliceCounts {
     val paced = LongAdder()
     val unroutable = LongAdder()
     val closedSeen = LongAdder()
+    val paceAhead = PaceAhead()
     val promotions = LongAdder()
     val demotions = LongAdder()
     val sendErrors = LongAdder()
@@ -942,6 +966,7 @@ internal class SliceLoop(
             if (settings.checks) c.checkDestination()
             if (settings.pacing) {
                 val at = c.sendTime()
+                if (DEBUG_PACE) counts.paceAhead.record(at - System.nanoTime())
                 if (at - System.nanoTime() > PACE_SLACK_NANOS) {
                     c.pacedLen = n
                     c.pacedAt = at

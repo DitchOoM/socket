@@ -660,7 +660,8 @@ internal class SliceLoopback(
                 "path mismatches ${both { it.pathMismatches }}, unroutable ${server { it.unroutable }}, paced ${both { it.paced }}, " +
                 "loop takeovers ${server { it.takeovers }}, promotions ${server { it.promotions }}, demotions ${server { it.demotions }}, " +
                 "stolen resumes ${handlerThreads.filterIsInstance<LoopHandlers>().sumOf { it.steals.sum() }}" +
-                (if (watchdog == null) "" else ", watchdog ticks ${watchdog.ticks.sum()}")
+                (if (watchdog == null) "" else ", watchdog ticks ${watchdog.ticks.sum()}") +
+                (if (DEBUG_PACE) ", send times ahead of now: server ${servers[0].counts.paceAhead}; client ${clients[0].counts.paceAhead}" else "")
         return if (probe == null) text else text + "\n" + probe.report()
     }
 
