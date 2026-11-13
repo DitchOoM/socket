@@ -116,6 +116,8 @@ internal class SharedQuicheServer(
      * server's scope ends. Never where handlers run: they are the application's code.
      */
     private val receivePlacement: DriverPlacement = placeDriver(tuning.driverContext, unplaced = serverReceiveDispatcher),
+    /** Where accepted-connection handlers run. Held until the server's scope ends. */
+    internal val handlerThreads: ServerHandlerThreads = ServerHandlerThreads("${localAddress.port}"),
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 
@@ -130,7 +132,10 @@ internal class SharedQuicheServer(
     private val serverJob =
         SupervisorJob(parentScope.coroutineContext[Job]).also { job ->
             // Released once every child (the receive loop among them) has finished, not when close() starts.
-            job.invokeOnCompletion { receivePlacement.release() }
+            job.invokeOnCompletion {
+                receivePlacement.release()
+                handlerThreads.release()
+            }
         }
     private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
 
@@ -210,7 +215,7 @@ internal class SharedQuicheServer(
             for (accepted in registry.acceptedDrivers) {
                 val driver = accepted.driver
                 val peer = accepted.remoteAddress
-                launch(serverReceiveDispatcher + CoroutineName("quic-server/handler/${peer.host}:${peer.port}")) {
+                launch(handlerThreads.dispatcher + CoroutineName("quic-server/handler/${peer.host}:${peer.port}")) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
                     val conn = DriverQuicConnection(driver, bufferFactory, accepted.remoteAddress, connScope)

@@ -33,8 +33,8 @@ import kotlin.coroutines.CoroutineContext
  *
  * - On a loop: a connection's driver, its UDP reader loops and its timers; a server's receive loop.
  *   Library code only, and none of it blocks.
- * - Never on a loop: anything the application supplied. Server handlers run on [serverReceiveDispatcher]
- *   (`Dispatchers.IO`), a client's block on the caller's dispatcher, and a connection's own scope
+ * - Never on a loop: anything the application supplied. Server handlers run on their server's own
+ *   threads ([ServerHandlerThreads]), a client's block on the caller's dispatcher, and a connection's own scope
  *   ([applicationScopeDispatcher]) on `Dispatchers.IO`. A loop thread blocked by application code would
  *   stall every connection on it.
  *

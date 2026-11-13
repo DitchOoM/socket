@@ -17,7 +17,7 @@ import kotlin.coroutines.resume
 
 /**
  * The thread that fires the deadlines of a QUIC connection's or server's application-facing side (its scope,
- * [applicationScopeDispatcher], and the server's handlers, [serverReceiveDispatcher]) and every bound on a
+ * [applicationScopeDispatcher], and the server's handlers, [ServerHandlerThreads]) and every bound on a
  * stream read or write ([withStreamDeadline]). One daemon thread, never stopped, over one [DeadlineQueue].
  * The transport's own deadlines fire on the event loop the connection runs on ([quicLoopGroup]).
  *
