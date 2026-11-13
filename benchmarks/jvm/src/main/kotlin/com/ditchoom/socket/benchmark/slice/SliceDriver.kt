@@ -181,7 +181,13 @@ internal class PaceAhead {
     val under100ms = LongAdder()
     val beyond = LongAdder()
 
+    @Volatile var firstAhead = Long.MIN_VALUE
+
+    @Volatile var maxAhead = Long.MIN_VALUE
+
     fun record(aheadNanos: Long) {
+        if (firstAhead == Long.MIN_VALUE) firstAhead = aheadNanos
+        if (aheadNanos > maxAhead) maxAhead = aheadNanos
         when {
             aheadNanos <= 0 -> past
             aheadNanos < 50_000 -> under50us
@@ -191,7 +197,7 @@ internal class PaceAhead {
         }.increment()
     }
 
-    override fun toString(): String = "past/now ${past.sum()}, <50us ${under50us.sum()}, <1ms ${under1ms.sum()}, <100ms ${under100ms.sum()}, beyond ${beyond.sum()}"
+    override fun toString(): String = "first ${firstAhead} ns, max ${maxAhead} ns, past/now ${past.sum()}, <50us ${under50us.sum()}, <1ms ${under1ms.sum()}, <100ms ${under100ms.sum()}, beyond ${beyond.sum()}"
 }
 
 internal val DEBUG_PACE: Boolean = System.getProperty("slice.debugPace") == "true"
