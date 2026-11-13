@@ -1,0 +1,24 @@
+{
+  "comment": "Every implementation the quic-interop-runner offers, with the roles it plays there. A peer that serves is run against our client (our-client, our-client-migrating); a peer that is a client is run against our server (our-server). The gate's expectations are keyed by these names.",
+  "peers": {
+    "aioquic": ["server", "client"],
+    "chrome": ["client"],
+    "go-x-net": ["server", "client"],
+    "haproxy": ["server"],
+    "kwik": ["server", "client"],
+    "lsquic": ["server", "client"],
+    "msquic": ["server", "client"],
+    "mvfst": ["server", "client"],
+    "neqo": ["server", "client"],
+    "nginx": ["server"],
+    "ngtcp2": ["server", "client"],
+    "picoquic": ["server", "client"],
+    "quic-go": ["server", "client"],
+    "quiche": ["server", "client"],
+    "quinn": ["server", "client"],
+    "rama": ["server", "client"],
+    "s2n-quic": ["server", "client"],
+    "xquic": ["server", "client"]
+  },
+  "tests": "handshake,transfer,multiplexing,longrtt,retry,resumption,zerortt,blackhole,handshakeloss,transferloss,handshakecorruption,transfercorruption,amplificationlimit,ipv6,rebind-port,rebind-addr,goodput"
+}
