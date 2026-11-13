@@ -226,9 +226,10 @@ class NettyServerActiveMigrationTests {
         suspend fun explaining(block: suspend () -> Unit) {
             try {
                 block()
-            } catch (failure: Throwable) {
-                failure.addSuppressed(AssertionError("client protocol timeline, newest last:\n" + events.joinToString("\n")))
-                throw failure
+            } catch (failure: AssertionError) {
+                // A new error rather than a suppressed one: coroutine stack-trace recovery copies the
+                // failure on its way out and the copy drops what was attached to the original.
+                throw AssertionError("${failure.message}\nclient protocol timeline (${events.size} events), newest last:\n${events.joinToString("\n")}", failure)
             }
         }
     }
