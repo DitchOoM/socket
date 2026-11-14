@@ -1,4 +1,32 @@
 {
+  "ios-simulator-arm64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "ios-simulator-arm64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "macos-arm64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "macos-arm64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
   "macos-arm64-our-client": {
     "quic-go": {
       "handshake": "pass",

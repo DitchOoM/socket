@@ -8,6 +8,8 @@ name: QUIC interop, native lanes
 # the runner's result shape for .github/scripts/quic-interop-gate.py to judge against the same
 # expectations file (directions prefixed with the lane: macos-arm64-our-client, ...).
 #
+# A third lane runs our client as Kotlin/Native, on macOS arm64 and in a booted iOS simulator.
+#
 # Peers: quic-go, built from source and patched to take its paths and port from the environment
 # (.github/scripts/build-quic-go-interop.sh). Cases: handshake, transfer, resumption, zerortt, and our
 # client's active-migration transfer. Weaker than the runner: no capture (resumption and 0-RTT are judged by
@@ -75,6 +77,50 @@ jobs:
           path: interop-results
           retention-days: 14
 
+  # Our client as Kotlin/Native: on macOS arm64, and inside a booted iOS simulator, the only place the
+  # Apple client's Network.framework datapath meets a foreign QUIC stack. The client is the K/N test binary
+  # (AppleQuicInteropClient, run through test-harness/quic-interop/kn-client.sh); there is no K/N server.
+  macos-arm64-kn:
+    name: "macOS arm64 + iOS simulator (Kotlin/Native)"
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/apple-quiche-env
+        with:
+          natives-run-id: ${{ inputs.apple-natives-run-id }}
+          github-token: ${{ github.token }}
+      # Linked before the simulator boots, so the link does not share the runner with the booting device.
+      - name: Link the test binaries
+        run: ./gradlew :socket-quic-quiche:linkDebugTestMacosArm64 :socket-quic-quiche:linkDebugTestIosSimulatorArm64 --no-configuration-cache
+      - name: Boot an iOS simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          if [ -z "$UDID" ]; then
+            echo "::error::no available iPhone simulator to boot"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          xcrun simctl boot "$UDID" || true # already booted is fine
+          xcrun simctl bootstatus "$UDID" -b
+          echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Build quic-go's interop endpoints
+        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: Run the pairs
+        run: .github/scripts/quic-interop-native-kn-run.sh
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: interop-results-native-kn
+          path: interop-results
+          retention-days: 14
+
   windows-x64:
     name: "Windows x64 (JVM)"
     runs-on: windows-latest
@@ -115,7 +161,7 @@ jobs:
 
   gate:
     name: "native gate"
-    needs: [macos-arm64, windows-x64]
+    needs: [macos-arm64, macos-arm64-kn, windows-x64]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
