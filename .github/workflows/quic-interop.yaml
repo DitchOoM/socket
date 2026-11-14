@@ -62,16 +62,19 @@ jobs:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event_name == 'schedule' && 'main' || '' }}
+          BRANCH: ${{ github.event_name == 'schedule' && 'main' || github.ref_name }}
         run: |
           set -euo pipefail
-          newest() { # <artifact name>: the run that uploaded the newest unexpired copy, from main when nightly
+          # <artifact name> <branch>: the run that uploaded the newest unexpired copy on that branch. Natives
+          # from another branch can carry other quiche patches, whose markers then send Gradle back to cargo.
+          newest() {
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
-              --jq "[.artifacts[] | select(.expired == false) | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")]
+              --jq "[.artifacts[] | select(.expired == false) | select(.workflow_run.head_branch == \"$2\")]
                     | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty"
           }
           for pair in run-id:quiche-linux-natives-full apple-run-id:quiche-apple-natives windows-run-id:quiche-windows-natives; do
-            rid=$(newest "${pair#*:}")
+            rid=$(newest "${pair#*:}" "$BRANCH")
+            [ -n "$rid" ] || rid=$(newest "${pair#*:}" main)
             if [ -z "$rid" ]; then
               echo "::error::No unexpired ${pair#*:} artifact exists. Run the build that makes it once, then retry."
               exit 1
@@ -98,5 +101,6 @@ jobs:
       version: "0.0.0-interop"
       apple-natives-run-id: ${{ needs.natives.outputs.apple-run-id }}
       windows-natives-run-id: ${{ needs.natives.outputs.windows-run-id }}
+      linux-natives-run-id: ${{ needs.natives.outputs.run-id }}
       stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
       record: ${{ inputs.mode || 'gate' }}
