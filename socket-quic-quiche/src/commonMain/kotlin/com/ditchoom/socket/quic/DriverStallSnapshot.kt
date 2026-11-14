@@ -24,9 +24,25 @@ internal data class DriverStallSnapshot(
     val writable: List<Long>,
     val sentStreamData: SentStreamData,
     val stats: QuicConnStats?,
+    /** The path quiche sends on, found by its active flag (index 0 is the original path, which a move leaves). */
     val activePath: QuicPathStats?,
+    /** quiche's own view of every path it holds, by index: validation, loss and recovery counters. */
+    val quichePaths: List<QuicPathStats>,
+    val ids: ConnectionIdRoom,
+    val peerPathRoom: PeerPathRoom,
     val streams: List<StreamWake>,
+    /** The driver's paths: those it sends or probes on, then the left ones it still reads ([PathUse.Left]). */
     val paths: List<PathView>,
+)
+
+/** The connection ids a migration can spend, as quiche counts them now. */
+internal data class ConnectionIdRoom(
+    /** The peer's ids no path uses: what a probe to a new 4-tuple needs. */
+    val spareDestinationIds: Long,
+    /** Our ids the peer holds. */
+    val activeSourceIds: Int,
+    /** How many more of our ids the peer's limit allows. */
+    val sourceIdsLeft: Long,
 )
 
 /** The deadline a driver loop was waiting on. */
@@ -76,4 +92,21 @@ internal data class PathView(
     val key: PathKey,
     val egress: PathEgressKind,
     val reader: PathReader,
-)
+    val slot: PathSlot,
+    val use: PathUse,
+) {
+    override fun toString(): String = "PathView(key=$key, egress=$egress, reader=$reader, slot=${slot.describe()}, use=$use)"
+}
+
+private fun PathSlot.describe(): String =
+    when (this) {
+        is PathSlot.Probing -> "Probing(dcidSeq=$dcidSeq)"
+        is PathSlot.Unanswered -> "Unanswered(dcidSeq=$dcidSeq, local=$localEndpoint)"
+        is PathSlot.Answered -> "Answered(dcidSeq=$dcidSeq, local=$localEndpoint)"
+        is PathSlot.Validated -> "Validated(dcidSeq=$dcidSeq)"
+        is PathSlot.Active -> "Active(dcidSeq=$dcidSeq)"
+        PathSlot.Abandoned -> "Abandoned"
+    }
+
+/** Whether a path is the one the connection sends on, another it may move to, or one it left and still reads. */
+internal enum class PathUse { Active, Standby, Left }

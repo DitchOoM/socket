@@ -1766,6 +1766,72 @@ abstract class MigrationSimTestSuite {
         }
     }
 
+    /**
+     * A reply larger than the read buffer is read to its FIN, live, over a path that loses and reorders
+     * datagrams. The client's reads park without asking the loop (nothing but a signal, a hand-off or a mark
+     * says quiche holds bytes), so this is the shape where a read left parked with bytes in quiche would
+     * hang: the first chunk fills the 64 KiB read buffer while later bytes are still arriving out of order
+     * or being retransmitted. Every read is bounded by the idle timeout, so a stranded read fails the run.
+     * (The public stream fixes the read buffer at 64 KiB; a reply of three times that makes every read after
+     * the first a continuation of the one before.)
+     */
+    @Test
+    fun aReplyLargerThanTheReadBufferIsReadLiveOverALossyReorderingPath() =
+        runTest {
+            wrapTestBody {
+                for (seed in 0L..LIVE_READ_SEEDS) {
+                    var received = 0
+                    var ending: ReplyEnding = ReplyEnding.Reset
+                    withMigrationSim(
+                        simEnv(),
+                        seed = seed,
+                        primaryImpairment =
+                            PathImpairment(
+                                latency = SLOW_PATH_ONE_WAY,
+                                jitter = SLOW_PATH_ONE_WAY / 2,
+                                loss = LIVE_READ_LOSS,
+                            ),
+                    ) {
+                        val reply = "reply;".repeat(LIVE_READ_REPLY_BYTES / 6)
+                        client.launch {
+                            val stream = server.acceptStream()
+                            while (stream
+                                    .read(
+                                        IDLE_TIMEOUT_IN_THE_FIELD,
+                                    ).also { (it as? ReadResult.Data)?.buffer?.freeIfNeeded() } is ReadResult.Data
+                            ) {
+                                Unit
+                            }
+                            val out = BufferFactory.network().allocate(reply.length)
+                            out.writeString(reply, Charset.UTF8)
+                            out.resetForRead()
+                            stream.writeFully(out, IDLE_TIMEOUT_IN_THE_FIELD)
+                            out.freeNativeMemory()
+                            stream.close()
+                            serverDriver.lingerBeforeClose(QuicCloseLinger.Default, migrationSimOptions().idleTimeout)
+                            server.close()
+                        }
+                        try {
+                            client.runUntilClosed(linger = IDLE_TIMEOUT_IN_THE_FIELD) {
+                                val stream = openStream()
+                                stream.writeText("request")
+                                stream.shutdownSend()
+                                ending = stream.readToItsEnding { received += it }
+                            }
+                        } catch (e: QuicCloseException) {
+                            ending = ReplyEnding.Failed(e)
+                        }
+                        assertEquals(
+                            reply.length,
+                            received,
+                            "seed $seed: the live read got $received of ${reply.length} bytes, then $ending, traffic ${pipeTraffic()}",
+                        )
+                        assertEquals(ReplyEnding.Fin, ending, "seed $seed: the reply arrived whole; it must also end")
+                    }
+                }
+            }
+        }
+
     @Test
     fun aClientMigratesToAFreshPathUnderVirtualTime() =
         runTest {
@@ -2354,6 +2420,149 @@ abstract class MigrationSimTestSuite {
 
                         assertIs<QuicConnectionState.Established>(serverDriver.state.value, "the server connection died")
                         assertIs<QuicConnectionState.Established>(clientDriver.state.value, "the client connection died")
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * A peer keeps sending on the path a client leaves until it sees the client's packets on the new
+     * one, and on a slower old path those packets land after the switch. The client must still read
+     * them: a peer whose loss recovery cannot declare a left path's packets lost (stock quiche, as in
+     * Netty's QUIC server) never resends them, and the stream it was echoing stalls for good. Over a
+     * lossless link, then, every datagram that reaches the client is a packet its quiche receives.
+     */
+    @Test
+    fun packetsThePeerSentOnTheLeftPathBeforeItSawTheMoveAreStillReceived() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 904_029L,
+                    primaryImpairment = PathImpairment(latency = 20.milliseconds),
+                    probeImpairment = { PathImpairment(latency = 20.milliseconds) },
+                ) {
+                    val serverJob =
+                        client.launch {
+                            val st = server.acceptStream()
+                            while (true) {
+                                val d = st.read(60.seconds)
+                                if (d !is ReadResult.Data) break
+                                st.writeFully(d.buffer, 30.seconds)
+                                d.buffer.freeIfNeeded()
+                            }
+                        }
+                    try {
+                        awaitSpareDcids()
+
+                        fun deliveredToClient() = pipe.paths().sumOf { it.stats.deliveredToClient.toLong() }
+
+                        suspend fun receivedByClient() =
+                            assertNotNull(clientDriver.stats().connStats, "an established connection has stats").recv
+                        val deliveredBefore = deliveredToClient()
+                        val receivedBefore = receivedByClient()
+                        val stream = client.openStream()
+                        var echoed = 0L
+                        val readerJob =
+                            client.launch {
+                                while (true) {
+                                    val d = stream.read(60.seconds)
+                                    if (d !is ReadResult.Data) break
+                                    echoed += d.buffer.remaining()
+                                    d.buffer.freeIfNeeded()
+                                }
+                            }
+                        val chunks = 60
+                        val writerJob =
+                            client.launch {
+                                repeat(chunks) {
+                                    val out = BufferFactory.network().allocate(ECHO_CHUNK_BYTES)
+                                    repeat(ECHO_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
+                                    out.resetForRead()
+                                    stream.write(out, 30.seconds)
+                                    out.freeNativeMemory()
+                                    delay(5.milliseconds)
+                                }
+                            }
+                        delay(50.milliseconds)
+
+                        val result = withTimeout(30.seconds) { migrate().await() }
+                        assertIs<MigrationResult.Succeeded>(result, "the migration itself failed")
+                        val left = pipe.paths().first()
+                        val reachedLeftPathAtSwitch = left.stats.deliveredToClient
+
+                        withTimeout(30.seconds) { writerJob.join() }
+                        withTimeout(30.seconds) {
+                            while (echoed < chunks.toLong() * ECHO_CHUNK_BYTES) delay(10.milliseconds)
+                        }
+
+                        assertTrue(
+                            left.stats.deliveredToClient > reachedLeftPathAtSwitch,
+                            "no datagram reached the left path after the switch, so this run never opened the " +
+                                "window it exists for: ${pipeTraffic()}",
+                        )
+                        delay(2.seconds)
+                        assertEquals(
+                            deliveredToClient() - deliveredBefore,
+                            receivedByClient() - receivedBefore,
+                            "datagrams delivered to the client (left) against packets its quiche received (right): the " +
+                                "difference is what the client discarded. ${pipeTraffic()}",
+                        )
+                        readerJob.cancel()
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * A PATH_RESPONSE lost after the PATH_CHALLENGE it answers was acknowledged costs nothing: the peer's
+     * packets on the active path acknowledge the challenge, so quiche never declares it lost and never sends
+     * another by itself, and the client sends one each PTO until the budget runs out. Here the new path's
+     * downlink drops everything for its first 150 ms, which takes the first answer and nothing after it.
+     */
+    @Test
+    fun aMoveSurvivesItsFirstPathResponseBeingLost() =
+        runTest {
+            val virtual = this
+            var downlinkDarkUntil = Duration.ZERO
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 904_031L,
+                    primaryImpairment = PathImpairment(latency = 20.milliseconds),
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = 20.milliseconds,
+                            reach = LinkReach(uplink = PathReach.Open, downlink = PathReach.DarkUntil(downlinkDarkUntil)),
+                        )
+                    },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"))
+                        awaitSpareDcids()
+                        val echoing =
+                            client.launch {
+                                while (true) stream.echo("during")
+                            }
+                        downlinkDarkUntil = virtual.currentTime.milliseconds + 150.milliseconds
+                        val result = withTimeout(30.seconds) { migrate().await() }
+                        echoing.cancel()
+                        assertIs<MigrationResult.Succeeded>(
+                            result,
+                            "the first PATH_RESPONSE was lost and no other challenge was sent: ${pipeTraffic()}",
+                        )
+                        assertTrue(
+                            pipe.pathAt(clientPaths().last()).stats.blackholed > 0,
+                            "the new path's downlink dropped nothing, so no answer was lost: ${pipeTraffic()}",
+                        )
                         stream.close()
                     } finally {
                         serverJob.cancel()
@@ -5301,9 +5510,13 @@ abstract class MigrationSimTestSuite {
 
         /** A reply several congestion windows long. */
         const val SLOW_REPLY_BYTES = 34 * 1024
+        const val LIVE_READ_REPLY_BYTES = 3 * 64 * 1024
+        const val LIVE_READ_SEEDS = 9L
+        const val LIVE_READ_LOSS = 0.1
 
         /** Payload size per write — big enough that a burst becomes many datagrams on the wire. */
         const val CHUNK_BYTES = 1000
+        const val ECHO_CHUNK_BYTES = 200
 
         /** The link the connection is established on, and the one it hands off to. Ids are arbitrary. */
         val WIFI = NetworkId.Link(NetworkKind.Wifi, 1L)

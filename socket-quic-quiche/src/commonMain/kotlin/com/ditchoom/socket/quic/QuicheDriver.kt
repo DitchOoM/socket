@@ -799,6 +799,15 @@ class QuicheDriver(
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
 
+    /** Peer-opened streams whose slot has been released: never announced again. Driver-loop only. */
+    private val releasedPeerStreams = ReleasedPeerStreams()
+
+    /**
+     * Slots whose stream reached [StreamLifecycle.Finished] on an application thread, waiting for the loop
+     * to release them (the stream map is loop-only). Drained at the start of every turn's sweep.
+     */
+    private val finishedStreams = Channel<StreamSlot>(Channel.UNLIMITED)
+
     /**
      * Streams whose last write quiche refused for flow control (`QUICHE_ERR_DONE`, or 0 bytes): the only
      * ones with a writer that may be parked on [StreamSlot.writableSignal], and the only ones
@@ -1440,7 +1449,7 @@ class QuicheDriver(
      * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
      * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
      *
-     * …or, if quiche reports **neither** outcome, by [abandonPathValidationIfDue] once [budget]
+     * …or, if quiche reports **neither** outcome, by [tendPathValidation] once [budget]
      * elapses. Path validation is the one driver operation with no other bound on it: quiche can go
      * silent on a probed path (measured on a real Wi-Fi↔cellular handoff — a probe stuck at
      * `Probing` for the rest of a 2194-line trace), and because [handleMigrate] admits one migration
@@ -1459,11 +1468,29 @@ class QuicheDriver(
     ) {
         private val armedAt: TimeMark = clock.markNow()
 
-        /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
-        fun validationRemaining(): Duration = (budget - armedAt.elapsedNow()).coerceAtLeast(Duration.ZERO)
+        /**
+         * One PTO: how long a PATH_CHALLENGE goes unanswered before another is sent. quiche sends one again
+         * only when the packet carrying it is declared lost, never when the peer's PATH_RESPONSE is.
+         */
+        private val challengeInterval: Duration = budget / PATH_VALIDATION_PTO_MULTIPLIER
 
-        /** Re-*measured*, never inferred from which `select` clause won — see [abandonPathValidationIfDue]. */
+        /** PATH_CHALLENGEs asked of quiche for this validation, the probe's own included. */
+        private var challengesAsked = 1
+
+        /** Time left before the next PATH_CHALLENGE is owed or validation is abandoned; feeds the loop's `wait`. */
+        fun nextDeadline(): Duration =
+            minOf(budget, challengeInterval * challengesAsked)
+                .minus(armedAt.elapsedNow())
+                .coerceAtLeast(Duration.ZERO)
+
+        /** Re-*measured*, never inferred from which `select` clause won — see [tendPathValidation]. */
         fun isDue(): Boolean = armedAt.elapsedNow() >= budget
+
+        fun challengeIsDue(): Boolean = armedAt.elapsedNow() >= challengeInterval * challengesAsked
+
+        fun challengeAsked() {
+            challengesAsked++
+        }
     }
 
     /**
@@ -1578,25 +1605,34 @@ class QuicheDriver(
         keepAlive: Deadline,
         probe: Deadline,
     ): NextWake {
-        fun candidate(
-            deadline: Deadline,
-            wake: (Duration) -> Wake,
-        ): Wake? =
-            when (deadline) {
-                Deadline.NotArmed -> null
-                is Deadline.Due -> wake(deadline.remaining)
-            }
-
-        val soonest =
-            listOfNotNull(
-                candidate(probe, Wake::ProbeAbandon),
-                candidate(keepAlive, Wake::KeepAlive),
-                candidate(connTimeout, Wake::QuicheTimeout),
-                candidate(floorWake(), Wake::SilenceVerdict),
-                candidate(unansweredWake(), Wake::SilenceVerdict),
-            ).minWithOrNull(compareBy({ it.remaining }, { it.priority })) ?: return NextWake.NoTimer
-        return NextWake.Armed(soonest)
+        // The soonest of up to five deadlines, picked as they are met: one object per deadline that is armed
+        // and nothing else (this runs every turn). Ties go to the lower [Wake.priority], and among equals to
+        // the first met, in the order probe, keepalive, quiche, then the two silence deadlines.
+        var soonest: NextWake = NextWake.NoTimer
+        if (probe is Deadline.Due) soonest = soonerOf(soonest, Wake.ProbeAbandon(probe.remaining))
+        if (keepAlive is Deadline.Due) soonest = soonerOf(soonest, Wake.KeepAlive(keepAlive.remaining))
+        if (connTimeout is Deadline.Due) soonest = soonerOf(soonest, Wake.QuicheTimeout(connTimeout.remaining))
+        val floor = floorWake()
+        if (floor is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(floor.remaining))
+        val unanswered = unansweredWake()
+        if (unanswered is Deadline.Due) soonest = soonerOf(soonest, Wake.SilenceVerdict(unanswered.remaining))
+        return soonest
     }
+
+    /** [candidate] if it is due sooner than [current], or equally soon with a lower [Wake.priority]; else [current]. */
+    private fun soonerOf(
+        current: NextWake,
+        candidate: Wake,
+    ): NextWake =
+        when (current) {
+            NextWake.NoTimer -> NextWake.Armed(candidate)
+            is NextWake.Armed ->
+                when {
+                    candidate.remaining < current.wake.remaining -> NextWake.Armed(candidate)
+                    candidate.remaining == current.wake.remaining && candidate.priority < current.wake.priority -> NextWake.Armed(candidate)
+                    else -> current
+                }
+        }
 
     /**
      * How long until the active path's silence meets the threshold's time **floor**, as a [Deadline].
@@ -2122,7 +2158,7 @@ class QuicheDriver(
                 // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
-                val probeRemaining = validating()?.validationRemaining()
+                val probeRemaining = validating()?.nextDeadline()
                 // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
                 val armed =
                     nextWake(
@@ -2189,7 +2225,7 @@ class QuicheDriver(
                             NextWake.NoTimer -> Unit
                             is NextWake.Armed ->
                                 when (armed.wake) {
-                                    is Wake.ProbeAbandon -> abandonPathValidationIfDue()
+                                    is Wake.ProbeAbandon -> tendPathValidation()
                                     // Keepalive is the sooner deadline → PING; quiche's idle timer is
                                     // always later (keepAliveInterval < idleTimeout), so this fires first
                                     // and prevents the idle close.
@@ -2247,10 +2283,12 @@ class QuicheDriver(
                 // Awaiting here also stops a self-closed connection's reader from lingering
                 // until the connection scope dies. Bounded: cancellation unblocks receive() on
                 // every UdpChannel (worst case one io_uring submitAndWait tick on Linux).
-                for (entry in paths.values.toList()) {
+                // A left path in reservedPorts is still read, so its reader is one of them.
+                val readers = paths.values.toList() + reservedPorts.values.toList()
+                for (entry in readers) {
                     entry.readerJob?.cancel()
                 }
-                for (entry in paths.values.toList()) {
+                for (entry in readers) {
                     entry.readerJob?.let { reader ->
                         reportingStall(
                             "reader ${entry.key} to exit in $coroutineName",
@@ -2447,33 +2485,49 @@ class QuicheDriver(
                         is PacketSource.FromServerSocket -> source.recvInfo
                         is PacketSource.FromPath -> {
                             val entry = paths[source.key]
-                            if (entry == null) {
-                                // The packet arrived on a path that has since been retired — a
-                                // reader's final datagrams can be queued behind their own teardown.
-                                // Feeding it under another path's recv_info would tell quiche it
-                                // arrived somewhere it did not (the stale attribution retirement
-                                // exists to end); it is bounded collateral of a path the connection
-                                // already left. Drop it.
-                                cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
-                                return
+                            when {
+                                entry != null -> {
+                                    // The path we live on is carrying traffic: the silence trigger resets
+                                    // here, where the arrival is observed rather than inferred. Ungated on
+                                    // purpose, unlike the sampler — with no collector no run is ever built,
+                                    // so this returns on its first field read. See [activePathAnswered].
+                                    if (migrationEnabled && entry === active) activePathAnswered()
+                                    entry.recvInfo
+                                }
+                                // A path a switch left ([leavePath]): what the peer sent there before it saw
+                                // the move is quiche's to acknowledge, so it is fed as arriving where the
+                                // connection now lives. Anything it asks of the left path, a PATH_CHALLENGE,
+                                // is then answered on the active one: answering on the left path would link
+                                // a spare connection id to it, and pull a peer that follows NAT rebindings
+                                // back onto an address the client has left.
+                                source.key in reservedPorts -> active.recvInfo
+                                else -> {
+                                    flight.record(FlightEvent.DroppedFromLeftPath, source.key.port.toLong())
+                                    // A reader's final datagrams can be queued behind its own release.
+                                    cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
+                                    return
+                                }
                             }
-                            // The path we live on is carrying traffic: the silence trigger resets here,
-                            // where the arrival is observed rather than inferred. Ungated on purpose,
-                            // unlike the sampler — with no collector no run is ever built, so this
-                            // returns on its first field read. See [activePathAnswered].
-                            if (migrationEnabled && entry === active) activePathAnswered()
-                            entry.recvInfo
                         }
                     }
                 // No QuicheMemory here, deliberately: this command already carries the buffer itself,
                 // so the owner needs no re-pairing — only the fence, which costs nothing per datagram
                 // where an extra object on the receive hot path would not.
                 receivedSinceFlush++
-                try {
-                    api.connRecv(conn, addr, cmd.len, info)
-                } finally {
-                    reachabilityFence(cmd.buf)
-                }
+                val received =
+                    try {
+                        api.connRecv(conn, addr, cmd.len, info)
+                    } finally {
+                        reachabilityFence(cmd.buf)
+                    }
+                flight.record(
+                    FlightEvent.Received,
+                    received.toLong(),
+                    when (source) {
+                        is PacketSource.FromPath -> source.key
+                        is PacketSource.FromServerSocket -> PacketSource.FromServerSocket::class
+                    },
+                )
                 // quiche copied what it needs during connRecv: the buffer goes back to its pool and
                 // the server may release the cached recv_info the packet was carrying.
                 cmd.release(QuicheCmd.ReleaseDoor.Executed)
@@ -2543,6 +2597,13 @@ class QuicheDriver(
                 // The writer is about to park on writableSignal; recorded before it is told, so the
                 // next afterCommand already looks for its window to reopen.
                 if (sent.result == QUICHE_ERR_DONE || sent.result == 0) awaitingWritable += cmd.streamId
+                // quiche takes the FIN only with a write it accepts whole; a stream the peer stopped or reset
+                // takes no more writes. Either way this stream's send side is over.
+                val sendOver =
+                    (cmd.fin && sent.result == cmd.bufLen) ||
+                        sent.result == QUICHE_ERR_STREAM_STOPPED ||
+                        sent.result == QUICHE_ERR_STREAM_RESET
+                if (sendOver) streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
                 cmd.result.complete(sent)
             }
 
@@ -2550,6 +2611,10 @@ class QuicheDriver(
                 val result = api.connStreamShutdown(conn, QuicStreamId(cmd.streamId), cmd.direction, cmd.errorCode)
                 // Write side (1) shut: no write on it will be refused again, so it no longer waits to be woken.
                 if (cmd.direction == 1) awaitingWritable -= cmd.streamId
+                if (result == 0) {
+                    val direction = if (cmd.direction == 1) StreamDirection.Send else StreamDirection.Receive
+                    streams[cmd.streamId]?.let { directionOver(it, direction) }
+                }
                 cmd.result.complete(result)
             }
 
@@ -2667,6 +2732,14 @@ class QuicheDriver(
     private suspend fun afterCommand() {
         loopGuard.assertOnLoop(LoopSite.AfterCommand)
         receivedSinceFlush = 0
+        releaseFinishedStreams()
+        // Once established, the sweep that hands a parked read its bytes comes before the flush, so one flush
+        // carries both the ACK and the flow-control credit those bytes make quiche owe. quiche's readable set
+        // grows only in `quiche_conn_recv`, so the sweep sees the same streams on either side of the flush.
+        // Before the handshake is established the flush comes first: `quiche_conn_send` can complete the
+        // handshake, and the sweep classifies a stream as early data by whether it is complete.
+        val establishedAtStart = _state.value is QuicConnectionState.Established
+        if (establishedAtStart) discoverNewStreams()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -2674,7 +2747,7 @@ class QuicheDriver(
         measureSentStreamData()
         if (migrationEnabled) drainPathEvents()
         resumeMigrationAwaitingConfirmation()
-        discoverNewStreams()
+        if (!establishedAtStart) discoverNewStreams()
         admitWaitingOpens()
         signalWritableStreams()
         signalDatagrams()
@@ -2694,6 +2767,22 @@ class QuicheDriver(
      * owe the peer a frame, until the flush that sends it. Loop only.
      */
     private var quicheOwesAFlush = false
+
+    /**
+     * Whether the source connection id of a path this client has left still has to be pushed out.
+     * quiche links one of our source ids to every path the peer has answered on, and only the peer's
+     * RETIRE_CONNECTION_ID unlinks it. A peer that retires nothing on its own (any quiche-based server
+     * that does not migrate itself) leaves the left path's id holding one of the slots its
+     * `active_connection_id_limit` allows, and once every slot is linked quiche refuses the next probe.
+     */
+    private var leftPathSourceId: LeftPathSourceId = LeftPathSourceId.Settled
+
+    /** What the peer is known to do with the paths this client leaves. See [PeerPathRoom]. */
+    private var peerPathRoom: PeerPathRoom = PeerPathRoom.Kept(emptySet())
+
+    /** How many of our source ids this client has asked the peer to retire (Retire Prior To), and how many it has retired. */
+    private var retirementsAsked = 0L
+    private var retirementsSeen = 0L
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
@@ -2779,7 +2868,7 @@ class QuicheDriver(
             } else {
                 QuicStreamId(nextStreamId).also { nextStreamId += 4 }
             }
-        val slot = StreamSlot(id)
+        val slot = StreamSlot(id, StreamLifecycle.of(id, role))
         streams[id.id] = slot
         // Make the stream real to quiche now, so that openStream() means what its name says.
         // A QUIC stream becomes known to quiche on its first stream_send; reserving the id
@@ -2849,6 +2938,42 @@ class QuicheDriver(
         }
     }
 
+    /** Whether [id], readable with no slot, is a stream the peer has just opened. */
+    private fun isNewPeerStream(id: QuicStreamId): Boolean = isPeerOpened(id) && id !in releasedPeerStreams
+
+    /**
+     * Drop the slot of every stream that reached [StreamLifecycle.Finished]: both directions are over, so
+     * no command, readable event or write window concerns it again. Bytes the application has not read
+     * are not lost: its receive side is not over until it has been given the end, and the application's
+     * handle holds the slot itself.
+     */
+    private fun releaseFinishedStreams() {
+        while (true) {
+            val slot = finishedStreams.tryReceive().getOrNull() ?: return
+            if (streams[slot.id.id] !== slot) continue
+            streams.remove(slot.id.id)
+            awaitingWritable -= slot.id.id
+            if (isPeerOpened(slot.id)) releasedPeerStreams.add(slot.id)
+        }
+    }
+
+    private fun isPeerOpened(id: QuicStreamId): Boolean =
+        when (role) {
+            QuicRole.Client -> id.isServerInitiated
+            QuicRole.Server -> id.isClientInitiated
+        }
+
+    /**
+     * [direction] of [slot]'s stream is over. When that finishes the stream, the loop releases the slot at
+     * its next turn; callable from any thread.
+     */
+    internal fun directionOver(
+        slot: StreamSlot,
+        direction: StreamDirection,
+    ) {
+        if (slot.finish(direction)) finishedStreams.trySend(slot)
+    }
+
     private fun discoverNewStreams() {
         val iter = api.connReadable(conn)
         if (iter.isExhausted) return
@@ -2870,10 +2995,13 @@ class QuicheDriver(
                 val existing = streams[streamId.id]
                 if (existing != null) {
                     handToWaitingRead(existing)
-                    existing.dataSignal.trySend(Unit)
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
+                } else if (!isNewPeerStream(streamId)) {
+                    // A stream this endpoint opened, or one the peer opened that has been released: nothing
+                    // is waiting for it, and it is not a stream to announce.
+                    flight.record(FlightEvent.ReleasedStreamReadable, streamId.id)
                 } else {
-                    val slot = StreamSlot(streamId)
+                    val slot = StreamSlot(streamId, StreamLifecycle.of(streamId, role))
                     streams[streamId.id] = slot
                     val adapter = DriverStreamAdapter(this, slot)
                     val byteStream =
@@ -2885,7 +3013,7 @@ class QuicheDriver(
                             writePolicy = streamWritePolicy,
                         )
                     incomingStreams.trySend(QuicByteStream(streamId, byteStream, originOfPeerStream()))
-                    slot.dataSignal.trySend(Unit)
+                    slot.announce()
                     flight.record(FlightEvent.StreamSignalled, streamId.id)
                 }
             }
@@ -2895,19 +3023,19 @@ class QuicheDriver(
     }
 
     /**
-     * When a read is parked on [slot]'s data signal, read what quiche has for it now and queue it on the
-     * slot, so the signal that follows wakes the read with its bytes already in hand. Without this the
-     * woken read had to send a `StreamRecv` back through this loop and wait for the answer: two more
-     * thread hand-offs on the critical path of every read that waited for the network.
+     * Wakes or announces [slot], which quiche reports readable. When a read is parked on it, reads what
+     * quiche has for it now and queues that on the slot before waking it, so the read returns with its
+     * bytes in hand instead of sending a `StreamRecv` back through this loop.
      *
      * One chunk per park, of the size the read asked for ([StreamSlot.takeWaitingRead]): exactly what the
-     * read's own `StreamRecv` would have taken, so flow control credits the peer no sooner than before.
-     * The queue keeps order with the read's later `StreamRecv`s (see [StreamSlot.awaitData]), and the
-     * chunk is handed over and its FIN latched the way the teardown drain does ([StreamSlot.deliverDrained]).
+     * read's own `StreamRecv` would have taken. The queue keeps order with the read's later `StreamRecv`s
+     * (see [StreamSlot.awaitData]), and the chunk is handed over and its FIN latched the way the teardown
+     * drain does ([StreamSlot.deliverDrained]). With no read parked, or nothing to hand over, the slot is
+     * announced instead ([StreamSlot.announce]).
      */
     private fun handToWaitingRead(slot: StreamSlot) {
         val size = slot.takeWaitingRead()
-        if (size <= 0) return
+        if (size <= 0) return slot.announce()
         val buffer = streamReadPool.allocate(size)
         when (val result = api.connStreamRecv(conn, slot.id, addr(buffer), size)) {
             is StreamRecvResult.Data -> {
@@ -2916,18 +3044,23 @@ class QuicheDriver(
                     quicheOwesAFlush = true
                     buffer.position(result.bytesRead)
                     buffer.resetForRead()
-                    if (!slot.deliverDrained(buffer, result.fin)) buffer.freeNativeMemory()
+                    if (!slot.handedOff(buffer, result.fin, size, result.bytesRead)) buffer.freeNativeMemory()
                 } else {
                     buffer.freeNativeMemory()
                     if (result.fin) slot.latchFin()
+                    slot.announce()
                 }
             }
             is StreamRecvResult.Reset -> {
                 buffer.freeNativeMemory()
                 slot.latchReset(result.applicationErrorCode)
+                slot.announce()
             }
             // Nothing to hand over after all, or a failure the read's own StreamRecv will meet and report.
-            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> buffer.freeNativeMemory()
+            StreamRecvResult.Done, is StreamRecvResult.Error, StreamRecvResult.ConnectionGone -> {
+                buffer.freeNativeMemory()
+                slot.announce()
+            }
         }
     }
 
@@ -2998,6 +3131,10 @@ class QuicheDriver(
             if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
             val issued = issueSpareCids()
             val retired = drainRetiredScids()
+            retirementsSeen += retired
+            // More retirements than this client asked for: the peer retires the ids of paths a client leaves
+            // on its own, so it frees those paths and has room for any number of moves.
+            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
@@ -3079,9 +3216,11 @@ class QuicheDriver(
         // conn that cleanup() is about to free.
         latchForClose()
         refreshSessionTicket()
-        // A close that comes out of the flush (a rejected send) runs before this turn's sweep has looked at
-        // the streams, so a stream that became readable in it is not in [streams] yet and the drain below
-        // would skip it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
+        // A close that does not come out of [afterCommand]'s own sequence (a Close command's updateState,
+        // which runs inside execute before the turn's sweep; a cancelled loop; a rejected send during the
+        // handshake, where the sweep still follows the flush) can run before the sweep has looked at the
+        // streams, so a stream that became readable is not in [streams] yet and the drain below would skip
+        // it, losing what quiche holds for it. Adopt it first: a no-op when the sweep already ran.
         discoverNewStreams()
         drainReadableStreamsIntoSlots()
         settleUnreadAtClose()
@@ -3346,6 +3485,7 @@ class QuicheDriver(
                             // it never probed (the misroute), and a dead fallback socket would abort
                             // this whole flush (the stall). It is already lost: skip it and keep
                             // draining — RFC 9002 loss recovery owns it.
+                            flight.record(FlightEvent.SendDroppedNoPath, from.port.toLong())
                             continue
                         }
                         routed
@@ -3357,7 +3497,10 @@ class QuicheDriver(
                 // Waiting here again would park the loop for another bound, so this datagram is lost
                 // instead — RFC 9002 loss recovery owns it. Shut is unreachable: shut entries leave
                 // [paths], and [primary] and [active] are never shut while the driver runs.
-                is PathEgress.Stalled, PathEgress.Shut -> continue
+                is PathEgress.Stalled, PathEgress.Shut -> {
+                    flight.record(FlightEvent.SendDroppedEgress, entry.key.port.toLong(), entry.egress)
+                    continue
+                }
             }
             val channel = entry.channel
             // Server egress follows the peer and pins its own source: send to the destination quiche
@@ -3382,31 +3525,19 @@ class QuicheDriver(
                 } else {
                     SendTarget.ConnectedPeer
                 }
-            // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
-            // a backend that throws outside that contract. It normalises into the type — it does not
-            // decide policy. That decision is the exhaustive `when` below, which is what makes adding
-            // a new outcome a compile error rather than a silent inheritance of whatever this branch
-            // happened to do. Letting anything escape would leak an uncaught coroutine failure into
-            // the parent scope, the original defect this site was written to fix.
+            // A send the socket takes at once needs no bound: it cannot have stalled and has no cancellation point
+            // to be mistaken for non-delivery. Only a send that must wait takes the bounded path.
+            flight.record(FlightEvent.SendBegin, written.toLong())
+            val immediate =
+                when (channel) {
+                    is ImmediateUdpSend -> channel.sendNow(scratch.buffer, written, sendTarget)
+                    else -> ImmediateSend.MustWait
+                }
             val outcome =
-                try {
-                    // Bounded, because the driver loop's liveness must not be an external promise.
-                    // `send` is the one call this loop makes into platform code that can suspend
-                    // indefinitely: NIO returns synchronously, but io_uring awaits a completion and
-                    // Network.framework awaits a handler on a serial queue, and a completion that
-                    // never arrives is indistinguishable from one that has not arrived yet. Unbounded,
-                    // that parks the loop itself — and with it every timer the loop arms, including
-                    // the idle timer RFC 9000 SS10 makes responsible for reaping a dead connection, and
-                    // every queued stream command. The connection then cannot die, so nothing
-                    // reconnects: measured in the field as 48.6 hours of total silence from a client
-                    // that had been echoing at full cadence a moment earlier.
-                    flight.record(FlightEvent.SendBegin, written.toLong())
-                    loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, sendTarget) } }
-                        ?: SendOutcome.Stalled(sendStallBound)
-                } catch (ce: kotlinx.coroutines.CancellationException) {
-                    throw ce
-                } catch (untyped: Exception) {
-                    SendOutcome.Failed(DatagramSendError.Transport(untyped))
+                when (immediate) {
+                    ImmediateSend.Sent -> SendOutcome.Sent
+                    is ImmediateSend.Failed -> SendOutcome.Failed(immediate.error)
+                    ImmediateSend.MustWait -> sendBounded(channel, scratch, written, sendTarget)
                 }
             flight.record(
                 FlightEvent.SendEnd,
@@ -3457,6 +3588,33 @@ class QuicheDriver(
             }
         }
     }
+
+    /**
+     * [channel]'s `send`, bounded because the driver loop's liveness must not be an external promise.
+     * `send` is the one call this loop makes into platform code that can suspend indefinitely: io_uring
+     * awaits a completion and Network.framework awaits a handler on a serial queue, and a completion that
+     * never arrives is indistinguishable from one that has not arrived yet. Unbounded, that parks the loop
+     * itself, and with it every timer it arms, the idle timer included, so the connection could never die.
+     * A send that outlives [sendStallBound] is [SendOutcome.Stalled].
+     *
+     * A channel reports failure as a value ([SendOutcome]); the `catch` is only a net for a backend that
+     * throws outside that contract, normalising it into the type. Letting anything escape would leak an
+     * uncaught coroutine failure into the parent scope.
+     */
+    private suspend fun sendBounded(
+        channel: UdpChannel,
+        scratch: SendScratch,
+        written: Int,
+        target: SendTarget,
+    ): SendOutcome =
+        try {
+            loopGuard.suspending { clock.withBound(sendStallBound) { channel.send(scratch.buffer, written, target) } }
+                ?: SendOutcome.Stalled(sendStallBound)
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (untyped: Exception) {
+            SendOutcome.Failed(DatagramSendError.Transport(untyped))
+        }
 
     /**
      * Send [lent] again on [entry]'s socket beside the loop, with no bound: this coroutine may wait as
@@ -3637,6 +3795,11 @@ class QuicheDriver(
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
         val keptResumable = cmd.target is MigrationTarget.FreshLocalEndpoint && keptPath() is KeptPath.Found
+        if (!keptResumable && peerHasNoRoomForANewPath()) {
+            // The peer would drop the probe: answering now saves the validation budget it would cost.
+            cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
+            return
+        }
         if (api.connAvailableDcids(conn) <= 0L && !keptResumable) {
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
@@ -3776,7 +3939,15 @@ class QuicheDriver(
             when (probe) {
                 is ProbeOutcome.Rejected -> {
                     releaseUnprobedPath(newPath)
-                    cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(probe.code))
+                    cmd.result.complete(
+                        when (probe.code) {
+                            // A spare destination id was checked above; this is quiche finding no source id
+                            // of ours free to bind to the new path. Either way there is nothing to move onto
+                            // until the peer retires one of ours or issues one of its own.
+                            QUICHE_ERR_OUT_OF_IDENTIFIERS -> MigrationResult.Unmoved.Failed.NoSpareConnectionId
+                            else -> MigrationResult.Unmoved.Failed.ProbeRejected(probe.code)
+                        },
+                    )
                     return
                 }
 
@@ -3853,9 +4024,9 @@ class QuicheDriver(
     }
 
     /**
-     * The RFC 9000 §8.2.4 abandon timer firing: give up on a path the peer has neither validated nor
-     * failed, so `migrate()` returns and the automatic reactor is released to follow the *next*
-     * network change.
+     * The path validation timer firing: each PTO another PATH_CHALLENGE ([challengeAgain]), and at the
+     * RFC 9000 §8.2.4 abandon deadline, give up on a path the peer has neither validated nor failed, so
+     * `migrate()` returns and the automatic reactor is released to follow the *next* network change.
      *
      * **Order is the correctness argument.** [drainPathEvents] runs FIRST, before anything is
      * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
@@ -3874,12 +4045,31 @@ class QuicheDriver(
      * ([PathSlot.Kept]): the next migration either probes it again or replaces it, so at most one
      * unanswered probe's socket and id are ever held.
      */
-    private fun abandonPathValidationIfDue() {
+    private fun tendPathValidation() {
         if (migrationEnabled) drainPathEvents()
         val pending = validating() ?: return
-        if (!pending.isDue()) return
+        if (!pending.isDue()) {
+            if (pending.challengeIsDue()) challengeAgain(pending)
+            return
+        }
         paths[pending.key]?.keep(pending.localEndpoint)
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
+    }
+
+    /**
+     * Ask quiche for another PATH_CHALLENGE on the path [pending] validates. Probing a path quiche already
+     * holds only requests validation again: it keeps the path's connection id and spends no spare. A
+     * response to any challenge sent on the path validates it (RFC 9000 §8.2.1 allows several).
+     */
+    private fun challengeAgain(pending: PendingMigration) {
+        pending.challengeAsked()
+        val wiring = migrationWiring ?: return
+        val entry = paths[pending.key] ?: return
+        when (api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+            is ProbeOutcome.Probed -> quicheOwesAFlush = true
+            // The path is left to the abandon deadline, which reports it as unanswered.
+            is ProbeOutcome.Rejected -> Unit
+        }
     }
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
@@ -3972,6 +4162,12 @@ class QuicheDriver(
                 val previous = active
                 entry.transitionTo(PathSlot.Active(outcome.dcidSeq))
                 active = entry
+                leftPathSourceId = LeftPathSourceId.Owed
+                peerPathRoom =
+                    when (val room = peerPathRoom) {
+                        is PeerPathRoom.Freed -> PeerPathRoom.Freed(room.movedTo + entry.key)
+                        is PeerPathRoom.Kept -> PeerPathRoom.Kept(room.movedTo + entry.key)
+                    }
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
                 // unanswered expiries is re-baselined here, in the same statement sequence
@@ -3983,7 +4179,7 @@ class QuicheDriver(
                 // clears the old path's `active_dcid_seq` inside quiche, making its slot
                 // evictable; without it the table fills at active_conn_id_limit and the
                 // next probe is refused.
-                teardownPath(previous)
+                leavePath(previous)
                 completeMigration(
                     pending,
                     MigrationResult.Succeeded(pending.localEndpoint),
@@ -4037,16 +4233,26 @@ class QuicheDriver(
      * in [reservedPorts] until quiche evicts the path, and [releaseReservedPort] frees the rest.
      */
     private fun teardownPath(entry: PathEntry) {
+        leavePath(entry)
+        entry.readerJob?.cancel()
+    }
+
+    /**
+     * [teardownPath] for the path a switch moved off, which keeps reading while it is in [reservedPorts]:
+     * the peer goes on sending there until it sees the move, and those packets are quiche's to acknowledge
+     * (fed as arriving on the active path, see [execute]). A probe path is never left this way: what
+     * reaches it late is the peer's answer to a validation the client gave up on.
+     */
+    private fun leavePath(entry: PathEntry) {
         loopGuard.assertOnLoop(LoopSite.TeardownPath)
         // quiche routes the active path through this socket; closing it would strand the connection.
-        check(entry !== active) { "teardownPath on the active path ${entry.key}" }
+        check(entry !== active) { "leavePath on the active path ${entry.key}" }
         // First, and unconditionally: the path stops holding its destination CID, which retires it
-        // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a kept
-        // path replaced, a refused switch, a quiche path eviction — so this is the one place a CID
-        // can be released, and there is no way to remove a path from `paths` that bypasses it.
+        // (RFC 9000 §9.5). Every removal from `paths` comes here — the successful migration's
+        // supersede, a kept path replaced, a refused switch, a quiche path eviction — so this is the
+        // one place a CID can be released.
         entry.transitionTo(PathSlot.Abandoned)
         paths.remove(entry.key)
-        entry.readerJob?.cancel()
         reservedPorts.put(entry.key, entry)?.let(::releaseReservedPort)
     }
 
@@ -4056,6 +4262,7 @@ class QuicheDriver(
      * [recvInfo] freed in [cleanup], and its sockaddr belongs to the connection setup's [onCleanup].
      */
     private fun releaseReservedPort(entry: PathEntry) {
+        entry.readerJob?.cancel()
         try {
             entry.channel.close()
         } catch (_: Exception) {
@@ -4080,27 +4287,84 @@ class QuicheDriver(
      */
     private fun issueSpareCids(): Int {
         var count = 0
+        // At the peer's limit with a left path's id still counted and no id of ours left unused by the
+        // peer: a new id issued with retire_if_needed asks the peer (Retire Prior To, RFC 9000 §5.1.2) to
+        // retire the lowest one, which is the id of the path left longest ago. Its RETIRE_CONNECTION_ID frees
+        // the slot, and the new id becomes the spare the next probe needs. While the peer still holds an
+        // unused id of ours the next probe has one already, and nothing is pushed: issuing at the limit makes
+        // the peer briefly hold one id more than it allowed, which RFC 9000 §5.1.1 permits with Retire Prior
+        // To but a peer may still close the connection for (xquic answers CONNECTION_ID_LIMIT_ERROR). Below the
+        // limit the loop beneath issues a spare without retiring anything.
+        if (leftPathSourceId == LeftPathSourceId.Owed) {
+            leftPathSourceId =
+                when {
+                    api.connScidsLeft(conn) > 0L -> LeftPathSourceId.Settled
+                    peerHoldsAnUnusedIdOfOurs() -> LeftPathSourceId.Settled
+                    issueOneScid() >= 0 -> {
+                        count++
+                        retirementsAsked++
+                        LeftPathSourceId.Settled
+                    }
+                    else -> LeftPathSourceId.Owed
+                }
+        }
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
-            val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
-            val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
-            repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
-            token.resetForRead()
-            val rc =
-                api.connNewScid(
-                    conn,
-                    scid.driverOwnedNativeAddress(),
-                    QUIC_ISSUED_CONN_ID_LEN,
-                    token.driverOwnedNativeAddress(),
-                    true,
-                    addr(seqScratch),
-                )
-            scid.freeNativeMemory()
-            token.freeNativeMemory()
-            if (rc < 0) break
+            if (issueOneScid() < 0) break
             count++
-            quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
         }
         return count
+    }
+
+    /**
+     * Whether the peer holds an id of ours that no path uses: our active ids outnumber the original path and
+     * every path moved to, each of which keeps one until the peer retires it. The same count whatever the
+     * peer does with its paths: one that frees them (s2n-quic) need not retire the ids they held.
+     */
+    private fun peerHoldsAnUnusedIdOfOurs(): Boolean = api.connActiveScids(conn) > peerPathRoom.movedTo.size + 1
+
+    /**
+     * Whether a move to a new 4-tuple would exceed what the peer can hold. A peer keeps a path for each of
+     * our ids it holds and holds at most its `active_connection_id_limit` of them; one that never frees a
+     * path a client left (quiche: `path.rs` `make_room_for_new_path` evicts only a path with no id, and
+     * `lib.rs` relinks the id that Retire Prior To brings to the left path) admits a new 4-tuple only while
+     * it holds fewer paths than that limit. Unknown before the handshake, and never once the peer has
+     * shown it frees left paths. A peer past its limit may drop the probe (Netty) or end the connection
+     * (mvfst answers the move after its limit with INTERNAL_ERROR), so the move is refused unprobed.
+     */
+    private fun peerHasNoRoomForANewPath(): Boolean =
+        when (val room = peerPathRoom) {
+            is PeerPathRoom.Freed -> false
+            is PeerPathRoom.Kept ->
+                when (val params = api.connPeerTransportParams(conn)) {
+                    PeerTransportParams.NotYetNegotiated -> false
+                    // The original path is held too, beside every one moved to.
+                    is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
+                }
+        }
+
+    /**
+     * Issue one new source connection id (`quiche_conn_new_scid` with retire_if_needed): its sequence
+     * number, or a negative quiche error. At the peer's limit quiche raises Retire Prior To past the lowest
+     * id still in use instead of refusing.
+     */
+    private fun issueOneScid(): Int {
+        val scid = generateScid(bufferFactory, random) // QUIC_ISSUED_CONN_ID_LEN random bytes, reset for read
+        val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
+        repeat(STATELESS_RESET_TOKEN_LEN / Long.SIZE_BYTES) { token.writeLong(random.nextLong()) }
+        token.resetForRead()
+        val rc =
+            api.connNewScid(
+                conn,
+                scid.driverOwnedNativeAddress(),
+                QUIC_ISSUED_CONN_ID_LEN,
+                token.driverOwnedNativeAddress(),
+                true,
+                addr(seqScratch),
+            )
+        scid.freeNativeMemory()
+        token.freeNativeMemory()
+        if (rc >= 0) quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
+        return rc
     }
 
     /**
@@ -4207,6 +4471,7 @@ class QuicheDriver(
         latchForClose()
         wireIdScratch.freeNativeMemory()
         commands.close()
+        finishedStreams.close()
         // A driver torn down mid-handshake never confirms it: release whatever waits for that.
         handshakeSettled.complete(HandshakeSettled.Failed)
 
@@ -4448,7 +4713,19 @@ class QuicheDriver(
             sentStreamData =
                 if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged,
             stats = api.connStats(conn),
-            activePath = api.connPathStats(conn, 0L),
+            activePath =
+                when (val read = api.readActivePath(conn)) {
+                    is ActivePath.Read -> read.stats
+                    ActivePath.Unreadable -> null
+                },
+            quichePaths = (0L until (api.connStats(conn)?.pathsCount ?: 0L)).mapNotNull { api.connPathStats(conn, it) },
+            ids =
+                ConnectionIdRoom(
+                    spareDestinationIds = api.connAvailableDcids(conn),
+                    activeSourceIds = api.connActiveScids(conn),
+                    sourceIdsLeft = api.connScidsLeft(conn),
+                ),
+            peerPathRoom = peerPathRoom,
             streams =
                 streams.values.map { slot ->
                     StreamWake(
@@ -4461,7 +4738,7 @@ class QuicheDriver(
                     )
                 },
             paths =
-                paths.values.map { entry ->
+                (paths.values + reservedPorts.values).map { entry ->
                     PathView(
                         key = entry.key,
                         egress =
@@ -4474,6 +4751,13 @@ class QuicheDriver(
                             when (val job = entry.readerJob) {
                                 null -> PathReader.None
                                 else -> if (job.isActive) PathReader.Running else PathReader.Ended
+                            },
+                        slot = entry.slot,
+                        use =
+                            when {
+                                entry === active -> PathUse.Active
+                                entry.key in reservedPorts -> PathUse.Left
+                                else -> PathUse.Standby
                             },
                     )
                 },
@@ -5006,7 +5290,10 @@ class DriverStreamAdapter(
                 driver.flight.record(FlightEvent.ReadReturned, slot.id.id)
                 driver.readReturned(slot)
             }
-            ReadResult.End, ReadResult.Reset -> driver.readSideFinished(slot)
+            ReadResult.End, ReadResult.Reset -> {
+                driver.readSideFinished(slot)
+                driver.directionOver(slot, StreamDirection.Receive)
+            }
         }
         return result
     }
@@ -5094,8 +5381,11 @@ class DriverStreamAdapter(
                     if (slot.end != StreamEnd.Open) {
                         slot.queuedOrLatchedVerdict { takePending() }?.let { return@withStreamDeadline it }
                     }
+                    // A stream nothing has announced parks without asking the loop: [StreamSlot.readNeedsQuicheAnswer].
+                    if (!slot.readNeedsQuicheAnswer()) awaitDataThenQueued()?.let { return@withStreamDeadline it }
                     while (true) {
                         val deferred = CompletableDeferred<StreamRecvResult>()
+                        slot.asking()
                         // trySend, not send: on the UNLIMITED command channel it always succeeds unless
                         // the channel is closed (getOrThrow then rethrows the close cause, exactly like
                         // send). Unlike send it is not a suspend call, so there is no state in which the

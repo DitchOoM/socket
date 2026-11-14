@@ -1,6 +1,9 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic
 
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.Duration
 
 /**
@@ -194,12 +197,18 @@ internal class StubQuicheApi : QuicheApi {
      */
     @Volatile var onConnRecv: ((Int) -> Unit)? = null
 
+    /** The recv_info each [connRecv] was given, in order: where the driver said each packet arrived. */
+    @Volatile var recvArrivals: List<QuicheRecvInfo> = emptyList()
+
+    @Volatile private var recvInfosMade = 0L
+
     override fun connRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
     ): Int {
+        recvArrivals = recvArrivals + recvInfo
         onConnRecv?.invoke(bufLen)
         return 0
     }
@@ -556,11 +565,18 @@ internal class StubQuicheApi : QuicheApi {
      */
     val readableStreams: ArrayDeque<Long> = ArrayDeque()
 
+    /**
+     * Stream IDs reported readable in addition to [readableStreams], replaced as one immutable list, so a test
+     * may change it while the driver loop runs; [readableStreams] may only be changed before the driver starts.
+     */
+    val readableWhileRunning = AtomicReference<List<Long>>(emptyList())
+
     private var readableSnapshot: ArrayDeque<Long> = ArrayDeque()
 
     override fun connReadable(conn: QuicheConn): QuicheStreamIter {
-        if (readableStreams.isEmpty()) return QuicheStreamIter(0L)
-        readableSnapshot = ArrayDeque(readableStreams)
+        val whileRunning = readableWhileRunning.load()
+        if (readableStreams.isEmpty() && whileRunning.isEmpty()) return QuicheStreamIter(0L)
+        readableSnapshot = ArrayDeque(readableStreams + whileRunning)
         return QuicheStreamIter(READABLE_ITER)
     }
 
@@ -589,7 +605,11 @@ internal class StubQuicheApi : QuicheApi {
         fromAddrLen: Int,
         toAddr: Long,
         toAddrLen: Int,
-    ) = QuicheRecvInfo(1L)
+    ): QuicheRecvInfo {
+        // A range of its own, apart from the recv_infos tests make by hand, so each path's can be told apart.
+        recvInfosMade++
+        return QuicheRecvInfo(STUB_RECV_INFO_BASE + recvInfosMade)
+    }
 
     override fun recvInfoFree(info: QuicheRecvInfo) {}
 
@@ -857,9 +877,13 @@ internal class StubQuicheApi : QuicheApi {
      * real connection would still be waiting on.
      *
      * The negotiated values mirror this module's own defaults so a driver test reads plausible numbers;
-     * nothing in [QuicheDriver] dispatches on any field but [PeerTransportParams.Negotiated.disableActiveMigration].
+     * [QuicheDriver] dispatches on [PeerTransportParams.Negotiated.disableActiveMigration] and on
+     * [PeerTransportParams.Negotiated.activeConnIdLimit], which bounds the paths a peer that frees none can hold.
      */
     @Volatile var peerDisablesActiveMigration = false
+
+    /** The peer's `active_connection_id_limit`: this module's default, so existing tests move as often as they like. */
+    @Volatile var peerActiveConnIdLimit = 8L
 
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
         if (!established) {
@@ -877,7 +901,7 @@ internal class StubQuicheApi : QuicheApi {
                 ackDelayExponent = 3,
                 maxAckDelayMillis = 25,
                 disableActiveMigration = peerDisablesActiveMigration,
-                activeConnIdLimit = 4,
+                activeConnIdLimit = peerActiveConnIdLimit,
                 maxDatagramFrameSize = -1,
             )
         }
@@ -929,8 +953,14 @@ internal class StubQuicheApi : QuicheApi {
         drainRetiredScidCalls++
         lastDrainCapacity = maxIds
         retiredScidCount = 0
-        return 0
+        return retiredScidsDrained.also { retiredScidsDrained = 0 }
     }
+
+    /**
+     * How many retirements the next [connDrainRetiredScids] reports as drained, writing no ids. The driver
+     * acts on the count alone (whether the peer retired more than it was asked to). **0 by default.**
+     */
+    @Volatile var retiredScidsDrained = 0
 
     /**
      * How many source CIDs quiche considers active (`quiche_conn_active_scids`). **0 by default** —
@@ -1014,6 +1044,9 @@ internal class StubQuicheApi : QuicheApi {
         const val WRITABLE_ITER = 1L
     }
 }
+
+/** First handle of the recv_infos [StubQuicheApi.recvInfoNew] makes. */
+private const val STUB_RECV_INFO_BASE = 1_000L
 
 /** The v4 address (127.0.0.1) a registered synthetic sockaddr claims unless it is registered with another. */
 internal const val STUB_SOCKADDR_V4 = 0x7F000001L

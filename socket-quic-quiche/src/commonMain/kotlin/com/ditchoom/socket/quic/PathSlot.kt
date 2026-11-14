@@ -111,3 +111,30 @@ internal sealed interface PathSlot {
      */
     data object Abandoned : PathSlot
 }
+
+/** Whether a path this client left still holds one of its source connection ids that must be pushed out. */
+internal enum class LeftPathSourceId {
+    /** Nothing owed. */
+    Settled,
+
+    /** A migration has left a path whose source id still occupies a slot under the peer's limit. */
+    Owed,
+}
+
+/**
+ * What the peer is known to do with the paths this client leaves, and every path moved to, each of which may
+ * still hold one of our source ids: quiche releases a path's id only when the peer retires it, evicted or not.
+ */
+internal sealed interface PeerPathRoom {
+    val movedTo: Set<PathKey>
+
+    /** The peer has retired ids of ours unasked: it frees the paths a client leaves, so any number of moves fit. */
+    data class Freed(
+        override val movedTo: Set<PathKey>,
+    ) : PeerPathRoom
+
+    /** No sign yet that the peer frees anything: it may still hold the original path and every one moved to. */
+    data class Kept(
+        override val movedTo: Set<PathKey>,
+    ) : PeerPathRoom
+}

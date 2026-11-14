@@ -39,6 +39,13 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
+
+/**
+ * rustc flags of every quiche build: opt-level=3 as quiche's own release profile, because the packet-path
+ * calls (`quiche_conn_recv`, `quiche_conn_send`) are the largest part of a connection's CPU. One codegen unit,
+ * and no LTO: BoringSSL's archives carry no bitcode.
+ */
+val quicheRustcOpt = "-C opt-level=3 -C codegen-units=1"
 val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBoringCrateVersion = libs.versions.quicheBoringCrate.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
@@ -3438,9 +3445,9 @@ fun createBuildQuicheSharedTask(
             // refuses to link against such a dylib. The Apple `strip -x` below strips it instead.
             val baseRustflags =
                 if (os == "macos") {
-                    "-C opt-level=s -C codegen-units=1"
+                    quicheRustcOpt
                 } else {
-                    "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+                    "$quicheRustcOpt -C strip=symbols"
                 }
             if (os == "linux" && usesExternalBssl) {
                 // External-BoringSSL path: whole-archive libssl.a + libcrypto.a INTO the cdylib so
@@ -3709,7 +3716,7 @@ fun createBuildQuicheAppleStaticTask(
             logger.lifecycle("Building quiche $quicheVersion (static, $libSubdir / $rustTarget)...")
 
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "$quicheRustcOpt -C strip=symbols"
             rustToolchain.requireTarget(rustTarget)
             env["PATH"] = rustToolchain.childPath()
 
@@ -4048,12 +4055,9 @@ val nativeLibsByPlatform =
         "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
         "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
         "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
-        // Windows ships only the JNI shim: quiche is statically linked into
-        // quiche_jni.dll (boringssl-boring-crate + --whole-archive libquiche.a in
-        // build-linux.yaml's MinGW cross-compile), so there is no separate
-        // quiche.dll to extract — matching NativeLibLoader, which loads only
-        // quiche_jni.dll on Windows. Staged into the jvmTest classpath only;
-        // not in nativeClassifiers, so no windows publish artifact yet.
+        // Windows ships one self-contained DLL: quiche and BoringSSL are linked into quiche_jni.dll
+        // (--whole-archive libquiche.a in build-linux.yaml's MinGW cross-compile), which exports both the
+        // JNI entry points (JDK < 21, NativeLibLoader) and quiche's C API (JDK 21+, the FFM loader).
         "windows-x64" to listOf("quiche_jni.dll"),
     )
 
@@ -4436,7 +4440,7 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
             logger.lifecycle("Building quiche for Android ${abi.abi}...")
             val env = mutableMapOf<String, String>()
             env["ANDROID_NDK_HOME"] = ndk.absolutePath
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "$quicheRustcOpt -C strip=symbols"
             rustToolchain.requireTarget(abi.rustTarget)
             env["PATH"] = rustToolchain.childPath()
 
@@ -4969,9 +4973,11 @@ afterEvaluate {
         // Unpack every dep jar so the resulting fat jar is `java -jar`-able.
         // Duplicate META-INF entries (manifests, signatures, services) would
         // otherwise break the jar; EXCLUDE picks the first occurrence.
+        // Netty is on the test classpath only as the foreign server of NettyServerActiveMigrationTests; the
+        // echo server never uses it, so it stays out of this jar and the interop jar built from it.
         from({
             testCompilation.runtimeDependencyFiles.files
-                .filter { it.isFile && it.name.endsWith(".jar") }
+                .filter { it.isFile && it.name.endsWith(".jar") && !it.name.startsWith("netty-") }
                 .map { zipTree(it) }
         })
 
@@ -5836,6 +5842,17 @@ kotlin {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        jvmTest.dependencies {
+            // A QUIC server this library did not write, for NettyServerActiveMigrationTests. Test scope on
+            // the JVM only: nothing published depends on Netty.
+            val nettyVersion = providers.gradleProperty("nettyVersion").get()
+            implementation("io.netty:netty-codec-classes-quic:$nettyVersion")
+            implementation("io.netty:netty-handler:$nettyVersion")
+            implementation("io.netty:netty-transport:$nettyVersion")
+            for (classifier in listOf("osx-aarch_64", "osx-x86_64", "linux-x86_64", "linux-aarch_64", "windows-x86_64")) {
+                runtimeOnly("io.netty:netty-codec-native-quic:$nettyVersion:$classifier")
+            }
+        }
         val androidUnitTest by getting {
             dependencies {
                 implementation(kotlin("test"))
@@ -6041,6 +6058,7 @@ val nativeClassifiers =
         NativeClassifier("macos-x64", "macos-x86_64"),
         NativeClassifier("linux-x64", "linux-x86_64"),
         NativeClassifier("linux-arm64", "linux-aarch64"),
+        NativeClassifier("windows-x64", "windows-x86_64"),
     )
 
 val nativeClassifierJars =

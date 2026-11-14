@@ -4,10 +4,14 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -63,7 +67,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val result = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Reset>(
                     result,
@@ -83,7 +87,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val adapter = DriverStreamAdapter(driver, slot)
                 adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertEquals(
@@ -112,7 +116,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val adapter = DriverStreamAdapter(driver, slot)
                 assertIs<ReadResult.Reset>(adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds))
                 assertIs<ReadResult.Reset>(
@@ -138,7 +142,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val buffered = bufferFactory.allocate(4)
                 repeat(4) { buffered.writeByte(7) }
                 buffered.resetForRead()
@@ -173,16 +177,48 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
-                slot.dataSignal.trySend(Unit)
+                val slot = announcedSlot()
                 val adapter = DriverStreamAdapter(driver, slot)
-                val result = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                val read = async { adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 5.seconds) }
+                // The announced read asked, was answered with nothing, and now waits for the next signal:
+                // it must still be waiting, not have reported an end.
+                assertNull(withTimeoutOrNull(300) { read.await() }, "the read returned on an empty, FIN-less answer")
+                // The data the loop's next sweep announces.
+                slot.announce()
+                val result = withTimeout(2.seconds) { read.await() }
                 assertIs<ReadResult.Data>(
                     result,
                     "a zero-byte, no-FIN answer was reported as a stream end instead of waiting for " +
                         "the bytes that follow — got $result",
                 )
                 assertEquals(3, result.buffer.remaining())
+                result.buffer.freeIfNeeded()
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /**
+     * A read on a stream nothing has announced parks without asking the loop, even though the stub holds
+     * bytes: quiche only holds bytes because a datagram arrived, and the sweep after it announces them.
+     * The inverse of every test above, which announce the stream first.
+     */
+    @Test
+    fun anUnannouncedReadParksAndSendsNoStreamRecv() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvSequence.addLast(StreamRecvResult.Data(3, fin = false))
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = StreamSlot(QuicStreamId(0L))
+                val adapter = DriverStreamAdapter(driver, slot)
+                val read = async { adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 5.seconds) }
+                assertNull(withTimeoutOrNull(300) { read.await() }, "the read returned without any announcement")
+                assertEquals(1, api.streamRecvSequence.size, "the read asked the loop for bytes nothing had announced")
+                slot.announce()
+                val result = withTimeout(2.seconds) { read.await() }
+                assertIs<ReadResult.Data>(result)
                 result.buffer.freeIfNeeded()
             } finally {
                 driver.destroy()
@@ -200,7 +236,7 @@ class StreamResetReadTests {
     fun aPureFinStillDeliversBytesDrainedInTheSameWake() =
         runQuicTest {
             val stub = StubQuicheApi()
-            val slot = StreamSlot(QuicStreamId(0L))
+            val slot = announcedSlot()
             val api =
                 object : QuicheApi by stub {
                     override fun connStreamRecv(
@@ -258,7 +294,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val thrown =
                     assertFailsWith<QuicStreamReadException>(
                         "a quiche stream error must not read as a clean end-of-stream",
@@ -279,7 +315,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
                 val thrown =
                     assertFailsWith<QuicStreamReadException> {
                         adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
@@ -303,7 +339,7 @@ class StreamResetReadTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val slot = StreamSlot(QuicStreamId(0L))
+                val slot = announcedSlot()
                 val buffered = bufferFactory.allocate(4)
                 repeat(4) { buffered.writeByte(9) }
                 buffered.resetForRead()

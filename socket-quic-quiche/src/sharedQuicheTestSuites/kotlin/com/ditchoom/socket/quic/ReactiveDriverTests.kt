@@ -824,7 +824,7 @@ class ReactiveDriverTests {
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val adapter = DriverStreamAdapter(driver, announcedSlot())
 
                 val first = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.Data>(first, "first read should deliver the coalesced data chunk")
@@ -1014,7 +1014,7 @@ class ReactiveDriverTests {
             val udpGate = CompletableDeferred<Unit>()
             val driver = gatedStartupDriver(api, udpGate)
             driver.start(this)
-            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val adapter = DriverStreamAdapter(driver, announcedSlot())
             try {
                 // streamRead enqueues a StreamRecv the gated driver cannot process yet, then its 150 ms
                 // timeout fires while that command is still queued.
@@ -1041,7 +1041,7 @@ class ReactiveDriverTests {
             val udpGate = CompletableDeferred<Unit>()
             val driver = gatedStartupDriver(api, udpGate)
             driver.start(this)
-            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val adapter = DriverStreamAdapter(driver, announcedSlot())
             val buf = bufferFactory.allocate(64)
             try {
                 val write = async { runCatching { adapter.streamWrite(QuicStreamId(0L), buf, 150.milliseconds) } }
