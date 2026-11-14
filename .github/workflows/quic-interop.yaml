@@ -1,7 +1,8 @@
 name: QUIC interop (quic-interop-runner)
 
 # Runs this library's QUIC client and server against every implementation the quic-interop-runner offers,
-# nightly on main and on demand, through the gate in quic-interop-gate.yaml.
+# nightly on main and on demand, through the gate in quic-interop-gate.yaml (review.yaml runs the same gate
+# on every pull request).
 #
 # Every other QUIC lane here is quiche talking to quiche (the HTTP/3 lane's aioquic server and the browser
 # WebTransport lane aside). Two copies of one engine can agree on the same mistake; another stack does not.
@@ -49,14 +50,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # This workflow builds no natives of its own. A run on demand takes the natives built for the commit it
-  # runs: natives from another commit carry another quiche patch set. A pull request's CI builds them from
-  # the branch merged into main, so they match only while the branch is up to date with main. A nightly run
-  # takes the newest from main.
+  # The quiche natives of the commit this run tests: another commit's carry another quiche patch set. A pull
+  # request's CI builds them (from the branch merged into main, so they match only while the branch is up to
+  # date with main); when none exist for this commit, as on main, whose squash commits no pull request built,
+  # this run builds them with build-linux.yaml and build-apple.yaml's natives jobs.
   natives:
     name: "find natives"
     runs-on: ubuntu-24.04
     outputs:
+      # earlier: every artifact exists from an earlier run (the ids below); this-run: this run builds them.
+      source: ${{ steps.find.outputs.source }}
       run-id: ${{ steps.find.outputs.run-id }}
       apple-run-id: ${{ steps.find.outputs.apple-run-id }}
       windows-run-id: ${{ steps.find.outputs.windows-run-id }}
@@ -64,44 +67,65 @@ jobs:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event_name == 'schedule' && 'main' || '' }}
-          SHA: ${{ github.event_name == 'schedule' && '' || github.sha }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          newest() { # <artifact name>: the run that uploaded the newest unexpired copy for this commit, from main when nightly
+          newest() { # <artifact name>: the run that uploaded the newest unexpired copy for this commit
             gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
-              --jq ".artifacts[] | select(.expired == false)
-                    | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")
-                    | select(\"$SHA\" == \"\" or .workflow_run.head_sha == \"$SHA\")
+              --jq ".artifacts[] | select(.expired == false) | select(.workflow_run.head_sha == \"$SHA\")
                     | [.created_at, .workflow_run.id] | @tsv" | sort -r | head -1 | cut -f2
           }
+          found=()
           for pair in run-id:quiche-linux-natives-full apple-run-id:quiche-apple-natives windows-run-id:quiche-windows-natives; do
             rid=$(newest "${pair#*:}")
-            if [ -z "$rid" ]; then
-              echo "::error::No unexpired ${pair#*:} artifact exists for ${SHA:-$BRANCH}. Run the build that makes it once, then retry."
-              exit 1
-            fi
-            echo "${pair%%:*}=$rid" >> "$GITHUB_OUTPUT"
+            [ -n "$rid" ] && found+=("${pair%%:*}=$rid")
           done
+          if [ ${#found[@]} -eq 3 ]; then
+            echo "source=earlier" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${found[@]}" >> "$GITHUB_OUTPUT"
+            echo "natives for $SHA from earlier runs: ${found[*]}"
+          else
+            echo "source=this-run" >> "$GITHUB_OUTPUT"
+            echo "no complete set of natives for $SHA (found: ${found[*]:-none}); this run builds them"
+          fi
 
-  interop:
+  build-linux:
     needs: natives
-    if: ${{ inputs.lanes != 'native' }}
+    if: ${{ needs.natives.outputs.source == 'this-run' }}
+    uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: "0.0.0-interop"
+      natives-only: true
+
+  build-apple:
+    needs: natives
+    if: ${{ needs.natives.outputs.source == 'this-run' }}
+    uses: ./.github/workflows/build-apple.yaml
+    with:
+      version: "0.0.0-interop"
+      natives-only: true
+
+  # A skipped build (natives from an earlier run) is not a failed one, hence !cancelled() and the results.
+  interop:
+    needs: [natives, build-linux]
+    if: ${{ !cancelled() && needs.natives.result == 'success' && needs.build-linux.result != 'failure' && inputs.lanes != 'native' }}
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"
-      natives-run-id: ${{ needs.natives.outputs.run-id }}
+      natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.run-id || '' }}
       stale: fail
       record: ${{ inputs.mode || 'gate' }}
       peers: ${{ inputs.peers || '' }}
 
   native:
-    needs: natives
-    if: ${{ inputs.lanes != 'linux' && inputs.peers == '' }}
+    needs: [natives, build-linux, build-apple]
+    if: >-
+      ${{ !cancelled() && needs.natives.result == 'success' && needs.build-linux.result != 'failure'
+      && needs.build-apple.result != 'failure' && inputs.lanes != 'linux' && inputs.peers == '' }}
     uses: ./.github/workflows/quic-interop-native.yaml
     with:
       version: "0.0.0-interop"
-      apple-natives-run-id: ${{ needs.natives.outputs.apple-run-id }}
-      windows-natives-run-id: ${{ needs.natives.outputs.windows-run-id }}
+      apple-natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.apple-run-id || github.run_id }}
+      windows-natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.windows-run-id || github.run_id }}
       stale: fail
       record: ${{ inputs.mode || 'gate' }}
