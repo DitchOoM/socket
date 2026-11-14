@@ -322,8 +322,10 @@ jobs:
       # source hash so the cache invalidates on either change.
       # restore-keys gives a partial-hit on version bumps so cargo incremental
       # recompile picks up from the previous build instead of from zero.
-      - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v6
+      # Restore only: native-deps-freshness.yaml's cache-warm writes it on main. A pull request's own
+      # copy (about 1 GB per ref) pushed the small natives entries out of the 10 GB cache.
+      - name: Restore quiche cargo target/ (all triples)
+        uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
           key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
@@ -719,6 +721,10 @@ jobs:
       # silently swallowed by continue-on-error. `cache-hit` is true only on an exact primary-key
       # match (a restore-keys prefix hit leaves it false), which is precisely the case where a
       # re-save is impossible anyway: cache entries are immutable per key.
+      - name: Keep only downloads in the Gradle cache (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/gradle-cache-prune
+
       - name: Save Gradle build outputs (main only)
         id: save_gradle_caches
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
