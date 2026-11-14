@@ -167,7 +167,9 @@
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
-      "rebind-addr": "pass",
+      "rebind-addr": {
+        "flaky": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)"
+      },
       "rebind-port": "pass",
       "resumption": "pass",
       "retry": "pass",
@@ -476,12 +478,8 @@
       "transfer": "pass"
     },
     "quiche": {
-      "active-migration": {
-        "known-failure": "ours: as transfer"
-      },
-      "transfer": {
-        "known-failure": "ours: the second migrate() against the stock quiche server never answers and sends no probe; the download ends and the idle timeout closes the connection"
-      }
+      "active-migration": "pass",
+      "transfer": "pass"
     },
     "quinn": {
       "active-migration": "pass",
