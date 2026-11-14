@@ -68,8 +68,9 @@ abstract class NativeCompareBench {
         val workload = getenv("NATIVE_BENCH")?.toKString()?.takeIf { it in WORKLOADS } ?: return
         val warmup = (getenv("NATIVE_BENCH_WARMUP")?.toKString()?.toIntOrNull() ?: 2).seconds
         val window = (getenv("NATIVE_BENCH_SECONDS")?.toKString()?.toIntOrNull() ?: 10).seconds
-        if (workload == "tcp") runQuicTest(timeout = 10.minutes) { tcp(warmup.inWholeSeconds, window.inWholeSeconds) }
-        else
+        if (workload == "tcp") {
+            runQuicTest(timeout = 10.minutes) { tcp(warmup.inWholeSeconds, window.inWholeSeconds) }
+        } else {
             runQuicTest(timeout = 10.minutes) {
                 withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
                     val serverJob = launch { connections { coroutineScope { streams().collect { launch { serve(it) } } } } }
@@ -86,6 +87,7 @@ abstract class NativeCompareBench {
                     }
                 }
             }
+        }
     }
 
     private suspend fun longLived(
@@ -295,6 +297,7 @@ abstract class NativeCompareBench {
             val secs = start.elapsedNow().inWholeNanoseconds / 1e9
             val cpu = cpuMicros() - cpu0
             samples.sort(0, n)
+
             fun pct(p: Double) = samples[minOf(n - 1, (n * p).toInt())] / 1000.0
             println(
                 "RESULT stack=kotlin-native-ours workload=$workload ops=$n seconds=$secs p50_us=${pct(0.5)} p99_us=${pct(0.99)} " +
