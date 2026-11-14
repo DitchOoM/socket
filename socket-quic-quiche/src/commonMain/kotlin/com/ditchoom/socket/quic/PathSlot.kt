@@ -128,21 +128,13 @@ internal enum class LeftPathSourceId {
 internal sealed interface PeerPathRoom {
     val movedTo: Set<PathKey>
 
-    /**
-     * The peer has retired ids of ours unasked, or validated a path beyond what holding every left path would
-     * allow: it frees the paths a client leaves, so any number of moves fit.
-     */
+    /** The peer has retired ids of ours unasked: it frees the paths a client leaves, so any number of moves fit. */
     data class Freed(
         override val movedTo: Set<PathKey>,
     ) : PeerPathRoom
 
-    /** No sign yet that the peer frees anything; a move is still tried, and its probe's answer teaches which. */
+    /** No sign yet that the peer frees anything: it may still hold the original path and every one moved to. */
     data class Kept(
-        override val movedTo: Set<PathKey>,
-    ) : PeerPathRoom
-
-    /** A probe sent with the peer holding as many paths as its id limit allows went unanswered: no move fits. */
-    data class Full(
         override val movedTo: Set<PathKey>,
     ) : PeerPathRoom
 }

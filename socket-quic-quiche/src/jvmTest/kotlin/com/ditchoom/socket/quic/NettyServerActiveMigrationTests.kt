@@ -103,12 +103,12 @@ class NettyServerActiveMigrationTests {
      * Prior To, which arrives with a new id in the same NEW_CONNECTION_ID, and quiche links that new id
      * to the left path when it retires the old one (`lib.rs`, the `NewConnectionId` frame: inserted first
      * by `ids.new_dcid`, then `lowest_available_dcid_seq` relinked to every retired path). So the server
-     * drops the second probe. The client cannot tell such a server from one that frees left paths until
-     * that probe goes unanswered; after it, every move is answered NoSpareConnectionId at once, and the
-     * connection lives throughout.
+     * drops the second probe. The client knows the server's limit from the handshake and has seen no sign
+     * that it frees left paths, so it must answer the second move at once with NoSpareConnectionId, send
+     * no probe the server would drop, and keep the connection.
      */
     @Test
-    fun aMoveAgainstAServerWithRoomForTwoPathsIsRefusedAtOnceAfterItsProbeGoesUnansweredAndTheConnectionLives() =
+    fun aSecondMoveAgainstAServerWithRoomForTwoPathsIsRefusedAtOnceAndTheConnectionLives() =
         runQuicTest(timeout = 60.seconds) {
             skipOnMissingNativeLib(NettyServerActiveMigrationTests::class) {
                 val timeline = ClientTimeline()
@@ -122,22 +122,14 @@ class NettyServerActiveMigrationTests {
                                 assertIs<MigrationResult.Succeeded>(migrateOnceAConnectionIdIsSpare(), "the first move")
                                 assertEquals("m1", stream.echo("m1"))
 
-                                assertEquals(
-                                    MigrationResult.Unmoved.Failed.PathNotValidated,
-                                    withTimeout(CONNECTION_BUDGET.scaled()) { migrate() },
-                                    "a second move, whose probe the server drops",
-                                )
+                                val second = withTimeout(SECOND_MOVE_BUDGET.scaled()) { migrate() }
                                 assertEquals(
                                     MigrationResult.Unmoved.Failed.NoSpareConnectionId,
-                                    withTimeout(REFUSED_MOVE_BUDGET.scaled()) { migrate() },
-                                    "a move after the server dropped a probe at its path limit",
+                                    second,
+                                    "a second move the server cannot admit",
                                 )
-                                assertEquals(
-                                    QuicPathState.Failed(MigrationResult.Unmoved.Failed.PathNotValidated),
-                                    pathState.value,
-                                    "the last move that probed",
-                                )
-                                assertEquals("m2", stream.echo("m2"), "the connection on the path the first move landed on")
+                                assertIs<QuicPathState.Migrated>(pathState.value, "the path the first move landed on")
+                                assertEquals("m2", stream.echo("m2"), "the connection on the path it kept")
                                 stream.close()
                             }
                         }
@@ -482,7 +474,7 @@ class NettyServerActiveMigrationTests {
         val RETIRE_BUDGET = 15.seconds
 
         /** An answer that needs no probe: well under one path validation (three PTOs, at least 1 s). */
-        val REFUSED_MOVE_BUDGET = 500.milliseconds
+        val SECOND_MOVE_BUDGET = 500.milliseconds
 
         val clientOptions =
             QuicOptions(

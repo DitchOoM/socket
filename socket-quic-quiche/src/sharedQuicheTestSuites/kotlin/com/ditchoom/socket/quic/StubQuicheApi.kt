@@ -953,8 +953,14 @@ internal class StubQuicheApi : QuicheApi {
         drainRetiredScidCalls++
         lastDrainCapacity = maxIds
         retiredScidCount = 0
-        return 0
+        return retiredScidsDrained.also { retiredScidsDrained = 0 }
     }
+
+    /**
+     * How many retirements the next [connDrainRetiredScids] reports as drained, writing no ids. The driver
+     * acts on the count alone (whether the peer retired more than it was asked to). **0 by default.**
+     */
+    @Volatile var retiredScidsDrained = 0
 
     /**
      * How many source CIDs quiche considers active (`quiche_conn_active_scids`). **0 by default** —
