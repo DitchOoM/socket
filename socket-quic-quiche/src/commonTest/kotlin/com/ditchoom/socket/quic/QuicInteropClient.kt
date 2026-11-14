@@ -101,15 +101,22 @@ internal fun interopBaseOptions() =
         alpnProtocols = listOf(HQ),
         verifyPeer = false,
         idleTimeout = 30.seconds,
-        // The interop transfers are up to 10 MB per file and thousands of streams per connection.
+        // The interop transfers are up to 10 MB per file and thousands of streams per connection; the
+        // stream limit is raised as streams finish (`multiplexing` requires the initial one to be at most
+        // 1000). A client that writes each request in one stream_send and ignores a partial write (quiche's
+        // http09 client) truncates every request that does not fit in its congestion window, so the limit
+        // is kept to a burst of requests that does.
         flowControl =
             FlowControl(
                 initialMaxData = 64L * 1024 * 1024,
                 initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                 initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                initialMaxStreamsBidi = 1000,
+                initialMaxStreamsBidi = INITIAL_MAX_STREAMS_BIDI,
             ),
     )
+
+/** About 100 requests of under 50 bytes each: a burst that fits a client's initial congestion window. */
+private const val INITIAL_MAX_STREAMS_BIDI = 100L
 
 /** What the client does beyond what `TESTCASE` asks, from `CLIENT_PARAMS`. */
 private sealed interface ClientMode {
