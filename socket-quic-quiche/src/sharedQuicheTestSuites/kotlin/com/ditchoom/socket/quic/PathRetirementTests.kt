@@ -191,7 +191,7 @@ class PathRetirementTests {
                 rawApi = api,
                 conn = QuicheConn(1L),
                 bufferFactory = bufferFactory,
-                recvInfo = QuicheRecvInfo(1L),
+                recvInfo = PRIMARY_RECV_INFO,
                 sendInfo = QuicheSendInfo(1L),
                 udpChannel = primaryChannel,
                 // No primary reader loop: nothing ever delivers a datagram here. Probed paths still
@@ -482,18 +482,15 @@ class PathRetirementTests {
         }
 
     /**
-     * **A packet tagged with a retired path's key is dropped, not misattributed.** After retirement a
-     * reader's final in-flight datagrams can still be queued behind the teardown. Falling back to
-     * another path's `recv_info` would tell quiche the packet arrived on an address it did not —
-     * the exact stale-attribution defect retirement exists to end. The packet is bounded collateral
-     * of a path the connection already left; RFC 9002 loss recovery owns it.
+     * **A packet from the path a switch left is fed as arriving on the active path until quiche evicts
+     * the left one, and dropped after.** The peer sends on the left path until it sees the move, so those
+     * packets are quiche's to acknowledge; under the left path's own recv_info quiche would answer a
+     * PATH_CHALLENGE among them there, linking a spare connection id to a path the client has left.
      */
     @Test
-    fun aPacketTaggedWithARetiredPathsKeyIsDroppedNotMisattributed() =
+    fun aPacketFromTheLeftPathIsReadAsArrivingOnTheActivePathUntilQuicheEvictsIt() =
         runTest {
             val f = Fixture()
-            var recvs = 0
-            f.stub.onConnRecv = { recvs++ }
             f.driver.start(this)
             try {
                 runCurrent()
@@ -502,21 +499,23 @@ class PathRetirementTests {
                 f.validate(1)
                 runCurrent()
                 result.assertSucceeded()
-                val retiredKey = PathKey(family = 4, port = primaryPort, hi = 0L, lo = STUB_LOOPBACK_V4)
-
-                // Anti-vacuity: a packet tagged with the LIVE path's key must reach quiche.
+                val leftKey = PathKey(family = 4, port = primaryPort, hi = 0L, lo = STUB_LOOPBACK_V4)
                 val liveKey = PathKey(family = 4, port = probePortBase + 1, hi = 0L, lo = STUB_LOOPBACK_V4)
                 sendPacket(f, liveKey)
+                sendPacket(f, leftKey)
                 runCurrent()
-                assertEquals(1, recvs, "a live-path packet must reach connRecv — the test harness is broken")
+                val (live, left) = f.stub.recvArrivals
+                assertTrue(live != PRIMARY_RECV_INFO, "the active path's packet must reach quiche under its own recv_info")
+                assertEquals(live, left, "the left path's packet must reach quiche as arriving on the active path")
 
-                sendPacket(f, retiredKey)
+                f.evict(primaryPort)
+                runCurrent()
+                sendPacket(f, leftKey)
                 runCurrent()
                 assertEquals(
-                    1,
-                    recvs,
-                    "a packet tagged with the RETIRED path's key was fed to quiche under another path's " +
-                        "recv_info — stale attribution, the defect retirement exists to end",
+                    listOf(live, left),
+                    f.stub.recvArrivals,
+                    "a packet from a path quiche evicted must be dropped",
                 )
             } finally {
                 f.driver.destroy()
@@ -867,6 +866,142 @@ class PathRetirementTests {
         }
 
     /**
+     * **At the peer's limit, a migration pushes the left path's source id out.** quiche links one of
+     * our source ids to each path the peer answered on, and only the peer's RETIRE_CONNECTION_ID unlinks
+     * it; a peer that retires nothing on its own leaves the left path's id occupying a slot, and once all
+     * are linked the next probe is refused. With no capacity left (`scids_left` = 0), the switch must be
+     * followed by exactly one new id issued with retire_if_needed (Retire Prior To past the lowest), and
+     * no more on later wakes.
+     */
+    @Test
+    fun aMigrationAtThePeersLimitIssuesOneIdThatRetiresTheLeftPathsId() =
+        runTest {
+            val f = Fixture()
+            f.stub.scidsLeft = 0L
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.wake()
+                runCurrent()
+                assertEquals(0, f.stub.newScidCalls, "at the limit with nothing left behind, no id is owed")
+
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "the left path's source id was never pushed out")
+
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "one left path owes one id, not one per wake")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **At the peer's limit with unused ids of ours left, a migration pushes nothing out.** The peer still
+     * holds ids no path of it uses, so the next probe has one; issuing at the limit would have the peer hold
+     * one id more than it allowed until it applies Retire Prior To, and xquic closes the connection for that
+     * (CONNECTION_ID_LIMIT_ERROR) the moment our client first migrates.
+     */
+    @Test
+    fun aMigrationAtThePeersLimitPushesNothingOutWhileThePeerHoldsAnUnusedIdOfOurs() =
+        runTest {
+            val f = Fixture()
+            f.stub.scidsLeft = 0L
+            f.stub.activeScidCount = 8
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val result = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                result.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(0, f.stub.newScidCalls, "an id was issued at the peer's limit although it held six unused ones")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A peer that frees paths still has the left path's id pushed out when no id of ours is unused.**
+     * Freeing paths is not retiring our ids: s2n-quic retires our handshake id unasked, which marks it as
+     * freeing paths, yet retires none of the ids its left paths hold, and quiche cannot open a path without
+     * a source id of ours free. Every id the peer holds is still linked, so once every one is linked, a move is followed by a push.
+     */
+    @Test
+    fun aPeerThatFreesPathsStillGetsTheLeftPathsIdPushedOutWhenNoIdOfOursIsUnused() =
+        runTest {
+            val f = Fixture()
+            f.stub.peerActiveConnIdLimit = 3L
+            f.stub.scidsLeft = 0L
+            f.stub.activeScidCount = 3
+            f.stub.retiredScidCount = 1
+            f.stub.retiredScidsDrained = 1
+            f.driver.start(this)
+            try {
+                runCurrent()
+                f.wake()
+                runCurrent()
+                val first = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                first.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(0, f.stub.newScidCalls, "after one move the peer still holds an unused id of ours")
+
+                val second = f.migrate()
+                runCurrent()
+                f.validate(2)
+                runCurrent()
+                second.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "a peer that retired an id unasked was taken to hold an unused one")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A peer with room for two paths that frees none gets no probe it would drop.** Its
+     * `active_connection_id_limit` of 2 caps the paths it holds at two; once the client has moved off the
+     * original path, and the peer has retired nothing it was not asked to, a move to a new 4-tuple is
+     * answered NoSpareConnectionId at once, with no socket opened and no probe sent.
+     */
+    @Test
+    fun aSecondMoveAgainstAPeerWithRoomForTwoPathsIsRefusedWithoutAProbe() =
+        runTest {
+            val f = Fixture()
+            f.stub.peerActiveConnIdLimit = 2L
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val first = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                first.assertSucceeded()
+
+                val second = f.migrate()
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, second.await())
+                assertEquals(1, f.factory.opened, "a socket was opened for a move the peer cannot admit")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **A probe quiche rejects outright consumes nothing, so it must retire nothing.**
      *
      * The anti-vacuity partner of the two tests above: it would be trivial to "fix" #447 by retiring
@@ -885,10 +1020,7 @@ class PathRetirementTests {
                 val result = f.migrate()
                 runCurrent()
 
-                assertEquals(
-                    MigrationResult.Unmoved.Failed.ProbeRejected(QUICHE_ERR_OUT_OF_IDENTIFIERS),
-                    result.await(),
-                )
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, result.await())
                 assertEquals(
                     emptyList(),
                     f.stub.retiredDcids,
@@ -1004,6 +1136,9 @@ class PathRetirementTests {
     private companion object {
         /** [StubQuicheApi]'s default `sockAddrV4` answer for a registered sockaddr (127.0.0.1). */
         const val STUB_LOOPBACK_V4 = 0x7F000001L
+
+        /** The recv_info the fixture's driver is built with, which is the primary path's. */
+        val PRIMARY_RECV_INFO = QuicheRecvInfo(1L)
 
         /** A second local address (10.0.0.2) — another link, as the driver sees it. */
         const val OTHER_LINK_V4 = 0x0A000002L
