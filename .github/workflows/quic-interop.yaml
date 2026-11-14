@@ -98,5 +98,6 @@ jobs:
       version: "0.0.0-interop"
       apple-natives-run-id: ${{ needs.natives.outputs.apple-run-id }}
       windows-natives-run-id: ${{ needs.natives.outputs.windows-run-id }}
+      linux-natives-run-id: ${{ needs.natives.outputs.run-id }}
       stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
       record: ${{ inputs.mode || 'gate' }}

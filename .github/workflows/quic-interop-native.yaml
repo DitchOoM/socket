@@ -8,7 +8,8 @@ name: QUIC interop, native lanes
 # the runner's result shape for .github/scripts/quic-interop-gate.py to judge against the same
 # expectations file (directions prefixed with the lane: macos-arm64-our-client, ...).
 #
-# A third lane runs our client as Kotlin/Native, on macOS arm64 and in a booted iOS simulator.
+# The Kotlin/Native lanes run our client as a K/N test binary: on macOS arm64, in a booted iOS simulator, and on
+# Linux x64 and arm64 (io_uring/POSIX datapath).
 #
 # Peers: quic-go, built from source and patched to take its paths and port from the environment
 # (.github/scripts/build-quic-go-interop.sh). Cases: handshake, transfer, resumption, zerortt, and our
@@ -27,6 +28,10 @@ on:
         type: string
       windows-natives-run-id:
         description: "Run holding the quiche-windows-natives artifact."
+        required: true
+        type: string
+      linux-natives-run-id:
+        description: "Run holding the quiche-linux-natives-full artifact."
         required: true
         type: string
       stale:
@@ -113,11 +118,78 @@ jobs:
       - name: Build quic-go's interop endpoints
         run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
       - name: Run the pairs
-        run: .github/scripts/quic-interop-native-kn-run.sh
+        run: >-
+          .github/scripts/quic-interop-native-kn-run.sh
+          macos-arm64-kn=socket-quic-quiche/build/bin/macosArm64/debugTest/test.kexe
+          ios-simulator-arm64-kn=socket-quic-quiche/build/bin/iosSimulatorArm64/debugTest/test.kexe@"$IOS_SIMULATOR_BOOTED_UDID"
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: interop-results-native-kn
+          path: interop-results
+          retention-days: 14
+
+  # Both Linux test binaries are linked on x64 (the arm64 one cross-compiled, as build-linux.yaml's `link` does)
+  # against the run's quiche natives, then each runs on its own architecture.
+  linux-kn-link:
+    name: "Link Linux K/N test binaries"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ inputs.linux-natives-run-id }}
+          github-token: ${{ github.token }}
+      - name: Link the test binaries
+        run: >-
+          .github/scripts/gradle-retry.sh
+          :socket-quic-quiche:linkDebugTestLinuxX64 :socket-quic-quiche:linkDebugTestLinuxArm64
+          --no-configuration-cache
+      - uses: actions/upload-artifact@v7
+        with:
+          name: interop-kn-linux-binaries
+          path: |
+            socket-quic-quiche/build/bin/linuxX64/debugTest/test.kexe
+            socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
+          retention-days: 1
+          if-no-files-found: error
+
+  linux-kn:
+    name: "Linux ${{ matrix.arch }} (Kotlin/Native)"
+    needs: linux-kn-link
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            binary: linuxX64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            binary: linuxArm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: interop-kn-linux-binaries
+          path: socket-quic-quiche/build/bin
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Build quic-go's interop endpoints
+        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: Run the pairs
+        run: >-
+          .github/scripts/quic-interop-native-kn-run.sh
+          linux-${{ matrix.arch }}-kn=socket-quic-quiche/build/bin/${{ matrix.binary }}/debugTest/test.kexe
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: interop-results-native-linux-${{ matrix.arch }}-kn
           path: interop-results
           retention-days: 14
 
@@ -161,7 +233,7 @@ jobs:
 
   gate:
     name: "native gate"
-    needs: [macos-arm64, macos-arm64-kn, windows-x64]
+    needs: [macos-arm64, macos-arm64-kn, linux-kn, windows-x64]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:

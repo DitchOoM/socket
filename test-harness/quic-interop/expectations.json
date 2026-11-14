@@ -13,6 +13,34 @@
       "transfer": "pass"
     }
   },
+  "linux-arm64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "linux-arm64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "linux-x64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "linux-x64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
   "macos-arm64-kn-our-client": {
     "quic-go": {
       "handshake": "pass",
