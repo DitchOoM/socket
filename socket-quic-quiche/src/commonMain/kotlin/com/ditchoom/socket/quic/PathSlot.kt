@@ -121,26 +121,28 @@ internal enum class LeftPathSourceId {
     Owed,
 }
 
-/** What the peer is known to do with the paths this client leaves. */
+/**
+ * What the peer is known to do with the paths this client leaves, and every path moved to, each of which may
+ * still hold one of our source ids: quiche releases a path's id only when the peer retires it, evicted or not.
+ */
 internal sealed interface PeerPathRoom {
+    val movedTo: Set<PathKey>
+
     /**
      * The peer has retired ids of ours unasked, or validated a path beyond what holding every left path would
      * allow: it frees the paths a client leaves, so any number of moves fit.
      */
-    data object Freed : PeerPathRoom
-
-    /** The paths the peer may still hold besides the original one: every path moved to. */
-    sealed interface Holding : PeerPathRoom {
-        val movedTo: Set<PathKey>
-    }
+    data class Freed(
+        override val movedTo: Set<PathKey>,
+    ) : PeerPathRoom
 
     /** No sign yet that the peer frees anything; a move is still tried, and its probe's answer teaches which. */
     data class Kept(
         override val movedTo: Set<PathKey>,
-    ) : Holding
+    ) : PeerPathRoom
 
     /** A probe sent with the peer holding as many paths as its id limit allows went unanswered: no move fits. */
     data class Full(
         override val movedTo: Set<PathKey>,
-    ) : Holding
+    ) : PeerPathRoom
 }

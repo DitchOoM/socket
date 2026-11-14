@@ -931,6 +931,44 @@ class PathRetirementTests {
         }
 
     /**
+     * **A peer that frees paths still has the left path's id pushed out when no id of ours is unused.**
+     * Freeing paths is not retiring our ids: s2n-quic answers moves past its limit yet retires none of the
+     * ids its left paths hold, and quiche cannot open a path without a source id of ours free. Every id
+     * the peer holds is linked to a path the driver still holds, so the push follows the second move too.
+     */
+    @Test
+    fun aPeerThatFreesPathsStillGetsTheLeftPathsIdPushedOutWhenNoIdOfOursIsUnused() =
+        runTest {
+            val f = Fixture()
+            f.stub.peerActiveConnIdLimit = 2L
+            f.stub.scidsLeft = 0L
+            f.stub.activeScidCount = 2
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val first = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                first.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(1, f.stub.newScidCalls, "the first left path's id was never pushed out")
+
+                val second = f.migrate()
+                runCurrent()
+                f.validate(2)
+                runCurrent()
+                second.assertSucceeded()
+                f.wake()
+                runCurrent()
+                assertEquals(2, f.stub.newScidCalls, "a peer that answered a move past its limit was taken to hold an unused id")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
      * **A move at the peer's path limit is probed once; unanswered, later moves are refused unprobed.** A peer
      * whose `active_connection_id_limit` of 2 caps the paths it holds, and that frees none, drops that probe;
      * after it the client answers NoSpareConnectionId at once, opening no socket, kept path or not.

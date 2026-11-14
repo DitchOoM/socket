@@ -3134,7 +3134,7 @@ class QuicheDriver(
             retirementsSeen += retired
             // More retirements than this client asked for: the peer retires the ids of paths a client leaves
             // on its own, so it frees those paths and has room for any number of moves.
-            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed
+            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
@@ -4167,10 +4167,14 @@ class QuicheDriver(
                 leftPathSourceId = LeftPathSourceId.Owed
                 peerPathRoom =
                     when (val room = peerPathRoom) {
-                        PeerPathRoom.Freed -> PeerPathRoom.Freed
+                        is PeerPathRoom.Freed -> PeerPathRoom.Freed(room.movedTo + entry.key)
                         // It validated a path it could not have held beside every left one: it frees them.
-                        is PeerPathRoom.Holding ->
-                            if (peerAtItsPathLimit(room)) PeerPathRoom.Freed else PeerPathRoom.Kept(room.movedTo + entry.key)
+                        is PeerPathRoom.Kept, is PeerPathRoom.Full ->
+                            if (peerAtItsPathLimit(room)) {
+                                PeerPathRoom.Freed(room.movedTo + entry.key)
+                            } else {
+                                PeerPathRoom.Kept(room.movedTo + entry.key)
+                            }
                     }
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
@@ -4320,15 +4324,11 @@ class QuicheDriver(
     }
 
     /**
-     * Whether the peer holds an id of ours that none of the paths it may still keep uses: our active ids
-     * outnumber the original path and every path moved to. A peer that frees left paths ([PeerPathRoom.Freed])
-     * retires their ids itself, so its capacity comes back without a push.
+     * Whether the peer holds an id of ours that no path uses: our active ids outnumber the original path and
+     * every path moved to, each of which keeps one until the peer retires it. The same count whatever the
+     * peer does with its paths: one that frees them (s2n-quic) need not retire the ids they held.
      */
-    private fun peerHoldsAnUnusedIdOfOurs(): Boolean =
-        when (val room = peerPathRoom) {
-            PeerPathRoom.Freed -> true
-            is PeerPathRoom.Holding -> api.connActiveScids(conn) > room.movedTo.size + 1
-        }
+    private fun peerHoldsAnUnusedIdOfOurs(): Boolean = api.connActiveScids(conn) > peerPathRoom.movedTo.size + 1
 
     /**
      * Whether a peer still holding the original path and every path in [room] is at its
@@ -4337,7 +4337,7 @@ class QuicheDriver(
      * Prior To brings to the left path) then drops a probe from a new 4-tuple; one that frees them answers
      * it. Only the probe's answer tells which, so this decides what an answer teaches, not whether to probe.
      */
-    private fun peerAtItsPathLimit(room: PeerPathRoom.Holding): Boolean =
+    private fun peerAtItsPathLimit(room: PeerPathRoom): Boolean =
         when (val params = api.connPeerTransportParams(conn)) {
             PeerTransportParams.NotYetNegotiated -> false
             is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
