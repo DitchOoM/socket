@@ -745,9 +745,7 @@
       "handshakeloss": "pass",
       "ipv6": "pass",
       "longrtt": "pass",
-      "multiplexing": {
-        "known-failure": "ours (likely): our server times out reading requests (\"request failed: TimeoutCancellationException: Timed out immediately\") with the stock quiche client; under investigation"
-      },
+      "multiplexing": "pass",
       "rebind-addr": "pass",
       "rebind-port": "pass",
       "resumption": "pass",
